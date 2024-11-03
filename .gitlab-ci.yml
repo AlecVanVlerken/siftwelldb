@@ -1,0 +1,33 @@
+image: node:22
+
+stages:
+  - build
+  - coverage
+  - lint
+  - prettier-check
+
+cache:
+  paths:
+    - node_modules/
+
+build_and_test:
+  stage: build
+  script:
+    - npm ci
+    - npm run build
+    - npm test
+
+coverage:
+  stage: coverage
+  script:
+    - npm run coverage
+
+eslint:
+  stage: lint
+  script:
+    - npm run lint
+
+prettier-check:
+  stage: prettier-check
+  script:
+    - npm run prettier-check

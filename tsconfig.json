@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "module": "NodeNext",
+    "target": "es2022",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "moduleResolution": "NodeNext",
+    "allowUnusedLabels": false,
+    "allowUnreachableCode": false,
+    //"exactOptionalPropertyTypes": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noPropertyAccessFromIndexSignature": true,
+    //"noUncheckedIndexedAccess": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "allowJs": false,
+    //"checkJs": false,
+    "allowSyntheticDefaultImports": true,
+    "rootDir": "src",
+    "sourceMap": true,
+    "outDir": "build",
+    "noImplicitAny": true
+  },
+  "ts-node": { "esm": true },
+  "exclude": ["build"],
+  "include": ["src"]
+}

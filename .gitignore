@@ -1,0 +1,15 @@
+node_modules/
+build/
+coverage/
+
+.DS_Store
+Thumbs.db
+
+# vim swap files
+*.swp
+
+testdb
+
+tsconfig.tsbuildinfo
+
+.vscode/
