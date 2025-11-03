@@ -1,7 +1,8 @@
-image: node:22
+image: node:24
 
 stages:
   - build
+  - test
   - coverage
   - lint
   - prettier-check
@@ -10,11 +11,15 @@ cache:
   paths:
     - node_modules/
 
-build_and_test:
+download_dependencies:
   stage: build
   script:
     - npm ci
     - npm run build
+
+npm_test:
+  stage: test
+  script:
     - npm test
 
 coverage:

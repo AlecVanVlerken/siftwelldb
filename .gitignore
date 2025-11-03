@@ -10,6 +10,6 @@ Thumbs.db
 
 testdb
 
-tsconfig.tsbuildinfo
+*.tsbuildinfo
 
 .vscode/
