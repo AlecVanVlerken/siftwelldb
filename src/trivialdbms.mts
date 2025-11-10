@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { type File } from './mockfile.mjs';
+import { type File } from './core/file.mjs';
 
 export class Database {
   private constructor(
