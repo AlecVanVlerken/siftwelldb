@@ -1,6 +1,6 @@
-import type { File } from "../core/file.mts";  
-import type { LogRecord } from "./logrecord.mts";
-import { serializeLogRecord } from "./logrecord.mjs";
+import type { File } from '../core/file.mts';
+import type { LogRecord } from './logrecord.mts';
+import { serializeLogRecord } from './logrecord.mjs';
 
 /**
  * Schrijft een logrecord atomisch naar schijf.
@@ -12,10 +12,7 @@ import { serializeLogRecord } from "./logrecord.mjs";
  * @param logFile - Bestand waarop het logrecord wordt opgeslagen.
  * @param record - LogRecord dat moet worden geschreven.
  */
-export async function writeAndSyncLog(
-  logFile: File,
-  record: LogRecord
-): Promise<void> {
+export async function writeAndSyncLog(logFile: File, record: LogRecord): Promise<void> {
   const serialized = serializeLogRecord(record);
 
   await logFile.truncate(0);
