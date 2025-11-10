@@ -6,12 +6,12 @@
  * - checksum: SHA-256 hash van de data voor integriteitscontrole
  */
 export interface LogRecord {
-    position: number;
-    data: Buffer;
-    checksum: Buffer;
+  position: number;
+  data: Buffer;
+  checksum: Buffer;
 }
 
-import { createHash } from "crypto";
+import { createHash } from 'crypto';
 
 /**
  * Bereken de SHA-256 checksum van een buffer.
@@ -19,7 +19,7 @@ import { createHash } from "crypto";
  * @returns Buffer met de 32-byte SHA-256 hash.
  */
 export function computeChecksum(data: Buffer): Buffer {
-  return createHash("sha256").update(data).digest();
+  return createHash('sha256').update(data).digest();
 }
 
 /**
