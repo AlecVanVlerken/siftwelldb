@@ -65,6 +65,7 @@ function deleteFromSubtree(node: InteriorNode, value: string): InteriorNode {
  */
 function delete_(tree: Tree, value: string): Tree {
   throw new Error('Not yet implemented');
+  
 }
 
 process.nextTick(() => {
