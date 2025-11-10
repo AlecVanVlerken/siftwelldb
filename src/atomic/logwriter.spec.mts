@@ -1,15 +1,15 @@
-import { describe, test, expect } from "vitest"; 
-import { strict as assert } from "node:assert";
-import { computeChecksum, serializeLogRecord } from "./logrecord.mjs";
-import { writeAndSyncLog } from "./logwriter.mjs";
-import type { LogRecord } from "./logrecord.mts";
-import { MockFile } from "../core/mockfile.mjs";
+import { describe, test, expect } from 'vitest';
+import { strict as assert } from 'node:assert';
+import { computeChecksum, serializeLogRecord } from './logrecord.mjs';
+import { writeAndSyncLog } from './logwriter.mjs';
+import type { LogRecord } from './logrecord.mts';
+import { MockFile } from '../core/mockfile.mjs';
 
-describe("writeAndSyncLog", () => {
-  test("writes serialized record atomically to file using MockFile", async () => {
+describe('writeAndSyncLog', () => {
+  test('writes serialized record atomically to file using MockFile', async () => {
     const mockFile = new MockFile(512);
 
-    const data = Buffer.from("Atomic file test!");
+    const data = Buffer.from('Atomic file test!');
     const checksum = computeChecksum(data);
     const record: LogRecord = { position: 128, data, checksum };
 
