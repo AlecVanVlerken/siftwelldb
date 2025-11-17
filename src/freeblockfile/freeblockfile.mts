@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 /**
  * FreeBlockFile
  * ---------------------------
@@ -50,8 +51,28 @@ export class FreeBlockFile {
       throw new Error(`Block size must be > ${layout.HEADER_CLIENT_AREA_OFFSET} to fit header`);
     }
 
+=======
+import { type File } from '../core/file.mjs';
+import { type AtomicFile } from 'wait implementation';
+
+export class FreeBlockFile {
+  private file: File;
+  private blockSize: number;
+  private dirtyBlocks: Map<number, Buffer> = new Map();
+  private atomicFile: new AtomicFile;
+
+  constructor(file: File, blockSize: number) {
+>>>>>>> ade49aa (Use constructor File and dirtyBlocks)
     this.file = file;
     this.blockSize = blockSize;
+  }
+
+  async open() {
+    await this.file.open();
+  }
+
+  async close() {
+    await this.file.close();
   }
 
   /**
@@ -127,7 +148,19 @@ export class FreeBlockFile {
    * @author Alec Van Vlerken
    */
   async readBlock(blockNumber: number): Promise<Buffer> {
+<<<<<<< HEAD
     return await readBlock(this, blockNumber);
+=======
+    const cached = this.dirtyBlocks.get(blockNumber);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const offset = blockNumber * this.blockSize;
+    const buffer = Buffer.alloc(this.blockSize);
+    await this.file.read(buffer, { position: offset });
+    return buffer;
+>>>>>>> ade49aa (Use constructor File and dirtyBlocks)
   }
 
   /**
@@ -147,6 +180,7 @@ export class FreeBlockFile {
    * @author Alec Van Vlerken
    */
   async writeBlock(blockNumber: number, data: Buffer): Promise<void> {
+<<<<<<< HEAD
     await writeBlock(this, blockNumber, data);
   }
 
@@ -157,10 +191,30 @@ export class FreeBlockFile {
    *
    * @returns {Promise<Buffer>} A copy of the client area.
    * @throws {Error} If the file is not open.
+=======
+    if (data.length > this.blockSize) {
+      throw new Error(`Block too large (${data.length})`);
+    }
+
+    const buffer = Buffer.alloc(this.blockSize);
+    data.copy(buffer);
+    this.dirtyBlocks.set(blockNumber, buffer);
+    await Promise.resolve();
+  }
+
+  /**
+   * Reads the client area from block 0.
+   *
+   * The client area is a reserved block (block 0) that contains database metadata,
+   * such as the version, free list head, and root block pointers for collections.
+   *
+   * @returns {Promise<Buffer>} A buffer containing the client area (block 0) data.
+>>>>>>> ade49aa (Use constructor File and dirtyBlocks)
    *
    * @author Alec Van Vlerken
    */
   async getClientArea(): Promise<Buffer> {
+<<<<<<< HEAD
     return await getClientArea(this);
   }
 
@@ -181,6 +235,27 @@ export class FreeBlockFile {
    */
   async writeClientArea(buffer: Buffer): Promise<void> {
     await writeClientArea(this, buffer);
+=======
+    return this.readBlock(0);
+  }
+
+  /**
+   * Writes to the client area in block 0.
+   *
+   * The client area stores metadata about the database. This function overwrites
+   * the entire block 0 with the provided buffer, which must be <= blockSize.
+   *
+   * @param {Buffer} buffer - A buffer containing the metadata to write.
+   * @returns {Promise<void>} A promise that resolves when the client area has been successfully written.
+   *
+   * @throws {Error} If the buffer exceeds the block size.
+   *
+   * @author Alec Van Vlerken
+   */
+
+  async writeClientArea(buffer: Buffer): Promise<void> {
+    return this.writeBlock(0, buffer);
+>>>>>>> ade49aa (Use constructor File and dirtyBlocks)
   }
 
   /**
@@ -198,12 +273,18 @@ export class FreeBlockFile {
    *  3. Flush all changes to disk.
    *  4. Clear the in-memory dirty block map.
    *
+<<<<<<< HEAD
    * @returns {Promise<void>} A promise that resolves once all pending changes are durably and atomically written to disk.
    * @throws {Error} If the file is not open.
+=======
+   * @returns {Promise<void>} A promise that resolves once all pending changes
+   * are durably and atomically written to disk.
+>>>>>>> ade49aa (Use constructor File and dirtyBlocks)
    *
    * @author Alec Van Vlerken
    */
   async commit(): Promise<void> {
+<<<<<<< HEAD
     await commit(this);
   }
 
@@ -328,5 +409,24 @@ export class FreeBlockFile {
 
   _ensureOpen(): void {
     if (!this.isOpen) throw new Error('File not open');
+=======
+    if (this.dirtyBlocks.size === 0) return;
+
+    // Assuming atomicWrite() has a list as input
+    const writeOps: Array<{ offset: number; data: Buffer }> = [];
+
+    for (const [blockNum, buffer] of this.dirtyBlocks) {
+      writeOps.push({
+        offset: blockNum * this.blockSize,
+        data: buffer,
+      });
+    }
+
+    await this.atomicFile.atomicWrite(writeOps);
+
+    await this.file.sync();
+
+    this.dirtyBlocks.clear();
+>>>>>>> ade49aa (Use constructor File and dirtyBlocks)
   }
 }
