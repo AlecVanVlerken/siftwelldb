@@ -196,6 +196,7 @@ export class FreeBlockFile {
     const header = await this.readBlock(0);
 
     header.writeBigUInt64LE(BigInt(blockNum), 8);
+
     await this.writeBlock(0, header);
     this.firstfreeBlock = blockNum;
   }
