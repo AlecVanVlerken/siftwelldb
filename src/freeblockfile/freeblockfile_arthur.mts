@@ -291,4 +291,44 @@ export class FreeBlockFile {
     // Update header: make this block the new free head
     await this.setFirstFreeBlock(blockNumber);
   }
+
+  /**
+   * Returns the total number of blocks in the file.
+   *
+   * @returns {Promise<number>} Total number of blocks in the file.
+   * @throws {Error} If the file is not open or I/O fails.
+   * @author Arthur Cukier
+   */
+  async getBlockCount(): Promise<number> {
+    if (!this.isOpen || !this.fileHandle) {
+      throw new Error('Cannot count blocks: file not open');
+    }
+
+    const stats = await this.fileHandle.stat();
+    return Math.floor(stats.size / this.blockSize);
+  }
+
+  /**
+   * Counts how many blocks are currently marked as free.
+   *
+   * @returns {Promise<number>} The number of free blocks found.
+   * @throws {Error} If the file is not open or I/O fails.
+   * @author Arthur Cukier
+   */
+  async getFreeBlockCount(): Promise<number> {
+    if (!this.isOpen || !this.fileHandle) {
+      throw new Error('Cannot count free blocks: file not open');
+    }
+
+    let count = 0;
+    let current = await this.getFirstFreeBlock();
+
+    while (current !== 0) {
+      count++;
+      const buf = await this.readBlock(current);
+      current = Number(buf.readBigUInt64LE(0)); // follow next pointer
+    }
+
+    return count;
+  }
 }
