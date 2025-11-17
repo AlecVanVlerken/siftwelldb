@@ -1,3 +1,6 @@
+// @author Alexandre-Gatien Bienfet
+// @date 2025-11-17
+
 import assert from 'assert';
 import { computeChecksum, serializeLogRecord, deserializeLogRecord } from '../atomic/logrecord.mjs';
 import type { LogRecord } from '../atomic/logrecord.mts';
@@ -21,7 +24,7 @@ describe('logrecord', () => {
 
   it('rejects records with invalid checksum length during serialization', () => {
     const data = Buffer.from('abc');
-    const badChecksum = Buffer.alloc(10); // fout
+    const badChecksum = Buffer.alloc(10); // invalid checksum length
 
     const record: LogRecord = { position: 1, data, checksum: badChecksum };
 
@@ -29,18 +32,18 @@ describe('logrecord', () => {
   });
 
   it('rejects buffers that are too small for header + checksum', () => {
-    const tooSmall = Buffer.alloc(20); // minder dan 8 + 32
+    const tooSmall = Buffer.alloc(20); // less than 8 + 32
     assert.throws(() => deserializeLogRecord(tooSmall));
   });
 
-  it('rejects truncated records (header OK, checksum OK, data ontbreekt)', () => {
+  it('rejects truncated records (header OK, checksum OK, missing data)', () => {
     const data = Buffer.from('Test123');
     const checksum = computeChecksum(data);
     const record: LogRecord = { position: 10, data, checksum };
 
     const full = serializeLogRecord(record);
 
-    // maak hem expres te kort (data ontbreekt gedeeltelijk)
+    // deliberately truncate the buffer (part of the data is missing)
     const truncated = full.subarray(0, full.length - 2);
 
     assert.throws(() => deserializeLogRecord(truncated));
@@ -53,7 +56,7 @@ describe('logrecord', () => {
 
     const serialized = serializeLogRecord(record);
 
-    // corruptie simuleren
+    // simulate corruption by flipping the last byte
     serialized[serialized.length - 1] ^= 0xff;
 
     assert.throws(() => deserializeLogRecord(serialized));
