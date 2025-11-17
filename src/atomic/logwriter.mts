@@ -15,6 +15,10 @@ import { serializeLogRecord } from './logrecord.mjs';
 export async function writeAndSyncLog(logFile: File, record: LogRecord): Promise<void> {
   const serialized = serializeLogRecord(record);
 
+  if (serialized.length > logFile.sectorSize) {
+    throw new Error(`LogRecord too large to be written atomically`);
+  }
+
   await logFile.truncate(0);
 
   await logFile.writev([serialized], 0);
