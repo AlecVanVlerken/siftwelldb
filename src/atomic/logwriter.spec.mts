@@ -6,7 +6,7 @@ import type { LogRecord } from './logrecord.mts';
 import { MockFile } from '../core/mockfile.mjs';
 
 describe('writeAndSyncLog', () => {
-  test('writes serialized record atomically to file using MockFile', async () => {
+  test('writes a valid record atomically', async () => {
     const mockFile = new MockFile(512);
 
     const data = Buffer.from('Atomic file test!');
@@ -26,5 +26,35 @@ describe('writeAndSyncLog', () => {
     await mockFile.read(buffer, { position: 0 });
 
     expect(buffer.equals(expected)).toBe(true);
+  });
+
+  test('accepts a record that fits exactly in one sector', async () => {
+    const sectorSize = 256;
+    const mockFile = new MockFile(sectorSize);
+
+    // record = header (8) + checksum (32) + data (216) = 256 bytes
+    const data = Buffer.alloc(sectorSize - 40, 0xaa);
+    const checksum = computeChecksum(data);
+    const record: LogRecord = { position: 1, data, checksum };
+
+    await mockFile.create();
+    await mockFile.open();
+    await expect(writeAndSyncLog(mockFile, record)).resolves.not.toThrow();
+    await mockFile.close();
+  });
+
+  test('rejects a record larger than the sector size', async () => {
+    const mockFile = new MockFile(128); // kleine sector
+
+    const data = Buffer.alloc(200); // te groot
+    const checksum = computeChecksum(data);
+    const record: LogRecord = { position: 1, data, checksum };
+
+    await mockFile.create();
+    await mockFile.open();
+
+    await expect(writeAndSyncLog(mockFile, record)).rejects.toThrow();
+
+    await mockFile.close();
   });
 });
