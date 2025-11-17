@@ -82,18 +82,12 @@ export class FreeBlockFile {
    * @author Arthur Cukier
    */
   async create(): Promise<void> {
-    // open file in write mode (truncate or create)
     this.fileHandle = await fs.open(this.filePath, 'w+');
-
     this.rootBlock = 0;
     this.firstfreeBlock = 0;
-
-    // initial block 0 buffer filled with zeros
     const header = Buffer.alloc(this.blockSize, 0);
-    header.writeBigUInt64LE(BigInt(this.rootBlock), 0); // root pointer
-    header.writeBigUInt64LE(BigInt(this.firstfreeBlock), 8); // free-list head
-
-    // schrijf buffer in bestand
+    header.writeBigUInt64LE(BigInt(this.rootBlock), 0);
+    header.writeBigUInt64LE(BigInt(this.firstfreeBlock), 8);
     await this.fileHandle.write(header, 0, this.blockSize, 0);
     await this.fileHandle.sync();
   }
@@ -106,13 +100,10 @@ export class FreeBlockFile {
    */
   async open(): Promise<void> {
     if (this.isOpen) throw new Error('File already open');
-    // open file in read mode
     this.fileHandle = await fs.open(this.filePath, 'r+');
     this.isOpen = true;
-
     const header = Buffer.alloc(this.blockSize);
     await this.fileHandle.read(header, 0, this.blockSize, 0);
-
     this.rootBlock = Number(header.readBigUInt64LE(0));
     this.firstfreeBlock = Number(header.readBigUInt64LE(8));
   }
@@ -125,7 +116,6 @@ export class FreeBlockFile {
   async close(): Promise<void> {
     if (!this.isOpen || !this.fileHandle) return;
     if (this.fileHandle) {
-      // flush all pending writes to disk (safety) and then close
       await this.fileHandle.sync();
       await this.fileHandle.close();
     }
@@ -165,16 +155,10 @@ export class FreeBlockFile {
       throw new Error('Cannot set root block: file not open');
     }
 
-    // read full header so we preserve the freeBlock bytes
     const header = await this.readBlock(0);
-
-    // update bytes 0–7 with new root block
     header.writeBigUInt64LE(BigInt(blockNum), 0);
-
-    // write the updated header back to block 0
     await this.writeBlock(0, header);
 
-    // update in-memory cache
     this.rootBlock = blockNum;
   }
 
@@ -209,16 +193,10 @@ export class FreeBlockFile {
       throw new Error('Cannot set free block: file not open');
     }
 
-    // read entire header so we don't overwrite rootBlock
     const header = await this.readBlock(0);
 
-    // update bytes 8–15 with new freeHead
     header.writeBigUInt64LE(BigInt(blockNum), 8);
-
-    // write the updated header back to disk
     await this.writeBlock(0, header);
-
-    // update in-memory value
     this.firstfreeBlock = blockNum;
   }
 
@@ -238,21 +216,17 @@ export class FreeBlockFile {
       throw new Error('Cannot allocate: file not open');
     }
 
-    // Read current free list head from header
     const freeBlock = await this.getFirstFreeBlock();
 
     if (freeBlock === 0) {
       throw new Error('Free list empty — expected at least one free block');
     }
 
-    // Read the free block itself to find the next free block pointer
     const freeBlockBuf = await this.readBlock(freeBlock);
-    const nextFree = Number(freeBlockBuf.readBigUInt64LE(0)); // first 8 bytes = next free
+    const nextFree = Number(freeBlockBuf.readBigUInt64LE(0));
 
-    // Update header: new freeHead becomes nextFree
     await this.setFirstFreeBlock(nextFree);
 
-    // Return the block we just allocated
     return freeBlock;
   }
 
@@ -276,19 +250,12 @@ export class FreeBlockFile {
     if (blockNumber === 0) {
       throw new Error('Cannot free header block (block 0)');
     }
-
-    // Get the current head of the free list
     const currentHead = this.firstfreeBlock;
 
-    // Create a buffer representing this newly freed block
-    // First 8 bytes = pointer to the previous head
     const buf = Buffer.alloc(this.blockSize, 0);
     buf.writeBigUInt64LE(BigInt(currentHead), 0);
-
-    // Write this block to disk
     await this.writeBlock(blockNumber, buf);
 
-    // Update header: make this block the new free head
     await this.setFirstFreeBlock(blockNumber);
   }
 
@@ -326,7 +293,7 @@ export class FreeBlockFile {
     while (current !== 0) {
       count++;
       const buf = await this.readBlock(current);
-      current = Number(buf.readBigUInt64LE(0)); // follow next pointer
+      current = Number(buf.readBigUInt64LE(0));
     }
 
     return count;
