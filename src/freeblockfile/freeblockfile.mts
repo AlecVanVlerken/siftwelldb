@@ -631,7 +631,7 @@ async allocateBlock(): Promise<number> {
  * @throws {Error} If the file is not open or if blockNumber is 0.
  * @author Arthur Cukier
  */
-async free(blockNumber: number): Promise<void> {
+async freeBlock(blockNumber: number): Promise<void> {
   if (!this.isOpen) throw new Error('File not open');
   if (blockNumber === 0) throw new Error('Cannot free block 0');
 
