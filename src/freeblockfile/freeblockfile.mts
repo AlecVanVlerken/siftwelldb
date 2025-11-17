@@ -19,9 +19,6 @@ export class FreeBlockFile {
    * Create a new file and initialize header (block 0).
    * The header block is written with both the root block and first free
    * block pointers set to 0. This marks the file as newly initialized.
-   * Header layout:
-   *   [0–7]  rootBlock  (uint64 LE)
-   *   [8–15] freeBlock   (uint64 LE)
    * @returns {Promise<void>}
    * @author Arthur Cukier
    */
@@ -177,56 +174,6 @@ export class FreeBlockFile {
   }
 
   /**
-   * Reads the root block number from block 0 (bytes 0–7).
-   * Reads bytes [0–7] of block 0 of and updates the in-memory 'rootBlock'.
-   *
-   * @returns {Promise<number>} The current root block number.
-   * @throws {Error} If the file is not open.
-   * @author Arthur Cukier
-   */
-  async getRootBlock(): Promise<number> {
-    if (!this.isOpen) {
-      throw new Error('File not open');
-    }
-    let header: Buffer;
-
-  if (this.dirtyBlocks.has(0)) {
-    header = this.dirtyBlocks.get(0)!;
-  } else {
-    header = await this.readBlock(0);
-  }
-    this.rootBlock = Number(header.readBigUInt64LE(0));
-    return this.rootBlock;
-  }
-
-  /**
-   * Updates the root block number in block 0 (bytes 0–7),
-   * keeping the firstfreeBlock value (bytes 8–15) intact.
-   *
-   * @param {number} blockNum - The new root block number.
-   * @throws {Error} If the file is not open.
-   * @returns {Promise<void>}
-   * @author Arthur Cukier
-   */
-  async setRootBlock(blockNum: number): Promise<void> {
-    if (!this.isOpen) {
-      throw new Error('File not open');
-    }
-
-    let header: Buffer;
-
-  if (this.dirtyBlocks.has(0)) {
-    header = this.dirtyBlocks.get(0)!;
-  } else {
-    header = await this.readBlock(0);
-  }
-
-  header.writeBigUInt64LE(BigInt(blockNum), 0);
-  this.dirtyBlocks.set(0, header);
-  this.rootBlock = blockNum;
-  }
-
-  /**
    * Reads the first free block pointer from block 0 (bytes 8–15).
    *
    * @returns {Promise<number>} The block number of the first free block or 0 if there are no free blocks.
@@ -317,6 +264,7 @@ export class FreeBlockFile {
   /**
  * Allocates a block by removing it from the head of the free list.
  * Works against the dirty header if present; no direct disk writes.
+ * @returns {Promise<void>}
  * @throws {Error} If the file is not open or the free list is empty.
  * @author Arthur Cukier
  */
@@ -342,6 +290,7 @@ async allocateBlock(): Promise<number> {
 /**
  * Frees a block by inserting it at the head of the free list.
  * Writes only to the dirty cache; no direct disk writes.
+ * @returns {Promise<void>}
  * @throws {Error} If the file is not open or if blockNumber is 0.
  * @author Arthur Cukier
  */
@@ -361,6 +310,63 @@ async freeBlock(blockNumber: number): Promise<void> {
   buf.writeBigUInt64LE(BigInt(currentHead), 0);
   this.dirtyBlocks.set(blockNumber, buf);
   await this.setFirstFreeBlock(blockNumber);
+}
+
+/**
+ * Retrieves the current root block number.
+ *
+ * If block 0 (the header) is dirty in memory, reads the root
+ * directly from the in-memory buffer. Otherwise, reads it from disk.
+ *
+ * @returns {Promise<number>} The most recent root block number.
+ * @throws {Error} If the file is not open.
+ * @author Arthur Cukier
+ */
+async getRootBlock(): Promise<number> {
+  if (!this.isOpen) throw new Error('File not open');
+
+  let header: Buffer;
+
+  if (this.dirtyBlocks.has(0)) {
+    header = this.dirtyBlocks.get(0)!;
+  } else {
+    header = await this.readBlock(0);
+  }
+
+  this.rootBlock = Number(header.readBigUInt64LE(0));
+  return this.rootBlock;
+}
+
+
+/**
+ * Updates the root block number in the header (block 0).
+ * 
+ * The new value is written to the in-memory dirty block cache,
+ * not directly to disk. This ensures that changes become
+ * permanent only after a successful commit().
+ *
+ * If block 0 is not yet cached, it is first loaded from disk.
+ *
+ * @param {number} blockNum - The new root block number.
+ * @returns {Promise<void>}
+ * @throws {Error} If the file is not open.
+ * @author Arthur Cukier
+ */
+async setRootBlock(blockNum: number): Promise<void> {
+  if (!this.isOpen) throw new Error('File not open');
+
+  let header: Buffer;
+
+  if (this.dirtyBlocks.has(0)) {
+    header = this.dirtyBlocks.get(0)!;
+  } else {
+    header = await this.readBlock(0);
+  }
+
+  header.writeBigUInt64LE(BigInt(blockNum), 0);
+
+  this.dirtyBlocks.set(0, header);
+  this.rootBlock = blockNum;
 }
 
 
