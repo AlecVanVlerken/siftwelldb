@@ -1,3 +1,6 @@
+// @author Alexandre-Gatien Bienfet
+// @date 2025-11-17
+
 import { describe, test, expect } from 'vitest';
 import { strict as assert } from 'node:assert';
 import { computeChecksum, serializeLogRecord } from './logrecord.mjs';
@@ -44,9 +47,9 @@ describe('writeAndSyncLog', () => {
   });
 
   test('rejects a record larger than the sector size', async () => {
-    const mockFile = new MockFile(128); // kleine sector
+    const mockFile = new MockFile(128); // small sector size
 
-    const data = Buffer.alloc(200); // te groot
+    const data = Buffer.alloc(200); // larger than sector size
     const checksum = computeChecksum(data);
     const record: LogRecord = { position: 1, data, checksum };
 
