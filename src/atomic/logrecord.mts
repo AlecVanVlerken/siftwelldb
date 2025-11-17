@@ -1,9 +1,12 @@
+// @author Alexandre-Gatien Bienfet
+// @date 2025-11-17
+
 /**
  * @interface LogRecord
- * Een logrecord dat atomisch op schijf kan worden opgeslagen.
- * - position: logische positie van de data in het databestand
- * - data: de eigenlijke binaire inhoud
- * - checksum: SHA-256 hash van de data voor integriteitscontrole
+ * A log record that can be stored atomically on disk.
+ * - position: the logical position of the data in the data file
+ * - data: the actual binary content
+ * - checksum: the SHA-256 hash of the data for integrity verification
  */
 export interface LogRecord {
   position: number;
@@ -14,18 +17,18 @@ export interface LogRecord {
 import { createHash } from 'crypto';
 
 /**
- * Bereken de SHA-256 checksum van een buffer.
- * @param data - De data waarvoor de hash berekend wordt.
- * @returns Buffer met de 32-byte SHA-256 hash.
+ * Compute the SHA-256 checksum of a buffer.
+ * @param data - The data for which the hash is calculated.
+ * @returns A buffer containing the 32-byte SHA-256 hash.
  */
 export function computeChecksum(data: Buffer): Buffer {
   return createHash('sha256').update(data).digest();
 }
 
 /**
- * Zet een LogRecord om naar een binair formaat dat direct kan worden weggeschreven.
- * @param record - Het logrecord dat moet worden geserialiseerd.
- * @returns Buffer met de volledige binaire representatie.
+ * Convert a LogRecord into a binary format that can be written directly to disk.
+ * @param record - The log record to be serialized.
+ * @returns A buffer containing the complete binary representation.
  */
 export function serializeLogRecord(record: LogRecord): Buffer {
   if (record.checksum.length !== 32) {
@@ -38,13 +41,13 @@ export function serializeLogRecord(record: LogRecord): Buffer {
 }
 
 /**
- * Zet een buffer terug om in een LogRecord.
- * @param buf - De buffer die een geserialiseerd logrecord bevat.
- * @returns Het gedeserialiseerde LogRecord.
+ * Convert a buffer back into a LogRecord.
+ * @param buf - The buffer containing a serialized log record.
+ * @returns The deserialized LogRecord.
  */
 export function deserializeLogRecord(buf: Buffer): LogRecord {
   if (buf.length < 8 + 32) {
-    throw new Error('Buffer too small to contain a log record header');
+    throw new Error('Buffer too small');
   }
 
   const position = buf.readUInt32BE(0);
@@ -52,7 +55,7 @@ export function deserializeLogRecord(buf: Buffer): LogRecord {
 
   const expectedTotal = 8 + 32 + length;
   if (buf.length < expectedTotal) {
-    throw new Error('Incomplete log record: buffer is truncated');
+    throw new Error('Incomplete log record');
   }
 
   const checksum = buf.subarray(8, 8 + 32);
