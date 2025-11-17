@@ -1,15 +1,23 @@
-import fs from 'fs/promises';
-import { AtomicFile } from 'wait implementation';
+import { type File } from '../core/file.mjs';
+import { type AtomicFile } from 'wait implementation';
 
 export class FreeBlockFile {
-  private fileHandle!: fs.FileHandle;
+  private file: File;
   private blockSize: number;
-  private dirtyBlocks: Map<number, Buffer>;
+  private dirtyBlocks: Map<number, Buffer> = new Map();
+  private atomicFile: new AtomicFile;
 
-  constructor(blockSize: number) {
+  constructor(file: File, blockSize: number) {
+    this.file = file;
     this.blockSize = blockSize;
-    this.atomicFile = new AtomicFile();
-    this.dirtyBlocks = new Map();
+  }
+
+  async open() {
+    await this.file.open();
+  }
+
+  async close() {
+    await this.file.close();
   }
 
   /**
@@ -26,13 +34,14 @@ export class FreeBlockFile {
    * @author Alec Van Vlerken
    */
   async readBlock(blockNumber: number): Promise<Buffer> {
-    if (this.dirtyBlocks.has(blockNumber)) {
-      return this.dirtyBlocks.get(blockNumber)!;
+    const cached = this.dirtyBlocks.get(blockNumber);
+    if (cached !== undefined) {
+      return cached;
     }
 
     const offset = blockNumber * this.blockSize;
     const buffer = Buffer.alloc(this.blockSize);
-    await this.fileHandle.read(buffer, 0, this.blockSize, offset);
+    await this.file.read(buffer, { position: offset });
     return buffer;
   }
 
@@ -53,14 +62,14 @@ export class FreeBlockFile {
    * @author Alec Van Vlerken
    */
   async writeBlock(blockNumber: number, data: Buffer): Promise<void> {
-    await Promise.resolve(); // For consistency
+    if (data.length > this.blockSize) {
+      throw new Error(`Block too large (${data.length})`);
+    }
 
-    if (data.length > this.blockSize) throw new Error('Block too large');
-    //const offset = blockNumber * this.blockSize;
     const buffer = Buffer.alloc(this.blockSize);
     data.copy(buffer);
-    // await this.fileHandle.write(buffer, 0, this.blockSize, offset);
     this.dirtyBlocks.set(blockNumber, buffer);
+    await Promise.resolve();
   }
 
   /**
@@ -90,8 +99,9 @@ export class FreeBlockFile {
    *
    * @author Alec Van Vlerken
    */
+
   async writeClientArea(buffer: Buffer): Promise<void> {
-    await this.writeBlock(0, buffer);
+    return this.writeBlock(0, buffer);
   }
 
   /**
@@ -115,20 +125,21 @@ export class FreeBlockFile {
    * @author Alec Van Vlerken
    */
   async commit(): Promise<void> {
-    if (this.dirtyBlocks.size === 0) {
-      return;
-    }
+    if (this.dirtyBlocks.size === 0) return;
 
     // Assuming atomicWrite() has a list as input
     const writeOps: Array<{ offset: number; data: Buffer }> = [];
-    for (const [blockNumber, buffer] of this.dirtyBlocks.entries()) {
-      const offset = blockNumber * this.blockSize;
-      writeOps.push({ offset, data: buffer });
+
+    for (const [blockNum, buffer] of this.dirtyBlocks) {
+      writeOps.push({
+        offset: blockNum * this.blockSize,
+        data: buffer,
+      });
     }
 
     await this.atomicFile.atomicWrite(writeOps);
 
-    await this.fileHandle.sync();
+    await this.file.sync();
 
     this.dirtyBlocks.clear();
   }
