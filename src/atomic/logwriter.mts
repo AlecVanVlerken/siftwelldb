@@ -1,16 +1,19 @@
+// @author Alexandre-Gatien Bienfet
+// @date 2025-11-17
+
 import type { File } from '../core/file.mts';
 import type { LogRecord } from './logrecord.mts';
 import { serializeLogRecord } from './logrecord.mjs';
 
 /**
- * Schrijft een logrecord atomisch naar schijf.
- * 1. Serieel omzetten
- * 2. Bestand leegmaken
- * 3. In één write-operatie wegschrijven
- * 4. Syncen naar schijf
+ * Write a log record atomically to disk.
+ * 1. Serialize the record
+ * 2. Truncate the file
+ * 3. Write the record in a single write operation
+ * 4. Sync the file to disk
  *
- * @param logFile - Bestand waarop het logrecord wordt opgeslagen.
- * @param record - LogRecord dat moet worden geschreven.
+ * @param logFile - The file in which the log record will be stored.
+ * @param record - The LogRecord to be written.
  */
 export async function writeAndSyncLog(logFile: File, record: LogRecord): Promise<void> {
   const serialized = serializeLogRecord(record);
