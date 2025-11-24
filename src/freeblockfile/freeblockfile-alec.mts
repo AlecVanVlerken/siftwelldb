@@ -457,18 +457,31 @@ export class FreeBlockFile {
       return count;
     }
 
+  private async allocateNewBlock(): Promise<BlockNumber> {
+    const blockCount = await this.getBlockCount();
+    const newBlockNum = blockCount;
+
+    const buf = Buffer.alloc(this.blockSize);
+    this.setBlockType(buf, BlockType.Data);
+
+    this.dirtyBlocks.set(newBlockNum, buf);
+    return newBlockNum;
+  }
+
   /**
   * Allocates a block by removing it from the head of the free list.
   * Works against the dirty header if present; no direct disk writes.
   * @returns {Promise<bigint>}
   * @throws {Error} If the file is not open or the free list is empty.
-  * @author Arthur Cukier
+  * @author Arthur Cukier, Alec Van Vlerken
   */
   async allocateBlock(): Promise<bigint> {
     this.ensureOpen();
 
     const head = await this.getFirstFreeBlock();
-    if (head === 0n) throw new Error('Free list cannot be empty');
+    if (head === 0n) {
+      this.allocateNewBlock();
+    }
 
     await this.validateBlockNumber(head);
 
@@ -498,7 +511,7 @@ export class FreeBlockFile {
    * Writes only to the dirty cache; no direct disk writes.
    * @returns {Promise<void>}
    * @throws {Error} If the file is not open or if blockNumber is 0.
-   * @author Arthur Cukier
+   * @author Arthur Cukier, Alec Van Vlerken
    */
   async freeBlock(blockNumber: number | bigint): Promise<void> {
     const bn = this.toBlockNum(blockNumber);
