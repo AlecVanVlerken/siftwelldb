@@ -145,7 +145,7 @@ export class AtomicFile implements File {
       await this.cleanupLog();
 
       return true;
-    } catch{
+    } catch {
       // Best-effort cleanup; cannot guarantee full rollback of dataFile,
       // but by truncating the WAL we avoid redo on the next recover().
       await this.bestEffortAbort();
@@ -206,7 +206,7 @@ export class AtomicFile implements File {
       const record = deserializeLogRecord(walBuf);
 
       // Decode JSON payload describing all block updates.
-      const encoded = JSON.parse(record.data.toString("utf8")) as unknown as EncodedUpdate[];
+      const encoded = JSON.parse(record.data.toString('utf8')) as unknown as EncodedUpdate[];
 
       // Redo is idempotent: we simply re-apply all bytes at their positions.
       for (const u of encoded) {
@@ -214,7 +214,7 @@ export class AtomicFile implements File {
         await this.dataFile.writev([buf], u.position);
       }
       await this.dataFile.sync();
-    } catch{
+    } catch {
       // Invalid / corrupted WAL: drop it. We can't safely redo.
     }
 
