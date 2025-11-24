@@ -25,6 +25,6 @@ export async function writeAndSyncLog(logFile: File, record: LogRecord): Promise
   await logFile.truncate(0);
 
   await logFile.writev([serialized], 0);
-
+  
   await logFile.sync();
 }
