@@ -22,14 +22,23 @@ export class AtomicFile implements File {
     this.dataFile = dataFile;
     this.logFile = logFile;
   }
-  create(): Promise<void> {
-    throw new Error('Method not implemented.');
+  async create(): Promise<void> {
+    await this.dataFile.create();
+    await this.dataFile.truncate(0);
+    await this.dataFile.sync();
+
+    await this.logFile.create();
+    await this.logFile.truncate(0);
+    await this.logFile.sync();
   }
-  open(): Promise<void> {
-    throw new Error('Method not implemented.');
+  async open(): Promise<void> {
+    await this.dataFile.open();
+    await this.logFile.open();
+    await this.recover();
   }
-  close(): Promise<void> {
-    throw new Error('Method not implemented.');
+  async close(): Promise<void> {
+    await this.dataFile.close();
+    await this.logFile.close();
   }
 
   // ---------------------------------------------------------------------------
@@ -105,7 +114,7 @@ export class AtomicFile implements File {
 
       this.inFlight = false;
       return true;
-    } catch (_err) {
+    } catch {
       // Best-effort cleanup; cannot guarantee full rollback of dataFile.
       await this.bestEffortAbort();
       this.inFlight = false;
@@ -166,7 +175,7 @@ export class AtomicFile implements File {
       // Redo is idempotent: we simply re-apply the bytes at the same position.
       await this.dataFile.writev([record.data], record.position);
       await this.dataFile.sync();
-    } catch (_err) {
+    } catch {
       // Invalid / corrupted WAL: drop it. We can't safely redo.
     }
 
