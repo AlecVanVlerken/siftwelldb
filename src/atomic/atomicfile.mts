@@ -22,6 +22,15 @@ export class AtomicFile implements File {
     this.dataFile = dataFile;
     this.logFile = logFile;
   }
+  create(): Promise<void> {
+    throw new Error('Method not implemented.');
+  }
+  open(): Promise<void> {
+    throw new Error('Method not implemented.');
+  }
+  close(): Promise<void> {
+    throw new Error('Method not implemented.');
+  }
 
   // ---------------------------------------------------------------------------
   // File interface passthroughs
@@ -31,14 +40,12 @@ export class AtomicFile implements File {
     return this.dataFile.sectorSize;
   }
 
-  async read(buffer: Buffer, opts?: { position?: number }): Promise<number> {
-    return this.dataFile.read(buffer, opts);
+  async read(buffer: Buffer, options: { position: number }): Promise<void> {
+    return this.dataFile.read(buffer, options);
   }
 
-  async writev(buffers: Buffer[], position: number): Promise<number> {
-    // Non-atomic write: direct passthrough.
-    // For atomic semantics, callers should use atomicWritev().
-    return this.dataFile.writev(buffers, position);
+  async writev(buffers: Buffer[], position: number): Promise<void> {
+    await this.dataFile.writev(buffers, position);
   }
 
   async truncate(length: number): Promise<void> {
@@ -60,7 +67,7 @@ export class AtomicFile implements File {
   /**
    * Atomic write using a single-record redo log.
    *
-   * 1) build LogRecord = (position, data, checksum) NO CHECKSUM i think ---------------------------------------------------------- 
+   * 1) build LogRecord = (position, data, checksum) NO CHECKSUM i think ----------------------------------------------------------
    * 2) writeAndSyncLog(logFile, record)
    * 3) write data to dataFile + sync
    * 4) truncate logFile
@@ -98,9 +105,7 @@ export class AtomicFile implements File {
 
       this.inFlight = false;
       return true;
-    } 
-    
-    catch (_err) {
+    } catch (_err) {
       // Best-effort cleanup; cannot guarantee full rollback of dataFile.
       await this.bestEffortAbort();
       this.inFlight = false;
