@@ -8,7 +8,6 @@ const compareNumbers = (a: number, b: number) => a - b;
 describe('BPlusTree', () => {
   it('inserts and retrieves values', async () => {
     const tree = await BPlusTree.create<number, string>({
-      compareKeys: compareNumbers,
       maxLeafEntries: 4,
       maxChildren: 4,
     });
@@ -25,7 +24,6 @@ describe('BPlusTree', () => {
 
   it('iterates keys in order starting from a specific key', async () => {
     const tree = await BPlusTree.create<number, number>({
-      compareKeys: compareNumbers,
       maxLeafEntries: 4,
       maxChildren: 4,
     });
@@ -43,7 +41,6 @@ describe('BPlusTree', () => {
 
   it('deletes keys and collapses the tree when empty', async () => {
     const tree = await BPlusTree.create<number, string>({
-      compareKeys: compareNumbers,
       maxLeafEntries: 3,
       maxChildren: 3,
     });
@@ -77,7 +74,6 @@ describe('BPlusTree', () => {
 
   it('rejects duplicate keys', async () => {
     const tree = await BPlusTree.create<number, string>({
-      compareKeys: compareNumbers,
       maxLeafEntries: 3,
       maxChildren: 3,
     });
@@ -87,7 +83,6 @@ describe('BPlusTree', () => {
 
   it('maintains order for large sequential inserts', async () => {
     const tree = await BPlusTree.create<number, number>({
-      compareKeys: compareNumbers,
       maxLeafEntries: 4,
       maxChildren: 4,
     });
@@ -104,7 +99,6 @@ describe('BPlusTree', () => {
 
   it('rebalances parents after mixed deletions', async () => {
     const tree = await BPlusTree.create<number, string>({
-      compareKeys: compareNumbers,
       maxLeafEntries: 3,
       maxChildren: 3,
     });
@@ -125,7 +119,6 @@ describe('BPlusTree', () => {
 
   it('iterates entire tree when no start key is provided', async () => {
     const tree = await BPlusTree.create<number, number>({
-      compareKeys: compareNumbers,
       maxLeafEntries: 4,
       maxChildren: 4,
     });
@@ -144,7 +137,6 @@ describe('BPlusTree', () => {
     const maxLeafEntries = 2;
     const maxChildren = 3;
     const tree = await BPlusTree.create<number, number>({
-      compareKeys: compareNumbers,
       maxLeafEntries,
       maxChildren,
     });

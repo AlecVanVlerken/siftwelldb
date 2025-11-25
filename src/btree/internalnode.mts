@@ -88,7 +88,7 @@ export class InternalNodeImpl<K, V>
       throw new Error('Internal node has no child to move.');
     }
     nextNode.prependChild(child, key);
-    return this.keys[this.keys.length - 1]!;
+    return this.getKeyAt(this.keys.length - 1);
   }
 
   async moveFirstChildTo(previousNode: InternalNodeImpl<K, V>, _separatorKey: K): Promise<K> {
@@ -148,7 +148,14 @@ export class InternalNodeImpl<K, V>
     if (this.keys.length === 0) {
       throw new Error('Internal node is empty.');
     }
-    return this.keys[this.keys.length - 1]!;
+    return this.getKeyAt(this.keys.length - 1);
+  }
+
+  protected smallestKeyInternal(): K {
+    if (this.keys.length === 0) {
+      throw new Error('Internal node is empty.');
+    }
+    return this.getKeyAt(0);
   }
 
   private prependChild(child: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>, key: K) {
