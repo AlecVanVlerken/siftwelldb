@@ -36,7 +36,7 @@ export class BPlusTree<K, V> {
     if (isAtKey) {
       throw new Error('Duplicate keys are not allowed in B+ trees.');
     }
-    let descriptor = await cursor.insert(key, value);
+    const descriptor = await cursor.insert(key, value);
     await this.propagateChange(path, descriptor);
   }
 

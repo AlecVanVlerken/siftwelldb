@@ -31,15 +31,15 @@ export class LeafNodeImpl<K, V>
     this.previousLeafNode = previous;
   }
 
-  getCursorBeforeFirst(): LeafCursor<K, V, L, I> {
+  getCursorBeforeFirst(): LeafCursorImpl<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>> {
     return new LeafCursorImpl<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>>(this.createLeafAccess(), -1);
   }
 
   getCursorBeforeKey(
     key: K,
   ):
-    | { cursor: LeafCursor<K, V, L, I>; isAtKey: boolean }
-    | PromiseLike<{ cursor: LeafCursor<K, V, L, I>; isAtKey: boolean }> {
+    | { cursor: LeafCursorImpl<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>>; isAtKey: boolean }
+    | PromiseLike<{ cursor: LeafCursorImpl<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>>; isAtKey: boolean }> {
     const access = this.createLeafAccess();
     const index = this.findFirstGreaterOrEqualIndex(key);
     const cursor = new LeafCursorImpl(access, index - 1);
@@ -47,7 +47,7 @@ export class LeafNodeImpl<K, V>
     return { cursor, isAtKey };
   }
 
-  async getNextLeaf(): Promise<L | null> {
+  async getNextLeaf(): Promise<LeafNodeImpl<K, V> | null> {
     return this.nextLeafNode;
   }
 
@@ -118,6 +118,14 @@ export class LeafNodeImpl<K, V>
 
   protected greatestKeyInternal(): K {
     const entry = this.entries[this.entries.length - 1];
+    if (!entry) {
+      throw new Error('Leaf node is empty.');
+    }
+    return entry.key;
+  }
+
+  protected smallestKeyInternal(): K {
+    const entry = this.entries[0];
     if (!entry) {
       throw new Error('Leaf node is empty.');
     }
