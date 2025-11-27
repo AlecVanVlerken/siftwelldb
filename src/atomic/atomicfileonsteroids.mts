@@ -1,11 +1,13 @@
-// atomicfile.mts
-// WAL-based atomic wrapper around a data File.
+// atomicfileonsteroids.mts
+// WAL-based atomic wrapper around a data File with multi-range support.
 //
 // Protocol for atomicWriteMany():
 //   1. Build a LogRecord with a JSON payload describing all block updates
-//   2. writeAndSyncLog(): truncate log, write record in a single sector-sized write, fsync
+//   2. writeAndSyncLog(): truncate log, write record in a single
+//      sector-sized write, fsync
 //   3. Write all blocks into the main file (+ fsync data)
-//   4. Truncate the log (optional cleanup; presence of a log means "redo me" on crash)
+//   4. Truncate the log (optional cleanup; presence of a log means
+//      "redo me" on crash)
 
 import type { File } from '../core/file.mts';
 import type { LogRecord } from '../atomic/logrecord.mts';
@@ -19,10 +21,10 @@ type BlockUpdate = {
 
 type EncodedUpdate = {
   position: number;
-  data: string; // base64-encoded data // check this MOFO
+  data: string; // base64-encoded data
 };
 
-export class AtomicFile implements File {
+export class AtomicFileOnSteroids implements File {
   private readonly dataFile: File;
   private readonly logFile: File;
   private inFlight = false;
@@ -32,17 +34,21 @@ export class AtomicFile implements File {
     this.logFile = logFile;
   }
 
-  // You probably want to create/open/close both underlying files.
-
   async create(): Promise<void> {
     await this.dataFile.create();
+    await this.dataFile.truncate(0);
+    await this.dataFile.sync();
+
     await this.logFile.create();
+    await this.logFile.truncate(0);
+    await this.logFile.sync();
   }
 
   async open(): Promise<void> {
-    // ADD RECOVERY HERE ??????
     await this.dataFile.open();
     await this.logFile.open();
+    // Redo any in-progress atomic write from a previous crash.
+    await this.recover();
   }
 
   async close(): Promise<void> {
@@ -50,9 +56,9 @@ export class AtomicFile implements File {
     await this.logFile.close();
   }
 
-  // ---------------------------------------------------------------------------
+  // ----------------------------
   // File interface passthroughs
-  // ---------------------------------------------------------------------------
+  // ----------------------------
 
   get sectorSize(): number {
     return this.dataFile.sectorSize;
@@ -79,9 +85,9 @@ export class AtomicFile implements File {
     await this.dataFile.sync();
   }
 
-  // ---------------------------------------------------------------------------
+  // ----------------------------
   // Public WAL entry points: atomic writes
-  // ---------------------------------------------------------------------------
+  // ----------------------------
 
   /**
    * Atomic write for a single contiguous range.
@@ -128,11 +134,13 @@ export class AtomicFile implements File {
         position: 0,
         data,
         checksum: computeChecksum(data),
-        committed: false, // presence of WAL implies "redo if crash"
       };
 
       // STEP 2: Write WAL record atomically and fsync.
       await writeAndSyncLog(this.logFile, record);
+
+      // Vanaf dit punt moet de WAL blijven staan tot de data volledig en gesynct is.
+      // Bij crash wordt alles opnieuw uitgevoerd in recover().
 
       // STEP 3: Apply all updates to the main file and fsync.
       for (const u of updates) {
@@ -146,41 +154,30 @@ export class AtomicFile implements File {
 
       return true;
     } catch {
-      // Best-effort cleanup; cannot guarantee full rollback of dataFile,
-      // but by truncating the WAL we avoid redo on the next recover().
-      await this.bestEffortAbort();
+      // Als er iets misgaat na writeAndSyncLog(), laten we de WAL staan zodat
+      // recover() de write kan afmaken (redo-only protocol).
       return false;
     } finally {
       this.inFlight = false;
     }
   }
 
-  // ---------------------------------------------------------------------------
+  // ----------------------------
   // WAL helpers
-  // ---------------------------------------------------------------------------
+  // ----------------------------
 
   /**
    * Deletes/truncates the log. After this, a crash will *not* trigger a redo.
+   * Mag alleen na een volledig geslaagde data-write + sync.
    */
   private async cleanupLog(): Promise<void> {
     await this.logFile.truncate(0);
     await this.logFile.sync();
   }
 
-  /**
-   * Best-effort abort for failed atomic writes.
-   *
-   * Minimal design: just truncate the log so that recover() sees nothing.
-   * (We cannot undo partial writes to the data file.)
-   */
-  private async bestEffortAbort(): Promise<void> {
-    await this.logFile.truncate(0);
-    await this.logFile.sync();
-  }
-
-  // ---------------------------------------------------------------------------
+  // ----------------------------
   // Recovery (redo-only, multi-block)
-  // ---------------------------------------------------------------------------
+  // ----------------------------
 
   /**
    * Crash recovery:
@@ -206,7 +203,7 @@ export class AtomicFile implements File {
       const record = deserializeLogRecord(walBuf);
 
       // Decode JSON payload describing all block updates.
-      const encoded = JSON.parse(record.data.toString('utf8')) as unknown as EncodedUpdate[];
+      const encoded = JSON.parse(record.data.toString('utf8')) as EncodedUpdate[];
 
       // Redo is idempotent: we simply re-apply all bytes at their positions.
       for (const u of encoded) {
