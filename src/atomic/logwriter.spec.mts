@@ -10,7 +10,8 @@ import { MockFile } from '../core/mockfile.mjs';
 
 describe('writeAndSyncLog', () => {
   test('writes a valid record atomically', async () => {
-    const mockFile = new MockFile(512);
+    const sectorSize = 512;
+    const mockFile = new MockFile(sectorSize);
 
     const data = Buffer.from('Atomic file test!');
     const checksum = computeChecksum(data);
@@ -23,12 +24,20 @@ describe('writeAndSyncLog', () => {
 
     const expected = serializeLogRecord(record);
     const stats = await mockFile.stat();
-    assert.strictEqual(stats.size, expected.length);
 
-    const buffer = Buffer.alloc(expected.length);
+    // 1) we verwachten precies één sector
+    assert.strictEqual(stats.size, sectorSize);
+
+    const buffer = Buffer.alloc(sectorSize);
     await mockFile.read(buffer, { position: 0 });
 
-    expect(buffer.equals(expected)).toBe(true);
+    // 2) inhoud van de record zelf moet kloppen
+    const prefix = buffer.subarray(0, expected.length);
+    expect(prefix.equals(expected)).toBe(true);
+
+    // 3) optioneel: controleer padding
+    const padding = buffer.subarray(expected.length);
+    expect(padding.every((b) => b === 0)).toBe(true);
   });
 
   test('accepts a record that fits exactly in one sector', async () => {

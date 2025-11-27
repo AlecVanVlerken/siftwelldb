@@ -12,7 +12,6 @@ export interface LogRecord {
   position: number;
   data: Buffer;
   checksum: Buffer;
-  committed?: boolean; // added by HENRY, maybe remove later
 }
 
 import { createHash } from 'crypto';
