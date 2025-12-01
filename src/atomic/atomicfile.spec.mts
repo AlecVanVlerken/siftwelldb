@@ -2,10 +2,10 @@
 // @date 2025-11-27
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { AtomicFileOnSteroids as AtomicFile } from './atomicfile.mjs';
+import { AtomicFile } from './atomicfile.mjs';
 import { MockFile } from '../core/mockfile.mjs';
 
-describe('AtomicFileOnSteroids', () => {
+describe('atomicFile', () => {
   let dataFile: MockFile;
   let logFile: MockFile;
   let atomicFile: AtomicFile;

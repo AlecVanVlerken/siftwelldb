@@ -9,10 +9,10 @@
 //   4. Truncate the log (optional cleanup; presence of a log means
 //      "redo me" on crash)
 
-import type { File } from '../core/file.mts';
-import type { LogRecord } from '../atomic/logrecord.mts';
-import { computeChecksum, deserializeLogRecord } from '../atomic/logrecord.mjs';
-import { writeAndSyncLog } from '../atomic/logwriter.mjs';
+import type { File } from '../core/file.mjs';
+import type { LogRecord } from './logrecord.mjs';
+import { computeChecksum, deserializeLogRecord } from './logrecord.mjs';
+import { writeAndSyncLog } from './logwriter.mjs';
 
 type EncodedUpdate = {
   position: number;
