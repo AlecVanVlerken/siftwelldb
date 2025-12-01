@@ -163,3 +163,144 @@ describe('BPlusTree', () => {
     }
   });
 });
+it('splits root correctly when leaf overflows', async () => {
+  const tree = await BPlusTree.create<number, number>({
+    compareKeys: compareNumbers,
+    maxLeafEntries: 2,
+    maxChildren: 3,
+  });
+  await tree.insert(1, 10);
+  await tree.insert(2, 20);
+  await tree.insert(3, 30); // triggers split
+  const keys: number[] = [];
+  for await (const [key] of tree.iterate()) keys.push(key);
+  expect(keys).toEqual([1, 2, 3]);
+  expect(tree.root.isLeaf).toBe(false); // new root should be internal
+});
+
+describe('BPlusTree – rigorous missing tests', () => {
+  it('compresses root correctly after deletions', async () => {
+    const tree = await BPlusTree.create<number, number>({
+      compareKeys: compareNumbers,
+      maxLeafEntries: 2,
+      maxChildren: 3,
+    });
+
+    // Insert enough keys to create a multi-level tree
+    for (const k of [1, 2, 3, 4, 5]) await tree.insert(k, k);
+
+    // Delete keys until only one key remains in the tree
+    await tree.delete(1);
+    await tree.delete(2);
+    await tree.delete(3);
+    await tree.delete(4);
+
+    // Only key 5 should remain
+    const keys: number[] = [];
+    for await (const [key] of tree.iterate()) keys.push(key);
+    expect(keys).toEqual([5]);
+
+    // Now root should be a leaf, because compressRootIfPossible triggers
+    expect(tree['root'].isLeaf).toBe(true);
+
+    // Verify that get works for remaining key
+    expect(await tree.get(5)).toBe(5);
+  });
+
+  it('creates new root when tree becomes empty', async () => {
+    const tree = await BPlusTree.create<number, number>({
+      compareKeys: compareNumbers,
+      maxLeafEntries: 2,
+      maxChildren: 3,
+    });
+    await tree.insert(1, 10);
+    await tree.delete(1);
+    const keys: number[] = [];
+    for await (const [key] of tree.iterate()) keys.push(key);
+    expect(keys).toEqual([]);
+    // Root should be a leaf
+    expect(tree['root'].isLeaf).toBe(true);
+  });
+
+  it('iteration from a non-existent key yields next higher key', async () => {
+    const tree = await BPlusTree.create<number, number>({
+      compareKeys: compareNumbers,
+      maxLeafEntries: 4,
+      maxChildren: 4,
+    });
+    for (const k of [10, 20, 30]) await tree.insert(k, k);
+    const iterated: number[] = [];
+    for await (const [key] of tree.iterate(15)) iterated.push(key);
+    expect(iterated).toEqual([20, 30]);
+  });
+
+  it('iteration starting before first key yields all keys', async () => {
+    const tree = await BPlusTree.create<number, number>({
+      compareKeys: compareNumbers,
+      maxLeafEntries: 4,
+      maxChildren: 4,
+    });
+    for (const k of [10, 20, 30]) await tree.insert(k, k);
+    const iterated: number[] = [];
+    for await (const [key] of tree.iterate(5)) iterated.push(key);
+    expect(iterated).toEqual([10, 20, 30]);
+  });
+
+  it('iteration starting beyond last key yields nothing', async () => {
+    const tree = await BPlusTree.create<number, number>({
+      compareKeys: compareNumbers,
+      maxLeafEntries: 4,
+      maxChildren: 4,
+    });
+    for (const k of [10, 20, 30]) await tree.insert(k, k);
+    const iterated: number[] = [];
+    for await (const [key] of tree.iterate(50)) iterated.push(key);
+    expect(iterated).toEqual([]);
+  });
+
+  it('delete followed by re-insert works correctly', async () => {
+    const tree = await BPlusTree.create<number, string>({
+      compareKeys: compareNumbers,
+      maxLeafEntries: 3,
+      maxChildren: 3,
+    });
+    await tree.insert(10, 'ten');
+    await tree.delete(10);
+    await tree.insert(10, 'TEN');
+    expect(await tree.get(10)).toBe('TEN');
+  });
+
+  it('multi-level tree maintains order after mixed insertions and deletions', async () => {
+    const tree = await BPlusTree.create<number, number>({
+      compareKeys: compareNumbers,
+      maxLeafEntries: 3,
+      maxChildren: 3,
+    });
+    const keys = Array.from({ length: 20 }, (_, i) => i + 1);
+    for (const k of keys) await tree.insert(k, k);
+    // Delete some keys to potentially trigger compressions
+    for (const k of [2, 5, 7, 11, 13, 17]) await tree.delete(k);
+    const iterated: number[] = [];
+    for await (const [key] of tree.iterate()) iterated.push(key);
+    expect(iterated).toEqual(keys.filter((k) => ![2, 5, 7, 11, 13, 17].includes(k)));
+  });
+
+  it('handles extreme boundary keys correctly', async () => {
+    const tree = await BPlusTree.create<number, string>({
+      compareKeys: compareNumbers,
+      maxLeafEntries: 3,
+      maxChildren: 3,
+    });
+    const boundaryKeys = [Number.MIN_SAFE_INTEGER, -1, 0, 1, Number.MAX_SAFE_INTEGER];
+    for (const k of boundaryKeys) await tree.insert(k, String(k));
+    for (const k of boundaryKeys) {
+      expect(await tree.get(k)).toBe(String(k));
+    }
+    // Delete some boundary keys
+    await tree.delete(Number.MIN_SAFE_INTEGER);
+    await tree.delete(Number.MAX_SAFE_INTEGER);
+    const remaining: number[] = [];
+    for await (const [key] of tree.iterate()) remaining.push(key);
+    expect(remaining).toEqual([-1, 0, 1]);
+  });
+});
