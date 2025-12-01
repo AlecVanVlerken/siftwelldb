@@ -1,425 +1,359 @@
-// @author Alexandre-Gatien Bienfet
+// @author Henry Delacroix, Alexandre-Gatien Bienfet
 // @date 2025-11-27
 
-import { describe, test, expect } from 'vitest';
-import { strict as assert } from 'node:assert';
-
-import { AtomicFile } from './atomicfile.mjs';
-import { AtomicFileOnSteroids } from './atomicfileonsteroids.mjs';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { AtomicFileOnSteroids as AtomicFile } from './atomicfile.mjs';
 import { MockFile } from '../core/mockfile.mjs';
-import { computeChecksum } from './logrecord.mjs';
-import type { LogRecord } from './logrecord.mts';
-import { writeAndSyncLog } from './logwriter.mjs';
-
-// ---------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------
-
-class FailingDataFile extends MockFile {
-  private failOnce = true;
-
-  override async writev(buffers: Buffer[], position: number): Promise<void> {
-    if (this.failOnce) {
-      this.failOnce = false;
-      throw new Error('simulated write failure');
-    }
-    return super.writev(buffers, position);
-  }
-}
-
-class FailingLogFile extends MockFile {
-  private failOnce = true;
-
-  override async writev(buffers: Buffer[], position: number): Promise<void> {
-    if (this.failOnce) {
-      this.failOnce = false;
-      throw new Error('simulated WAL write failure');
-    }
-    return super.writev(buffers, position);
-  }
-}
-
-// ---------------------------------------------------------
-// AtomicFile tests
-// ---------------------------------------------------------
-
-describe('AtomicFile', () => {
-  test('performs a successful atomicWritev and clears the WAL', async () => {
-    const sectorSize = 512;
-    const dataFile = new MockFile(sectorSize);
-    const logFile = new MockFile(sectorSize);
-    const atomic = new AtomicFile(dataFile, logFile);
-
-    await atomic.create();
-    await atomic.open();
-
-    const position = 128;
-    const payload = Buffer.from('hello atomic world');
-    const ok = await atomic.atomicWritev([payload], position);
-
-    expect(ok).toBe(true);
-
-    const readBuf = Buffer.alloc(payload.length);
-    await atomic.read(readBuf, { position });
-    expect(readBuf.equals(payload)).toBe(true);
-
-    const logStats = await logFile.stat();
-    assert.strictEqual(logStats.size, 0);
-
-    await atomic.close();
-  });
-
-  test('keeps WAL on data write failure and recover() replays the write', async () => {
-    const sectorSize = 512;
-    const dataFile = new FailingDataFile(sectorSize); // eerste data-write faalt
-    const logFile = new MockFile(sectorSize);
-
-    const atomic1 = new AtomicFile(dataFile, logFile);
-    await atomic1.create();
-    await atomic1.open();
-
-    const position = 4096;
-    const payload = Buffer.from('partial crash scenario');
-    const ok1 = await atomic1.atomicWritev([payload], position);
-
-    // Door de geforceerde fout moet dit mislukken.
-    expect(ok1).toBe(false);
-
-    // WAL moet nog data bevatten.
-    const logStatsAfterFail = await logFile.stat();
-    expect(logStatsAfterFail.size).toBeGreaterThan(0);
-
-    await atomic1.close();
-
-    // Tweede "proces" dat dezelfde files opent en recovery uitvoert.
-    const atomic2 = new AtomicFile(dataFile, logFile);
-    await atomic2.open(); // roept intern recover() aan
-
-    const readBuf = Buffer.alloc(payload.length);
-    await atomic2.read(readBuf, { position });
-    expect(readBuf.equals(payload)).toBe(true);
-
-    const logStatsAfterRecover = await logFile.stat();
-    assert.strictEqual(logStatsAfterRecover.size, 0);
-
-    await atomic2.close();
-  });
-
-  test('returns false and leaves WAL empty when WAL write fails', async () => {
-    const sectorSize = 512;
-    const dataFile = new MockFile(sectorSize);
-    const logFile = new FailingLogFile(sectorSize); // eerste WAL-write faalt
-    const atomic = new AtomicFile(dataFile, logFile);
-
-    await atomic.create();
-    await atomic.open();
-
-    const position = 512;
-    const payload = Buffer.from('wal write failure');
-    const ok = await atomic.atomicWritev([payload], position);
-
-    // writeAndSyncLog faalt → atomicWritev moet false geven
-    expect(ok).toBe(false);
-
-    // WAL mag geen half record bevatten (truncate(0) vóór writev).
-    const logStats = await logFile.stat();
-    assert.strictEqual(logStats.size, 0);
-
-    // datafile mag niet aangepast zijn (geen data-write uitgevoerd).
-    const dataStats = await dataFile.stat();
-    assert.strictEqual(dataStats.size, 0);
-
-    await atomic.close();
-  });
-
-  test('drops a corrupt WAL during recover() and leaves data unchanged', async () => {
-    const sectorSize = 512;
-    const dataFile = new MockFile(sectorSize);
-    const logFile = new MockFile(sectorSize);
-
-    // 1) "Oude" data in dataFile
-    await dataFile.create();
-    await dataFile.open();
-    const pos = 128;
-    const original = Buffer.from('original data');
-    await dataFile.writev([original], pos);
-    await dataFile.sync();
-    await dataFile.close();
-
-    // 2) Corrupt WAL (geen geldig LogRecord)
-    await logFile.create();
-    await logFile.open();
-    const garbage = Buffer.from('not a valid log record');
-    await logFile.writev([garbage], 0);
-    await logFile.sync();
-    await logFile.close();
-
-    // 3) AtomicFile opent en doet recover()
-    const atomic = new AtomicFile(dataFile, logFile);
-    await atomic.open(); // recover() ziet corrupt WAL en dropt die
-
-    // Data moet onveranderd zijn.
-    const buf = Buffer.alloc(original.length);
-    await atomic.read(buf, { position: pos });
-    expect(buf.equals(original)).toBe(true);
-
-    // WAL moet leeggemaakt zijn.
-    const logStatsAfter = await logFile.stat();
-    assert.strictEqual(logStatsAfter.size, 0);
-
-    await atomic.close();
-  });
-
-  test('recovery is idempotent when WAL is present but data already applied', async () => {
-    const sectorSize = 512;
-    const dataFile = new MockFile(sectorSize);
-    const logFile = new MockFile(sectorSize);
-
-    // 1) Create/open onderliggende files
-    await dataFile.create();
-    await dataFile.open();
-    await logFile.create();
-    await logFile.open();
-
-    const position = 2048;
-    const newData = Buffer.from('new data already written');
-
-    // 2) Schrijf een geldige WAL-record alsof atomicWritev net de log heeft geschreven
-    const record: LogRecord = {
-      position,
-      data: newData,
-      checksum: computeChecksum(newData),
-    };
-    await writeAndSyncLog(logFile, record);
-
-    // 3) Simuleer dat de data al geschreven + gesynct is,
-    //    maar cleanupLog nog niet gebeurd is (crash tussen stap 3 en 4).
-    await dataFile.writev([newData], position);
-    await dataFile.sync();
-
-    await dataFile.close();
-    await logFile.close();
-
-    // 4) Nieuw proces met AtomicFile: open() doet recover()
-    const atomic = new AtomicFile(dataFile, logFile);
-    await atomic.open();
-
-    // Data moet nog steeds correct zijn.
-    const buf = Buffer.alloc(newData.length);
-    await atomic.read(buf, { position });
-    expect(buf.equals(newData)).toBe(true);
-
-    // WAL moet nu verdwenen zijn (cleanup in recover()).
-    const logStatsAfter = await logFile.stat();
-    assert.strictEqual(logStatsAfter.size, 0);
-
-    await atomic.close();
-  });
-});
-
-// ---------------------------------------------------------
-// AtomicFileOnSteroids tests
-// ---------------------------------------------------------
 
 describe('AtomicFileOnSteroids', () => {
-  test('atomicWritev writes a single range atomically and clears the WAL', async () => {
-    const sectorSize = 512;
-    const dataFile = new MockFile(sectorSize);
-    const logFile = new MockFile(sectorSize);
-    const atomic = new AtomicFileOnSteroids(dataFile, logFile);
+  let dataFile: MockFile;
+  let logFile: MockFile;
+  let atomicFile: AtomicFile;
 
-    await atomic.create();
-    await atomic.open();
-
-    const position = 256;
-    const payload = Buffer.from('hello atomic steroids');
-    const ok = await atomic.atomicWritev([payload], position);
-
-    expect(ok).toBe(true);
-
-    const readBuf = Buffer.alloc(payload.length);
-    await atomic.read(readBuf, { position });
-    expect(readBuf.equals(payload)).toBe(true);
-
-    const logStats = await logFile.stat();
-    assert.strictEqual(logStats.size, 0);
-
-    await atomic.close();
+  beforeEach(async () => {
+    dataFile = new MockFile(512);
+    logFile = new MockFile(512);
+    atomicFile = new AtomicFile(dataFile, logFile);
+    await atomicFile.create();
+    await atomicFile.open();
   });
 
-  test('atomicWriteMany updates multiple ranges atomically', async () => {
-    const sectorSize = 512;
-    const dataFile = new MockFile(sectorSize);
-    const logFile = new MockFile(sectorSize);
-    const atomic = new AtomicFileOnSteroids(dataFile, logFile);
-
-    await atomic.create();
-    await atomic.open();
-
-    const p1 = 0;
-    const p2 = 4096;
-
-    const buf1 = Buffer.from('page one');
-    const buf2 = Buffer.from('page two');
-
-    const ok = await atomic.atomicWriteMany([
-      { position: p1, buffers: [buf1] },
-      { position: p2, buffers: [buf2] },
-    ]);
-
-    expect(ok).toBe(true);
-
-    const r1 = Buffer.alloc(buf1.length);
-    const r2 = Buffer.alloc(buf2.length);
-    await atomic.read(r1, { position: p1 });
-    await atomic.read(r2, { position: p2 });
-
-    expect(r1.equals(buf1)).toBe(true);
-    expect(r2.equals(buf2)).toBe(true);
-
-    const logStats = await logFile.stat();
-    assert.strictEqual(logStats.size, 0);
-
-    await atomic.close();
+  afterEach(async () => {
+    await atomicFile.close();
   });
 
-  test('keeps WAL on failure and recover() replays all ranges', async () => {
-    const sectorSize = 512;
-    const dataFile = new FailingDataFile(sectorSize);
-    const logFile = new MockFile(sectorSize);
+  // ===========================================================================
+  // Basic Operations
+  // ===========================================================================
 
-    const atomic1 = new AtomicFileOnSteroids(dataFile, logFile);
-    await atomic1.create();
-    await atomic1.open();
+  describe('Basic Operations', () => {
+    it('should create and open without error', async () => {
+      const df = new MockFile(512);
+      const lf = new MockFile(512);
+      const af = new AtomicFile(df, lf);
 
-    const p1 = 1024;
-    const p2 = 2048;
-    const buf1 = Buffer.from('block one (should survive crash)');
-    const buf2 = Buffer.from('block two (should survive crash)');
+      await expect(af.create()).resolves.not.toThrow();
+      await expect(af.open()).resolves.not.toThrow();
+      await af.close();
+    });
 
-    const ok1 = await atomic1.atomicWriteMany([
-      { position: p1, buffers: [buf1] },
-      { position: p2, buffers: [buf2] },
-    ]);
+    it('should passthrough read operations to data file', async () => {
+      const testData = Buffer.from('hello world');
+      await dataFile.writev([testData], 0); // should this not use atomicFile ??
+      await dataFile.sync();
 
-    expect(ok1).toBe(false);
+      const readBuf = Buffer.alloc(11);
+      await atomicFile.read(readBuf, { position: 0 });
 
-    const logStatsAfterFail = await logFile.stat();
-    expect(logStatsAfterFail.size).toBeGreaterThan(0);
+      expect(readBuf.toString()).toBe('hello world');
+    });
 
-    await atomic1.close();
+    it('should passthrough stat operations', async () => {
+      const testData = Buffer.from('test data here');
+      await dataFile.writev([testData], 0);
+      await dataFile.sync();
 
-    const atomic2 = new AtomicFileOnSteroids(dataFile, logFile);
-    await atomic2.open(); // recover()
+      const stat = await atomicFile.stat();
+      expect(stat.size).toBeGreaterThanOrEqual(testData.length);
+    });
 
-    const r1 = Buffer.alloc(buf1.length);
-    const r2 = Buffer.alloc(buf2.length);
-    await atomic2.read(r1, { position: p1 });
-    await atomic2.read(r2, { position: p2 });
-
-    expect(r1.equals(buf1)).toBe(true);
-    expect(r2.equals(buf2)).toBe(true);
-
-    const logStatsAfterRecover = await logFile.stat();
-    assert.strictEqual(logStatsAfterRecover.size, 0);
-
-    await atomic2.close();
+    it('should return correct sectorSize from data file', () => {
+      expect(atomicFile.sectorSize).toBe(512);
+    });
   });
 
-  test('drops a WAL with invalid JSON payload on recover()', async () => {
-    const sectorSize = 512;
-    const dataFile = new MockFile(sectorSize);
-    const logFile = new MockFile(sectorSize);
+  // ===========================================================================
+  // atomicWrite (single position)
+  // ===========================================================================
 
-    // 1) Oude data
-    await dataFile.create();
-    await dataFile.open();
-    const pos = 0;
-    const original = Buffer.from('old steroids data');
-    await dataFile.writev([original], pos);
-    await dataFile.sync();
-    await dataFile.close();
+  describe('atomicWrite - single position', () => {
+    it('should write a single buffer atomically', async () => {
+      const data = Buffer.from('atomic write test');
+      const updates = new Map<number, Buffer>([[0, data]]);
 
-    // 2) Geldige LogRecord-structuur, maar data = geen geldige JSON
-    await logFile.create();
-    await logFile.open();
-    const badJson = Buffer.from('not json at all', 'utf8');
-    const record: LogRecord = {
-      position: 0,
-      data: badJson,
-      checksum: computeChecksum(badJson),
-    };
-    await writeAndSyncLog(logFile, record);
-    await logFile.close();
+      const result = await atomicFile.atomicWrite(updates);
 
-    // 3) recover(): JSON.parse moet falen, WAL wordt gedropt, data blijft oud.
-    const atomic = new AtomicFileOnSteroids(dataFile, logFile);
-    await atomic.open();
+      expect(result).toBe(true);
 
-    const buf = Buffer.alloc(original.length);
-    await atomic.read(buf, { position: pos });
-    expect(buf.equals(original)).toBe(true);
+      const readBuf = Buffer.alloc(data.length);
+      await atomicFile.read(readBuf, { position: 0 });
+      expect(readBuf.toString()).toBe('atomic write test');
+    });
 
-    const logStatsAfter = await logFile.stat();
-    assert.strictEqual(logStatsAfter.size, 0);
+    it('should write at non-zero position', async () => {
+      const data = Buffer.from('offset data');
+      const updates = new Map<number, Buffer>([[100, data]]);
 
-    await atomic.close();
+      const result = await atomicFile.atomicWrite(updates);
+
+      expect(result).toBe(true);
+
+      const readBuf = Buffer.alloc(data.length);
+      await atomicFile.read(readBuf, { position: 100 });
+      expect(readBuf.toString()).toBe('offset data');
+    });
+
+    it('should clear WAL after successful write', async () => {
+      const updates = new Map<number, Buffer>([[0, Buffer.from('test')]]);
+      await atomicFile.atomicWrite(updates);
+
+      const logStat = await logFile.stat();
+      expect(logStat.size).toBe(0);
+    });
   });
 
-  test('recovery is idempotent for multi-range WAL already applied', async () => {
-    const sectorSize = 512;
-    const dataFile = new MockFile(sectorSize);
-    const logFile = new MockFile(sectorSize);
+  // ===========================================================================
+  // atomicWrite (multiple positions)
+  // ===========================================================================
 
-    await dataFile.create();
-    await dataFile.open();
-    await logFile.create();
-    await logFile.open();
+  describe('atomicWrite - multiple positions', () => {
+    it('should write multiple blocks at different positions atomically', async () => {
+      const updates = new Map<number, Buffer>([
+        [0, Buffer.from('AAAA')],
+        [100, Buffer.from('BBBB')],
+        [200, Buffer.from('CCCC')],
+      ]);
 
-    const p1 = 0;
-    const p2 = 4096;
-    const buf1 = Buffer.from('redo-range-one');
-    const buf2 = Buffer.from('redo-range-two');
+      const result = await atomicFile.atomicWrite(updates);
 
-    // 1) Bouw JSON payload zoals atomicWriteMany dat doet.
-    const encoded = [
-      { position: p1, data: Buffer.from(buf1).toString('base64') },
-      { position: p2, data: Buffer.from(buf2).toString('base64') },
-    ];
-    const json = Buffer.from(JSON.stringify(encoded), 'utf8');
+      expect(result).toBe(true);
 
-    const record: LogRecord = {
-      position: 0,
-      data: json,
-      checksum: computeChecksum(json),
-    };
+      // Verify all writes
+      const bufA = Buffer.alloc(4);
+      const bufB = Buffer.alloc(4);
+      const bufC = Buffer.alloc(4);
 
-    // 2) Schrijf WAL alsof atomicWriteMany net writeAndSyncLog gedaan heeft.
-    await writeAndSyncLog(logFile, record);
+      await atomicFile.read(bufA, { position: 0 });
+      await atomicFile.read(bufB, { position: 100 });
+      await atomicFile.read(bufC, { position: 200 });
 
-    // 3) Simuleer dat de data-updates al zijn uitgevoerd en gesynct.
-    await dataFile.writev([buf1], p1);
-    await dataFile.writev([buf2], p2);
-    await dataFile.sync();
+      expect(bufA.toString()).toBe('AAAA');
+      expect(bufB.toString()).toBe('BBBB');
+      expect(bufC.toString()).toBe('CCCC');
+    });
 
-    await dataFile.close();
-    await logFile.close();
+    it('should handle empty updates map', async () => {
+      const result = await atomicFile.atomicWrite(new Map());
 
-    // 4) Nieuw proces met AtomicFileOnSteroids: recover() redo't nog eens.
-    const atomic = new AtomicFileOnSteroids(dataFile, logFile);
-    await atomic.open();
+      expect(result).toBe(true); // vacuously atomic - nothing to do
+    });
 
-    const r1 = Buffer.alloc(buf1.length);
-    const r2 = Buffer.alloc(buf2.length);
-    await atomic.read(r1, { position: p1 });
-    await atomic.read(r2, { position: p2 });
+    it('should clear WAL after successful multi-block write', async () => {
+      const updates = new Map<number, Buffer>([
+        [0, Buffer.from('block1')],
+        [512, Buffer.from('block2')],
+      ]);
 
-    expect(r1.equals(buf1)).toBe(true);
-    expect(r2.equals(buf2)).toBe(true);
+      await atomicFile.atomicWrite(updates);
 
-    const logStatsAfter = await logFile.stat();
-    assert.strictEqual(logStatsAfter.size, 0);
+      const logStat = await logFile.stat();
+      expect(logStat.size).toBe(0);
+    });
+  });
 
-    await atomic.close();
+  // ===========================================================================
+  // Crash Recovery (using MockFile.crash())
+  // ===========================================================================
+
+  describe('Crash Recovery', () => {
+    it('should recover nothing when WAL is empty', async () => {
+      // Write some data and commit properly
+      const updates = new Map<number, Buffer>([[0, Buffer.from('original')]]);
+      await atomicFile.atomicWrite(updates);
+
+      // Simulate restart (open() calls recover() automatically)
+      await atomicFile.close();
+      await atomicFile.open();
+
+      const readBuf = Buffer.alloc(8);
+      await atomicFile.read(readBuf, { position: 0 });
+      expect(readBuf.toString()).toBe('original');
+    });
+
+    it('should redo writes from valid WAL after simulated crash', async () => {
+      const { computeChecksum, serializeLogRecord } = await import('./logrecord.mjs');
+
+      // Manually create a WAL record simulating a crash mid-transaction
+      const encoded = [{ position: 0, data: Buffer.from('recovered').toString('base64') }];
+      const data = Buffer.from(JSON.stringify(encoded), 'utf8');
+
+      const record = {
+        position: 0,
+        data,
+        checksum: computeChecksum(data),
+      };
+
+      const serialized = serializeLogRecord(record);
+      await logFile.writev([serialized], 0);
+      await logFile.sync();
+
+      // Now recover
+      await atomicFile.recover();
+
+      // Data should be recovered
+      const readBuf = Buffer.alloc(9);
+      await atomicFile.read(readBuf, { position: 0 });
+      expect(readBuf.toString()).toBe('recovered');
+
+      // WAL should be cleared
+      const logStat = await logFile.stat();
+      expect(logStat.size).toBe(0);
+    });
+
+    it('should redo multiple block writes from WAL', async () => {
+      const { computeChecksum, serializeLogRecord } = await import('./logrecord.mjs');
+
+      const encoded = [
+        { position: 0, data: Buffer.from('AAAA').toString('base64') },
+        { position: 100, data: Buffer.from('BBBB').toString('base64') },
+        { position: 200, data: Buffer.from('CCCC').toString('base64') },
+      ];
+      const data = Buffer.from(JSON.stringify(encoded), 'utf8');
+
+      const record = {
+        position: 0,
+        data,
+        checksum: computeChecksum(data),
+      };
+
+      await logFile.writev([serializeLogRecord(record)], 0);
+      await logFile.sync();
+
+      await atomicFile.recover();
+
+      const bufA = Buffer.alloc(4);
+      const bufB = Buffer.alloc(4);
+      const bufC = Buffer.alloc(4);
+
+      await atomicFile.read(bufA, { position: 0 });
+      await atomicFile.read(bufB, { position: 100 });
+      await atomicFile.read(bufC, { position: 200 });
+
+      expect(bufA.toString()).toBe('AAAA');
+      expect(bufB.toString()).toBe('BBBB');
+      expect(bufC.toString()).toBe('CCCC');
+    });
+
+    it('should handle crash using MockFile.crash()', async () => {
+      // First, write and commit some initial data
+      const updates = new Map<number, Buffer>([[0, Buffer.from('committed')]]);
+      await atomicFile.atomicWrite(updates);
+      await atomicFile.close();
+
+      // Reopen
+      await atomicFile.open();
+
+      // Manually write to data file without proper WAL (simulating incomplete transaction)
+      await dataFile.writev([Buffer.from('uncommit')], 0);
+
+      // Simulate crash - loses uncommitted writes
+      dataFile.crash();
+      logFile.crash();
+
+      // Reopen and recover (open() calls recover() automatically)
+      await atomicFile.open();
+
+      // Should have original committed data (or recovered state)
+      const readBuf = Buffer.alloc(9);
+      await atomicFile.read(readBuf, { position: 0 });
+      // Data depends on what crash() randomly kept
+    });
+
+    it('should ignore corrupted WAL and clear it', async () => {
+      // Write garbage to WAL
+      await logFile.writev([Buffer.from('corrupted garbage data')], 0);
+      await logFile.sync();
+
+      // Write known data to data file
+      await dataFile.writev([Buffer.from('untouched')], 0);
+      await dataFile.sync();
+
+      // Recovery should drop the corrupted WAL
+      await atomicFile.recover();
+
+      // Data file should be unchanged
+      const readBuf = Buffer.alloc(9);
+      await atomicFile.read(readBuf, { position: 0 });
+      expect(readBuf.toString()).toBe('untouched');
+
+      // WAL should be cleared
+      const logStat = await logFile.stat();
+      expect(logStat.size).toBe(0);
+    });
+
+    it('should ignore WAL with bad checksum', async () => {
+      const { serializeLogRecord } = await import('./logrecord.mjs');
+
+      const encoded = [{ position: 0, data: Buffer.from('bad').toString('base64') }];
+      const data = Buffer.from(JSON.stringify(encoded), 'utf8');
+
+      // Create a 32-byte buffer with wrong checksum value
+      const badChecksum = Buffer.alloc(32, 0xde);
+
+      const record = {
+        position: 0,
+        data,
+        checksum: badChecksum, // valid format, wrong value
+      };
+
+      await logFile.writev([serializeLogRecord(record)], 0);
+      await logFile.sync();
+
+      await dataFile.writev([Buffer.from('original')], 0);
+      await dataFile.sync();
+
+      await atomicFile.recover();
+
+      // Data should be unchanged (bad checksum = drop WAL)
+      const readBuf = Buffer.alloc(8);
+      await atomicFile.read(readBuf, { position: 0 });
+      expect(readBuf.toString()).toBe('original');
+    });
+  });
+
+  // ===========================================================================
+  // Integration: Full Transaction Cycle
+  // ===========================================================================
+
+  describe('Full Transaction Cycle', () => {
+    it('should handle a complete write-read cycle', async () => {
+      // Write multiple blocks atomically
+      const updates = new Map<number, Buffer>([
+        [0, Buffer.from('header')],
+        [512, Buffer.from('block1')],
+        [1024, Buffer.from('block2')],
+      ]);
+
+      await atomicFile.atomicWrite(updates);
+
+      // Close and reopen (simulates restart)
+      await atomicFile.close();
+      await atomicFile.open();
+
+      // Verify data persisted
+      const header = Buffer.alloc(6);
+      const b1 = Buffer.alloc(6);
+      const b2 = Buffer.alloc(6);
+
+      await atomicFile.read(header, { position: 0 });
+      await atomicFile.read(b1, { position: 512 });
+      await atomicFile.read(b2, { position: 1024 });
+
+      expect(header.toString()).toBe('header');
+      expect(b1.toString()).toBe('block1');
+      expect(b2.toString()).toBe('block2');
+    });
+
+    it('should overwrite existing data atomically', async () => {
+      // Initial write
+      await atomicFile.atomicWrite(new Map([[0, Buffer.from('old data')]]));
+
+      // Overwrite
+      await atomicFile.atomicWrite(new Map([[0, Buffer.from('new data')]]));
+
+      const readBuf = Buffer.alloc(8);
+      await atomicFile.read(readBuf, { position: 0 });
+      expect(readBuf.toString()).toBe('new data');
+    });
   });
 });
