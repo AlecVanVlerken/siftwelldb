@@ -19,7 +19,7 @@ type EncodedUpdate = {
   data: string; // base64-encoded data
 };
 
-export class AtomicFileOnSteroids implements File {
+export class AtomicFile implements File {
   private readonly dataFile: File;
   private readonly logFile: File;
   private inFlight = false;
