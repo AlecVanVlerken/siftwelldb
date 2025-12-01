@@ -1,5 +1,7 @@
-// atomicfile.mts
-// WAL-based atomic wrapper around a data File with multi-range support.
+// @author: Henry Delacroix, Alexandre-Gatien Bienfet
+// @date: 2025-12-1
+
+// this is a WAL-based atomic wrapper around a data File
 //
 // Protocol for atomicWrite():
 //   1. Build a LogRecord with a JSON payload describing all block updates
