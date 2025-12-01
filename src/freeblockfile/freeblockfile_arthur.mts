@@ -103,6 +103,8 @@ export class FreeBlockFile {
 
   /**
    * Open an existing file and loads its header into memory.
+   * AANPASSING DOCUMENTATIE 7
+   * The internal root and free-list pointers are reloaded from the header.
    * @returns {Promise<void>}
    * @throws {Error} If the file is already open.
    * @author Arthur Cukier
@@ -111,6 +113,11 @@ export class FreeBlockFile {
     if (this.isOpen) throw new Error('File already open');
     await this.file.open();
     this.isOpen = true;
+// AANPASSING 7
+
+    const header = await this.getHeader();
+this.firstfreeBlock = header.readBigUInt64LE(HEADER_FIRST_FREE_OFFSET);
+this.rootBlock = header.readBigUInt64LE(HEADER_ROOT_OFFSET);
   }
 
   /**
@@ -179,13 +186,29 @@ export class FreeBlockFile {
  *
  * @returns {Promise<BlockNumber>} Total number of blocks in the file.
  * @throws {Error} If the file is not open.
+ * 
+ * DOCUMENTATIE AANPASSING 1
+ * 
+ *  @throws {Error} If the file size is not a multiple of the block size (corrupted file).
  *
  * @author Arthur Cukier, Alec Van Vlerken
  */
   async getBlockCount(): Promise<BlockNumber> {
     this.ensureOpen();
     const stats = await this.file.stat();
-    const blocks = Math.floor(stats.size / this.blockSize);
+    
+// AANPASSING 1
+
+    if (stats.size % this.blockSize !== 0) {
+    throw new Error(
+      `Corrupt file: size ${stats.size} is not a multiple of block size ${this.blockSize}`
+    );
+  }
+
+  const blocks = stats.size / this.blockSize;
+
+
+
     return BigInt(blocks);
   }
 
@@ -210,7 +233,8 @@ export class FreeBlockFile {
  *
  * @returns {Promise<Buffer>} The header block buffer.
  * @throws {Error} If the file is not open.
- * @throws {Error} If the header block is corrupted.
+ * AANPASSING 6
+ * @throws {Error} If the header block is corrupted or contains invalid block pointers.
  */
   private async getHeader(): Promise<Buffer> {
     this.ensureOpen();
@@ -227,6 +251,24 @@ export class FreeBlockFile {
         `Corrupt header: expected BlockType.Header (${BlockType.Header}), found ${type}`
       );
     }
+
+// AANPASSING 6
+
+    const firstFree = header.readBigUInt64LE(HEADER_FIRST_FREE_OFFSET);
+const root = header.readBigUInt64LE(HEADER_ROOT_OFFSET);
+const blockCount = await this.getBlockCount();
+
+if (firstFree >= blockCount) {
+  throw new Error(
+    `Corrupt header: firstFree=${firstFree.toString()} >= blockCount=${blockCount.toString()}`
+  );
+}
+
+if (root >= blockCount) {
+  throw new Error(
+    `Corrupt header: rootBlock=${root.toString()} >= blockCount=${blockCount.toString()}`
+  );
+}
 
     return header;
   }
@@ -268,6 +310,9 @@ export class FreeBlockFile {
  *
  * @throws {Error} If the file is not open.
  * @throws {Error} If the block number is invalid.
+ * 
+ * // AANPASSING DOCUMENTATIE 10
+ * @throws {Error} If the header block (block 0) is read directly.
  *
  * @author Alec Van Vlerken
  */
@@ -276,6 +321,13 @@ export class FreeBlockFile {
 
     this.ensureOpen();
     await this.validateBlockNumber(bn);
+
+    // AANPASSING 10
+    if (bn === 0n) {
+  throw new Error(
+    'Direct reads from the header block are not allowed. Use getClientArea(), getRootBlock() or getFirstFreeBlock().'
+  );
+}
 
     const cached = this.dirtyBlocks.get(bn);
     if (cached !== undefined) {
@@ -300,6 +352,12 @@ export class FreeBlockFile {
  * @returns {Promise<void>}
  * @throws {Error} If the file is not open.
  * @throws {Error} If the data exceeds the block size.
+ * 
+ * AANPASSING DOCUMENTATIE 8
+ * @throws {Error} If the header block (block 0) is written directly.
+ * 
+ * AANPASSING DOCUMENTATIE 4
+ * @throws {Error} If the block number is invalid.
  *
  * @author Alec Van Vlerken
  */
@@ -308,9 +366,16 @@ export class FreeBlockFile {
 
     this.ensureOpen();
 
+    // AANPASSING 4
+    await this.validateBlockNumber(bn);
+
     if (data.length > this.blockSize) {
       throw new Error(`Block too large (${data.length})`);
     }
+// AANPASSING 8
+    if (bn === 0n) {
+  throw new Error('Direct writes to the header block are not allowed. Use writeClientArea().');
+}
 
     const buffer = Buffer.alloc(this.blockSize);
     data.copy(buffer, 0, 0, data.length);
@@ -338,6 +403,9 @@ export class FreeBlockFile {
  *
  * The header fields (block type, free list pointer, root pointer)
  * remain unchanged.
+ * 
+ * AANPASSING DOCUMENTATIE 9
+ * The previous client area contents are fully cleared before writing the new data.
  *
  * @param {Buffer} buffer Client metadata to write.
  * @returns {Promise<void>}
@@ -353,6 +421,14 @@ export class FreeBlockFile {
     }
 
     const header = await this.getHeader();
+
+    // AANPASSING 9
+header.fill(
+  0,
+  HEADER_CLIENT_AREA_OFFSET,
+  this.blockSize
+);
+
     buffer.copy(header, HEADER_CLIENT_AREA_OFFSET);
     this.dirtyBlocks.set(0n, header);
   }
@@ -461,6 +537,9 @@ export class FreeBlockFile {
  *
  * @throws {Error} If the file is not open.
  * @throws {Error} If the block number is invalid.
+ * 
+ * AANPASSING DOCUMENTATIE 11
+ * @throws {Error} If the client tries to set the header block as FirstFreeBlock.
  *
  * @author Arthur Cukier
  */
@@ -470,6 +549,10 @@ export class FreeBlockFile {
     this.ensureOpen();
     if (bn !== 0n) {
         await this.validateBlockNumber(bn);
+    } 
+    // AANPASSING 11
+    else {
+      throw new Error('Header block cannot be used as a free block');
     }
 
     const header = await this.getHeader();
@@ -500,7 +583,15 @@ export class FreeBlockFile {
       let count = 0n;
       let current = await this.getFirstFreeBlock();
 
+      let steps = 0n;
       while (current !== 0n) {
+
+// AANPASSING 3: OM TE CHECKEN OF ER GEEN LUS ZIJN !
+
+        if (steps++ >= blockCount) {
+  throw new Error('Corrupt free list: cycle detected');
+}
+
         if (current >= blockCount) {
           throw new Error(
             `Corrupt free list: free block ${current.toString()} >= block count ${blockCount.toString()}`
@@ -568,9 +659,12 @@ export class FreeBlockFile {
   async allocateBlock(): Promise<bigint> {
     this.ensureOpen();
 
-    const head = await this.getFirstFreeBlock();
+    let head = await this.getFirstFreeBlock();
+
+// AANPASSING 2 : correct await !!!
+
     if (head === 0n) {
-      this.allocateNewBlock();
+      head = await this.allocateNewBlock();
     }
 
     await this.validateBlockNumber(head);
@@ -610,6 +704,9 @@ export class FreeBlockFile {
  * @throws {Error} If blockNumber is 0.
  * @throws {Error} If the block number is invalid.
  * @throws {Error} If a double-free is detected.
+ * 
+ * AANPASSING DOCUMENTATIE 5
+ * @throws {Error} If the block to be freed is not a data block.
  *
  * @author Arthur Cukier, Alec Van Vlerken
  */
@@ -628,11 +725,21 @@ export class FreeBlockFile {
     }
 
     const type = this.getBlockType(buf);
-    if (type === BlockType.Free) {
-      throw new Error(
-        `Double free detected for block ${blockNumber.toString()}`
-      );
-    }
+
+// AANPASSING 5
+
+if (type === BlockType.Free) {
+  throw new Error(
+    `Double free detected for block ${blockNumber.toString()}`
+  );
+}
+
+if (type !== BlockType.Data) {
+  throw new Error(
+    `Cannot free non-data block ${blockNumber.toString()} (type = ${type})`
+  );
+}
+
 
     this.setBlockType(buf, BlockType.Free);
     buf.writeBigUInt64LE(currentHead, FREE_NEXT_OFFSET);
