@@ -21,7 +21,6 @@ export async function writeAndSyncLog(logFile: File, record: LogRecord): Promise
     throw new Error('Invalid sector size on log file');
   }
 
-  // Enforce "one-sector WAL" design: caller must split larger batches.
   if (serialized.length > sectorSize) {
     throw new Error(
       `LogRecord of ${serialized.length} bytes exceeds sector size ` +
@@ -29,8 +28,6 @@ export async function writeAndSyncLog(logFile: File, record: LogRecord): Promise
     );
   }
 
-  // Pad to a full sector so the filesystem can treat this as a single
-  // sector-aligned, sector-sized write.
   const padded = Buffer.alloc(sectorSize);
   serialized.copy(padded, 0);
 
