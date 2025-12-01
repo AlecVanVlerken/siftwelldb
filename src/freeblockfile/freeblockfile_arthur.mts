@@ -1,38 +1,104 @@
 import { type File } from '../core/file.mjs';
 import { type AtomicFile } from 'wait implementation';
 
+const enum BlockType {
+  Free = 0x00,
+  Header = 0x01,
+  Data = 0x02,
+}
+
+// Header block (block 0) layout:
+// byte 0      : BlockType.Header
+// bytes 1–8   : first free block pointer (u64 LE)
+// bytes 9–16  : root block pointer (u64 LE)
+// bytes 17–.. : client area (user metadata)
+const HEADER_TYPE_OFFSET = 0;
+const HEADER_FIRST_FREE_OFFSET = 1;
+const HEADER_ROOT_OFFSET = 9;
+const HEADER_CLIENT_AREA_OFFSET = 17;
+
+// Free block layout:
+// byte 0      : BlockType.Free
+// bytes 1–8   : next free block pointer (u64 LE)
+// bytes 9–..  : unused
+const FREE_TYPE_OFFSET = 0;
+const FREE_NEXT_OFFSET = 1;
+
+type BlockNumber = bigint;
+
 export class FreeBlockFile {
   private file: File;
   private blockSize: number;
-  private dirtyBlocks: Map<number, Buffer> = new Map();
   private atomicFile: new AtomicFile;
-  private rootBlock = 0;
-  private firstfreeBlock = 0;
+  
+  private dirtyBlocks: Map<BlockNumber, Buffer> = new Map();
+  
+  private rootBlock: BlockNumber = 0n;
+  private firstfreeBlock: BlockNumber = 0n;
   private isOpen = false;
 
 
   /**
- * Creates a new FreeBlockFile with 2 input parameters (a file and a fixed blockSize)
+ * Creates a new FreeBlockFile instance controlling a block-structured file.
  *
- * @param {File} file - The low-level file abstraction used for physical disk access.
- * @param {number} blockSize - The fixed size (in bytes) of each block in the file.
+ * This class manages a file divided into fixed-size blocks and maintains a
+ * free-list for block allocation. Block 0 is reserved as a header block.
  *
- * @author Arthur Cukier
+ * @param {File} file Low-level file abstraction used for physical disk access.
+ * @param {number} blockSize Size (in bytes) of each block.
+ *
+ * @throws {Error} If blockSize is not a positive integer.
+ * @throws {Error} If blockSize is too small to store the header layout.
+ *
+ * @author Arthur Cukier, Alec Van Vlerken
  */
   constructor(file: File, blockSize: number) {
+    if (!Number.isInteger(blockSize) || blockSize <= 0) {
+      throw new Error(`Invalid block size: ${blockSize}`);
+    }
+    if (blockSize <= HEADER_CLIENT_AREA_OFFSET) {
+      throw new Error(
+        `Block size must be > ${HEADER_CLIENT_AREA_OFFSET} to fit header`
+      );
+    }
+
     this.file = file;
     this.blockSize = blockSize;
   }
 
+
   /**
-   * Create a new file and initialize header (block 0).
-   * The header block is written with both the root block and first free
-   * block pointers set to 0. This marks the file as newly initialized.
-   * @returns {Promise<void>}
-   * @author Arthur Cukier
-   */
+ * Opens the underlying file and loads the header into memory on demand.
+ *
+ * @returns {Promise<void>}
+ * @throws {Error} If the file is already open.
+ *
+ * @author Arthur Cukier
+ */
   async create(){
     await this.file.create();
+
+    const wasOpen = this.isOpen;
+    if (!wasOpen) {
+      await this.file.open();
+      this.isOpen = true;
+    }
+
+    const header = Buffer.alloc(this.blockSize);
+    header.writeUInt8(BlockType.Header, HEADER_TYPE_OFFSET);
+    header.writeBigUInt64LE(0n, HEADER_FIRST_FREE_OFFSET);
+    header.writeBigUInt64LE(0n, HEADER_ROOT_OFFSET);
+    
+    // client area is zeroed by Buffer.alloc
+
+    // Stage and commit header through atomicFile
+    this.dirtyBlocks.set(0n, header);
+    await this.commit();
+
+    if (!wasOpen) {
+      await this.file.close();
+      this.isOpen = false;
+    }
   }
 
   /**
@@ -48,98 +114,247 @@ export class FreeBlockFile {
   }
 
   /**
-   * Closes the file.
-   * @returns {Promise<void>}
-   * @author Arthur Cukier
-   */
+ * Closes the underlying file.
+ *
+ * If the file is already closed, this method does nothing.
+ *
+ * @returns {Promise<void>}
+ *
+ * @author Arthur Cukier
+ */
   async close() {
     if (!this.isOpen) return;
     await this.file.close();
     this.isOpen = false;
   }
 
+
+  // ---------- helpers ------------
   /**
-   * Reads a single block of data from the file at the specified block number.
-   *
-   * Each block has a fixed size defined by 'this.blockSize'. The function
-   * calculates the byte offset of the block in the file, reads exactly
-   * 'blockSize' bytes into a buffer, and returns it.
-   *
-   * @param {number} blockNumber - The index of the block to read (0-based).
-   * @returns {Promise<Buffer>} A promise that resolves with a Buffer
-   * containing the block data. The buffer is always 'blockSize' bytes long.
-   *
-   * @author Alec Van Vlerken
-   */
-  async readBlock(blockNumber: number): Promise<Buffer> {
-    const cached = this.dirtyBlocks.get(blockNumber);
+ * Ensures that the file is currently open.
+ *
+ * @throws {Error} If the file is not open.
+ */
+  private ensureOpen(): void {
+    if (!this.isOpen) throw new Error('File not open');
+  }
+
+  /**
+ * Converts a block number from number or bigint to bigint.
+ *
+ * @param {number | bigint} n - Block number.
+ * @returns {bigint} Block number as bigint.
+ */
+  private toBlockNum(n: number | bigint): bigint {
+    return typeof n === "bigint" ? n : BigInt(n);
+  }
+
+
+  /**
+ * Computes the byte offset in the file for a given block number.
+ *
+ * @param {BlockNumber} blockNum - Block number.
+ * @returns {number} Byte offset in the file.
+ *
+ * @throws {Error} If the block number is negative.
+ * @throws {Error} If the block number is too large to compute a safe offset.
+ */
+  private offsetOf(blockNum: BlockNumber): number {
+    if (blockNum < 0n) {
+      throw new Error(`Negative block number: ${blockNum.toString()}`);
+    }
+
+    const maxBlock = BigInt(Math.floor(Number.MAX_SAFE_INTEGER / this.blockSize));
+    if (blockNum > maxBlock) {
+      throw new Error(
+        `Block number ${blockNum.toString()} too large for safe offset calculation`
+      );
+    }
+
+    return Number(blockNum) * this.blockSize;
+  }
+
+  /**
+ * Returns the total number of blocks currently stored in the file.
+ *
+ * @returns {Promise<BlockNumber>} Total number of blocks in the file.
+ * @throws {Error} If the file is not open.
+ *
+ * @author Arthur Cukier, Alec Van Vlerken
+ */
+  async getBlockCount(): Promise<BlockNumber> {
+    this.ensureOpen();
+    const stats = await this.file.stat();
+    const blocks = Math.floor(stats.size / this.blockSize);
+    return BigInt(blocks);
+  }
+
+  /**
+ * Validates that a block number lies within the current file boundaries.
+ *
+ * @param {BlockNumber} blockNum Block number to validate.
+ * @throws {Error} If the block number is outside the valid range.
+ */
+  private async validateBlockNumber(blockNum: BlockNumber): Promise<void> {
+    const blockCount = await this.getBlockCount();
+    if (blockNum < 0n || blockNum >= blockCount) {
+      throw new Error(
+        `Invalid block number ${blockNum.toString()} (block count = ${blockCount.toString()})`
+      );
+    }
+  }
+
+  /**
+ * Retrieves the header block (block 0) from the dirty cache or disk.
+ *
+ *
+ * @returns {Promise<Buffer>} The header block buffer.
+ * @throws {Error} If the file is not open.
+ * @throws {Error} If the header block is corrupted.
+ */
+  private async getHeader(): Promise<Buffer> {
+    this.ensureOpen();
+
+    let header = this.dirtyBlocks.get(0n);
+    if (!header) {
+      header = await this.readBlock(0n);
+      this.dirtyBlocks.set(0n, header);
+    }
+
+    const type = header.readUInt8(HEADER_TYPE_OFFSET);
+    if (type !== BlockType.Header) {
+      throw new Error(
+        `Corrupt header: expected BlockType.Header (${BlockType.Header}), found ${type}`
+      );
+    }
+
+    return header;
+  }
+
+  /**
+ * Reads the block type from a block buffer.
+ *
+ * @param {Buffer} buf Block buffer.
+ * @returns {BlockType} The stored block type.
+ */
+  private getBlockType(buf: Buffer): BlockType {
+    return buf.readUInt8(0);
+  }
+
+  /**
+ * Writes a block type into a block buffer.
+ *
+ * @param {Buffer} buf Target block buffer.
+ * @param {BlockType} type Block type to write.
+ * @throws {Error} If the type is invalid.
+ */
+  private setBlockType(buf: Buffer, type: BlockType): void {
+    if (type !== BlockType.Free &&
+        type !== BlockType.Header &&
+        type !== BlockType.Data) {
+        throw new Error(`Invalid block type: ${type}`);
+    }
+    buf.writeUInt8(type, 0);
+  }
+  
+
+  // -------------------------------------------
+
+  /**
+ * Reads a block from disk or from the dirty cache.
+ *
+ * @param {number | bigint} blockNumber Block index (0-based).
+ * @returns {Promise<Buffer>} A buffer of size {@link blockSize}.
+ *
+ * @throws {Error} If the file is not open.
+ * @throws {Error} If the block number is invalid.
+ *
+ * @author Alec Van Vlerken
+ */
+  async readBlock(blockNumber: number | bigint): Promise<Buffer> {
+    const bn = this.toBlockNum(blockNumber);
+
+    this.ensureOpen();
+    await this.validateBlockNumber(bn);
+
+    const cached = this.dirtyBlocks.get(bn);
     if (cached !== undefined) {
       return cached;
     }
 
-    const offset = blockNumber * this.blockSize;
+    const offset = this.offsetOf(bn);
     const buffer = Buffer.alloc(this.blockSize);
     await this.file.read(buffer, { position: offset });
     return buffer;
   }
 
-  /**
-   * Writes a single block of data to the file at the specified block number.
-   *
-   * Each block has a fixed size defined by 'this.blockSize'. The function
-   * calculates the byte offset of the block in the file, copies the provided
-   * data into a buffer of size 'blockSize', and writes it to the file.
-   * If the input data is larger than the block size, an error is thrown.
-   *
-   * @param {number} blockNumber - The index of the block to write (0-based).
-   * @param {Buffer} data - A buffer containing the data to write. Must not exceed 'blockSize' bytes.
-   * @returns {Promise<void>} A promise that resolves once the write operation is complete.
-   *
-   * @throws {Error} If the data length exceeds 'blockSize'.
-   *
-   * @author Alec Van Vlerken
-   */
-  async writeBlock(blockNumber: number, data: Buffer): Promise<void> {
+ /**
+ * Stages a full block for writing.
+ *
+ * The data is copied into an internal buffer and stored in the dirty cache.
+ * The actual disk write occurs only after calling commit().
+ *
+ * @param {number | bigint} blockNumber Block index (0-based).
+ * @param {Buffer} data Data to write into the block.
+ *
+ * @returns {Promise<void>}
+ * @throws {Error} If the file is not open.
+ * @throws {Error} If the data exceeds the block size.
+ *
+ * @author Alec Van Vlerken
+ */
+  async writeBlock(blockNumber: number | bigint, data: Buffer): Promise<void> {
+    const bn = this.toBlockNum(blockNumber);
+
+    this.ensureOpen();
+
     if (data.length > this.blockSize) {
       throw new Error(`Block too large (${data.length})`);
     }
 
     const buffer = Buffer.alloc(this.blockSize);
-    data.copy(buffer);
-    this.dirtyBlocks.set(blockNumber, buffer);
+    data.copy(buffer, 0, 0, data.length);
+    this.dirtyBlocks.set(bn, buffer);
     await Promise.resolve();
   }
 
   /**
-   * Reads the client area from block 0.
-   *
-   * The client area is a reserved block (block 0) that contains database metadata,
-   * such as the version, free list head, and root block pointers for collections.
-   *
-   * @returns {Promise<Buffer>} A buffer containing the client area (block 0) data.
-   *
-   * @author Alec Van Vlerken
-   */
+ * Returns the client metadata area stored in the header block.
+ *
+ * The client area begins at byte HEADER_CLIENT_AREA_OFFSET.
+ *
+ * @returns {Promise<Buffer>} A copy of the client area.
+ * @throws {Error} If the file is not open.
+ *
+ * @author Alec Van Vlerken
+ */
   async getClientArea(): Promise<Buffer> {
-    return this.readBlock(0);
+    const header = await this.getHeader();
+    return Buffer.from(header.subarray(HEADER_CLIENT_AREA_OFFSET));
   }
 
-  /**
-   * Writes to the client area in block 0.
-   *
-   * The client area stores metadata about the database. This function overwrites
-   * the entire block 0 with the provided buffer, which must be <= blockSize.
-   *
-   * @param {Buffer} buffer - A buffer containing the metadata to write.
-   * @returns {Promise<void>} A promise that resolves when the client area has been successfully written.
-   *
-   * @throws {Error} If the buffer exceeds the block size.
-   *
-   * @author Alec Van Vlerken
-   */
-
+ /**
+ * Writes data into the client metadata area of the header block.
+ *
+ * The header fields (block type, free list pointer, root pointer)
+ * remain unchanged.
+ *
+ * @param {Buffer} buffer Client metadata to write.
+ * @returns {Promise<void>}
+ *
+ * @throws {Error} If the buffer exceeds available client area space.
+ * @throws {Error} If the file is not open.
+ *
+ * @author Alec Van Vlerken
+ */
   async writeClientArea(buffer: Buffer): Promise<void> {
-    return this.writeBlock(0, buffer);
+    if (buffer.length > this.blockSize - HEADER_CLIENT_AREA_OFFSET) {
+      throw new Error('Client area buffer exceeds available header space');
+    }
+
+    const header = await this.getHeader();
+    buffer.copy(header, HEADER_CLIENT_AREA_OFFSET);
+    this.dirtyBlocks.set(0n, header);
   }
 
   /**
@@ -159,18 +374,20 @@ export class FreeBlockFile {
    *
    * @returns {Promise<void>} A promise that resolves once all pending changes
    * are durably and atomically written to disk.
-   *
+   * @throws {Error} If the file is not open.
    * @author Alec Van Vlerken
    */
   async commit(): Promise<void> {
     if (this.dirtyBlocks.size === 0) return;
+    this.ensureOpen();
 
     // Assuming atomicWrite() has a list as input
     const writeOps: Array<{ offset: number; data: Buffer }> = [];
 
-    for (const [blockNum, buffer] of this.dirtyBlocks) {
+    for (const [blockNum, buffer] of this.dirtyBlocks.entries()) {
+      const offset = this.offsetOf(blockNum);
       writeOps.push({
-        offset: blockNum * this.blockSize,
+        offset,
         data: buffer,
       });
     }
@@ -183,217 +400,245 @@ export class FreeBlockFile {
   }
 
   /**
-   * Reads the first free block pointer from block 0 (bytes 8–15).
-   *
-   * @returns {Promise<number>} The block number of the first free block or 0 if there are no free blocks.
-   * @throws {Error} If the file is not open.
-   * @author Arthur Cukier
-   */
-  async getFirstFreeBlock(): Promise<number> {
-    if (!this.isOpen) {
-      throw new Error('File not open');
-    }
-
-    let header: Buffer;
-
-  if (this.dirtyBlocks.has(0)) {
-    header = this.dirtyBlocks.get(0)!;
-  } else {
-    header = await this.readBlock(0);
+ * Returns the current root block pointer stored in the header.
+ *
+ * @returns {Promise<BlockNumber>} Root block number.
+ * @throws {Error} If the file is not open.
+ *
+ * @author Arthur Cukier, Alec Van Vlerken
+ */
+  async getRootBlock(): Promise<BlockNumber> {
+    const header = await this.getHeader();
+    const root = header.readBigUInt64LE(HEADER_ROOT_OFFSET);
+    this.rootBlock = root;
+    return root;
   }
 
-  this.firstfreeBlock = Number(header.readBigUInt64LE(8));
-  return this.firstfreeBlock;
+
+  /**
+ * Updates the root block pointer in the header.
+ *
+ * The change is staged in memory and persisted only after commit().
+ *
+ * @param {BlockNumber} blockNum - New root block number.
+ * @returns {Promise<void>}
+ *
+ * @throws {Error} If the file is not open.
+ * @throws {Error} If the block number is invalid.
+ *
+ * @author Arthur Cukier, Alec Van Vlerken
+ */
+  async setRootBlock(blockNum: BlockNumber): Promise<void> {
+    this.ensureOpen();
+    await this.validateBlockNumber(blockNum);
+
+    const header = await this.getHeader();
+    header.writeBigUInt64LE(blockNum, HEADER_ROOT_OFFSET);
+    this.dirtyBlocks.set(0n, header);
+    this.rootBlock = blockNum;
   }
 
   /**
-   * Updates the first free block pointer in block 0 (bytes 8–15),
-   * keeping the rootBlock value (bytes 0–7) intact.
-   *
-   * @param {number} blockNum - The block number to set as the first free block (0 = none).
-   * @returns {Promise<void>}
-   * @throws {Error} If the file is not open.
-   * @author Arthur Cukier
-   */
-  async setFirstFreeBlock(blockNum: number): Promise<void> {
-    if (!this.isOpen) throw new Error('File not open');
-
-  let header: Buffer;
-
-  if (this.dirtyBlocks.has(0)) {
-    header = this.dirtyBlocks.get(0)!;
-  } else {
-    header = await this.readBlock(0);
-  }
-
-  header.writeBigUInt64LE(BigInt(blockNum), 8);
-  this.dirtyBlocks.set(0, header);
-  this.firstfreeBlock = blockNum;}
-
-  /**
-   * Returns the total number of blocks in the file.
-   *
-   * @returns {Promise<number>} Total number of blocks in the file.
-   * @throws {Error} If the file is not open.
-   * @author Arthur Cukier
-   */
-  async getBlockCount(): Promise<number> {
-    if (!this.isOpen) {
-      throw new Error('Cannot count blocks: file not open');
-    }
-
-    const stats = await this.file.stat();
-    return Math.floor(stats.size / this.blockSize);
+ * Returns the first free block pointer from the header.
+ *
+ * @returns {Promise<BlockNumber>} First free block or 0 if none exist.
+ * @throws {Error} If the file is not open.
+ *
+ * @author Arthur Cukier, Alec Van Vlerken
+ */
+  async getFirstFreeBlock(): Promise<BlockNumber> {
+    const header = await this.getHeader();
+    const firstFree = header.readBigUInt64LE(HEADER_FIRST_FREE_OFFSET);
+    this.firstfreeBlock = firstFree;
+    return firstFree;
   }
 
   /**
-   * Counts how many blocks are currently marked as free.
-   *
-   * @returns {Promise<number>} The number of free blocks found.
-   * @throws {Error} If the file is not open.
-   * @author Arthur Cukier
-   */
-  async getFreeBlockCount(): Promise<number> {
-    if (!this.isOpen) {
-      throw new Error('Cannot count free blocks: file not open');
+ * Updates the first free block pointer in the header.
+ *
+ * @param {number | bigint} blockNum New head of the free list (0 = none).
+ * @returns {Promise<void>}
+ *
+ * @throws {Error} If the file is not open.
+ * @throws {Error} If the block number is invalid.
+ *
+ * @author Arthur Cukier
+ */
+  async setFirstFreeBlock(blockNum: number | bigint): Promise<void> {
+    const bn = this.toBlockNum(blockNum);
+
+    this.ensureOpen();
+    if (bn !== 0n) {
+        await this.validateBlockNumber(bn);
     }
 
-    let count = 0;
-    let current = await this.getFirstFreeBlock();
+    const header = await this.getHeader();
+    header.writeBigUInt64LE(bn, HEADER_FIRST_FREE_OFFSET);
+    this.dirtyBlocks.set(0n, header);
+    this.firstfreeBlock = bn;
+  }
 
-    while (current !== 0) {
-      count++;
+
+    /**
+ * Traverses the free list and counts the number of free blocks.
+ *
+ * Includes consistency checks for:
+ *  - Out-of-range pointers
+ *  - Invalid block types
+ *  - Self-referential cycles
+ *
+ * @returns {Promise<bigint>} Number of free blocks.
+ * @throws {Error} If the file is not open.
+ * @throws {Error} If the free list is corrupted.
+ *
+ * @author Arthur Cukier, Alec Van Vlerken
+ */
+    async getFreeBlockCount(): Promise<bigint> {
+      this.ensureOpen();
+
+      const blockCount = await this.getBlockCount();
+      let count = 0n;
+      let current = await this.getFirstFreeBlock();
+
+      while (current !== 0n) {
+        if (current >= blockCount) {
+          throw new Error(
+            `Corrupt free list: free block ${current.toString()} >= block count ${blockCount.toString()}`
+          );
+        }
+
       const buf = await this.readBlock(current);
-      current = Number(buf.readBigUInt64LE(0));
+      const type = this.getBlockType(buf);
+      if (type !== BlockType.Free) {
+        throw new Error(
+          `Corrupt free list: block ${current.toString()} has type ${type}, expected Free`
+        );
+      }
+
+      count++;
+      const next = buf.readBigUInt64LE(FREE_NEXT_OFFSET);
+      if (next === current) {
+        throw new Error(
+          `Corrupt free list: self-referential free block at ${current.toString()}`
+        );
+      }
+      current = next;
     }
 
-    return count;
+      return count;
+    }
+
+  /**
+ * Allocates a brand-new data block at the end of the file.
+ *
+ * The block is initialized with BlockType.Data and staged
+ * in the dirty cache.
+ *
+ * @returns {Promise<BlockNumber>} Newly allocated block number.
+ *
+ * @throws {Error} If the file is not open.
+ */
+  private async allocateNewBlock(): Promise<BlockNumber> {
+    const blockCount = await this.getBlockCount();
+    const newBlockNum = blockCount;
+
+    const buf = Buffer.alloc(this.blockSize);
+    this.setBlockType(buf, BlockType.Data);
+
+    this.dirtyBlocks.set(newBlockNum, buf);
+    return newBlockNum;
   }
 
   /**
- * Allocates a free block by removing the first block from the free list.
+ * Allocates a data block.
  *
- * This method reads the current head of the free list from the header (block 0),
- * retrieves the next free block pointer stored in that block, and updates the
- * free list head accordingly. All modifications are written only to the in-memory
- * dirty block cache and are persisted to disk only after a successful commit.
+ * If the free list is non-empty, the first free block is removed
+ * from the free list and reused.
+ * If the free list is empty, a new block is appended to the file.
  *
- * @returns {Promise<number>} The block number of the allocated block.
+ * The allocated block is marked as BlockType.Data and staged
+ * in the dirty cache. Disk modification happens only after a commit().
+ *
+ * @returns {Promise<BlockNumber>} Allocated block number.
  * @throws {Error} If the file is not open.
- * @throws {Error} If the free list is empty.
+ * @throws {Error} If the free list is corrupted.
  *
- * @author Arthur Cukier
+ * @author Arthur Cukier, Alec Van Vlerken
  */
-async allocateBlock(): Promise<number> {
-  if (!this.isOpen) throw new Error('File not open');
+  async allocateBlock(): Promise<bigint> {
+    this.ensureOpen();
 
-  const head = await this.getFirstFreeBlock();
-  if (head === 0) throw new Error('Free list empty cannot be empty');
+    const head = await this.getFirstFreeBlock();
+    if (head === 0n) {
+      this.allocateNewBlock();
+    }
 
-  let headBuf: Buffer;
-  if (this.dirtyBlocks.has(head)) {
-    headBuf = this.dirtyBlocks.get(head)!;
-  } else {
-    headBuf = await this.readBlock(head);
+    await this.validateBlockNumber(head);
+
+    let headBuf = this.dirtyBlocks.get(head);
+    if (!headBuf) {
+      headBuf = await this.readBlock(head);
+    }
+
+    const type = this.getBlockType(headBuf);
+    if (type !== BlockType.Free) {
+      throw new Error(
+        `Corrupt free list: expected free block at ${head.toString()}, found type ${type}`
+      );
+    }
+
+    const nextFree = headBuf.readBigUInt64LE(FREE_NEXT_OFFSET);
+
+    this.setBlockType(headBuf, BlockType.Data);
+    this.dirtyBlocks.set(head, headBuf);
+
+    await this.setFirstFreeBlock(nextFree);
+    return head;
   }
 
-  const nextFree = Number(headBuf.readBigUInt64LE(0));
-
-  await this.setFirstFreeBlock(nextFree);
-  return head;
-}
-
-/**
- * Frees a block by inserting it at the head of the free list.
+  /**
+ * Frees a data block by prepending it to the free list.
  *
- * This method adds the given block to the free list by writing
- * the current head of the free list into the first 8 bytes of the block.
- * The header (metadata in block 0) is then updated to point to this newly freed block.
- * All changes are staged in the in-memory dirty cache and are written to
- * disk only after a successful commit.
+ * The block is marked as BlockType.Free and its next pointer
+ * is set to the previous free list head. Changes are staged in memory
+ * and persisted only after commit().
  *
- * @param {number} blockNumber The block number to be released and added back to the free list.
+ * @param {number | bigint} blockNumber Block to be released.
  * @returns {Promise<void>}
+ *
  * @throws {Error} If the file is not open.
- * @throws {Error} If {@link blockNumber} is 0 (block 0 cannot be freed).
+ * @throws {Error} If blockNumber is 0.
+ * @throws {Error} If the block number is invalid.
+ * @throws {Error} If a double-free is detected.
  *
- * @author Arthur Cukier
+ * @author Arthur Cukier, Alec Van Vlerken
  */
-async freeBlock(blockNumber: number): Promise<void> {
-  if (!this.isOpen) throw new Error('File not open');
-  if (blockNumber === 0) throw new Error('Cannot free block 0');
+  async freeBlock(blockNumber: number | bigint): Promise<void> {
+    const bn = this.toBlockNum(blockNumber);
+    this.ensureOpen();
+    if (bn === 0n) throw new Error('Cannot free block 0');
 
-  const currentHead = await this.getFirstFreeBlock();
+    await this.validateBlockNumber(bn);
 
-  let buf: Buffer;
-  if (this.dirtyBlocks.has(blockNumber)) {
-    buf = this.dirtyBlocks.get(blockNumber)!;
-  } else {
-    buf = await this.readBlock(blockNumber);
+    const currentHead = await this.getFirstFreeBlock();
+
+    let buf = this.dirtyBlocks.get(bn);
+    if (!buf) {
+      buf = await this.readBlock(bn);
+    }
+
+    const type = this.getBlockType(buf);
+    if (type === BlockType.Free) {
+      throw new Error(
+        `Double free detected for block ${blockNumber.toString()}`
+      );
+    }
+
+    this.setBlockType(buf, BlockType.Free);
+    buf.writeBigUInt64LE(currentHead, FREE_NEXT_OFFSET);
+    this.dirtyBlocks.set(bn, buf);
+    await this.setFirstFreeBlock(bn);
   }
-
-  buf.writeBigUInt64LE(BigInt(currentHead), 0);
-  this.dirtyBlocks.set(blockNumber, buf);
-  await this.setFirstFreeBlock(blockNumber);
-}
-
-/**
- * Retrieves the current root block number.
- *
- * If block 0 (the header) is dirty in memory, reads the root
- * directly from the in-memory buffer. Otherwise, reads it from disk.
- *
- * @returns {Promise<number>} The most recent root block number.
- * @throws {Error} If the file is not open.
- * @author Arthur Cukier
- */
-async getRootBlock(): Promise<number> {
-  if (!this.isOpen) throw new Error('File not open');
-
-  let header: Buffer;
-
-  if (this.dirtyBlocks.has(0)) {
-    header = this.dirtyBlocks.get(0)!;
-  } else {
-    header = await this.readBlock(0);
-  }
-
-  this.rootBlock = Number(header.readBigUInt64LE(0));
-  return this.rootBlock;
-}
-
-
-/**
- * Updates the root block number in the header (block 0).
- * 
- * The new value is written to the in-memory dirty block cache,
- * not directly to disk. This ensures that changes become
- * permanent only after a successful commit().
- *
- * If block 0 is not yet cached, it is first loaded from disk.
- *
- * @param {number} blockNum - The new root block number.
- * @returns {Promise<void>}
- * @throws {Error} If the file is not open.
- * @author Arthur Cukier
- */
-async setRootBlock(blockNum: number): Promise<void> {
-  if (!this.isOpen) throw new Error('File not open');
-
-  let header: Buffer;
-
-  if (this.dirtyBlocks.has(0)) {
-    header = this.dirtyBlocks.get(0)!;
-  } else {
-    header = await this.readBlock(0);
-  }
-
-  header.writeBigUInt64LE(BigInt(blockNum), 0);
-
-  this.dirtyBlocks.set(0, header);
-  this.rootBlock = blockNum;
-}
-
 
 
 }
