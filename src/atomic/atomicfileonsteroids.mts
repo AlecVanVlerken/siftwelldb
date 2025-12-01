@@ -1,7 +1,7 @@
-// atomicfileonsteroids.mts
+// atomicfile.mts
 // WAL-based atomic wrapper around a data File with multi-range support.
 //
-// Protocol for atomicWriteMany():
+// Protocol for atomicWrite():
 //   1. Build a LogRecord with a JSON payload describing all block updates
 //   2. writeAndSyncLog(): truncate log, write record in a single
 //      sector-sized write, fsync
@@ -13,11 +13,6 @@ import type { File } from '../core/file.mts';
 import type { LogRecord } from '../atomic/logrecord.mts';
 import { computeChecksum, deserializeLogRecord } from '../atomic/logrecord.mjs';
 import { writeAndSyncLog } from '../atomic/logwriter.mjs';
-
-type BlockUpdate = {
-  position: number;
-  buffers: Buffer[]; // multiple buffers for the same contiguous range
-};
 
 type EncodedUpdate = {
   position: number;
@@ -69,7 +64,7 @@ export class AtomicFileOnSteroids implements File {
   }
 
   async writev(buffers: Buffer[], position: number): Promise<void> {
-    // Non-atomic write-through; use atomicWritev/atomicWriteMany for WAL-protected writes.
+    // Non-atomic write-through; use atomicWrite() for WAL-protected writes.
     await this.dataFile.writev(buffers, position);
   }
 
@@ -86,33 +81,32 @@ export class AtomicFileOnSteroids implements File {
   }
 
   // ----------------------------
-  // Public WAL entry points: atomic writes
+  // Public WAL entry point: atomic write
   // ----------------------------
 
   /**
-   * Atomic write for a single contiguous range.
+   * Atomic write over one or more block positions using a single redo log record.
    *
-   * This is a thin wrapper around atomicWriteMany().
-   */
-  async atomicWritev(buffers: Buffer[], position: number): Promise<boolean> {
-    return this.atomicWriteMany([{ position, buffers }]);
-  }
-
-  /**
-   * Atomic write over multiple block ranges using a single redo log record.
+   * @param updates - Map of position -> data (Buffer) to write at each position
+   * @returns true if successful, false if failed or nested call
    *
-   * 1) Build a JSON payload listing all (position, data) pairs.
-   * 2) writeAndSyncLog(logFile, record) with checksum.
-   * 3) Write all blocks to dataFile + sync.
-   * 4) Truncate logFile.
+   * The WAL record contains:
+   *   - A JSON array of { position, data (base64) } entries
+   *   - A SHA-256 checksum for integrity verification
+   *
+   * Protocol:
+   *   1) Build a JSON payload listing all (position, data) pairs.
+   *   2) writeAndSyncLog(logFile, record) with checksum.
+   *   3) Write all blocks to dataFile + sync.
+   *   4) Truncate logFile (cleanup).
    */
-  async atomicWriteMany(updates: BlockUpdate[]): Promise<boolean> {
+  async atomicWrite(updates: Map<number, Buffer>): Promise<boolean> {
     if (this.inFlight) {
       // Prevent nested atomic writes; keeps state machine simple.
       return false;
     }
 
-    if (updates.length === 0) {
+    if (updates.size === 0) {
       // Nothing to do; vacuously atomic.
       return true;
     }
@@ -121,17 +115,20 @@ export class AtomicFileOnSteroids implements File {
 
     try {
       // STEP 1: Build JSON payload with all updates.
-      const encoded: EncodedUpdate[] = updates.map((u) => ({
-        position: u.position,
-        // concat all buffers for this position and encode as base64
-        data: Buffer.concat(u.buffers).toString('base64'),
-      }));
+      // Each entry contains: { position, data (base64-encoded) }
+      const encoded: EncodedUpdate[] = [];
+      for (const [position, buffer] of updates) {
+        encoded.push({
+          position,
+          data: buffer.toString('base64'),
+        });
+      }
 
       const data = Buffer.from(JSON.stringify(encoded), 'utf8');
 
+      // The LogRecord wraps the JSON payload with a checksum for integrity.
       const record: LogRecord = {
-        // position field is no longer semantically relevant; everything is in `data`.
-        position: 0,
+        position: 0, // Not used; all positions are in the JSON payload
         data,
         checksum: computeChecksum(data),
       };
@@ -139,13 +136,12 @@ export class AtomicFileOnSteroids implements File {
       // STEP 2: Write WAL record atomically and fsync.
       await writeAndSyncLog(this.logFile, record);
 
-      // Vanaf dit punt moet de WAL blijven staan tot de data volledig en gesynct is.
-      // Bij crash wordt alles opnieuw uitgevoerd in recover().
+      // From this point, the WAL must remain until data is fully written and synced.
+      // On crash, recover() will redo all writes.
 
       // STEP 3: Apply all updates to the main file and fsync.
-      for (const u of updates) {
-        const payload = Buffer.concat(u.buffers);
-        await this.dataFile.writev([payload], u.position);
+      for (const [position, buffer] of updates) {
+        await this.dataFile.writev([buffer], position);
       }
       await this.dataFile.sync();
 
@@ -154,8 +150,8 @@ export class AtomicFileOnSteroids implements File {
 
       return true;
     } catch {
-      // Als er iets misgaat na writeAndSyncLog(), laten we de WAL staan zodat
-      // recover() de write kan afmaken (redo-only protocol).
+      // If something fails after writeAndSyncLog(), we leave the WAL intact
+      // so recover() can finish the write (redo-only protocol).
       return false;
     } finally {
       this.inFlight = false;
