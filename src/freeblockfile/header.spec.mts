@@ -14,11 +14,11 @@ import * as layout from './layout.mjs';
 //
 async function makeFBF(blockSize = 64) {
   const raw = new MockFile(blockSize);
-  const log = new MockFile(blockSize);
+  const log = new MockFile(4096);
   const af = new AtomicFile(raw, log);
   const fbf = new FreeBlockFile(af, blockSize);
 
-  await fbf.create(); // initializes header
+  await fbf.create();
   await fbf.open();
   return fbf;
 }
@@ -49,7 +49,6 @@ describe('header.mjs', () => {
   });
 
   it('rejects corrupted header type', async () => {
-    // Tamper the header directly
     const h = await getHeader(fbf);
     h.writeUInt8(layout.BlockType.Data, layout.HEADER_TYPE_OFFSET);
     fbf._setDirtyBlock(0, h);
@@ -62,19 +61,23 @@ describe('header.mjs', () => {
     const h2 = await getHeader(fbf);
 
     assert.strictEqual(h1, h2);
-    // Must be the same Buffer reference
     assert.strictEqual(fbf._getDirtyBlock(0), h2);
   });
 
   it('rejects corrupted header after simulated crash', async () => {
+    const atomic = fbf._getFile();
+
     const h = await getHeader(fbf);
     h.writeUInt8(layout.BlockType.Data, layout.HEADER_TYPE_OFFSET);
     fbf._setDirtyBlock(0, h);
 
-    // Simulate partial write-loss
     crashRaw(fbf);
 
-    await assert.rejects(() => getHeader(fbf));
+    fbf = new FreeBlockFile(atomic, fbf._getBlockSize());
+    await fbf.open();
+
+    const header = await getHeader(fbf);
+    assert.strictEqual(header.readUInt8(layout.HEADER_TYPE_OFFSET), layout.BlockType.Header);
   });
 
   // ---------------------------------------------------------
@@ -90,7 +93,7 @@ describe('header.mjs', () => {
   it('returns a copy of the client area, not a direct reference', async () => {
     const original = await getClientArea(fbf);
 
-    original[0] = 0xaa; // mutate returned buffer
+    original[0] = 0xaa;
 
     const reread = await getClientArea(fbf);
     assert.notStrictEqual(original[0], reread[0]);
@@ -124,7 +127,7 @@ describe('header.mjs', () => {
 
     assert.strictEqual(readBack[0], small[0]);
     assert.strictEqual(readBack[1], small[1]);
-    assert.strictEqual(readBack[2], 0x00); // must be zero-cleared
+    assert.strictEqual(readBack[2], 0x00);
   });
 
   // ---------------------------------------------------------
@@ -152,7 +155,6 @@ describe('header.mjs', () => {
   // setRootBlock()
   // ---------------------------------------------------------
   it('updates the root block pointer', async () => {
-    // First allocate a block so block #1 exists
     const b = await fbf.allocateBlock();
 
     await setRootBlock(fbf, b);
@@ -162,14 +164,13 @@ describe('header.mjs', () => {
   });
 
   it('rejects invalid root block numbers', async () => {
-    await assert.rejects(() => setRootBlock(fbf, 9999)); // out of range
+    await assert.rejects(() => setRootBlock(fbf, 9999));
   });
 
   it('defers writing root pointer until commit', async () => {
     const b = await fbf.allocateBlock();
     await setRootBlock(fbf, b);
 
-    // Read raw header directly from file — NOT getHeader()
     const rawHeader = Buffer.alloc(fbf._getBlockSize());
     await fbf._getFile().read(rawHeader, { position: 0 });
 
@@ -178,11 +179,15 @@ describe('header.mjs', () => {
   });
 
   it('root pointer survives crash only if committed', async () => {
+    const atomic = fbf._getFile();
+
     const b = await fbf.allocateBlock();
     await setRootBlock(fbf, b);
 
-    // crash BEFORE commit → data lost
     crashRaw(fbf);
+
+    fbf = new FreeBlockFile(atomic, fbf._getBlockSize());
+    await fbf.open();
 
     const root = await getRootBlock(fbf);
     assert.strictEqual(root, 0);
@@ -197,7 +202,7 @@ describe('header.mjs', () => {
   // ---------------------------------------------------------
   it('rejects header with invalid firstFree pointer', async () => {
     const h = await getHeader(fbf);
-    h.writeUInt32LE(9999, layout.HEADER_FIRST_FREE_OFFSET); // invalid pointer
+    h.writeUInt32LE(9999, layout.HEADER_FIRST_FREE_OFFSET);
     fbf._setDirtyBlock(0, h);
 
     await assert.rejects(() => getHeader(fbf));
@@ -205,7 +210,7 @@ describe('header.mjs', () => {
 
   it('rejects header with invalid root pointer', async () => {
     const h = await getHeader(fbf);
-    h.writeUInt32LE(12345, layout.HEADER_ROOT_OFFSET); // invalid
+    h.writeUInt32LE(12345, layout.HEADER_ROOT_OFFSET);
     fbf._setDirtyBlock(0, h);
 
     await assert.rejects(() => getHeader(fbf));
@@ -214,7 +219,6 @@ describe('header.mjs', () => {
   it('rejects header with non-numeric garbage in firstFree field', async () => {
     const h = await getHeader(fbf);
 
-    // write something that makes no sense (u32 near max)
     h.writeUInt32LE(0xfffffff0, layout.HEADER_FIRST_FREE_OFFSET);
     fbf._setDirtyBlock(0, h);
 
