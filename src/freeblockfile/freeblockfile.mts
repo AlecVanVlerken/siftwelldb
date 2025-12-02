@@ -1,5 +1,6 @@
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 /**
  * FreeBlockFile
  * ---------------------------
@@ -58,6 +59,9 @@ import { type AtomicFile } from 'wait implementation';
 =======
 import { type AtomicFile } from '../atomic/atomicfile.mts';
 >>>>>>> 612c1f8 (Constructor)
+=======
+import { type AtomicFile } from '../atomic/atomicfile.mts';
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
 
 const enum BlockType {
   Free = 0x00,
@@ -96,6 +100,7 @@ export class FreeBlockFile {
 
   /**
 <<<<<<< HEAD
+<<<<<<< HEAD
  * Creates a new FreeBlockFile instance controlling a block-structured file.
  *
  * This class manages a file divided into fixed-size blocks and maintains a
@@ -114,6 +119,8 @@ export class FreeBlockFile {
 >>>>>>> ade49aa (Use constructor File and dirtyBlocks)
 =======
 =======
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
    * Creates a new FreeBlockFile instance controlling a block-structured file.
    *
    * This class manages a file divided into fixed-size blocks and maintains a
@@ -128,7 +135,10 @@ export class FreeBlockFile {
    * @author Arthur Cukier, Alec Van Vlerken
    */
   constructor(file: AtomicFile, blockSize: number) {
+<<<<<<< HEAD
 >>>>>>> 612c1f8 (Constructor)
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
     if (!Number.isInteger(blockSize) || blockSize <= 0) {
       throw new Error(`Invalid block size: ${blockSize}`);
     }
@@ -136,7 +146,10 @@ export class FreeBlockFile {
       throw new Error(`Block size must be > ${HEADER_CLIENT_AREA_OFFSET} to fit header`);
     }
 
+<<<<<<< HEAD
 >>>>>>> 07c079a (Added changes to main freeblockfile.mts)
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
     this.file = file;
     this.blockSize = blockSize;
   }
@@ -326,6 +339,7 @@ export class FreeBlockFile {
   /**
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
    * Opens the underlying file and loads the header into memory on demand.
    *
    * @returns {Promise<void>} Created file with initialized header with the file in a closed state
@@ -423,6 +437,8 @@ export class FreeBlockFile {
  */
 >>>>>>> dcdebe8 (documentation added in main file)
 =======
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
    * Reads a block from disk or from the dirty cache.
    *
    * @param {number | bigint} blockNumber Block index (0-based).
@@ -433,7 +449,10 @@ export class FreeBlockFile {
    *
    * @author Alec Van Vlerken
    */
+<<<<<<< HEAD
 >>>>>>> 612c1f8 (Constructor)
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
   async readBlock(blockNumber: number | bigint): Promise<Buffer> {
     const bn = this.toBlockNum(blockNumber);
 
@@ -441,7 +460,10 @@ export class FreeBlockFile {
     await this.validateBlockNumber(bn);
 
     const cached = this.dirtyBlocks.get(bn);
+<<<<<<< HEAD
 >>>>>>> 07c079a (Added changes to main freeblockfile.mts)
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
     if (cached !== undefined) {
       return cached;
     }
@@ -450,6 +472,7 @@ export class FreeBlockFile {
     const buffer = Buffer.alloc(this.blockSize);
     await this.file.read(buffer, { position: offset });
     return buffer;
+<<<<<<< HEAD
 >>>>>>> ade49aa (Use constructor File and dirtyBlocks)
   }
 
@@ -457,12 +480,17 @@ export class FreeBlockFile {
 <<<<<<< HEAD
 =======
 >>>>>>> 612c1f8 (Constructor)
+=======
+  }
+
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
   /**
    * Stages a full block for writing.
    *
    * The data is copied into an internal buffer and stored in the dirty cache.
    * The actual disk write occurs only after calling commit().
    *
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
    * @param {number} blockNumber - Block index (0-based).
@@ -515,6 +543,8 @@ export class FreeBlockFile {
  */
 >>>>>>> dcdebe8 (documentation added in main file)
 =======
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
    * @param {number | bigint} blockNumber Block index (0-based).
    * @param {Buffer} data Data to write into the block.
    *
@@ -524,13 +554,19 @@ export class FreeBlockFile {
    *
    * @author Alec Van Vlerken
    */
+<<<<<<< HEAD
 >>>>>>> 612c1f8 (Constructor)
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
   async writeBlock(blockNumber: number | bigint, data: Buffer): Promise<void> {
     const bn = this.toBlockNum(blockNumber);
 
     this.ensureOpen();
 
+<<<<<<< HEAD
 >>>>>>> 07c079a (Added changes to main freeblockfile.mts)
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
     if (data.length > this.blockSize) {
       throw new Error(`Block too large (${data.length})`);
     }
@@ -542,6 +578,7 @@ export class FreeBlockFile {
   }
 
   /**
+<<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
    * Reads the client area from block 0.
@@ -566,6 +603,8 @@ export class FreeBlockFile {
  */
 >>>>>>> dcdebe8 (documentation added in main file)
 =======
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
    * Returns the client metadata area stored in the header block.
    *
    * The client area begins at byte HEADER_CLIENT_AREA_OFFSET.
@@ -575,6 +614,7 @@ export class FreeBlockFile {
    *
    * @author Alec Van Vlerken
    */
+<<<<<<< HEAD
 >>>>>>> 612c1f8 (Constructor)
   async getClientArea(): Promise<Buffer> {
 <<<<<<< HEAD
@@ -605,6 +645,11 @@ export class FreeBlockFile {
     const header = await this.getHeader();
     return Buffer.from(header.subarray(HEADER_CLIENT_AREA_OFFSET));
 >>>>>>> 07c079a (Added changes to main freeblockfile.mts)
+=======
+  async getClientArea(): Promise<Buffer> {
+    const header = await this.getHeader();
+    return Buffer.from(header.subarray(HEADER_CLIENT_AREA_OFFSET));
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
   }
 
   /**
@@ -623,9 +668,12 @@ export class FreeBlockFile {
    */
   async writeClientArea(buffer: Buffer): Promise<void> {
 <<<<<<< HEAD
+<<<<<<< HEAD
     return this.writeBlock(0, buffer);
 >>>>>>> ade49aa (Use constructor File and dirtyBlocks)
 =======
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
     if (buffer.length > this.blockSize - HEADER_CLIENT_AREA_OFFSET) {
       throw new Error('Client area buffer exceeds available header space');
     }
@@ -633,7 +681,10 @@ export class FreeBlockFile {
     const header = await this.getHeader();
     buffer.copy(header, HEADER_CLIENT_AREA_OFFSET);
     this.dirtyBlocks.set(0n, header);
+<<<<<<< HEAD
 >>>>>>> 07c079a (Added changes to main freeblockfile.mts)
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
   }
 
   /**
@@ -651,6 +702,7 @@ export class FreeBlockFile {
    *  3. Flush all changes to disk.
    *  4. Clear the in-memory dirty block map.
    *
+<<<<<<< HEAD
 <<<<<<< HEAD
    * @returns {Promise<void>} A promise that resolves once all pending changes are durably and atomically written to disk.
    * @throws {Error} If the file is not open.
@@ -792,6 +844,14 @@ export class FreeBlockFile {
   _ensureOpen(): void {
     if (!this.isOpen) throw new Error('File not open');
 =======
+=======
+   * @returns {Promise<void>} A promise that resolves once all pending changes
+   * are durably and atomically written to disk.
+   * @throws {Error} If the file is not open.
+   * @author Alec Van Vlerken
+   */
+  async commit(): Promise<void> {
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
     if (this.dirtyBlocks.size === 0) return;
     this.ensureOpen();
 
@@ -800,7 +860,10 @@ export class FreeBlockFile {
     await this.file.atomicWrite(this.dirtyBlocks);
     await this.file.sync();
     this.dirtyBlocks.clear();
+<<<<<<< HEAD
 >>>>>>> ade49aa (Use constructor File and dirtyBlocks)
+=======
+>>>>>>> 327b98e9244f66fb70928a49ded9f711a3535510
   }
 
   /**
