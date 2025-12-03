@@ -10,6 +10,9 @@ import { FreeBlockFile } from './freeblockfile.mjs';
 import * as layout from './layout.mjs';
 import { getHeader } from './header.mjs';
 
+//
+// Test setup helpers
+//
 function makeFBF(blockSize = 64) {
   const raw = new MockFile(blockSize);
   const log = new MockFile(4096);
@@ -24,7 +27,6 @@ function crashRaw(fbf: FreeBlockFile) {
 }
 
 describe('FreeBlockFile', () => {
-
   // ---------------------------------------------------------
   // constructor
   // ---------------------------------------------------------
@@ -61,7 +63,7 @@ describe('FreeBlockFile', () => {
     const fbf = makeFBF();
     await assert.rejects(fbf.readBlock(1));
     await assert.rejects(fbf.allocateBlock());
-    });
+  });
 
   // ---------------------------------------------------------
   // create()

@@ -36,7 +36,7 @@ async function makeFBF(blockSize = 64) {
 
 function crashRaw(fbf: FreeBlockFile) {
   const atomic = fbf._getFile();
-  const raw = atomic["dataFile"] as MockFile;
+  const raw = atomic['dataFile'] as MockFile;
   raw.crash();
 }
 
@@ -63,7 +63,7 @@ describe('io.mjs', () => {
     assert.throws(() => offsetOf(fbf, -1));
   });
 
-   it('offsetOf rejects blockNum larger than maximum safe block', () => {
+  it('offsetOf rejects blockNum larger than maximum safe block', () => {
     const bs = fbf._getBlockSize();
     const maxBlock = Math.floor(Number.MAX_SAFE_INTEGER / bs);
 
@@ -141,8 +141,8 @@ describe('io.mjs', () => {
   });
 
   it('rejects reading out-of-range blocks', async () => {
-  await assert.rejects(() => readBlock(fbf, 99));
-});
+    await assert.rejects(() => readBlock(fbf, 99));
+  });
 
   // ---------------------------------------------------------
   // writeBlock()
@@ -202,20 +202,20 @@ describe('io.mjs', () => {
   });
 
   it('writeBlock preserves block type when loading from disk', async () => {
-  const b = await fbf.allocateBlock();
+    const b = await fbf.allocateBlock();
 
-  const buf = await readBlock(fbf, b);
-  setBlockType(buf, layout.BlockType.Data);
-  fbf._setDirtyBlock(b, buf);
-  await fbf.commit();
+    const buf = await readBlock(fbf, b);
+    setBlockType(buf, layout.BlockType.Data);
+    fbf._setDirtyBlock(b, buf);
+    await fbf.commit();
 
-  assert.strictEqual(fbf._getDirtyBlock(b), undefined);
+    assert.strictEqual(fbf._getDirtyBlock(b), undefined);
 
-  await writeBlock(fbf, b, Buffer.from('xyz'));
+    await writeBlock(fbf, b, Buffer.from('xyz'));
 
-  const stored = fbf._getDirtyBlock(b)!;
-  assert.strictEqual(stored.readUInt8(0), layout.BlockType.Data);
-});
+    const stored = fbf._getDirtyBlock(b)!;
+    assert.strictEqual(stored.readUInt8(0), layout.BlockType.Data);
+  });
 
   // ---------------------------------------------------------
   // getBlockCount()
@@ -231,16 +231,16 @@ describe('io.mjs', () => {
 
   it('detects corrupted file size', async () => {
     const atomic = fbf._getFile();
-  const raw = atomic['dataFile'] as MockFile;
+    const raw = atomic['dataFile'] as MockFile;
 
-  await raw.writev([Buffer.from([0])], 99);
+    await raw.writev([Buffer.from([0])], 99);
 
-  raw.crash();
+    raw.crash();
 
-  fbf = new FreeBlockFile(atomic, fbf._getBlockSize());
-  await fbf.open();
+    fbf = new FreeBlockFile(atomic, fbf._getBlockSize());
+    await fbf.open();
 
-  await assert.rejects(() => getBlockCount(fbf));
+    await assert.rejects(() => getBlockCount(fbf));
   });
 
   it('getBlockCount includes dirty blocks even after commit and reopen', async () => {
