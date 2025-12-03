@@ -12,7 +12,7 @@ import { commit } from './commit.mjs';
 import * as layout from './layout.mjs';
 
 //
-// Test helpers
+// Test setup helpers
 //
 async function makeFBF(blockSize = 64) {
   const raw = new MockFile(blockSize);
@@ -108,7 +108,6 @@ describe('commit.mjs', () => {
     fbf = new FreeBlockFile(atomic, fbf._getBlockSize());
     await fbf.open();
 
-    
     await assert.rejects(() => fbf.readBlock(b));
   });
 
@@ -150,7 +149,7 @@ describe('commit.mjs', () => {
     await commit(fbf);
 
     assert(snapshot.equals(buf));
-    });
+  });
 
   it('does not clear dirty blocks when atomicWrite fails', async () => {
     const atomic = fbf._getFile();

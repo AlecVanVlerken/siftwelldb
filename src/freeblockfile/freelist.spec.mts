@@ -55,7 +55,7 @@ describe('freelist.mjs', () => {
   // ---------------------------------------------------------
   // setFirstFreeBlock()
   // ---------------------------------------------------------
-   it('allocateBlock creates a new Data block with correct type', async () => {
+  it('allocateBlock creates a new Data block with correct type', async () => {
     const b = await allocateBlock(fbf);
     const buf = await fbf.readBlock(b);
     assert.strictEqual(buf.readUInt8(0), layout.BlockType.Data);
@@ -82,17 +82,17 @@ describe('freelist.mjs', () => {
   });
 
   it('clears the free list head when last free block is consumed', async () => {
-  const b = await allocateBlock(fbf);
-  await freeBlock(fbf, b);
+    const b = await allocateBlock(fbf);
+    await freeBlock(fbf, b);
 
-  const reused = await allocateBlock(fbf);
-  assert.strictEqual(reused, b);
+    const reused = await allocateBlock(fbf);
+    assert.strictEqual(reused, b);
 
-  const header = await getHeader(fbf);
-  const head = header.readUInt32LE(layout.HEADER_FIRST_FREE_OFFSET);
+    const header = await getHeader(fbf);
+    const head = header.readUInt32LE(layout.HEADER_FIRST_FREE_OFFSET);
 
-  assert.strictEqual(head, 0, 'free list should now be empty');
-});
+    assert.strictEqual(head, 0, 'free list should now be empty');
+  });
 
   it('setFirstFreeBlock rejects invalid block numbers', async () => {
     await assert.rejects(() => fbf.freeBlock(9999));
@@ -140,9 +140,9 @@ describe('freelist.mjs', () => {
     fbf._setDirtyBlock(0, header);
 
     await assert.rejects(() => allocateBlock(fbf));
-    });
+  });
 
-   it('allocateBlock rejects free-list head with invalid next pointer', async () => {
+  it('allocateBlock rejects free-list head with invalid next pointer', async () => {
     const b = await allocateBlock(fbf);
     await freeBlock(fbf, b);
 
@@ -204,7 +204,7 @@ describe('freelist.mjs', () => {
     await assert.rejects(() => freeBlock(fbf, b));
   });
 
-   it('freeBlock inserts freed blocks in LIFO order', async () => {
+  it('freeBlock inserts freed blocks in LIFO order', async () => {
     const b1 = await allocateBlock(fbf);
     const b2 = await allocateBlock(fbf);
 
