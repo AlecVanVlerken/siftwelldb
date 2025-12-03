@@ -1,3 +1,6 @@
+// @author: Alec Van Vlerken, Arthur Cukier
+// @date: 2025-12-03
+
 import assert from 'assert';
 import { describe, it, beforeEach } from 'vitest';
 
