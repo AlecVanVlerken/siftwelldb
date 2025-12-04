@@ -24,6 +24,10 @@ export class Document {
     this.nonIterableEntries = nonIterableEntries;
   }
 
+  getCollectionName() {
+    return this.collection;
+  }
+
   getId() {
     return this.id;
   }
