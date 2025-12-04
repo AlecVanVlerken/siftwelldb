@@ -1,11 +1,9 @@
 // @author Alexandre-Gatien Bienfet
 // @date 2025-11-17
 
-
 import type { File } from '../core/file.mts';
 import type { LogRecord } from './logrecord.mts';
 import { serializeLogRecord } from './logrecord.mjs';
-
 
 /**
  * Write a log record atomically to disk.
@@ -18,16 +16,13 @@ export async function writeAndSyncLog(logFile: File, record: LogRecord): Promise
   const serialized = serializeLogRecord(record);
   const sectorSize = logFile.sectorSize;
 
-
   if (sectorSize <= 0) {
     throw new Error('Invalid sector size on log file');
   }
 
-
   const paddedLength = Math.max(sectorSize, Math.ceil(serialized.length / sectorSize) * sectorSize);
   const padded = Buffer.alloc(paddedLength);
   serialized.copy(padded, 0);
-
 
   await logFile.truncate(0);
   await logFile.writev([padded], 0);
