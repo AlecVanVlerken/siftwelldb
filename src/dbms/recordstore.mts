@@ -1,9 +1,8 @@
 // @author: Matisse De Gauquier
 
-import { Document } from "./document.mjs";
+import { Document, type RawId, type FieldValue } from "./document.mjs";
 import { FreeBlockFile } from "../freeblockfile/freeblockfile.mjs";
 
-export type FieldValue = string | number;
 
 // class definition for RecordStore
 // Provides high-level operations for storing, reading and deleting documents
@@ -77,8 +76,8 @@ export class RecordStore {
         const json = JSON.stringify({
             collection: doc.getCollectionName(),
             id: doc.getId(),
-            iterableEntries: doc.getIterableEntries(),
-            nonIterableEntries: doc.getNonIterableEntries()
+            iterableEntries: doc.getIterableKeys(),
+            nonIterableEntries: doc.getNonIterableKeys()
         });
         
         const jsonBuffer = Buffer.from(json, 'utf-8');
@@ -110,9 +109,9 @@ export class RecordStore {
         // parse JSON to object
         const doc = JSON.parse(jsonString) as {
             collection: string;
-            id: FieldValue;
-            iterableEntries: string[];
-            nonIterableEntries: string[];
+            id: RawId;
+            iterableEntries: [string, FieldValue][];
+            nonIterableEntries: [string, FieldValue][];
         };
 
         return new Document(
