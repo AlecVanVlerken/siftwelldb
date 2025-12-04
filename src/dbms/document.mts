@@ -1,4 +1,10 @@
 export type FieldValue = string | number | boolean;
+export type RawId = string | number;
+
+export type RawDocument = {
+  id: RawId;
+  [key: string]: FieldValue;
+};
 
 /**
  * Plain data shape used by the rest of the DBMS.
@@ -43,6 +49,12 @@ export function validateDocument(document: Document) {
   }
 }
 
+function normalizeId(id: RawId): string {
+  const str = typeof id === 'number' ? String(id) : id;
+  if (str.length === 0) throw new Error('Document must have a non-empty string id');
+  return str;
+}
+
 /**
  * Parse a client-supplied object (e.g. `{ id: 'Leuven', population: 101032 }`)
  * and split its fields based on the supplied index predicate.
@@ -55,8 +67,11 @@ export function parseRawDocument(
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw))
     throw new Error('Document must be an object');
 
-  const id = (raw as Record<string, unknown>)['id'];
-  if (typeof id !== 'string' || id.length === 0) throw new Error('Document must have a non-empty string id');
+  const rawId = (raw as Record<string, unknown>)['id'];
+  if (rawId === undefined || rawId === null) throw new Error('Document must have an id');
+  if (typeof rawId !== 'string' && typeof rawId !== 'number')
+    throw new Error('Document id must be a string or number');
+  const id = normalizeId(rawId);
 
   const iterableEntries: [string, FieldValue][] = [];
   const nonIterableEntries: [string, FieldValue][] = [];
