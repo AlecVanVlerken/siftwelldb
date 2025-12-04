@@ -17,7 +17,12 @@ export class Document {
   private iterableEntries: [string, FieldValue][];
   private nonIterableEntries: [string, FieldValue][];
 
-  constructor(collection: string, id: RawId, iterableEntries: [string, FieldValue][], nonIterableEntries: [string, FieldValue][]) {
+  constructor(
+    collection: string,
+    id: RawId,
+    iterableEntries: [string, FieldValue][],
+    nonIterableEntries: [string, FieldValue][],
+  ) {
     this.collection = collection;
     this.id = id;
     this.iterableEntries = iterableEntries;
@@ -62,8 +67,7 @@ export function parseRawDocument(
 
   const rawId = (raw as Record<string, unknown>)['id'];
   if (rawId === undefined || rawId === null) throw new Error('Document must have an id');
-  if (typeof rawId !== 'string' && typeof rawId !== 'number')
-    throw new Error('Document id must be a string or number');
+  if (typeof rawId !== 'string' && typeof rawId !== 'number') throw new Error('Document id must be a string or number');
 
   const iterableEntries: [string, FieldValue][] = [];
   const nonIterableEntries: [string, FieldValue][] = [];
