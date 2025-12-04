@@ -1,24 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import {
-  defaultIndexPredicate,
-  DocumentRecord,
-  parseRawDocument,
-  type FieldValue,
-} from './document.mjs';
+import { JSONtoDocument, defaultIndexPredicate, parseRawDocument, type FieldValue } from './document.mjs';
 
 describe('document.mts', () => {
-  it('parses a raw document with string id and splits iterable vs non-iterable fields', () => {
-    const raw = { id: 'Leuven', population: 101032, _internal: true, name: 'Leuven' };
-    const parsed = parseRawDocument('cities', raw, defaultIndexPredicate);
+  it('parses a document string and splits iterable vs non-iterable fields', () => {
+    const input = "{id: 'Leuven', population: 101032, _internal: true, name: 'Leuven'}";
+    const doc = JSONtoDocument(input, 'cities');
 
-    expect(parsed.id).toBe('Leuven');
-    expect(parsed.collection).toBe('cities');
-    expect(parsed.iterableEntries).toEqual([
-      ['population', 101032],
-      ['name', 'Leuven'],
-    ]);
-    expect(parsed.nonIterableEntries).toEqual([['_internal', true]]);
-    expect(parsed.asDocument()).toEqual({
+    expect(doc.getId()).toBe('Leuven');
+    expect(doc.getIterableKeys()).toEqual(['population', 'name']);
+    expect(doc.getNonIterableKeys()).toEqual(['_internal']);
+    expect(doc.getFields()).toEqual({ population: 101032, _internal: true, name: 'Leuven' });
+    expect(doc.asDocument()).toEqual({
       id: 'Leuven',
       population: 101032,
       _internal: true,
@@ -26,16 +18,16 @@ describe('document.mts', () => {
     });
   });
 
-  it('normalizes numeric ids to strings', () => {
-    const raw = { id: 42, foo: 'bar' };
-    const parsed = parseRawDocument('numbers', raw, defaultIndexPredicate);
-    expect(parsed.id).toBe('42');
-    expect(parsed.asDocument().id).toBe('42');
+  it('retains numeric ids without normalization', () => {
+    const input = "{id: 42, foo: 'bar'}";
+    const doc = JSONtoDocument(input, 'numbers');
+    expect(doc.getId()).toBe(42);
+    expect(doc.asDocument().id).toBe(42);
   });
 
-  it('rejects missing or empty ids', () => {
-    expect(() => parseRawDocument('c', { foo: 1 } as unknown, defaultIndexPredicate)).toThrow();
-    expect(() => parseRawDocument('c', { id: '', foo: 1 } as unknown, defaultIndexPredicate)).toThrow();
+  it('rejects missing or invalid ids', () => {
+    expect(() => JSONtoDocument('{foo: 1}', 'c')).toThrow();
+    expect(() => JSONtoDocument('{id: {}, foo: 1}', 'c')).toThrow();
   });
 
   it('rejects unsupported value types', () => {
@@ -44,15 +36,16 @@ describe('document.mts', () => {
       ok: true,
       nested: { nope: true },
     };
-    expect(() => parseRawDocument('c', bad, defaultIndexPredicate)).toThrow(/Unsupported value type/);
+    const str = `{id: 'bad', ok: true, nested: { nope: true }}`;
+    expect(() => JSONtoDocument(str, 'c')).toThrow();
   });
 
-  it('wraps parsing via DocumentRecord helpers', () => {
-    const doc = new DocumentRecord('u', { id: 'x', a: 1, _b: false }, defaultIndexPredicate);
-    expect(doc.getId()).toBe('x');
+  it('parses raw object input via parseRawDocument', () => {
+    const raw = { id: 'X', a: 1, _b: false };
+    const doc = parseRawDocument('coll', raw, defaultIndexPredicate);
+    expect(doc.getId()).toBe('X');
     expect(doc.getIterableKeys()).toEqual(['a']);
     expect(doc.getNonIterableKeys()).toEqual(['_b']);
     expect(doc.getFields()).toEqual({ a: 1, _b: false });
-    expect(doc.asDocument()).toEqual({ id: 'x', a: 1, _b: false });
   });
 });
