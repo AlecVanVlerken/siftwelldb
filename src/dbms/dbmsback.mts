@@ -9,6 +9,7 @@ export class DbmsBack {
   freeblockFile: FreeBlockFile;
   recordStore: RecordStore;
   rootBlock: number;
+  metaCache: Record<string, Record<string, number>>;
 
   private constructor(dataFile: File, logFile: File) {
     const atomicFile = new AtomicFile(dataFile, logFile);
@@ -17,15 +18,16 @@ export class DbmsBack {
 
     //initialiseer metadata, dus rootblock
     this.rootBlock = -1;
+    this.metaCache = {};
   }
 
   async create(dataFile: File, logFile: File): Promise<DbmsBack> {
     const dbmsback = new DbmsBack(dataFile, logFile);
     await dbmsback.freeblockFile.create();
 
-    //initialiseer metadata, dus rootblock
-    dbmsback.rootBlock = await allocateBlock(dbmsback.freeblockFile);
-    await dbmsback.freeblockFile.setRootBlock(dbmsback.rootBlock);
+    //initialize client area for metadata
+    const initialMeta = Buffer.from(JSON.stringify([]));
+    await dbmsback.freeblockFile.writeClientArea(initialMeta);
 
     return dbmsback;
   }
@@ -33,25 +35,89 @@ export class DbmsBack {
   async open(dataFile: File, logFile: File): Promise<DbmsBack> {
     const dbmsback = new DbmsBack(dataFile, logFile);
     await dbmsback.freeblockFile.open();
+    dbmsback.metaCache = await dbmsback.metaReadJSON();
 
     return dbmsback;
   }
 
-  insertDocument(document: Document): Promise<void> {
+  async insertDocument(document: Document): Promise<void> {
     const documentLocation = this.recordStore.writeRecord(document);
+    const collectionName = document.getCollectionName();
+    const documentId = document.getId();
     // check if collection exists in meta, anders toevoegen
-    // check if iterable keys exist in meta, anders toevoegen
-    // load de B+ tree van de juiste collectie
-    // voeg document toe aan B+ tree
+    const meta = this.metaCache;
+    if (!(collectionName in meta)) {
+      meta[collectionName] = {};
+    }
+    // ga naar root voor id
+    if (!('id' in meta[collectionName])) {
+      // maak nieuwe B+ tree voor id aan en update meta
+      meta[collectionName]['id'] = await allocateBlock(this.freeblockFile);
+    }
+    const idRoot = meta[collectionName]['id'];
+    // voeg document-pointer toe aan id B+ tree
+
+    // TODO: BPLUSTREE INSERT (IDROOT, (documentLocation, documentId ) : documentPointer)
+    // TODO: update meta met nieuwe root als die veranderd is
+
+    // START FOR LOOP: voor elke iterabele key in document
+
+    for (const key of document.getIterableKeys()) {
+      // check if iterable keys exist in meta, anders toevoegen
+      if (!(key in meta[collectionName])) {
+        // maak nieuwe B+ tree voor deze key aan en update meta
+        meta[collectionName][key] = await allocateBlock(this.freeblockFile);
+      }
+      // load de B+ tree van de juiste collectie -> pointer naar de root
+      const keyRoot = meta[collectionName][key];
+      // voeg document-pointer toe aan B+ tree als in (key, id): pointer
+
+      // TODO: BPLUSTREE INSERT (keyRoot, (documentLocation, documentId ) : documentPointer)
+      // TODO: update meta met nieuwe root als die veranderd is
+    }
+    // END FOR LOOP
+    this.metaCache = meta;
+    await this.metaWriteJSON(meta);
+  }
+
+  getDocument(blockId: number, collection: string): Promise<Document> {
+    // ga naar root voor id
+    if (!(collection in this.metaCache)) {
+      throw new Error('Collection does not exist');
+    } else if (!('id' in this.metaCache[collection])) {
+      throw new Error('No document with given id exists');
+    }
+    const root = this.metaCache[collection]['id'];
+    // zoek document-pointer in id B+ tree
+
+    //TODO: BPLUSTREE SEARCH (root, blockId) : documentPointer
+
+    // load document via recordstore writeRecord
+    // TODO const document = await this.recordStore.readRecord(documentPointer);
     throw new Error('Method not implemented.');
   }
 
-  getDocument(blockId: number): Promise<Document> {
-    throw new Error('Method not implemented.');
-  }
+  async deleteDocument(blockId: number, collection: string): Promise<void> {
+    const document = await this.getDocument(blockId, collection);
+    const iterableKeys = document.getIterableKeys();
+    // verwijder document-pointer uit id B+ tree
+    const root = this.metaCache[collection]['id'];
 
-  deleteDocument(blockId: number): Promise<void> {
-    throw new Error('Method not implemented.');
+    // TODO: BPLUSTREE DELETE (root, (Key, id) )
+    // TODO: update meta met nieuwe root als die veranderd is
+
+    // START FOR LOOP: voor elke iterabele key in document
+    for (const key of iterableKeys) {
+      if (!(key in this.metaCache[collection])) {
+        throw new Error('Key should exist in meta, but does not');
+      }
+      // load de B+ tree van de juiste collectie -> pointer naar de root
+      const keyRoot = this.metaCache[collection][key];
+      // verwijder document-pointer uit B+ tree
+      //TODO BPLUSTREE DELETE (keyRoot, (Key, id) )
+      //TODO: update meta met nieuwe root als die veranderd is
+    }
+    await this.metaWriteJSON(this.metaCache);
   }
 
   cursor(): AsyncIterable<Document> {
@@ -60,113 +126,53 @@ export class DbmsBack {
 
   //hulperfuncties voor de meta
 
-  async metaGetCollections(): Promise<string[]> {
+  async metaReadJSON(): Promise<Record<string, Record<string, number>>> {
     const binary = await this.freeblockFile.getClientArea();
     const jsonString = binary.toString();
-    const meta = JSON.parse(jsonString) as Record<string, number>;
-    return Object.keys(meta);
-  }
-
-  async metaGetKeyTreeRoot(collection: string, iterabeleKey: string): Promise<number> {
-    if (iterabeleKey[0] === '_') {
-      throw new Error('Input should be an iterable key, so not starting with _');
+    const meta = JSON.parse(jsonString) as number[];
+    let binary2 = Buffer.alloc(0);
+    for (const blockId of meta) {
+      const binary3 = await this.freeblockFile.readBlock(blockId);
+      binary2 = Buffer.concat([binary2, binary3]);
     }
-    const binary = await this.freeblockFile.getClientArea();
-    const jsonString = binary.toString();
-    const meta = JSON.parse(jsonString) as Record<string, number>;
-    const binary2 = await this.freeblockFile.readBlock(meta[collection]);
     const jsonString2 = binary2.toString();
-    const collectionMeta = JSON.parse(jsonString2) as Record<string, number>;
-    return collectionMeta[iterabeleKey];
+    return JSON.parse(jsonString2) as Record<string, Record<string, number>>;
   }
 
-  async metaAddCollection(collection: string): Promise<void> {
-    const binary = await this.freeblockFile.getClientArea();
-    const jsonString = binary.toString();
-    const meta = JSON.parse(jsonString) as Record<string, number>;
-    const blockId = await allocateBlock(this.freeblockFile);
-    meta[collection] = blockId;
-    const newMetaBinary = Buffer.from(JSON.stringify(meta));
-    await this.freeblockFile.writeClientArea(newMetaBinary);
-  }
+  async metaWriteJSON(meta: Record<string, Record<string, number>>): Promise<void> {
+    // convert meta to binary
+    const jsonString = JSON.stringify(meta);
+    const binary = Buffer.from(jsonString);
+    const blockSize = this.freeblockFile._getBlockSize() - 2; //-2 for safety
+    const amountOfBlocks = Math.ceil(binary.length / (blockSize * 1024));
 
-  async metaAddIterableKey(collection: string, iterableKey: string): Promise<void> {
-    const binary = await this.freeblockFile.getClientArea();
-    const jsonString = binary.toString();
-    const meta = JSON.parse(jsonString) as Record<string, number>;
-    const blockId = meta[collection];
-    const binary2 = await this.freeblockFile.readBlock(blockId);
-    const jsonString2 = binary2.toString();
-    const collectionMeta = JSON.parse(jsonString2) as Record<string, number>;
-    if (iterableKey in collectionMeta) {
-      throw new Error('iterableKey already exists');
+    // read existing block ids from client area
+    const binaryBlockIds = await this.freeblockFile.getClientArea();
+    const jsonString2 = binaryBlockIds.toString();
+    const metaBlockIds = JSON.parse(jsonString2) as number[];
+
+    // if amountOfBlocks > metaBlockIds.length, allocate more blocks
+    // if amountOfBlocks < metaBlockIds.length, free some blocks
+    if (amountOfBlocks > metaBlockIds.length) {
+      for (let i = metaBlockIds.length; i < amountOfBlocks; i++) {
+        const newBlockId = await allocateBlock(this.freeblockFile);
+        metaBlockIds.push(newBlockId);
+      }
+    } else if (amountOfBlocks < metaBlockIds.length) {
+      for (let i = metaBlockIds.length - 1; i >= amountOfBlocks; i--) {
+        const blockIdToFree = metaBlockIds.pop() as number;
+        await this.freeblockFile.freeBlock(blockIdToFree);
+      }
     }
-    const newBlockId = await allocateBlock(this.freeblockFile);
-    collectionMeta[iterableKey] = newBlockId;
-    const newCollectionMetaBinary = Buffer.from(JSON.stringify(collectionMeta));
-    await this.freeblockFile.writeBlock(blockId, newCollectionMetaBinary);
-  }
-
-  async metaDeleteCollection(collection: string): Promise<void> {
-    const binary = await this.freeblockFile.getClientArea();
-    const jsonString = binary.toString();
-    const meta = JSON.parse(jsonString) as Record<string, number>;
-    const blockId = meta[collection];
-    const binary2 = await this.freeblockFile.readBlock(blockId);
-    const jsonString2 = binary2.toString();
-    const collectionMeta = JSON.parse(jsonString2) as Record<string, number>;
-    if (Object.keys(collectionMeta).length !== 0) {
-      throw new Error('Collection is not empty, you must delete all iterable keys first');
+    // write data to blocks
+    for (let i = 0; i < amountOfBlocks; i++) {
+      const start = i * blockSize * 1024;
+      const end = Math.min(start + blockSize * 1024, binary.length);
+      const chunk = binary.subarray(start, end);
+      await this.freeblockFile.writeBlock(metaBlockIds[i], chunk);
     }
-    await this.freeblockFile.freeBlock(blockId);
-    delete meta[collection];
-    const newMetaBinary = Buffer.from(JSON.stringify(meta));
-    await this.freeblockFile.writeClientArea(newMetaBinary);
-  }
-
-  async metaDeleteIterableKey(collection: string, iterableKey: string): Promise<void> {
-    const binary = await this.freeblockFile.getClientArea();
-    const jsonString = binary.toString();
-    const meta = JSON.parse(jsonString) as Record<string, number>;
-    const blockId = meta[collection];
-    const binary2 = await this.freeblockFile.readBlock(blockId);
-    const jsonString2 = binary2.toString();
-    const collectionMeta = JSON.parse(jsonString2) as Record<string, number>;
-    await this.freeblockFile.freeBlock(collectionMeta[iterableKey]);
-    delete collectionMeta[iterableKey];
-    const newCollectionMetaBinary = Buffer.from(JSON.stringify(collectionMeta));
-    await this.freeblockFile.writeBlock(blockId, newCollectionMetaBinary);
-  }
-
-  /**
-   *
-   * @param collection
-   * @param key
-   * @returns the blockId of the root of the B+ tree for this key; if it does not exist yet, it is created
-   * if the collection does not exist yet, it is created as well
-   */
-  async metaGetKeyRoot(collection: string, key: string): Promise<number> {
-    const binary = await this.freeblockFile.getClientArea();
-    const jsonString = binary.toString();
-    const meta = JSON.parse(jsonString) as Record<string, number>;
-    if (!(collection in meta)) {
-      const blockId = await allocateBlock(this.freeblockFile);
-      meta[collection] = blockId;
-      const newMetaBinary = Buffer.from(JSON.stringify(meta));
-      await this.freeblockFile.writeClientArea(newMetaBinary);
-    }
-    const blockId = meta[collection];
-    const binary2 = await this.freeblockFile.readBlock(blockId);
-    const jsonString2 = binary2.toString();
-    const collectionMeta = JSON.parse(jsonString2) as Record<string, number>;
-    if (key in collectionMeta) {
-      return collectionMeta[key];
-    } else {
-      const newBlockId = await allocateBlock(this.freeblockFile);
-      collectionMeta[key] = newBlockId;
-      const newCollectionMetaBinary = Buffer.from(JSON.stringify(collectionMeta));
-      await this.freeblockFile.writeBlock(blockId, newCollectionMetaBinary);
-      return newBlockId;
-    }
+    // write block ids to client area
+    const newBinaryBlockIds = Buffer.from(JSON.stringify(metaBlockIds));
+    await this.freeblockFile.writeClientArea(newBinaryBlockIds);
   }
 }
