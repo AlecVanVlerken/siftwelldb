@@ -331,10 +331,10 @@ describe('Block-based BPlusTree', () => {
 
     await tree.insert(largeKey, largeValue);
 
-    const result = await tree.get(largeKey);
+    const result = (await tree.get(largeKey)) as Buffer | null;
     expect(result).not.toBeNull();
     expect(result!.length).toBe(100);
-    expect((result as Buffer).every((b: number) => b === 'v'.charCodeAt(0))).toBe(true);
+    expect(result!.every((b: number) => b === 'v'.charCodeAt(0))).toBe(true);
   });
 
   it('handles multiple large entries causing splits', async () => {
