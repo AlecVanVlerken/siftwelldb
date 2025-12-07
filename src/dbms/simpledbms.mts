@@ -1,3 +1,6 @@
+// author: Thomas Dumon
+// date: 2025-12-07
+
 import { DbmsBack } from './dbmsback.mjs';
 import { type File } from '../core/file.mjs';
 import { documentToJSON } from './document.mjs';
