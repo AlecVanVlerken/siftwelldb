@@ -5,12 +5,7 @@ type PathEntry<K, V, L extends LeafNode<K, V, L, I>, I extends InternalNode<K, V
   cursor: ChildCursor<K, V, L, I>;
 };
 
-export class BPlusTree<
-  K,
-  V,
-  L extends LeafNode<K, V, L, I>,
-  I extends InternalNode<K, V, L, I>,
-> {
+export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalNode<K, V, L, I>> {
   private constructor(
     private root: L | I,
     private readonly storage: NodeStorage<K, V, L, I>,
@@ -19,12 +14,9 @@ export class BPlusTree<
   /**
    * Create a new empty B+ tree with the given storage.
    */
-  static async create<
-    K,
-    V,
-    L extends LeafNode<K, V, L, I>,
-    I extends InternalNode<K, V, L, I>,
-  >(storage: NodeStorage<K, V, L, I>): Promise<BPlusTree<K, V, L, I>> {
+  static async create<K, V, L extends LeafNode<K, V, L, I>, I extends InternalNode<K, V, L, I>>(
+    storage: NodeStorage<K, V, L, I>,
+  ): Promise<BPlusTree<K, V, L, I>> {
     const root = await storage.createTree();
     const tree = new BPlusTree<K, V, L, I>(root, storage);
     return tree;
@@ -34,12 +26,10 @@ export class BPlusTree<
    * Open an existing B+ tree with the given storage and root node.
    * Use this when loading a tree from disk.
    */
-  static open<
-    K,
-    V,
-    L extends LeafNode<K, V, L, I>,
-    I extends InternalNode<K, V, L, I>,
-  >(storage: NodeStorage<K, V, L, I>, root: L | I): BPlusTree<K, V, L, I> {
+  static open<K, V, L extends LeafNode<K, V, L, I>, I extends InternalNode<K, V, L, I>>(
+    storage: NodeStorage<K, V, L, I>,
+    root: L | I,
+  ): BPlusTree<K, V, L, I> {
     return new BPlusTree<K, V, L, I>(root, storage);
   }
 
@@ -138,10 +128,7 @@ export class BPlusTree<
     return { leaf: node, path };
   }
 
-  private async propagateChange(
-    path: PathEntry<K, V, L, I>[],
-    descriptor: NodeDescriptor<K, V, L, I>,
-  ): Promise<void> {
+  private async propagateChange(path: PathEntry<K, V, L, I>[], descriptor: NodeDescriptor<K, V, L, I>): Promise<void> {
     let currentDescriptor = descriptor;
     for (let i = path.length - 1; i >= 0; i--) {
       currentDescriptor = await path[i].cursor.replaceKeysAndChildrenAfterBy(
@@ -162,7 +149,7 @@ export class BPlusTree<
     if (descriptor.nodes.length === 1) {
       this.root = descriptor.nodes[0];
       await this.compressRootIfPossible();
-      this.root = (await this.storage.finalizeRoot(this.root));
+      this.root = await this.storage.finalizeRoot(this.root);
       return;
     }
     this.root = await this.storage.allocateInternalNode(descriptor.nodes, descriptor.keys);
