@@ -11,15 +11,17 @@ export class SimpleDbms {
   }
 
   static async create(dataFile: File, logFile: File): Promise<SimpleDbms> {
-    console.log('Creating new SimpleDbms instance');
     const dbmsback = new DbmsBack(dataFile, logFile);
-    console.log('Calling create on DbmsBack');
     await dbmsback.create();
-    console.log('DbmsBack created successfully');
     return new SimpleDbms(dbmsback);
   }
 
-  async open(datafile: File, logfile: File): Promise<void> {
+  static async open(dataFile: File, logFile: File): Promise<SimpleDbms> {
+    const dbmsback = await DbmsBack.open(dataFile, logFile);
+    return new SimpleDbms(dbmsback);
+  }
+
+  async reopen(datafile: File, logfile: File): Promise<void> {
     const dbmsback = await DbmsBack.open(datafile, logfile);
     this.dbmsback = dbmsback;
   }
@@ -28,7 +30,7 @@ export class SimpleDbms {
   }
 
   async insertDocument(collection: string, documentJSON: string): Promise<void> {
-    const documentObj = JSONtoDocument(collection, documentJSON);
+    const documentObj = JSONtoDocument(documentJSON, collection);
     return this.dbmsback.insertDocument(documentObj);
   }
 

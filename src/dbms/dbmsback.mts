@@ -28,6 +28,7 @@ export class DbmsBack {
 
   async create(): Promise<void> {
     await this.freeblockFile.create(); // must be async
+    await this.freeblockFile.open();
     const initialMeta = Buffer.from(JSON.stringify([]));
     await this.freeblockFile.writeClientArea(initialMeta);
   }
@@ -67,32 +68,44 @@ export class DbmsBack {
     if (!('id' in meta[collectionName])) {
       // maak nieuwe B+ tree voor id aan en update meta
       const storage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(vorm) });
+      // console.log('Creating B+ tree for collection id with form:', vorm);
       const tree = await BPlusTree.create(storage);
       const newIdRoot = tree.getRoot().getBlockNumber();
 
       meta[collectionName]['id'] = [newIdRoot, vorm];
     }
-
+    // console.log('Inserting document with id:', documentId, 'into collection:', collectionName);
     const idRoot = meta[collectionName]['id'][0];
     // BPLUSTREE INSERT (IDROOT, (documentLocation, documentId ) : documentPointer)
     const idBuffer = toBuffer(vorm, documentId);
     const idStorage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(vorm) });
-    const idTree = BPlusTree.open(idStorage, await idStorage.loadNode(idRoot));
-    await idTree.insert(idBuffer, documentLocation);
+    // console.log('Loading B+ tree for collection id with root:', idRoot);
+    const idTree = BPlusTree.open(idStorage, await idStorage.openTree(idRoot));
+    // console.log('Inserting into B+ tree for collection id');
+    const valueBuffer = Buffer.alloc(4); // 32-bit block number
+    valueBuffer.writeUInt32BE(documentLocation, 0);
+    await idTree.insert(idBuffer, valueBuffer);
     // update meta met nieuwe root als die veranderd is
+    // console.log('Updating meta for collection id');
     meta[collectionName]['id'][0] = idTree.getRoot().getBlockNumber();
-
+    // console.log('Document with id inserted:', documentId);
     // START FOR LOOP: voor elke iterabele key in document
 
     for (const key of document.getIterableKeys()) {
       // haal de vorm van de key op
-      let keyVorm = 'B' + vorm;
+      let keyVorm = vorm; // Default to vorm for unsupported types
       const keyValue = document.getFields()[key];
+      let convertedKeyValue: string | number | Buffer = keyValue as string | number | Buffer;
+
       if (typeof keyValue === 'number') {
         // keyvorm : keyVorm + Idvorm as a string, dus "NN" of "SN" of "NS"
         keyVorm = 'N' + vorm;
       } else if (typeof keyValue === 'string') {
         keyVorm = 'S' + vorm;
+      } else if (typeof keyValue === 'boolean') {
+        // Treat booleans as numbers (0 for false, 1 for true)
+        keyVorm = 'N' + vorm;
+        convertedKeyValue = keyValue ? 1 : 0;
       }
 
       // check if iterable keys exist in meta, anders toevoegen
@@ -106,9 +119,11 @@ export class DbmsBack {
       // load de B+ tree van de juiste collectie -> pointer naar de root
       const keyRoot = meta[collectionName][key];
       const keyStorage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(keyVorm) });
-      const keyTree = BPlusTree.open(keyStorage, await keyStorage.loadNode(keyRoot[0]));
-      const keyBuffer = toBuffer(keyVorm, keyValue as string | number | Buffer, documentId);
-      await keyTree.insert(keyBuffer, documentLocation);
+      const keyTree = BPlusTree.open(keyStorage, await keyStorage.openTree(keyRoot[0]));
+      const keyBuffer = toBuffer(keyVorm, convertedKeyValue, documentId);
+      const valueBuffer = Buffer.alloc(4);
+      valueBuffer.writeUInt32BE(documentLocation, 0);
+      await keyTree.insert(keyBuffer, valueBuffer);
 
       //update meta met nieuwe root als die veranderd is
       meta[collectionName][key][0] = keyTree.getRoot().getBlockNumber();
@@ -133,10 +148,14 @@ export class DbmsBack {
     //BPLUSTREE SEARCH (root, blockId) : documentPointer
     const idBuffer = toBuffer(vorm, documentId);
     const idStorage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(vorm) });
-    const idTree = BPlusTree.open(idStorage, await idStorage.loadNode(root));
-    const documentPointer = await idTree.get(idBuffer);
+    const idTree = BPlusTree.open(idStorage, await idStorage.openTree(root));
+    const documentPointerBuffer = await idTree.get(idBuffer);
     // load document via recordstore writeRecord
-    const document = (await this.recordStore.readRecord(documentPointer as number)) as Document;
+    const documentPointer = documentPointerBuffer ? (documentPointerBuffer as Buffer).readUInt32BE(0) : null;
+    if (documentPointer === null) {
+      throw new Error('Document not found');
+    }
+    const document = (await this.recordStore.readRecord(documentPointer)) as Document;
     return document;
   }
 
@@ -150,7 +169,7 @@ export class DbmsBack {
     //BPLUSTREE DELETE (root, (Key, id) )
     const idBuffer = toBuffer(vorm, documentId);
     const idStorage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(vorm) });
-    const idTree = BPlusTree.open(idStorage, await idStorage.loadNode(root));
+    const idTree = BPlusTree.open(idStorage, await idStorage.openTree(root));
     await idTree.delete(idBuffer);
     metaData[0] = idTree.getRoot().getBlockNumber();
     //update meta met nieuwe root als die veranderd is
@@ -166,7 +185,7 @@ export class DbmsBack {
       const keyVorm = keyMetaData[1];
       const keyValue = document.getFields()[key];
       const keyStorage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(keyVorm) });
-      const keyTree = BPlusTree.open(keyStorage, await keyStorage.loadNode(keyRoot));
+      const keyTree = BPlusTree.open(keyStorage, await keyStorage.openTree(keyRoot));
       const keyBuffer = toBuffer(keyVorm, keyValue as string | number | Buffer, documentId);
       await keyTree.delete(keyBuffer);
       // verwijder document-pointer uit B+ tree
@@ -194,14 +213,15 @@ export class DbmsBack {
     const keyVorm = keyMetaData[1];
 
     const keyStorage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(keyVorm) });
-    const keyTree = BPlusTree.open(keyStorage, await keyStorage.loadNode(keyRoot));
+    const keyTree = BPlusTree.open(keyStorage, await keyStorage.openTree(keyRoot));
 
     const startKeyBuffer: Buffer | undefined = value !== undefined ? toBuffer(keyVorm, value) : undefined;
     const asyncGenerator = keyTree.iterate(startKeyBuffer);
 
     const documentGenerator = async function* (this: DbmsBack) {
-      for await (const [, documentPointer] of asyncGenerator) {
-        const document = await this.recordStore.readRecord(documentPointer as number);
+      for await (const [, documentPointerBuffer] of asyncGenerator) {
+        const documentPointer = (documentPointerBuffer as Buffer).readUInt32BE(0);
+        const document = await this.recordStore.readRecord(documentPointer);
         if (!document) throw new Error(`Document error: not found`);
         yield document;
       }
@@ -214,14 +234,31 @@ export class DbmsBack {
 
   async metaReadJSON(): Promise<Record<string, Record<string, [number, string]>>> {
     const binary = await this.freeblockFile.getClientArea();
-    const jsonString = binary.toString();
+    // Find the first null byte to get the actual JSON length
+    let jsonLength = binary.length;
+    for (let i = 0; i < binary.length; i++) {
+      if (binary[i] === 0) {
+        jsonLength = i;
+        break;
+      }
+    }
+    const jsonString = binary.subarray(0, jsonLength).toString();
     const meta = JSON.parse(jsonString) as number[];
     let binary2 = Buffer.alloc(0);
     for (const blockId of meta) {
       const binary3 = await this.freeblockFile.readBlock(blockId);
-      binary2 = Buffer.concat([binary2, binary3]);
+      // Skip the first byte (block type) when reading data blocks
+      binary2 = Buffer.concat([binary2, binary3.subarray(1)]);
     }
-    const jsonString2 = binary2.toString();
+    // Find the first null byte in the concatenated blocks
+    let jsonLength2 = binary2.length;
+    for (let i = 0; i < binary2.length; i++) {
+      if (binary2[i] === 0) {
+        jsonLength2 = i;
+        break;
+      }
+    }
+    const jsonString2 = binary2.subarray(0, jsonLength2).toString();
     return JSON.parse(jsonString2) as Record<string, Record<string, [number, string]>>;
   }
 
@@ -234,7 +271,15 @@ export class DbmsBack {
 
     // read existing block ids from client area
     const binaryBlockIds = await this.freeblockFile.getClientArea();
-    const jsonString2 = binaryBlockIds.toString();
+    // Find the first null byte to get the actual JSON length
+    let jsonLength = binaryBlockIds.length;
+    for (let i = 0; i < binaryBlockIds.length; i++) {
+      if (binaryBlockIds[i] === 0) {
+        jsonLength = i;
+        break;
+      }
+    }
+    const jsonString2 = binaryBlockIds.subarray(0, jsonLength).toString();
     const metaBlockIds = JSON.parse(jsonString2) as number[];
 
     // if amountOfBlocks > metaBlockIds.length, allocate more blocks
@@ -311,8 +356,10 @@ function getCompareFunction(form: string): (a: Buffer, b: Buffer) => number {
       if (cmp1 !== 0) {
         return cmp1;
       }
+      // Handle partial keys (only first component)
       const offsetA2 = 2 + lenA1;
       const offsetB2 = 2 + lenB1;
+      if (a.length < offsetA2 + 2 || b.length < offsetB2 + 2) return 0;
       const lenA2 = a.readUInt16BE(offsetA2);
       const lenB2 = b.readUInt16BE(offsetB2);
       const strA2 = a.subarray(offsetA2 + 2, offsetA2 + 2 + lenA2);
@@ -332,8 +379,12 @@ function getCompareFunction(form: string): (a: Buffer, b: Buffer) => number {
       if (cmp1 !== 0) {
         return cmp1;
       }
-      const numA2 = a.readDoubleBE(2 + lenA1);
-      const numB2 = b.readDoubleBE(2 + lenB1);
+      // Handle partial keys (only first component)
+      const offsetA = 2 + lenA1;
+      const offsetB = 2 + lenB1;
+      if (a.length < offsetA + 8 || b.length < offsetB + 8) return 0;
+      const numA2 = a.readDoubleBE(offsetA);
+      const numB2 = b.readDoubleBE(offsetB);
       return numA2 - numB2;
     };
   }
@@ -346,6 +397,8 @@ function getCompareFunction(form: string): (a: Buffer, b: Buffer) => number {
       if (numA1 !== numB1) {
         return numA1 - numB1;
       }
+      // Handle partial keys (only first component)
+      if (a.length < 10 || b.length < 10) return 0;
       const lenA2 = a.readUInt16BE(8);
       const lenB2 = b.readUInt16BE(8);
       const strA2 = a.subarray(10, 10 + lenA2);
@@ -369,6 +422,11 @@ function toBuffer(vorm: string, input1: string | number | Buffer, input2?: strin
     return input1 as Buffer;
   }
   if (vorm === 'NN') {
+    if (input2 === undefined) {
+      const buffer = Buffer.alloc(8);
+      buffer.writeDoubleBE(input1 as number, 0);
+      return buffer;
+    }
     const buffer = Buffer.alloc(16);
     buffer.writeDoubleBE(input1 as number, 0);
     buffer.writeDoubleBE(input2 as number, 8);
@@ -376,6 +434,12 @@ function toBuffer(vorm: string, input1: string | number | Buffer, input2?: strin
   }
   if (vorm === 'SS') {
     const str1 = Buffer.from(input1 as string);
+    if (input2 === undefined) {
+      const buffer = Buffer.alloc(2 + str1.length);
+      buffer.writeUInt16BE(str1.length, 0);
+      str1.copy(buffer, 2);
+      return buffer;
+    }
     const str2 = Buffer.from(input2 as string);
     const buffer = Buffer.alloc(2 + str1.length + 2 + str2.length);
     buffer.writeUInt16BE(str1.length, 0);
@@ -386,6 +450,12 @@ function toBuffer(vorm: string, input1: string | number | Buffer, input2?: strin
   }
   if (vorm === 'SN') {
     const str1 = Buffer.from(input1 as string);
+    if (input2 === undefined) {
+      const buffer = Buffer.alloc(2 + str1.length);
+      buffer.writeUInt16BE(str1.length, 0);
+      str1.copy(buffer, 2);
+      return buffer;
+    }
     const buffer = Buffer.alloc(2 + str1.length + 8);
     buffer.writeUInt16BE(str1.length, 0);
     str1.copy(buffer, 2);
@@ -393,6 +463,11 @@ function toBuffer(vorm: string, input1: string | number | Buffer, input2?: strin
     return buffer;
   }
   if (vorm === 'NS') {
+    if (input2 === undefined) {
+      const buffer = Buffer.alloc(8);
+      buffer.writeDoubleBE(input1 as number, 0);
+      return buffer;
+    }
     const str2 = Buffer.from(input2 as string);
     const buffer = Buffer.alloc(8 + 2 + str2.length);
     buffer.writeDoubleBE(input1 as number, 0);

@@ -526,13 +526,7 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     return {
       node: this,
       getChildCount: () => this.children.length,
-      getChildAt: (index: number) => {
-        const child = this.children[index];
-        if (!child) throw new Error('Child index out of range');
-        const cached = this.childrenLoaded.get(child.blockNumber);
-        if (!cached) throw new Error('Child not loaded - use async getChildAt instead');
-        return cached;
-      },
+      getChildAt: (index: number) => this.getChildAt(index),
       getKeyAt: (index: number) => this.getKeyAt(index),
       replaceChildren: (
         start: number,
