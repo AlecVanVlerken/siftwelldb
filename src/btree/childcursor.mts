@@ -6,7 +6,7 @@ import type { NodeDescriptor } from './nodebase.mts';
 export type ChildAccess<K, V, L extends LeafNode<K, V, L, I>, I extends InternalNode<K, V, L, I>> = {
   node: I;
   getChildCount(): number;
-  getChildAt(index: number): L | I;
+  getChildAt(index: number): L | I | Promise<L | I>;
   getKeyAt(index: number): K;
   replaceChildren(startIndex: number, count: number, replacementKeys: K[], replacementChildren: (L | I)[]): void;
   splitIfNeeded(): NodeDescriptor<K, V, L, I> | Promise<NodeDescriptor<K, V, L, I>>;
@@ -32,9 +32,8 @@ export class ChildCursorImpl<K, V, L extends LeafNode<K, V, L, I>, I extends Int
     return this.index === this.access.getChildCount() - 1;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
   async getChild(offset = 0): Promise<L | I> {
-    return this.access.getChildAt(this.index + offset);
+    return await this.access.getChildAt(this.index + offset);
   }
 
   getKeyAfter(): K {
