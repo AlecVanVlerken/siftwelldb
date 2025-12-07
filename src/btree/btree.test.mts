@@ -1,13 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { BPlusTree } from './btree.mjs';
+import { NodeStorageImpl } from './nodestorage.mjs';
 import { LeafNodeImpl } from './leafnode.mjs';
 import { InternalNodeImpl } from './internalnode.mjs';
 
 const compareNumbers = (a: number, b: number) => a - b;
 
+// Helper to create in-memory tree with options
+async function createTree<K, V>(options: {
+  compareKeys?: (a: K, b: K) => number;
+  maxLeafEntries?: number;
+  maxChildren?: number;
+}) {
+  const storage = new NodeStorageImpl<K, V>(options);
+  return BPlusTree.create(storage);
+}
+
 describe('BPlusTree', () => {
   it('inserts and retrieves values', async () => {
-    const tree = await BPlusTree.create<number, string>({
+    const tree = await createTree<number, string>({
       maxLeafEntries: 4,
       maxChildren: 4,
     });
@@ -23,7 +34,7 @@ describe('BPlusTree', () => {
   });
 
   it('iterates keys in order starting from a specific key', async () => {
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       maxLeafEntries: 4,
       maxChildren: 4,
     });
@@ -40,7 +51,7 @@ describe('BPlusTree', () => {
   });
 
   it('deletes keys and collapses the tree when empty', async () => {
-    const tree = await BPlusTree.create<number, string>({
+    const tree = await createTree<number, string>({
       maxLeafEntries: 3,
       maxChildren: 3,
     });
@@ -73,7 +84,7 @@ describe('BPlusTree', () => {
   });
 
   it('rejects duplicate keys', async () => {
-    const tree = await BPlusTree.create<number, string>({
+    const tree = await createTree<number, string>({
       maxLeafEntries: 3,
       maxChildren: 3,
     });
@@ -81,8 +92,30 @@ describe('BPlusTree', () => {
     await expect(tree.insert(1, 'uno')).rejects.toThrow(/Duplicate keys/);
   });
 
+  it('updates an existing value', async () => {
+    const tree = await createTree<number, string>({
+      maxLeafEntries: 3,
+      maxChildren: 3,
+    });
+    await tree.insert(1, 'one');
+    expect(await tree.get(1)).toBe('one');
+    
+    const updated = await tree.update(1, 'ONE');
+    expect(updated).toBe(true);
+    expect(await tree.get(1)).toBe('ONE');
+  });
+
+  it('returns false when updating non-existent key', async () => {
+    const tree = await createTree<number, string>({
+      maxLeafEntries: 3,
+      maxChildren: 3,
+    });
+    const updated = await tree.update(999, 'value');
+    expect(updated).toBe(false);
+  });
+
   it('maintains order for large sequential inserts', async () => {
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       maxLeafEntries: 4,
       maxChildren: 4,
     });
@@ -98,7 +131,7 @@ describe('BPlusTree', () => {
   });
 
   it('rebalances parents after mixed deletions', async () => {
-    const tree = await BPlusTree.create<number, string>({
+    const tree = await createTree<number, string>({
       maxLeafEntries: 3,
       maxChildren: 3,
     });
@@ -118,7 +151,7 @@ describe('BPlusTree', () => {
   });
 
   it('iterates entire tree when no start key is provided', async () => {
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       maxLeafEntries: 4,
       maxChildren: 4,
     });
@@ -136,7 +169,7 @@ describe('BPlusTree', () => {
   it('never exceeds configured max occupancies', async () => {
     const maxLeafEntries = 2;
     const maxChildren = 3;
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       maxLeafEntries,
       maxChildren,
     });
@@ -147,40 +180,41 @@ describe('BPlusTree', () => {
       await tree.delete(i);
     }
     const queue: (LeafNodeImpl<number, number> | InternalNodeImpl<number, number>)[] = [
-      (tree as unknown as { root: LeafNodeImpl<number, number> | InternalNodeImpl<number, number> }).root,
+      tree.getRoot(),
     ];
     while (queue.length > 0) {
       const node = queue.shift()!;
       if (node.isLeaf) {
-        expect((node as LeafNodeImpl<number, number>).getEntryCount()).toBeLessThanOrEqual(maxLeafEntries);
+        expect((node).getEntryCount()).toBeLessThanOrEqual(maxLeafEntries);
       } else {
-        const internal = node as InternalNodeImpl<number, number>;
+        const internal = node;
         expect(internal.childCount()).toBeLessThanOrEqual(maxChildren);
         for (let i = 0; i < internal.childCount(); i++) {
-          queue.push(internal.getChildAt(i) as LeafNodeImpl<number, number> | InternalNodeImpl<number, number>);
+          queue.push(internal.getChildAt(i));
         }
       }
     }
   });
-});
-it('splits root correctly when leaf overflows', async () => {
-  const tree = await BPlusTree.create<number, number>({
-    compareKeys: compareNumbers,
-    maxLeafEntries: 2,
-    maxChildren: 3,
+
+  it('splits root correctly when leaf overflows', async () => {
+    const tree = await createTree<number, number>({
+      compareKeys: compareNumbers,
+      maxLeafEntries: 2,
+      maxChildren: 3,
+    });
+    await tree.insert(1, 10);
+    await tree.insert(2, 20);
+    await tree.insert(3, 30); // triggers split
+    const keys: number[] = [];
+    for await (const [key] of tree.iterate()) keys.push(key);
+    expect(keys).toEqual([1, 2, 3]);
+    expect(tree.getRoot().isLeaf).toBe(false); // new root should be internal
   });
-  await tree.insert(1, 10);
-  await tree.insert(2, 20);
-  await tree.insert(3, 30); // triggers split
-  const keys: number[] = [];
-  for await (const [key] of tree.iterate()) keys.push(key);
-  expect(keys).toEqual([1, 2, 3]);
-  expect(tree.root.isLeaf).toBe(false); // new root should be internal
 });
 
 describe('BPlusTree – rigorous missing tests', () => {
   it('compresses root correctly after deletions', async () => {
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       compareKeys: compareNumbers,
       maxLeafEntries: 2,
       maxChildren: 3,
@@ -201,14 +235,14 @@ describe('BPlusTree – rigorous missing tests', () => {
     expect(keys).toEqual([5]);
 
     // Now root should be a leaf, because compressRootIfPossible triggers
-    expect(tree['root'].isLeaf).toBe(true);
+    expect(tree.getRoot().isLeaf).toBe(true);
 
     // Verify that get works for remaining key
     expect(await tree.get(5)).toBe(5);
   });
 
   it('creates new root when tree becomes empty', async () => {
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       compareKeys: compareNumbers,
       maxLeafEntries: 2,
       maxChildren: 3,
@@ -219,11 +253,11 @@ describe('BPlusTree – rigorous missing tests', () => {
     for await (const [key] of tree.iterate()) keys.push(key);
     expect(keys).toEqual([]);
     // Root should be a leaf
-    expect(tree['root'].isLeaf).toBe(true);
+    expect(tree.getRoot().isLeaf).toBe(true);
   });
 
   it('iteration from a non-existent key yields next higher key', async () => {
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       compareKeys: compareNumbers,
       maxLeafEntries: 4,
       maxChildren: 4,
@@ -235,7 +269,7 @@ describe('BPlusTree – rigorous missing tests', () => {
   });
 
   it('iteration starting before first key yields all keys', async () => {
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       compareKeys: compareNumbers,
       maxLeafEntries: 4,
       maxChildren: 4,
@@ -247,7 +281,7 @@ describe('BPlusTree – rigorous missing tests', () => {
   });
 
   it('iteration starting beyond last key yields nothing', async () => {
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       compareKeys: compareNumbers,
       maxLeafEntries: 4,
       maxChildren: 4,
@@ -259,7 +293,7 @@ describe('BPlusTree – rigorous missing tests', () => {
   });
 
   it('delete followed by re-insert works correctly', async () => {
-    const tree = await BPlusTree.create<number, string>({
+    const tree = await createTree<number, string>({
       compareKeys: compareNumbers,
       maxLeafEntries: 3,
       maxChildren: 3,
@@ -271,7 +305,7 @@ describe('BPlusTree – rigorous missing tests', () => {
   });
 
   it('multi-level tree maintains order after mixed insertions and deletions', async () => {
-    const tree = await BPlusTree.create<number, number>({
+    const tree = await createTree<number, number>({
       compareKeys: compareNumbers,
       maxLeafEntries: 3,
       maxChildren: 3,
@@ -286,7 +320,7 @@ describe('BPlusTree – rigorous missing tests', () => {
   });
 
   it('handles extreme boundary keys correctly', async () => {
-    const tree = await BPlusTree.create<number, string>({
+    const tree = await createTree<number, string>({
       compareKeys: compareNumbers,
       maxLeafEntries: 3,
       maxChildren: 3,

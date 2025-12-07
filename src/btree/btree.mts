@@ -1,23 +1,53 @@
-import type { ChildCursor } from './interfaces.mts';
+import type { ChildCursor, InternalNode, LeafNode, NodeStorage } from './interfaces.mts';
 import type { NodeDescriptor } from './nodebase.mts';
-import { InternalNodeImpl } from './internalnode.mjs';
-import { LeafNodeImpl } from './leafnode.mjs';
-import { NodeStorageImpl, type NodeStorageOptions } from './nodestorage.mjs';
 
-type PathEntry<K, V> = {
-  cursor: ChildCursor<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>>;
+type PathEntry<K, V, L extends LeafNode<K, V, L, I>, I extends InternalNode<K, V, L, I>> = {
+  cursor: ChildCursor<K, V, L, I>;
 };
 
-export class BPlusTree<K, V> {
+export class BPlusTree<
+  K,
+  V,
+  L extends LeafNode<K, V, L, I>,
+  I extends InternalNode<K, V, L, I>,
+> {
   private constructor(
-    private root: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>,
-    private readonly storage: NodeStorageImpl<K, V>,
+    private root: L | I,
+    private readonly storage: NodeStorage<K, V, L, I>,
   ) {}
 
-  static async create<K, V>(options: NodeStorageOptions<K>): Promise<BPlusTree<K, V>> {
-    const storage = new NodeStorageImpl<K, V>(options);
+  /**
+   * Create a new empty B+ tree with the given storage.
+   */
+  static async create<
+    K,
+    V,
+    L extends LeafNode<K, V, L, I>,
+    I extends InternalNode<K, V, L, I>,
+  >(storage: NodeStorage<K, V, L, I>): Promise<BPlusTree<K, V, L, I>> {
     const root = await storage.createTree();
-    return new BPlusTree(root, storage);
+    const tree = new BPlusTree<K, V, L, I>(root, storage);
+    return tree;
+  }
+
+  /**
+   * Open an existing B+ tree with the given storage and root node.
+   * Use this when loading a tree from disk.
+   */
+  static open<
+    K,
+    V,
+    L extends LeafNode<K, V, L, I>,
+    I extends InternalNode<K, V, L, I>,
+  >(storage: NodeStorage<K, V, L, I>, root: L | I): BPlusTree<K, V, L, I> {
+    return new BPlusTree<K, V, L, I>(root, storage);
+  }
+
+  /**
+   * Get the current root node.
+   */
+  getRoot(): L | I {
+    return this.root;
   }
 
   async get(key: K): Promise<V | null> {
@@ -52,6 +82,22 @@ export class BPlusTree<K, V> {
     return true;
   }
 
+  /**
+   * Update the value for an existing key.
+   * Returns true if key was found and updated, false if key not found.
+   * Note: If the new value is larger, this may trigger a node split.
+   */
+  async update(key: K, value: V): Promise<boolean> {
+    const { leaf, path } = await this.findLeafPath(key);
+    const { cursor, isAtKey } = await leaf.getCursorBeforeKey(key);
+    if (!isAtKey) {
+      return false;
+    }
+    const descriptor = await cursor.updateValueAfter(value);
+    await this.propagateChange(path, descriptor);
+    return true;
+  }
+
   async *iterate(fromKey?: K): AsyncGenerator<[K, V]> {
     const { leaf } = await this.findLeafPath(fromKey);
     const cursorInfo =
@@ -74,31 +120,31 @@ export class BPlusTree<K, V> {
   }
 
   private async findLeafPath(key?: K): Promise<{
-    leaf: LeafNodeImpl<K, V>;
-    path: PathEntry<K, V>[];
+    leaf: L;
+    path: PathEntry<K, V, L, I>[];
   }> {
-    const path: PathEntry<K, V>[] = [];
-    let node: LeafNodeImpl<K, V> | InternalNodeImpl<K, V> = this.root;
+    const path: PathEntry<K, V, L, I>[] = [];
+    let node: L | I = this.root;
     while (!node.isLeaf) {
-      const internalNode = node as InternalNodeImpl<K, V>;
+      const internalNode = node;
       const cursor =
         key === undefined
           ? await internalNode.getChildCursorAtFirstChild()
           : await internalNode.getChildCursorAtKey(key);
       const child = await cursor.getChild();
       path.push({ cursor });
-      node = child as LeafNodeImpl<K, V> | InternalNodeImpl<K, V>;
+      node = child;
     }
-    return { leaf: node as LeafNodeImpl<K, V>, path };
+    return { leaf: node, path };
   }
 
   private async propagateChange(
-    path: PathEntry<K, V>[],
-    descriptor: NodeDescriptor<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>>,
+    path: PathEntry<K, V, L, I>[],
+    descriptor: NodeDescriptor<K, V, L, I>,
   ): Promise<void> {
     let currentDescriptor = descriptor;
     for (let i = path.length - 1; i >= 0; i--) {
-      currentDescriptor = await path[i]!.cursor.replaceKeysAndChildrenAfterBy(
+      currentDescriptor = await path[i].cursor.replaceKeysAndChildrenAfterBy(
         1,
         currentDescriptor.keys,
         currentDescriptor.nodes,
@@ -107,28 +153,39 @@ export class BPlusTree<K, V> {
     await this.rebuildRoot(currentDescriptor);
   }
 
-  private async rebuildRoot(
-    descriptor: NodeDescriptor<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>>,
-  ): Promise<void> {
+  private async rebuildRoot(descriptor: NodeDescriptor<K, V, L, I>): Promise<void> {
     if (descriptor.nodes.length === 0) {
       this.root = await this.storage.createTree();
+      this.root = (await this.storage.finalizeRoot(this.root)) as L;
       return;
     }
     if (descriptor.nodes.length === 1) {
-      this.root = descriptor.nodes[0] as LeafNodeImpl<K, V> | InternalNodeImpl<K, V>;
-      this.compressRootIfPossible();
+      this.root = descriptor.nodes[0];
+      await this.compressRootIfPossible();
+      this.root = (await this.storage.finalizeRoot(this.root));
       return;
     }
     this.root = await this.storage.allocateInternalNode(descriptor.nodes, descriptor.keys);
+    this.root = (await this.storage.finalizeRoot(this.root)) as I;
   }
 
-  private compressRootIfPossible() {
+  private async compressRootIfPossible(): Promise<void> {
     while (!this.root.isLeaf) {
-      const internalRoot = this.root as InternalNodeImpl<K, V>;
-      if (internalRoot.childCount() !== 1) {
+      const internalRoot = this.root;
+      if (!internalRoot.isUnderfull() || (await this.getChildCount(internalRoot)) !== 1) {
         break;
       }
-      this.root = internalRoot.getChildAt(0) as LeafNodeImpl<K, V> | InternalNodeImpl<K, V>;
+      this.root = await internalRoot.deallocateUnderfull();
     }
+  }
+
+  private async getChildCount(node: I): Promise<number> {
+    const cursor = await node.getChildCursorAtFirstChild();
+    let count = 1;
+    while (!cursor.isLastChild()) {
+      cursor.moveNext();
+      count++;
+    }
+    return count;
   }
 }

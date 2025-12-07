@@ -9,7 +9,7 @@ export type ChildAccess<K, V, L extends LeafNode<K, V, L, I>, I extends Internal
   getChildAt(index: number): L | I;
   getKeyAt(index: number): K;
   replaceChildren(startIndex: number, count: number, replacementKeys: K[], replacementChildren: (L | I)[]): void;
-  splitIfNeeded(): NodeDescriptor<K, V, L, I>;
+  splitIfNeeded(): NodeDescriptor<K, V, L, I> | Promise<NodeDescriptor<K, V, L, I>>;
   describe(): NodeDescriptor<K, V, L, I>;
 };
 
@@ -32,6 +32,7 @@ export class ChildCursorImpl<K, V, L extends LeafNode<K, V, L, I>, I extends Int
     return this.index === this.access.getChildCount() - 1;
   }
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   async getChild(offset = 0): Promise<L | I> {
     return this.access.getChildAt(this.index + offset);
   }
@@ -63,7 +64,7 @@ export class ChildCursorImpl<K, V, L extends LeafNode<K, V, L, I>, I extends Int
     if (this.index >= this.access.getChildCount()) {
       this.index = Math.max(0, this.access.getChildCount() - 1);
     }
-    const descriptor = this.access.splitIfNeeded();
+    const descriptor = await this.access.splitIfNeeded();
     return descriptor;
   }
 }

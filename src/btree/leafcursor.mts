@@ -13,7 +13,9 @@ export type LeafAccess<
   getKeyValuePairAt(index: number): [K, V];
   insertAt(index: number, key: K, value: V): void;
   removeAt(index: number): void;
-  splitIfNeeded(): NodeDescriptor<K, V, L, I>;
+  updateAt(index: number, value: V): void;
+  splitIfNeeded(): NodeDescriptor<K, V, L, I> | Promise<NodeDescriptor<K, V, L, I>>;
+  flush?: () => Promise<void>;  // Optional: for block-based storage to persist changes
 };
 
 export class LeafCursorImpl<
@@ -49,12 +51,20 @@ export class LeafCursorImpl<
     const insertIndex = this.position + 1;
     this.access.insertAt(insertIndex, key, value);
     this.position = insertIndex;
-    const descriptor = this.access.splitIfNeeded();
+    const descriptor = await this.access.splitIfNeeded();
     return { nodes: descriptor.nodes as L[], keys: descriptor.keys };
   }
 
   async removeKeyValuePairAfter(): Promise<void> {
     this.access.removeAt(this.position + 1);
     this.position = Math.min(this.position, this.access.getEntryCount() - 1);
+    await this.access.flush?.();  // Persist changes for block-based storage
+  }
+
+  async updateValueAfter(value: V): Promise<{ nodes: L[]; keys: K[] }> {
+    this.access.updateAt(this.position + 1, value);
+    // Check if node needs split after update (value might be larger)
+    const descriptor = await this.access.splitIfNeeded();
+    return { nodes: descriptor.nodes as L[], keys: descriptor.keys };
   }
 }

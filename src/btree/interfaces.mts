@@ -9,6 +9,12 @@ export interface NodeStorage<
   getMaxKeySize(): number;
   createTree(): Promise<LeafNodeType>;
   allocateInternalNode(nodes: (LeafNodeType | InternalNodeType)[], keys: K[]): Promise<InternalNodeType>;
+  /**
+   * Ensures root is in the stable location (for persistent storage).
+   * For block storage: moves root to stable root block if needed.
+   * For in-memory storage: no-op, returns the same root.
+   */
+  finalizeRoot(root: LeafNodeType | InternalNodeType): Promise<LeafNodeType | InternalNodeType>;
 }
 
 export interface NodeBase<
@@ -39,6 +45,10 @@ export interface LeafNode<
     | { cursor: LeafCursor<K, V, LeafNodeType, InternalNodeType>; isAtKey: boolean }
     | PromiseLike<{ cursor: LeafCursor<K, V, LeafNodeType, InternalNodeType>; isAtKey: boolean }>;
   getNextLeaf(): Promise<LeafNode<K, V, LeafNodeType, InternalNodeType> | null>;
+  /**
+   * Returns a descriptor of this node for propagating changes up the tree.
+   */
+  describe(): { nodes: (LeafNodeType | InternalNodeType)[]; keys: K[] };
 }
 
 export interface LeafCursor<
@@ -53,6 +63,7 @@ export interface LeafCursor<
   moveNext(): void;
   insert(key: K, value: V): Promise<{ nodes: LeafNodeType[]; keys: K[] }>;
   removeKeyValuePairAfter(): Promise<void>;
+  updateValueAfter(value: V): Promise<{ nodes: LeafNodeType[]; keys: K[] }>;
 }
 
 export interface InternalNode<
