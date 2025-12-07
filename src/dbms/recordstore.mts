@@ -43,8 +43,9 @@ export class RecordStore {
   async readRecord(blockID: number): Promise<Document | null> {
     try {
       const data = await this.freeBlockFile.readBlock(blockID);
-
-      const doc = this.deserializeDocument(data);
+      // Skip the first byte (block type marker) and use only the actual data
+      const actualData = data.subarray(1);
+      const doc = this.deserializeDocument(actualData);
       return doc;
     } catch (error) {
       console.error('Error reading record:', error);
@@ -69,11 +70,18 @@ export class RecordStore {
   // @throws {Error} - If the serialized data exceeds maximum block size
   private serializeDocument(doc: Document): Buffer {
     // convert Document to JSON string
+    const iterableKeys = doc.getIterableKeys();
+    const nonIterableKeys = doc.getNonIterableKeys();
+    const fields = doc.getFields();
+
+    const iterableEntries = iterableKeys.map((key) => [key, fields[key]]);
+    const nonIterableEntries = nonIterableKeys.map((key) => [key, fields[key]]);
+
     const json = JSON.stringify({
       collection: doc.getCollectionName(),
       id: doc.getId(),
-      iterableEntries: doc.getIterableKeys(),
-      nonIterableEntries: doc.getNonIterableKeys(),
+      iterableEntries,
+      nonIterableEntries,
     });
 
     const jsonBuffer = Buffer.from(json, 'utf-8');
