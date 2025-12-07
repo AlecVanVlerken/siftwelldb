@@ -104,3 +104,13 @@ export function JSONtoDocument(input: string, collection: string): Document {
 
   return parseRawDocument(collection, parsed, defaultIndexPredicate);
 }
+
+/**
+ *
+ * @param document
+ * @author: thomas Dumon
+ */
+export function documentToJSON(document: Document): string {
+  const obj = document.asDocument();
+  return JSON.stringify(obj);
+}
