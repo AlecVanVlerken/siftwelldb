@@ -1,3 +1,6 @@
+// author: Thomas Dumon
+// date: 2025-12-07
+
 import { describe, expect, it, beforeEach } from 'vitest';
 import { MockFile } from '../core/mockfile.mjs';
 import { SimpleDbms } from './simpledbms.mjs';

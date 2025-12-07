@@ -1,3 +1,6 @@
+// author: Thomas Dumon
+// date: 2025-12-07
+
 import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
