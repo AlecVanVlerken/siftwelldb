@@ -67,7 +67,6 @@ export class FreeBlockFile {
    */
   async create() {
     await this.file.create();
-
     const wasOpen = this.isOpen;
     if (!wasOpen) {
       await this.file.open();
