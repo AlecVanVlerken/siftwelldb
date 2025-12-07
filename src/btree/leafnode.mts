@@ -220,23 +220,23 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     // FreeBlockFile stores block type at byte 0, our data starts at byte 1
     const buffer = rawBuffer.subarray(1);
     this.entries = [];
-    
+
     // Our layout: [0]: type, [1-4]: count, [5-8]: next
     const count = buffer.readUInt32LE(1);
     this.nextLeafBlock = buffer.readUInt32LE(5);
-    
+
     let offset = LEAF_HEADER_SIZE;
     for (let i = 0; i < count; i++) {
       const keyLen = buffer.readUInt16LE(offset);
       offset += 2;
       const key = Buffer.from(buffer.subarray(offset, offset + keyLen));
       offset += keyLen;
-      
+
       const valueLen = buffer.readUInt16LE(offset);
       offset += 2;
       const value = Buffer.from(buffer.subarray(offset, offset + valueLen));
       offset += valueLen;
-      
+
       this.entries.push({ key, value });
     }
     this.dirty = false;
@@ -247,26 +247,26 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
    */
   async flush(): Promise<void> {
     if (!this.dirty) return;
-    
+
     // FreeBlockFile expects blockSize - 1 bytes (it reserves 1 byte for block type)
     const buffer = Buffer.alloc(this.blockSize - 1);
     buffer.writeUInt8(LEAF_TYPE_BYTE, 0);
     buffer.writeUInt32LE(this.entries.length, 1);
     buffer.writeUInt32LE(this.nextLeafBlock, 5);
-    
+
     let offset = LEAF_HEADER_SIZE;
     for (const entry of this.entries) {
       buffer.writeUInt16LE(entry.key.length, offset);
       offset += 2;
       entry.key.copy(buffer, offset);
       offset += entry.key.length;
-      
+
       buffer.writeUInt16LE(entry.value.length, offset);
       offset += 2;
       entry.value.copy(buffer, offset);
       offset += entry.value.length;
     }
-    
+
     await this.file.writeBlock(this.blockNumber, buffer);
     this.dirty = false;
   }
@@ -301,11 +301,11 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
       return null;
     }
     const nextLeaf = new BlockLeafNode(
-      this.file, 
-      this.nextLeafBlock, 
-      this.compareKeys, 
-      this.blockSize, 
-      this.allocateNode
+      this.file,
+      this.nextLeafBlock,
+      this.compareKeys,
+      this.blockSize,
+      this.allocateNode,
     );
     await nextLeaf.load();
     return nextLeaf;
@@ -325,9 +325,7 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     if (!(nextNode instanceof BlockLeafNode)) {
       return false;
     }
-    const combinedSize = this.calculateSize(this.entries) + 
-                         this.calculateSize(nextNode.entries) - 
-                         LEAF_HEADER_SIZE;
+    const combinedSize = this.calculateSize(this.entries) + this.calculateSize(nextNode.entries) - LEAF_HEADER_SIZE;
     // FreeBlockFile reserves 1 byte for block type
     return combinedSize <= this.blockSize - 1;
   }
@@ -379,25 +377,25 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
       await this.flush();
       return this.describe();
     }
-    
+
     // Find split point
     const midpoint = Math.ceil(this.entries.length / 2);
     const rightEntries = this.entries.splice(midpoint);
-    
+
     // Allocate new node for right half
     const rightNode = await this.allocateNode();
     rightNode.entries = rightEntries;
     rightNode.nextLeafBlock = this.nextLeafBlock;
     rightNode.dirty = true;
-    
+
     // Update this node to point to right node
     this.nextLeafBlock = rightNode.blockNumber;
     this.dirty = true;
-    
+
     // Write both nodes
     await this.flush();
     await rightNode.flush();
-    
+
     return {
       nodes: [this, rightNode],
       keys: [this.entries[this.entries.length - 1].key, rightEntries[rightEntries.length - 1].key],

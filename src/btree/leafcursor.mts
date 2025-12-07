@@ -15,7 +15,7 @@ export type LeafAccess<
   removeAt(index: number): void;
   updateAt(index: number, value: V): void;
   splitIfNeeded(): NodeDescriptor<K, V, L, I> | Promise<NodeDescriptor<K, V, L, I>>;
-  flush?: () => Promise<void>;  // Optional: for block-based storage to persist changes
+  flush?: () => Promise<void>; // Optional: for block-based storage to persist changes
 };
 
 export class LeafCursorImpl<
@@ -58,7 +58,7 @@ export class LeafCursorImpl<
   async removeKeyValuePairAfter(): Promise<void> {
     this.access.removeAt(this.position + 1);
     this.position = Math.min(this.position, this.access.getEntryCount() - 1);
-    await this.access.flush?.();  // Persist changes for block-based storage
+    await this.access.flush?.(); // Persist changes for block-based storage
   }
 
   async updateValueAfter(value: V): Promise<{ nodes: L[]; keys: K[] }> {

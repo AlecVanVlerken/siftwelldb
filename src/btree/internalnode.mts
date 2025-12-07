@@ -257,20 +257,20 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     const buffer = rawBuffer.subarray(1);
     this.children = [];
     this.childrenLoaded.clear();
-    
+
     // Our layout: [0]: type, [1-4]: count
     const count = buffer.readUInt32LE(1);
-    
+
     let offset = INTERNAL_HEADER_SIZE;
     for (let i = 0; i < count; i++) {
       const childBlock = buffer.readUInt32LE(offset);
       offset += 4;
-      
+
       const keyLen = buffer.readUInt16LE(offset);
       offset += 2;
       const key = Buffer.from(buffer.subarray(offset, offset + keyLen));
       offset += keyLen;
-      
+
       this.children.push({ blockNumber: childBlock, key });
     }
     this.dirty = false;
@@ -281,23 +281,23 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
    */
   async flush(): Promise<void> {
     if (!this.dirty) return;
-    
+
     // FreeBlockFile expects blockSize - 1 bytes (it reserves 1 byte for block type)
     const buffer = Buffer.alloc(this.blockSize - 1);
     buffer.writeUInt8(INTERNAL_TYPE_BYTE, 0);
     buffer.writeUInt32LE(this.children.length, 1);
-    
+
     let offset = INTERNAL_HEADER_SIZE;
     for (const child of this.children) {
       buffer.writeUInt32LE(child.blockNumber, offset);
       offset += 4;
-      
+
       buffer.writeUInt16LE(child.key.length, offset);
       offset += 2;
       child.key.copy(buffer, offset);
       offset += child.key.length;
     }
-    
+
     await this.file.writeBlock(this.blockNumber, buffer);
     this.dirty = false;
   }
@@ -344,11 +344,11 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     if (!child) {
       throw new Error('Child index out of range.');
     }
-    
+
     // Check cache first
     const cached = this.childrenLoaded.get(child.blockNumber);
     if (cached) return cached;
-    
+
     // Load from disk
     const loaded = await this.loadNode(child.blockNumber);
     this.childrenLoaded.set(child.blockNumber, loaded);
@@ -408,9 +408,8 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     if (!(nextNode instanceof BlockInternalNode)) {
       return false;
     }
-    const combinedSize = this.calculateSize(this.children) + 
-                         this.calculateSize(nextNode.children) - 
-                         INTERNAL_HEADER_SIZE;
+    const combinedSize =
+      this.calculateSize(this.children) + this.calculateSize(nextNode.children) - INTERNAL_HEADER_SIZE;
     // FreeBlockFile reserves 1 byte for block type
     return combinedSize <= this.blockSize - 1;
   }
@@ -446,20 +445,20 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     if (this.children.length === 0) {
       return { nodes: [], keys: [] };
     }
-    
+
     if (!this.needsSplit()) {
       await this.flush();
       return this.describe();
     }
-    
+
     const midpoint = Math.ceil(this.children.length / 2);
     const rightChildren = this.children.splice(midpoint);
-    
+
     // Allocate new node for right half
     const rightNode = await this.allocateInternalNode();
     rightNode.children = rightChildren;
     rightNode.dirty = true;
-    
+
     // Copy loaded children to right node
     for (const child of rightChildren) {
       const loaded = this.childrenLoaded.get(child.blockNumber);
@@ -467,13 +466,13 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
         rightNode.childrenLoaded.set(child.blockNumber, loaded);
       }
     }
-    
+
     this.dirty = true;
-    
+
     // Write both nodes
     await this.flush();
     await rightNode.flush();
-    
+
     return {
       nodes: [this, rightNode],
       keys: [this.children[this.children.length - 1].key, rightChildren[rightChildren.length - 1].key],

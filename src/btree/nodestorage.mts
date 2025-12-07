@@ -24,11 +24,13 @@ export class NodeStorageImpl<K, V> implements NodeStorage<K, V, LeafNodeImpl<K, 
   private readonly maxKeySize: number;
 
   constructor(options: NodeStorageOptions<K>) {
-    this.compareKeys = options.compareKeys ?? ((a: K, b: K) => {
-      if (a < b) return -1;
-      if (a > b) return 1;
-      return 0;
-    });
+    this.compareKeys =
+      options.compareKeys ??
+      ((a: K, b: K) => {
+        if (a < b) return -1;
+        if (a > b) return 1;
+        return 0;
+      });
     this.keySize = options.keySize ?? (() => 1);
     this.maxLeafEntries = options.maxLeafEntries ?? 8;
     this.maxChildren = options.maxChildren ?? 8;
@@ -133,10 +135,7 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     return root;
   }
 
-  async allocateInternalNode(
-    nodes: (BlockLeafNode | BlockInternalNode)[],
-    keys: Buffer[],
-  ): Promise<BlockInternalNode> {
+  async allocateInternalNode(nodes: (BlockLeafNode | BlockInternalNode)[], keys: Buffer[]): Promise<BlockInternalNode> {
     const blockNumber = await this.file.allocateBlock();
     const node = this.createInternalNode(blockNumber);
     await node.initWith(nodes, keys);
@@ -147,12 +146,8 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    * Ensures root is in the stable root block.
    * If root has moved (due to split), copies content to stable block.
    */
-  async finalizeRoot(
-    root: BlockLeafNode | BlockInternalNode,
-  ): Promise<BlockLeafNode | BlockInternalNode> {
-    const rootBlockNumber = root instanceof BlockInternalNode 
-      ? root.getBlockNumber() 
-      : root.getBlockNumber();
+  async finalizeRoot(root: BlockLeafNode | BlockInternalNode): Promise<BlockLeafNode | BlockInternalNode> {
+    const rootBlockNumber = root instanceof BlockInternalNode ? root.getBlockNumber() : root.getBlockNumber();
 
     if (rootBlockNumber === this.stableRootBlock) {
       // Root is already in stable block
@@ -210,13 +205,7 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   }
 
   private createLeafNode(blockNumber: number): BlockLeafNode {
-    return new BlockLeafNode(
-      this.file,
-      blockNumber,
-      this.compareKeys,
-      this.blockSize,
-      () => this.allocateLeafNode(),
-    );
+    return new BlockLeafNode(this.file, blockNumber, this.compareKeys, this.blockSize, () => this.allocateLeafNode());
   }
 
   private createInternalNode(blockNumber: number): BlockInternalNode {

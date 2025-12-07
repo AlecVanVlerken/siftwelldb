@@ -99,7 +99,7 @@ describe('BPlusTree', () => {
     });
     await tree.insert(1, 'one');
     expect(await tree.get(1)).toBe('one');
-    
+
     const updated = await tree.update(1, 'ONE');
     expect(updated).toBe(true);
     expect(await tree.get(1)).toBe('ONE');
@@ -179,13 +179,11 @@ describe('BPlusTree', () => {
     for (let i = 0; i < 30; i += 2) {
       await tree.delete(i);
     }
-    const queue: (LeafNodeImpl<number, number> | InternalNodeImpl<number, number>)[] = [
-      tree.getRoot(),
-    ];
+    const queue: (LeafNodeImpl<number, number> | InternalNodeImpl<number, number>)[] = [tree.getRoot()];
     while (queue.length > 0) {
       const node = queue.shift()!;
       if (node.isLeaf) {
-        expect((node).getEntryCount()).toBeLessThanOrEqual(maxLeafEntries);
+        expect(node.getEntryCount()).toBeLessThanOrEqual(maxLeafEntries);
       } else {
         const internal = node;
         expect(internal.childCount()).toBeLessThanOrEqual(maxChildren);

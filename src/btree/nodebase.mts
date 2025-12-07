@@ -42,9 +42,7 @@ export abstract class NodeBaseImpl<K, V, L extends LeafNode<K, V, L, I>, I exten
       throw new Error('Cannot merge nodes created by another implementation.');
     }
     const nextNodeImpl = nextNode as NodeBaseImpl<K, V, L, I>;
-    if (
-      !isValidSeperatorKey(this.getGreatestKey(), nextNodeImpl.getSmallestKey(), _key, this.compareKeys)
-    ) {
+    if (!isValidSeperatorKey(this.getGreatestKey(), nextNodeImpl.getSmallestKey(), _key, this.compareKeys)) {
       return false;
     }
     // Still have to check wether _key is correct, but for now assume it is.
@@ -55,7 +53,7 @@ export abstract class NodeBaseImpl<K, V, L extends LeafNode<K, V, L, I>, I exten
     // if (!(nextNode instanceof NodeBaseImpl)) {
     //   throw new Error('Cannot merge nodes created by another implementation.');
     // }
-    if (!this.canMergeWithNext(_key, nextNode)) { 
+    if (!this.canMergeWithNext(_key, nextNode)) {
       throw new Error('Cannot merge nodes: not enough space.');
     }
     await this.absorbNextNode(nextNode);
