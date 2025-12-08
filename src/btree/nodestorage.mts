@@ -3,6 +3,18 @@ import { InternalNodeImpl, BlockInternalNode } from './internalnode.mjs';
 import { LeafNodeImpl, BlockLeafNode } from './leafnode.mjs';
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 
+// Interface to help TypeScript resolve the method type correctly
+interface HasRelocateChildFromBlock {
+  relocateChildFromBlock(
+    blockNumber: number,
+    allocateLeafNode: () => Promise<BlockLeafNode>,
+    allocateInternalNodeBlock?: () => Promise<number>,
+  ): Promise<void>;
+  getBlockNumber(): number;
+  copyFrom(other: unknown): void;
+  flush(): Promise<void>;
+}
+
 export type NodeStorageOptions<K> = {
   compareKeys?: (a: K, b: K) => number;
   keySize?: (key: K) => number;
@@ -145,6 +157,10 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   /**
    * Ensures root is in the stable root block.
    * If root has moved (due to split), copies content to stable block.
+   *
+   * IMPORTANT: When the root is an internal node, we must check if any of its
+   * children point to the stable root block. If so, we must move that child
+   * to a new block first to avoid circular references.
    */
   async finalizeRoot(root: BlockLeafNode | BlockInternalNode): Promise<BlockLeafNode | BlockInternalNode> {
     const rootBlockNumber = root instanceof BlockInternalNode ? root.getBlockNumber() : root.getBlockNumber();
@@ -163,14 +179,32 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
       await this.file.freeBlock(root.getBlockNumber());
       this.currentRoot = stableRoot;
       return stableRoot;
-    } else {
-      const stableRoot = this.createInternalNode(this.stableRootBlock);
-      stableRoot.copyFrom(root);
-      await stableRoot.flush();
-      await this.file.freeBlock(root.getBlockNumber());
-      this.currentRoot = stableRoot;
-      return stableRoot;
     }
+
+    // For internal nodes, we must check if any child points to the stable root block.
+    // This can happen when a leaf at the stable root splits and becomes an internal node.
+    // If we copy the internal node to stable root without moving the child that points
+    // to stable root, we create a circular reference.
+    const internalRoot = root;
+    await this.relocateChildFromStableRoot(internalRoot);
+
+    const stableRoot = this.createInternalNode(this.stableRootBlock);
+    stableRoot.copyFrom(internalRoot);
+    await stableRoot.flush();
+    await this.file.freeBlock(internalRoot.getBlockNumber());
+    this.currentRoot = stableRoot;
+    return stableRoot;
+  }
+
+  /**
+   * Helper to relocate any child that points to the stable root block.
+   */
+  private async relocateChildFromStableRoot(node: HasRelocateChildFromBlock): Promise<void> {
+    await node.relocateChildFromBlock(
+      this.stableRootBlock,
+      () => this.allocateLeafNode(),
+      async () => this.file.allocateBlock(),
+    );
   }
 
   /**
