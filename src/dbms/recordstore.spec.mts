@@ -80,10 +80,19 @@ describe('RecordStore', () => {
     expect(fetched?.asDocument()).toEqual(doc2.asDocument());
   });
 
-  it('throws when serialized document exceeds block size', async () => {
-    const { recordStore } = await createRecordStore(20);
+  it('stores large documents across multiple blocks when needed', async () => {
+    const { recordStore, freeBlockFile } = await createRecordStore(20); // small blocks force chaining
     const doc = parseRawDocument('tiny', { id: 'oversized', payload: 'x'.repeat(50) });
 
-    await expect(recordStore.writeRecord(doc)).rejects.toThrow('Serialized document exceeds maximum block size');
+    const firstBlock = await recordStore.writeRecord(doc);
+    const readBack = await recordStore.readRecord(firstBlock);
+
+    // Ensure data round-trips
+    expect(readBack?.asDocument()).toEqual(doc.asDocument());
+
+    // And the first block points to a successor (multi-block storage)
+    const block = await freeBlockFile.readBlock(firstBlock);
+    const nextBlockId = block.readUInt32LE(1);
+    expect(nextBlockId).toBeGreaterThan(0);
   });
 });
