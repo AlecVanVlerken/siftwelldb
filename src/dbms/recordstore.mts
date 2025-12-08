@@ -14,7 +14,9 @@ import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
  * Large documents are split across multiple blocks using a linked list structure.
  *
  * Block format:
- * [NextBlockID: 4 bytes (0 = no next block)][Data: remaining bytes]
+ * - 1 byte: block type (reserved by FreeBlockFile)
+ * - 4 bytes: next block ID (0 = no next block)
+ * - remaining bytes: document data
  *
  * Block IDs are used to reference stored documents.
  */

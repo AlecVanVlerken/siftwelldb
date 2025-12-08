@@ -10,6 +10,12 @@ import { RecordStore } from './recordstore.mjs';
 import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
 
+/**
+ * DbmsBack class
+ *
+ * Provides low-level operations for managing the database backend,
+ * including document insertion, retrieval, deletion, and cursor-based iteration.
+ */
 export class DbmsBack {
   private freeblockFile: FreeBlockFile;
   private recordStore: RecordStore;
@@ -19,6 +25,11 @@ export class DbmsBack {
   private logFile: File;
   private atomicFile: AtomicFile;
 
+  /**
+   * Creates an instance of the DbmsBack class.
+   * @param dataFile - The file to use for storing data.
+   * @param logFile - The file to use for logging.
+   */
   constructor(dataFile: File, logFile: File) {
     this.dataFile = dataFile;
     this.logFile = logFile;
@@ -29,6 +40,10 @@ export class DbmsBack {
     this.recordStore = new RecordStore(this.freeblockFile);
   }
 
+  /**
+   * Creates a new database backend.
+   * @returns A Promise that resolves when the database backend is created.
+   */
   async create(): Promise<void> {
     await this.freeblockFile.create(); // must be async
     await this.freeblockFile.open();
@@ -36,6 +51,12 @@ export class DbmsBack {
     await this.freeblockFile.writeClientArea(initialMeta);
   }
 
+  /**
+   * Opens an existing database backend.
+   * @param dataFile - The file to use for storing data.
+   * @param logFile - The file to use for logging.
+   * @returns A Promise that resolves to the opened DbmsBack instance.
+   */
   static async open(dataFile: File, logFile: File): Promise<DbmsBack> {
     const dbmsback = new DbmsBack(dataFile, logFile);
     await dbmsback.freeblockFile.open();
@@ -44,14 +65,27 @@ export class DbmsBack {
     return dbmsback;
   }
 
+  /**
+   * Closes the database backend.
+   * @returns A Promise that resolves when the database backend is closed.
+   */
   async close(): Promise<void> {
     await this.freeblockFile.close();
   }
 
+  /**
+   * Commits all changes to the database.
+   * @returns A Promise that resolves when the commit is complete.
+   */
   async commit(): Promise<void> {
     return this.freeblockFile.commit();
   }
 
+  /**
+   * Inserts a Document into the database.
+   * @param document - The Document to insert.
+   * @returns A Promise that resolves when the document is inserted.
+   */
   async insertDocument(document: Document): Promise<void> {
     const documentLocation = await this.recordStore.writeRecord(document);
     const collectionName = document.getCollectionName();
@@ -136,6 +170,12 @@ export class DbmsBack {
     await this.metaWriteJSON(meta);
   }
 
+  /**
+   * Retrieves a document from the database.
+   * @param documentId - The ID of the document to retrieve.
+   * @param collection - The collection to retrieve the document from.
+   * @returns A Promise that resolves to the retrieved Document.
+   */
   async getDocument(documentId: number | string, collection: string): Promise<Document> {
     // ga naar root voor id
     if (!(collection in this.metaCache)) {
@@ -162,6 +202,11 @@ export class DbmsBack {
     return document;
   }
 
+  /**
+   * Deletes a document from the database.
+   * @param documentId - The ID of the document to delete.
+   * @param collection - The collection to delete the document from.
+   */
   async deleteDocument(documentId: number | string, collection: string): Promise<void> {
     const document = await this.getDocument(documentId, collection);
     const iterableKeys = document.getIterableKeys();
@@ -199,6 +244,13 @@ export class DbmsBack {
     await this.metaWriteJSON(this.metaCache);
   }
 
+  /**
+   * Queries the database for documents matching the specified criteria.
+   * @param collection - The collection to query.
+   * @param iterableKey - The key to iterate over.
+   * @param value - The value to match (optional).
+   * @returns An AsyncIterable of matching Documents.
+   */
   async cursor(
     collection: string,
     iterableKey: string,
@@ -235,6 +287,10 @@ export class DbmsBack {
 
   //hulperfuncties voor de meta
 
+  /**
+   * Reads the meta information from the database.
+   * @returns The meta information as a JSON object.
+   */
   async metaReadJSON(): Promise<Record<string, Record<string, [number, string]>>> {
     const binary = await this.freeblockFile.getClientArea();
     // Find the first null byte to get the actual JSON length
@@ -265,6 +321,10 @@ export class DbmsBack {
     return JSON.parse(jsonString2) as Record<string, Record<string, [number, string]>>;
   }
 
+  /**
+   * Writes the meta information to the database.
+   * @param meta - The meta information to write as a JSON object.
+   */
   async metaWriteJSON(meta: Record<string, Record<string, [number, string]>>): Promise<void> {
     // convert meta to binary
     const jsonString = JSON.stringify(meta);
@@ -311,6 +371,11 @@ export class DbmsBack {
   }
 }
 
+/**
+ * Gets the comparison function for the specified key form.
+ * @param form - The key form string.
+ * @returns A comparison function for the specified key form.
+ */
 function getCompareFunction(form: string): (a: Buffer, b: Buffer) => number {
   //als "N" => de key is een number
   //compare two buffers as numbers, should be 8 bytes each 64-bit float
@@ -412,6 +477,13 @@ function getCompareFunction(form: string): (a: Buffer, b: Buffer) => number {
   throw new Error(`Unknown key form: ${form}`);
 }
 
+/**
+ * Converts the input values to a Buffer according to the specified form.
+ * @param vorm - The key form.
+ * @param input1 - The first input value.
+ * @param input2 - The second input value (optional).
+ * @returns The resulting Buffer.
+ */
 function toBuffer(vorm: string, input1: string | number | Buffer, input2?: string | number): Buffer {
   if (vorm === 'N') {
     const buffer = Buffer.alloc(8);
