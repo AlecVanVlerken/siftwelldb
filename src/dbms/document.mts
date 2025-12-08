@@ -55,6 +55,37 @@ export class Document {
   asDocument() {
     return { id: this.id, ...this.getFields() };
   }
+
+  /**
+   * Creates a clone of the document with an updated field value.
+   * @param field - The field to update.
+   * @param newValue - The new value for the field.
+   * @returns A new Document instance with the updated field.
+   * @throws {Error} If the field does not exist in the document.
+   *
+   * @author: Matisse De Gauquier
+   */
+  cloneWithUpdatedField(field: string, newValue: FieldValue): Document {
+    // if field exists in iterableEntries, update it there
+    // else if it exists in nonIterableEntries, update it there
+    // else give error
+    const iterableIndex = this.iterableEntries.findIndex(([k]) => k === field);
+    const updatedIterableEntries = [...this.iterableEntries];
+    const updatedNonIterableEntries = [...this.nonIterableEntries];
+
+    if (iterableIndex !== -1) {
+      updatedIterableEntries[iterableIndex] = [field, newValue];
+    } else {
+      const nonIterableIndex = this.nonIterableEntries.findIndex(([k]) => k === field);
+      if (nonIterableIndex !== -1) {
+        updatedNonIterableEntries[nonIterableIndex] = [field, newValue];
+      } else {
+        throw new Error(`Field ${field} does not exist in document`);
+      }
+    }
+
+    return new Document(this.collection, this.id, updatedIterableEntries, updatedNonIterableEntries);
+  }
 }
 
 /**
