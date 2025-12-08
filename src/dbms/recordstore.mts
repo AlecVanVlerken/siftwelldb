@@ -1,87 +1,192 @@
-// @author: Matisse De Gauquier
+// author: Matisse De Gauquier
+// date: 2025-12-07
 
 import { Document, type RawId, type FieldValue } from './document.mjs';
 import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 
-// class definition for RecordStore
-// Provides high-level operations for storing, reading and deleting documents
-// in a FreeBlockFile based storage system
-//
-// Each Document is serialized and stored in a block
-// Block IDs are used to reference stored documents
+/**
+ * RecordStore class
+ *
+ * Provides high-level operations for storing, reading, and deleting documents
+ * in a FreeBlockFile based storage system.
+ *
+ * Each Document is serialized and stored across one or more blocks.
+ * Large documents are split across multiple blocks using a linked list structure.
+ *
+ * Block format:
+ * [NextBlockID: 4 bytes (0 = no next block)][Data: remaining bytes]
+ *
+ * Block IDs are used to reference stored documents.
+ */
 export class RecordStore {
   private freeBlockFile: FreeBlockFile;
+  private blockSize: number;
+  private NEXT_BLOCK_OFFSET = 4; // size of the nextBlockID pointer
 
-  // Creates a new RecordStore instance
-  // @param {FreeBlockFile} blockFile - The FreeBlockFile instance to use for storage
+  /**
+   * Creates a new RecordStore instance.
+   * @param blockFile - The FreeBlockFile instance to use for storage.
+   */
   constructor(blockFile: FreeBlockFile) {
     this.freeBlockFile = blockFile;
+    this.blockSize = blockFile._getBlockSize();
   }
 
-  // writeRecord writes a Document to the store
-  // The document is serialized to a binary format and written to a free block
-  // If there are free blocks available, it reuses one
-  // Otherwise, it appends a new block to the file
-  // It returns the block ID where the document is stored
-  // @param {Document} doc - The Document to write
-  // @returns {Promise<number>} - The block ID where the document is stored
-  // @throws {Error} - If serialization fails or the document is too large
+  /**
+   * Writes a Document to the store.
+   *
+   * The document is serialized and stored in one or more blocks.
+   * Each block contains a pointer to the next block if the document
+   * spans multiple blocks.
+   *
+   * @param {Document} doc - The Document to write
+   * @returns {Promise<number>} - The block ID of the first block
+   * @throws {Error} - If serialization fails
+   */
   async writeRecord(doc: Document): Promise<number> {
     const data = this.serializeDocument(doc);
 
-    const blockID = await this.freeBlockFile.allocateBlock();
-    await this.freeBlockFile.writeBlock(blockID, data);
+    // Block size minus next block pointer and block type byte (FreeBlockFile uses 1 byte for block type)
+    const maxDataPerBlock = this.blockSize - this.NEXT_BLOCK_OFFSET - 1;
+
+    // split data into chunks fitting in blocks
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    while (offset < data.length) {
+      const chunkSize = Math.min(maxDataPerBlock, data.length - offset);
+      chunks.push(data.subarray(offset, offset + chunkSize));
+      offset += chunkSize;
+    }
+
+    // allocate blocks for all chunks (in reversed order for linking)
+    const blockIDs: number[] = [];
+    for (const chunk of chunks) {
+      blockIDs.push(await this.freeBlockFile.allocateBlock());
+    }
+
+    // write each chunk to its block with next block pointer
+    for (let i = 0; i < chunks.length; i++) {
+      const blockID = blockIDs[i];
+      const chunk = chunks[i];
+      const nextBlockID = i < chunks.length - 1 ? blockIDs[i + 1] : 0;
+
+      // make buffer for block data
+      const blockBuffer = Buffer.alloc(this.blockSize - 1); // -1 for block type byte
+      blockBuffer.writeUInt32LE(nextBlockID, 0);
+      chunk.copy(blockBuffer, this.NEXT_BLOCK_OFFSET);
+
+      await this.freeBlockFile.writeBlock(blockID, blockBuffer);
+    }
+
+    // commit changes to FreeBlockFile
     await this.freeBlockFile.commit();
-    return blockID;
+
+    // return the first block ID (head of the chain)
+    return blockIDs[0];
   }
 
-  // readRecord reads a Document from the store by block id
-  // It returns the Document object or null if not found
-  // @param {number} blockID - The block ID of the Document to read
-  // @returns {Promise<Document | null>} - The Document object or null if not found
-  // @throws {Error} - If reading or deserialization fails
+  /**
+   * Reads a Document from the store by block ID.
+   *
+   * Follows the linked list of blocks to reconstruct the complete document.
+   *
+   * @param {number} blockID - The block ID of the first block in the chain
+   * @returns {Promise<Document | null>} The Document object, or null if not found or invalid
+   * @throws {Error} - If reading or deserialization fails
+   */
   async readRecord(blockID: number): Promise<Document | null> {
     try {
-      const data = await this.freeBlockFile.readBlock(blockID);
-      // Skip the first byte (block type marker) and use only the actual data
-      const actualData = data.subarray(1);
-      const doc = this.deserializeDocument(actualData);
+      const chunks: Buffer[] = [];
+      let currentBlockID = blockID;
+
+      // Follow the chain of blocks
+      while (currentBlockID !== 0) {
+        // Read the block
+        const blockData = await this.freeBlockFile.readBlock(currentBlockID);
+
+        // Read the pointer to the next block
+        const nextBlockID = blockData.readUInt32LE(0);
+
+        // Extract the data (skip the pointer)
+        const dataInBlock = blockData.subarray(this.NEXT_BLOCK_OFFSET);
+
+        // Add to chunks (without trailing zeros if this is the last block)
+        if (nextBlockID === 0) {
+          // Last block: trim trailing zeros
+          let actualLength = dataInBlock.length;
+          while (actualLength > 0 && dataInBlock[actualLength - 1] === 0) {
+            actualLength--;
+          }
+          chunks.push(dataInBlock.subarray(0, actualLength));
+        } else {
+          // Not the last block: use all
+          chunks.push(dataInBlock);
+        }
+
+        currentBlockID = nextBlockID;
+      }
+
+      // Combine all chunks
+      const completeData = Buffer.concat(chunks);
+
+      // Deserialize the data back into a Document
+      const doc = this.deserializeDocument(completeData);
+
       return doc;
     } catch (error) {
-      console.error('Error reading record:', error);
+      // Block does not exist, is corrupt, or deserialization failed
+      console.error(`Failed to read record from block ${blockID}:`, error);
       return null;
     }
   }
 
-  // deleteRecord deletes a Document from the store by block id
-  // The block is freed and added back to the free block list
-  // @param {number} blockID - The block ID of the Document to delete
-  // @returns {Promise<void>}
-  // @throws {Error} - If the block cannot be freed
+  /**
+   * Deletes a Document from the store by block ID.
+   *
+   * Follows the linked list and frees all blocks in the chain.
+   *
+   * @param {number} blockID - The block ID of the first block in the chain
+   * @returns {Promise<void>}
+   * @throws {Error} If any block cannot be freed
+   */
   async deleteRecord(blockID: number): Promise<void> {
-    await this.freeBlockFile.freeBlock(blockID);
+    const blocksToFree: number[] = [];
+    let currentBlockID = blockID;
+
+    // Collect all block IDs in the chain
+    while (currentBlockID !== 0) {
+      blocksToFree.push(currentBlockID);
+
+      // Read the block to get the next pointer
+      const blockData = await this.freeBlockFile.readBlock(currentBlockID);
+      const nextBlockID = blockData.readUInt32LE(0);
+
+      currentBlockID = nextBlockID;
+    }
+
+    // Free all blocks
+    for (const blockToFree of blocksToFree) {
+      await this.freeBlockFile.freeBlock(blockToFree);
+    }
+
+    // Commit to make the changes persistent
     await this.freeBlockFile.commit();
   }
 
-  // Serializes a Document to a Buffer for storage
-  // Format: [4-byte length][JSON data]
-  // @param {Document} doc - The Document to serialize
-  // @returns {Buffer} - The serialized Buffer
-  // @throws {Error} - If the serialized data exceeds maximum block size
+  /**
+   * Serializes a Document to a Buffer for storage
+   * Format: [4-byte length][JSON data]
+   *
+   * @param {Document} doc - The Document to serialize
+   * @returns {Buffer} - The serialized Buffer
+   */
   private serializeDocument(doc: Document): Buffer {
     // convert Document to JSON string
-    const iterableKeys = doc.getIterableKeys();
-    const nonIterableKeys = doc.getNonIterableKeys();
-    const fields = doc.getFields();
-
-    const iterableEntries = iterableKeys.map((key) => [key, fields[key]]);
-    const nonIterableEntries = nonIterableKeys.map((key) => [key, fields[key]]);
-
     const json = JSON.stringify({
       collection: doc.getCollectionName(),
       id: doc.getId(),
-      iterableEntries,
-      nonIterableEntries,
+      iterableEntries: doc.getIterableKeys(),
+      nonIterableEntries: doc.getNonIterableKeys(),
     });
 
     const jsonBuffer = Buffer.from(json, 'utf-8');
@@ -90,17 +195,16 @@ export class RecordStore {
 
     const resultBuffer = Buffer.concat([lengthBuffer, jsonBuffer]);
 
-    const maxBlockSize = this.freeBlockFile._getBlockSize() - 1;
-    if (resultBuffer.length > maxBlockSize) {
-      throw new Error('Serialized document exceeds maximum block size');
-    }
-
     return resultBuffer;
   }
 
-  // Deserializes a Buffer back to a Document
-  // @param {Buffer} buffer - The Buffer to deserialize
-  // @returns {Document} - The deserialized Document
+  /**
+   * Deserializes a Buffer back to a Document
+   *
+   * @param {Buffer} buffer - The Buffer to deserialize
+   * @returns {Document} - The deserialized Document
+   * @throws {Error} - If deserialization fails
+   */
   private deserializeDocument(data: Buffer): Document {
     try {
       // read length in first 4 bytes
