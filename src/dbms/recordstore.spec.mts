@@ -1,3 +1,6 @@
+// author: Frederik Caeyman, Matisse De Gauquier
+// date: 2025-12-08
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RecordStore } from './recordstore.mjs';
 import { parseRawDocument } from './document.mjs';

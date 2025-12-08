@@ -188,8 +188,8 @@ export class RecordStore {
     const nonIterableKeys = doc.getNonIterableKeys();
     const fields = doc.getFields();
 
-    const iterableEntries = iterableKeys.map((key) => [key, fields[key] as FieldValue]);
-    const nonIterableEntries = nonIterableKeys.map((key) => [key, fields[key] as FieldValue]);
+    const iterableEntries = iterableKeys.map((key) => [key, fields[key]]);
+    const nonIterableEntries = nonIterableKeys.map((key) => [key, fields[key]]);
 
     const json = JSON.stringify({
       collection: doc.getCollectionName(),
