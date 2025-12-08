@@ -82,8 +82,7 @@ export class RecordStore {
       await this.freeBlockFile.writeBlock(blockID, blockBuffer);
     }
 
-    // commit changes to FreeBlockFile
-    await this.freeBlockFile.commit();
+    // Note: commit is handled by the caller (DbmsBack.commit())
 
     // return the first block ID (head of the chain)
     return blockIDs[0];
