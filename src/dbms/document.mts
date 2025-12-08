@@ -12,7 +12,7 @@ export function isFieldValue(value: unknown): value is FieldValue {
 }
 
 /**
- * Core Document class used by the DBMS.
+ * Represents a document in the database.
  */
 export class Document {
   private collection: string;
