@@ -58,10 +58,14 @@ export class FreeBlockFile {
   }
 
   /**
-   * Opens the underlying file and loads the header into memory on demand.
+   * Creates a new underlying file and initializes its header.
    *
-   * @returns {Promise<void>} Created file with initialized header with the file in a closed state
-   * @throws {Error} If the file is already open.
+   * This method writes an empty header block containing the block type,
+   * the initial free-list head (0), and the initial root pointer (0).
+   * If the file was not already open, it is opened temporarily and
+   * closed again after initialization.
+   *
+   * @returns {Promise<void>}
    *
    * @author Arthur Cukier
    */
