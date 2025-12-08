@@ -1,3 +1,6 @@
+// author: Frederik Caeyman
+// date: 2025-12-08
+
 import { describe, expect, it } from 'vitest';
 import { JSONtoDocument, defaultIndexPredicate, parseRawDocument, type FieldValue } from './document.mjs';
 
