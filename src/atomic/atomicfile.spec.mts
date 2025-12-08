@@ -2,7 +2,7 @@
 // @date 2025-11-27
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { AtomicFile } from './atomicfile.mjs';
+import { AtomicFile, encodeWalPayload } from './atomicfile.mjs';
 import { MockFile } from '../core/mockfile.mjs';
 
 describe('atomicFile', () => {
@@ -152,6 +152,57 @@ describe('atomicFile', () => {
   });
 
   // ===========================================================================
+  // 4KB blocks & sectors
+  // ===========================================================================
+
+  describe('Large block handling (4096-byte sector)', () => {
+    it('should write and read a 4KB block with a 4KB WAL sector', async () => {
+      const df = new MockFile(4096);
+      const lf = new MockFile(4096);
+      const af = new AtomicFile(df, lf);
+      await af.create();
+      await af.open();
+
+      const data = Buffer.alloc(4096, 0xab);
+      const ok = await af.atomicWrite(new Map([[0, data]]));
+
+      expect(ok).toBe(true);
+
+      const out = Buffer.alloc(4096);
+      await af.read(out, { position: 0 });
+      expect(out.equals(data)).toBe(true);
+
+      // WAL should be cleaned up
+      const logStat = await lf.stat();
+      expect(logStat.size).toBe(0);
+
+      await af.close();
+    });
+
+    it('should write and read a block larger than 4KB with a 4KB WAL sector', async () => {
+      const df = new MockFile(4096);
+      const lf = new MockFile(4096);
+      const af = new AtomicFile(df, lf);
+      await af.create();
+      await af.open();
+
+      const data = Buffer.alloc(5000, 0xcd); // larger than one sector
+      const ok = await af.atomicWrite(new Map([[0, data]]));
+
+      expect(ok).toBe(true);
+
+      const out = Buffer.alloc(5000);
+      await af.read(out, { position: 0 });
+      expect(out.equals(data)).toBe(true);
+
+      const logStat = await lf.stat();
+      expect(logStat.size).toBe(0);
+
+      await af.close();
+    });
+  });
+
+  // ===========================================================================
   // Crash Recovery (using MockFile.crash())
   // ===========================================================================
 
@@ -174,17 +225,15 @@ describe('atomicFile', () => {
       const { computeChecksum, serializeLogRecord } = await import('./logrecord.mjs');
 
       // Manually create a WAL record simulating a crash mid-transaction
-      const encoded = [{ position: 0, data: Buffer.from('recovered').toString('base64') }];
-      const data = Buffer.from(JSON.stringify(encoded), 'utf8');
+      const payload = encodeWalPayload(new Map([[0, Buffer.from('recovered')]]));
 
       const record = {
         position: 0,
-        data,
-        checksum: computeChecksum(data),
+        data: payload,
+        checksum: computeChecksum(payload),
       };
 
-      const serialized = serializeLogRecord(record);
-      await logFile.writev([serialized], 0);
+      await logFile.writev([serializeLogRecord(record)], 0);
       await logFile.sync();
 
       // Now recover
@@ -203,17 +252,18 @@ describe('atomicFile', () => {
     it('should redo multiple block writes from WAL', async () => {
       const { computeChecksum, serializeLogRecord } = await import('./logrecord.mjs');
 
-      const encoded = [
-        { position: 0, data: Buffer.from('AAAA').toString('base64') },
-        { position: 100, data: Buffer.from('BBBB').toString('base64') },
-        { position: 200, data: Buffer.from('CCCC').toString('base64') },
-      ];
-      const data = Buffer.from(JSON.stringify(encoded), 'utf8');
+      const payload = encodeWalPayload(
+        new Map([
+          [0, Buffer.from('AAAA')],
+          [100, Buffer.from('BBBB')],
+          [200, Buffer.from('CCCC')],
+        ]),
+      );
 
       const record = {
         position: 0,
-        data,
-        checksum: computeChecksum(data),
+        data: payload,
+        checksum: computeChecksum(payload),
       };
 
       await logFile.writev([serializeLogRecord(record)], 0);
@@ -284,15 +334,14 @@ describe('atomicFile', () => {
     it('should ignore WAL with bad checksum', async () => {
       const { serializeLogRecord } = await import('./logrecord.mjs');
 
-      const encoded = [{ position: 0, data: Buffer.from('bad').toString('base64') }];
-      const data = Buffer.from(JSON.stringify(encoded), 'utf8');
+      const payload = encodeWalPayload(new Map([[0, Buffer.from('bad')]]));
 
       // Create a 32-byte buffer with wrong checksum value
       const badChecksum = Buffer.alloc(32, 0xde);
 
       const record = {
         position: 0,
-        data,
+        data: payload,
         checksum: badChecksum, // valid format, wrong value
       };
 

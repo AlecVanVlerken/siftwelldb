@@ -1,10 +1,8 @@
-// @author: Henry Delacroix, Alexandre-Gatien Bienfet
-// @date: 2025-12-1
-
-// this is a WAL-based atomic wrapper around a data File
+// atomicfile.mts
+// WAL-based atomic wrapper around a data File with multi-range support.
 //
 // Protocol for atomicWrite():
-//   1. Build a LogRecord with a JSON payload describing all block updates
+//   1. Build a LogRecord with a compact binary payload describing all block updates
 //   2. writeAndSyncLog(): truncate log, write record in a single
 //      sector-sized write, fsync
 //   3. Write all blocks into the main file (+ fsync data)
@@ -18,8 +16,65 @@ import { writeAndSyncLog } from './logwriter.mjs';
 
 type EncodedUpdate = {
   position: number;
-  data: string; // base64-encoded data
+  data: Buffer;
 };
+
+// WAL payload encoding (binary, compact):
+// [count: u32][entry...]
+// entry = [position: u64][length: u32][data bytes...]
+function encodeWalPayload(updates: Map<number, Buffer>): Buffer {
+  const parts: Buffer[] = [];
+  const countBuf = Buffer.alloc(4);
+  countBuf.writeUInt32BE(updates.size, 0);
+  parts.push(countBuf);
+
+  for (const [position, buf] of updates) {
+    if (position < 0) {
+      throw new Error('Negative position not supported');
+    }
+    const header = Buffer.alloc(12);
+    header.writeBigUInt64BE(BigInt(position), 0);
+    header.writeUInt32BE(buf.length, 8);
+    parts.push(header, buf);
+  }
+
+  return Buffer.concat(parts);
+}
+
+function decodeWalPayload(payload: Buffer): EncodedUpdate[] {
+  if (payload.length < 4) {
+    throw new Error('Payload too small for WAL header');
+  }
+
+  const count = payload.readUInt32BE(0);
+  let offset = 4;
+  const updates: EncodedUpdate[] = [];
+
+  for (let i = 0; i < count; i++) {
+    if (offset + 12 > payload.length) {
+      throw new Error('Incomplete WAL entry header');
+    }
+    const position = Number(payload.readBigUInt64BE(offset));
+    const length = payload.readUInt32BE(offset + 8);
+    offset += 12;
+
+    if (offset + length > payload.length) {
+      throw new Error('Incomplete WAL entry payload');
+    }
+
+    const data = Buffer.from(payload.subarray(offset, offset + length));
+    offset += length;
+
+    updates.push({ position, data });
+  }
+
+  if (offset !== payload.length) {
+    // Extra bytes would indicate corruption.
+    throw new Error('Trailing bytes in WAL payload');
+  }
+
+  return updates;
+}
 
 export class AtomicFile implements File {
   private readonly dataFile: File;
@@ -93,11 +148,11 @@ export class AtomicFile implements File {
    * @returns true if successful, false if failed or nested call
    *
    * The WAL record contains:
-   *   - A JSON array of { position, data (base64) } entries
+   *   - A compact binary payload: [count][(pos,len,data)...]
    *   - A SHA-256 checksum for integrity verification
    *
    * Protocol:
-   *   1) Build a JSON payload listing all (position, data) pairs.
+   *   1) Build a binary payload listing all (position, data) pairs.
    *   2) writeAndSyncLog(logFile, record) with checksum.
    *   3) Write all blocks to dataFile + sync.
    *   4) Truncate logFile (cleanup).
@@ -116,23 +171,14 @@ export class AtomicFile implements File {
     this.inFlight = true;
 
     try {
-      // STEP 1: Build JSON payload with all updates.
-      // Each entry contains: { position, data (base64-encoded) }
-      const encoded: EncodedUpdate[] = [];
-      for (const [position, buffer] of updates) {
-        encoded.push({
-          position,
-          data: buffer.toString('base64'),
-        });
-      }
+      // STEP 1: Build compact binary payload with all updates.
+      const payload = encodeWalPayload(updates);
 
-      const data = Buffer.from(JSON.stringify(encoded), 'utf8');
-
-      // The LogRecord wraps the JSON payload with a checksum for integrity.
+      // The LogRecord wraps the payload with a checksum for integrity.
       const record: LogRecord = {
-        position: 0, // Not used; all positions are in the JSON payload
-        data,
-        checksum: computeChecksum(data),
+        position: 0, // Not used; all positions are encoded in payload
+        data: payload,
+        checksum: computeChecksum(payload),
       };
 
       // STEP 2: Write WAL record atomically and fsync.
@@ -180,17 +226,17 @@ export class AtomicFile implements File {
   /**
    * Crash recovery:
    *   - If log is empty: nothing to do.
-   *   - If log contains a valid record: parse JSON payload, redo all writes, clear the log.
+   *   - If log contains a valid record: parse the payload, redo all writes, clear the log.
    *   - If log is corrupt/incomplete: drop it.
    *
-   * Because writeAndSyncLog() writes a single sector-sized record atomically,
-   * the WAL is either empty or contains exactly one valid record (modulo
-   * corruption), which we can safely redo.
+   * writeAndSyncLog() writes a single record padded to whole sectors, then fsyncs.
+   * On recovery the WAL is either empty or contains exactly one record (or
+   * detectable corruption), which we can safely redo.
    */
   async recover(): Promise<void> {
     const { size } = await this.logFile.stat();
     if (size === 0) {
-      return; // no WAL → nothing to redo
+      return; // no WAL -> nothing to redo
     }
 
     const walBuf = Buffer.alloc(size);
@@ -200,13 +246,11 @@ export class AtomicFile implements File {
       // deserializeLogRecord() also recomputes and checks the checksum.
       const record = deserializeLogRecord(walBuf);
 
-      // Decode JSON payload describing all block updates.
-      const encoded = JSON.parse(record.data.toString('utf8')) as EncodedUpdate[];
+      const encoded = decodeWalPayload(record.data);
 
       // Redo is idempotent: we simply re-apply all bytes at their positions.
       for (const u of encoded) {
-        const buf = Buffer.from(u.data, 'base64');
-        await this.dataFile.writev([buf], u.position);
+        await this.dataFile.writev([u.data], u.position);
       }
       await this.dataFile.sync();
     } catch {
@@ -217,3 +261,6 @@ export class AtomicFile implements File {
     await this.cleanupLog();
   }
 }
+
+// Exported for tests and debugging tools that need to craft/inspect WAL payloads.
+export { encodeWalPayload, decodeWalPayload };
