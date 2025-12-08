@@ -3,7 +3,7 @@
 
 import { DbmsBack } from './dbmsback.mjs';
 import { type File } from '../core/file.mjs';
-import { documentToJSON } from './document.mjs';
+import { documentToJSON, type FieldValue } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
 
 /**
@@ -95,6 +95,21 @@ export class SimpleDbms {
    */
   async deleteDocumentById(collection: string, id: string): Promise<void> {
     return this.dbmsback.deleteDocument(id, collection);
+  }
+
+  /**
+   * Edits a field in a document by its ID.
+   * It is not allowed to change the document ID or collection name during edit.
+   * @param collection - The name of the collection to edit the document in.
+   * @param id - The ID of the document to edit.
+   * @param field - The field to edit.
+   * @param newValue - The new value for the field.
+   * @returns A Promise that resolves when the document is edited.
+   *
+   * @author Matisse De Gauquier
+   */
+  async editDocument(collection: string, id: string, field: string, newValue: FieldValue): Promise<void> {
+    await this.dbmsback.editDocumentByID(collection, id, field, newValue);
   }
 
   /**

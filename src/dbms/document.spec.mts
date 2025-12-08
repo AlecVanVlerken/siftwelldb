@@ -51,4 +51,22 @@ describe('document.mts', () => {
     expect(doc.getNonIterableKeys()).toEqual(['_b']);
     expect(doc.getFields()).toEqual({ a: 1, _b: false });
   });
+
+  it('returns a clone with updated field value', () => {
+    const original = JSONtoDocument("{id: 'D', x: 10, _y: 20}", 'test');
+    const updated = original.cloneWithUpdatedField('x', 42);
+
+    expect(original.getId()).toBe('D');
+    expect(original.getFields()).toEqual({ x: 10, _y: 20 });
+
+    expect(updated.getId()).toBe('D');
+    expect(updated.getFields()).toEqual({ x: 42, _y: 20 });
+  });
+
+  it('throws error when updating non-existent field', () => {
+    const doc = JSONtoDocument("{id: 'E', a: 1}", 'test');
+    expect(() => doc.cloneWithUpdatedField('nonexistent', 99)).toThrowError(
+      'Field nonexistent does not exist in document',
+    );
+  });
 });

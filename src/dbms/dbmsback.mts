@@ -5,7 +5,7 @@ import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
 import { allocateBlock } from '../freeblockfile/freelist.mjs';
-import { Document } from '../dbms/document.mjs';
+import { Document, type FieldValue } from '../dbms/document.mjs';
 import { RecordStore } from './recordstore.mjs';
 import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
@@ -242,6 +242,30 @@ export class DbmsBack {
       keyMetaData[0] = keyTree.getRoot().getBlockNumber();
     }
     await this.metaWriteJSON(this.metaCache);
+  }
+
+  /**
+   * Edits a document in the database.
+   * @param existingDocument - The existing document to edit.
+   * @param newDocument - The new document with updated fields.
+   * @returns A Promise that resolves when the document is edited.
+   * @throws {Error} If the document ID or collection name is changed.
+   *
+   * @author: Matisse De Gauquier
+   */
+  async editDocumentByID(collection: string, id: string, field: string, newValue: FieldValue): Promise<void> {
+    const existingDocument = await this.getDocument(id, collection);
+    const newDocumentObj = existingDocument.cloneWithUpdatedField(field, newValue);
+
+    if (
+      existingDocument.getId() !== newDocumentObj.getId() ||
+      existingDocument.getCollectionName() !== newDocumentObj.getCollectionName()
+    ) {
+      throw new Error('Cannot change document ID or collection name during edit.');
+    }
+
+    await this.deleteDocument(existingDocument.getId(), existingDocument.getCollectionName());
+    await this.insertDocument(newDocumentObj);
   }
 
   /**
