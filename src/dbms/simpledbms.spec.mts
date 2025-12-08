@@ -85,6 +85,37 @@ describe('SimpleDbms', () => {
     });
   });
 
+  describe('editDocument', () => {
+    it('edits a field in a document', async () => {
+      const city = { id: 'Leuven', population: 101032, _isProvinceCapital: true };
+      await simpleDbms.insertDocument('cities', JSON.stringify(city));
+
+      await simpleDbms.editDocument('cities', 'Leuven', 'population', 102000);
+
+      const result = await simpleDbms.getDocumentById('cities', 'Leuven');
+      expect(JSON.parse(result)).toEqual({ id: 'Leuven', population: 102000, _isProvinceCapital: true });
+    });
+
+    it('throws error when editing document id or collection name', async () => {
+      const city = { id: 'Leuven', population: 101032, _isProvinceCapital: true };
+      await simpleDbms.insertDocument('cities', JSON.stringify(city));
+
+      await expect(simpleDbms.editDocument('cities', 'Leuven', 'id', 'New ID')).rejects.toThrow();
+      await expect(simpleDbms.editDocument('cities', 'Leuven', 'collection', 'New Collection')).rejects.toThrow();
+    });
+
+    it('edits multiple fields in a document sequentially', async () => {
+      const city = { id: 'Leuven', population: 101032, _isProvinceCapital: true };
+      await simpleDbms.insertDocument('cities', JSON.stringify(city));
+
+      await simpleDbms.editDocument('cities', 'Leuven', 'population', 102000);
+      await simpleDbms.editDocument('cities', 'Leuven', '_isProvinceCapital', false);
+
+      const result = await simpleDbms.getDocumentById('cities', 'Leuven');
+      expect(JSON.parse(result)).toEqual({ id: 'Leuven', population: 102000, _isProvinceCapital: false });
+    });
+  });
+
   describe('cursor - iterate over documents', () => {
     beforeEach(async () => {
       // Setup test data
