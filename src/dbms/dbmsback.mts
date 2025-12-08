@@ -329,8 +329,9 @@ export class DbmsBack {
     // convert meta to binary
     const jsonString = JSON.stringify(meta);
     const binary = Buffer.from(jsonString);
-    const blockSize = this.freeblockFile._getBlockSize() - 2; //-2 for safety
-    const amountOfBlocks = Math.ceil(binary.length / (blockSize * 1024));
+    // Data per block = blockSize - 1 (1 byte reserved for block type)
+    const dataPerBlock = this.freeblockFile._getBlockSize() - 1;
+    const amountOfBlocks = Math.ceil(binary.length / dataPerBlock);
 
     // read existing block ids from client area
     const binaryBlockIds = await this.freeblockFile.getClientArea();
@@ -360,8 +361,8 @@ export class DbmsBack {
     }
     // write data to blocks
     for (let i = 0; i < amountOfBlocks; i++) {
-      const start = i * blockSize * 1024;
-      const end = Math.min(start + blockSize * 1024, binary.length);
+      const start = i * dataPerBlock;
+      const end = Math.min(start + dataPerBlock, binary.length);
       const chunk = binary.subarray(start, end);
       await this.freeblockFile.writeBlock(metaBlockIds[i], chunk);
     }

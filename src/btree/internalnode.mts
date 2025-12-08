@@ -1,7 +1,7 @@
 import type { ChildCursor, InternalNode } from './interfaces.mts';
 import { NodeBaseImpl, type NodeDescriptor } from './nodebase.mjs';
 import { ChildCursorImpl, type ChildAccess } from './childcursor.mjs';
-import type { LeafNodeImpl, BlockLeafNode } from './leafnode.mts';
+import { BlockLeafNode, type LeafNodeImpl } from './leafnode.mjs';
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 
 type BlockInternalDescriptor = NodeDescriptor<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
@@ -546,5 +546,69 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     this.children = [...other.children];
     this.childrenLoaded = new Map(other.childrenLoaded);
     this.dirty = true;
+  }
+
+  /**
+   * If any child points to the given block number, relocate that child to a new block.
+   * This is used to prevent circular references when finalizing root to the stable root block.
+   *
+   * @param blockNumber The block number to check for and relocate from
+   * @param allocateLeafNode Function to allocate a new leaf node
+   * @param allocateInternalNodeBlock Optional function to allocate a new internal node block
+   */
+  async relocateChildFromBlock(
+    blockNumber: number,
+    allocateLeafNode: () => Promise<BlockLeafNode>,
+    allocateInternalNodeBlock?: () => Promise<number>,
+  ): Promise<void> {
+    for (let i = 0; i < this.children.length; i++) {
+      if (this.children[i].blockNumber === blockNumber) {
+        // Load the child that needs to be relocated
+        const oldChild = await this.getChildAt(i);
+
+        if (oldChild instanceof BlockLeafNode) {
+          // Allocate a new leaf node and copy content
+          const newChild = await allocateLeafNode();
+          newChild.copyFrom(oldChild);
+          await newChild.flush();
+
+          // Update this node's reference to point to the new block
+          this.children[i] = { blockNumber: newChild.getBlockNumber(), key: this.children[i].key };
+          this.childrenLoaded.set(newChild.getBlockNumber(), newChild);
+          this.childrenLoaded.delete(blockNumber);
+          this.dirty = true;
+          await this.flush();
+        } else {
+          // It's an internal node - need to relocate it too
+          if (!allocateInternalNodeBlock) {
+            throw new Error(`Cannot relocate internal node child from block ${blockNumber} - no allocator provided`);
+          }
+
+          // Create a new internal node at a new block and copy content
+          const newBlockNumber = await allocateInternalNodeBlock();
+          const newChild = new BlockInternalNode(
+            this.file,
+            newBlockNumber,
+            this.compareKeys,
+            this.blockSize,
+            this.loadNode,
+            this.allocateInternalNode,
+            this.stableRootBlock,
+          );
+          newChild.copyFrom(oldChild);
+          await newChild.flush();
+
+          // Update this node's reference to point to the new block
+          this.children[i] = { blockNumber: newBlockNumber, key: this.children[i].key };
+          this.childrenLoaded.set(newBlockNumber, newChild);
+          this.childrenLoaded.delete(blockNumber);
+          this.dirty = true;
+          await this.flush();
+        }
+
+        // Only one child should point to the stable root block
+        return;
+      }
+    }
   }
 }

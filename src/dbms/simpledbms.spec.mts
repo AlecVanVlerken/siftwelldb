@@ -9,8 +9,8 @@ describe('SimpleDbms', () => {
   let simpleDbms: SimpleDbms;
 
   beforeEach(async () => {
-    const dataFile = new MockFile(4096);
-    const logFile = new MockFile(4000096);
+    const dataFile = new MockFile(256);
+    const logFile = new MockFile(4096);
     simpleDbms = await SimpleDbms.create(dataFile, logFile);
   });
 
@@ -806,18 +806,25 @@ describe('SimpleDbms', () => {
 
   describe('stress tests', () => {
     it('handles rapid sequential inserts', async () => {
-      const count = 50;
+      const count = 1360;
       for (let i = 0; i < count; i++) {
-        const doc = { id: `rapid${i}`, value: i };
+        console.log(`Inserting document ${i + 1} of ${count}`);
+        const doc = {
+          id: `rapid${i}vgfhbjnsdfgnhmkeszrfgdgdgdffhfglqwe`, // long id to test handling
+          value: i,
+        };
         await simpleDbms.insertDocument('rapid', JSON.stringify(doc));
       }
 
       // Verify first and last
-      const first = await simpleDbms.getDocumentById('rapid', 'rapid0');
-      const last = await simpleDbms.getDocumentById('rapid', `rapid${count - 1}`);
+      const first = await simpleDbms.getDocumentById('rapid', 'rapid0vgfhbjnsdfgnhmkeszrfgdgdgdffhfglqwe');
+      const last = await simpleDbms.getDocumentById('rapid', `rapid${count - 1}vgfhbjnsdfgnhmkeszrfgdgdgdffhfglqwe`);
 
-      expect(JSON.parse(first)).toEqual({ id: 'rapid0', value: 0 });
-      expect(JSON.parse(last)).toEqual({ id: `rapid${count - 1}`, value: count - 1 });
+      expect(JSON.parse(first)).toEqual({ id: 'rapid0vgfhbjnsdfgnhmkeszrfgdgdgdffhfglqwe', value: 0 });
+      expect(JSON.parse(last)).toEqual({
+        id: `rapid${count - 1}vgfhbjnsdfgnhmkeszrfgdgdgdffhfglqwe`,
+        value: count - 1,
+      });
     });
 
     it('handles documents with many indexed fields', async () => {
