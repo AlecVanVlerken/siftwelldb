@@ -8,10 +8,9 @@ import { serializeLogRecord } from './logrecord.mjs';
 /**
  * Write a log record atomically to disk.
  *
- * Invariant: the WAL file is either empty or contains exactly one
- * sector-sized record. We enforce:
- *   - serialized LogRecord must fit in one sector
- *   - we pad the write to a full sector and write it at offset 0
+ * Invariant: the WAL file is either empty or contains exactly one record,
+ * aligned to whole sectors. We enforce:
+ *   - we pad the write to a whole number of sectors and write it at offset 0
  */
 export async function writeAndSyncLog(logFile: File, record: LogRecord): Promise<void> {
   const serialized = serializeLogRecord(record);
@@ -21,14 +20,8 @@ export async function writeAndSyncLog(logFile: File, record: LogRecord): Promise
     throw new Error('Invalid sector size on log file');
   }
 
-  if (serialized.length > sectorSize) {
-    throw new Error(
-      `LogRecord of ${serialized.length} bytes exceeds sector size ` +
-        `${sectorSize} bytes; split the atomic update into smaller batches.`,
-    );
-  }
-
-  const padded = Buffer.alloc(sectorSize);
+  const paddedLength = Math.max(sectorSize, Math.ceil(serialized.length / sectorSize) * sectorSize);
+  const padded = Buffer.alloc(paddedLength);
   serialized.copy(padded, 0);
 
   await logFile.truncate(0);
