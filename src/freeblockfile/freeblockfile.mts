@@ -29,6 +29,7 @@ export class FreeBlockFile {
   private blockSize: number;
 
   private dirtyBlocks: Map<number, Buffer> = new Map();
+  private highestDirtyBlock: number = -1;
 
   private isOpen = false;
 
@@ -310,6 +311,9 @@ export class FreeBlockFile {
 
   _setDirtyBlock(block: number, buf: Buffer) {
     this.dirtyBlocks.set(block, buf);
+    if (block > this.highestDirtyBlock) {
+      this.highestDirtyBlock = block;
+    }
   }
 
   _getDirtyBlocks() {
@@ -320,8 +324,13 @@ export class FreeBlockFile {
     return this.dirtyBlocks.keys();
   }
 
+  _getHighestDirtyBlock() {
+    return this.highestDirtyBlock;
+  }
+
   _clearDirty() {
     this.dirtyBlocks.clear();
+    this.highestDirtyBlock = -1;
   }
 
   _getFile() {

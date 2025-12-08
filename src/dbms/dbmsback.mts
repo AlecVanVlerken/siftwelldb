@@ -78,6 +78,7 @@ export class DbmsBack {
    * @returns A Promise that resolves when the commit is complete.
    */
   async commit(): Promise<void> {
+    await this.metaWriteJSON(this.metaCache);
     return this.freeblockFile.commit();
   }
 
@@ -167,7 +168,7 @@ export class DbmsBack {
     }
     // END FOR LOOP
     this.metaCache = meta;
-    await this.metaWriteJSON(meta);
+    // Note: metaWriteJSON is called in commit() to batch writes
   }
 
   /**

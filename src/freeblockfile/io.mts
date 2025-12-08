@@ -131,11 +131,7 @@ export async function getBlockCount(fbf: FreeBlockFile): Promise<number> {
  * @author Alec Van Vlerken
  */
 function getHighestDirtyBlock(fbf: FreeBlockFile): number {
-  let max = -1;
-  for (const b of fbf._dirtyBlockKeys()) {
-    if (b > max) max = b;
-  }
-  return max;
+  return fbf._getHighestDirtyBlock();
 }
 
 /**
