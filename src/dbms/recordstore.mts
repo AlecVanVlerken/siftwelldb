@@ -21,7 +21,9 @@ import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 export class RecordStore {
   private freeBlockFile: FreeBlockFile;
   private blockSize: number;
-  private NEXT_BLOCK_OFFSET = 4; // size of the nextBlockID pointer
+  private static readonly BLOCK_TYPE_BYTES = 1; // reserved by FreeBlockFile
+  private static readonly NEXT_BLOCK_BYTES = 4; // size of the nextBlockID pointer
+  private static readonly DATA_OFFSET = RecordStore.BLOCK_TYPE_BYTES + RecordStore.NEXT_BLOCK_BYTES;
 
   /**
    * Creates a new RecordStore instance.
@@ -46,8 +48,8 @@ export class RecordStore {
   async writeRecord(doc: Document): Promise<number> {
     const data = this.serializeDocument(doc);
 
-    // Block size minus next block pointer and block type byte (FreeBlockFile uses 1 byte for block type)
-    const maxDataPerBlock = this.blockSize - this.NEXT_BLOCK_OFFSET - 1;
+    // Block size minus block type byte and next block pointer
+    const maxDataPerBlock = this.blockSize - RecordStore.DATA_OFFSET;
 
     // split data into chunks fitting in blocks
     const chunks: Buffer[] = [];
@@ -71,9 +73,9 @@ export class RecordStore {
       const nextBlockID = i < chunks.length - 1 ? blockIDs[i + 1] : 0;
 
       // make buffer for block data
-      const blockBuffer = Buffer.alloc(this.blockSize - 1); // -1 for block type byte
-      blockBuffer.writeUInt32LE(nextBlockID, 0);
-      chunk.copy(blockBuffer, this.NEXT_BLOCK_OFFSET);
+      const blockBuffer = Buffer.alloc(this.blockSize - RecordStore.BLOCK_TYPE_BYTES);
+      blockBuffer.writeUInt32LE(nextBlockID, 0); // written after the type byte by writeBlock
+      chunk.copy(blockBuffer, RecordStore.NEXT_BLOCK_BYTES);
 
       await this.freeBlockFile.writeBlock(blockID, blockBuffer);
     }
@@ -105,10 +107,10 @@ export class RecordStore {
         const blockData = await this.freeBlockFile.readBlock(currentBlockID);
 
         // Read the pointer to the next block
-        const nextBlockID = blockData.readUInt32LE(0);
+        const nextBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
 
         // Extract the data (skip the pointer)
-        const dataInBlock = blockData.subarray(this.NEXT_BLOCK_OFFSET);
+        const dataInBlock = blockData.subarray(RecordStore.DATA_OFFSET);
 
         // Add to chunks (without trailing zeros if this is the last block)
         if (nextBlockID === 0) {
@@ -159,7 +161,7 @@ export class RecordStore {
 
       // Read the block to get the next pointer
       const blockData = await this.freeBlockFile.readBlock(currentBlockID);
-      const nextBlockID = blockData.readUInt32LE(0);
+      const nextBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
 
       currentBlockID = nextBlockID;
     }
@@ -182,11 +184,18 @@ export class RecordStore {
    */
   private serializeDocument(doc: Document): Buffer {
     // convert Document to JSON string
+    const iterableKeys = doc.getIterableKeys();
+    const nonIterableKeys = doc.getNonIterableKeys();
+    const fields = doc.getFields();
+
+    const iterableEntries = iterableKeys.map((key) => [key, fields[key] as FieldValue]);
+    const nonIterableEntries = nonIterableKeys.map((key) => [key, fields[key] as FieldValue]);
+
     const json = JSON.stringify({
       collection: doc.getCollectionName(),
       id: doc.getId(),
-      iterableEntries: doc.getIterableKeys(),
-      nonIterableEntries: doc.getNonIterableKeys(),
+      iterableEntries,
+      nonIterableEntries,
     });
 
     const jsonBuffer = Buffer.from(json, 'utf-8');
