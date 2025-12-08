@@ -1,3 +1,6 @@
+// author: Frederik Caeyman
+// date: 2025-12-08
+
 export type FieldValue = string | number | boolean;
 export type RawId = string | number;
 export type IndexPredicate = (field: string) => boolean;
