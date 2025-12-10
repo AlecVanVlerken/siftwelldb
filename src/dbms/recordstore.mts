@@ -172,8 +172,7 @@ export class RecordStore {
       await this.freeBlockFile.freeBlock(blockToFree);
     }
 
-    // Commit to make the changes persistent
-    await this.freeBlockFile.commit();
+    // Note: commit is handled by the caller (DbmsBack.commit())
   }
 
   /**

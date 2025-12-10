@@ -106,13 +106,8 @@ export function offsetOf(fbf: FreeBlockFile, blockNum: number): number {
  */
 export async function getBlockCount(fbf: FreeBlockFile): Promise<number> {
   fbf._ensureOpen();
-  const stats = await fbf._getFile().stat();
-
-  if (stats.size % fbf._getBlockSize() !== 0) {
-    throw new Error(`Corrupt file: size ${stats.size} is not a multiple of block size ${fbf._getBlockSize()}`);
-  }
-
-  const physicalBlocks = Math.floor(stats.size / fbf._getBlockSize());
+  // Use cached block count instead of calling stat() every time
+  const physicalBlocks = fbf._getCachedBlockCount();
   const blocks = Math.max(physicalBlocks, getHighestDirtyBlock(fbf) + 1);
   return blocks;
 }
