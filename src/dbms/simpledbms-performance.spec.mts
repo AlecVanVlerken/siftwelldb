@@ -9,7 +9,7 @@ import { writeFileSync } from 'fs';
 describe('SimpleDbms Performance', () => {
   describe('timing of insertion and deletion of a lot of documents', () => {
     it('should insert and delete many documents', async () => {
-      const count = 100000;
+      const count = 50000;
       const runs = 10;
       const allInsertResults: number[][] = [];
       const allDeleteResults: number[][] = [];

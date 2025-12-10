@@ -144,22 +144,22 @@ export class DbmsBack {
    * @returns A Promise that resolves when the document is inserted.
    */
   async insertDocument(document: Document): Promise<void> {
-    const documentLocation = await this.recordStore.writeRecord(document);
-    const collectionName = document.getCollectionName();
-    const documentId = document.getId();
-    let vorm = 'S';
+    const documentLocation = await this.recordStore.writeRecord(document); //constant time
+    const collectionName = document.getCollectionName(); //constant time
+    const documentId = document.getId(); //constant time
+    let vorm = 'S'; //constant time
     if (typeof documentId === 'number') {
-      vorm = 'N';
+      vorm = 'N'; //constant time
     }
     // check if collection exists in meta, anders toevoegen
-    const meta = this.metaCache;
+    const meta = this.metaCache; //constant time
     if (!(collectionName in meta)) {
       meta[collectionName] = {};
     }
     // voeg document-pointer toe aan id B+ tree
 
     // ga naar root voor id
-    let idTree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
+    let idTree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>; // constant time
     if (!('id' in meta[collectionName])) {
       // maak nieuwe B+ tree voor id aan en update meta
       const storage = this.getOrCreateStorage(collectionName, 'id', vorm);
@@ -174,7 +174,7 @@ export class DbmsBack {
     }
 
     // BPLUSTREE INSERT (IDROOT, (documentLocation, documentId ) : documentPointer)
-    const idBuffer = toBuffer(vorm, documentId);
+    const idBuffer = toBuffer(vorm, documentId); //constant time
     const valueBuffer = Buffer.alloc(4); // 32-bit block number
     valueBuffer.writeUInt32BE(documentLocation, 0);
     await idTree.insert(idBuffer, valueBuffer);
@@ -260,20 +260,38 @@ export class DbmsBack {
    * @param collection - The collection to delete the document from.
    */
   async deleteDocument(documentId: number | string, collection: string): Promise<void> {
-    const document = await this.getDocument(documentId, collection);
-    const iterableKeys = document.getIterableKeys();
-    // verwijder document-pointer uit id B+ tree
+    // Check if collection exists
+    if (!(collection in this.metaCache)) {
+      throw new Error('Collection does not exist');
+    }
+    if (!('id' in this.metaCache[collection])) {
+      throw new Error('No document with given id exists');
+    }
+
+    // First, get the document pointer from the id tree before deleting
     const metaData = this.metaCache[collection]['id'];
     const root = metaData[0];
     const vorm = metaData[1];
-    //BPLUSTREE DELETE (root, (Key, id) )
     const idBuffer = toBuffer(vorm, documentId);
     const idTree = await this.getOrCreateTree(collection, 'id', vorm, root);
+    const documentPointerBuffer = await idTree.get(idBuffer);
+    if (!documentPointerBuffer) {
+      throw new Error('Document not found');
+    }
+    const documentPointer = documentPointerBuffer.readUInt32BE(0);
+
+    // Get the document for its iterable keys
+    const document = await this.recordStore.readRecord(documentPointer);
+    if (!document) {
+      throw new Error('Document not found in record store');
+    }
+    const iterableKeys = document.getIterableKeys();
+
+    // Delete from id B+ tree
     await idTree.delete(idBuffer);
     metaData[0] = idTree.getRoot().getBlockNumber();
-    //update meta met nieuwe root als die veranderd is
 
-    // START FOR LOOP: voor elke iterabele key in document
+    // Delete from all iterable key trees
     for (const key of iterableKeys) {
       if (!(key in this.metaCache[collection])) {
         throw new Error('Key should exist in meta, but does not');
@@ -291,6 +309,10 @@ export class DbmsBack {
       //update meta met nieuwe root als die veranderd is
       keyMetaData[0] = keyTree.getRoot().getBlockNumber();
     }
+
+    // Free the record blocks from the record store
+    await this.recordStore.deleteRecord(documentPointer);
+
     // Note: metaWriteJSON is called in commit() to batch writes
   }
 
