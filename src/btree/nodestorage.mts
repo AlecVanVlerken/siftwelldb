@@ -104,6 +104,9 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   private stableRootBlock: number = 0;
   private currentRoot: BlockLeafNode | BlockInternalNode | null = null;
 
+  // Cache for loaded nodes to avoid repeated disk reads
+  private readonly nodeCache: Map<number, BlockLeafNode | BlockInternalNode> = new Map();
+
   constructor(
     private readonly file: FreeBlockFile,
     options: BlockNodeStorageOptions = {},
@@ -134,6 +137,8 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     const root = this.createLeafNode(this.stableRootBlock);
     await root.initEmpty();
     this.currentRoot = root;
+    // Cache the newly created root
+    this.nodeCache.set(this.stableRootBlock, root);
     return root;
   }
 
@@ -144,6 +149,8 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     this.stableRootBlock = stableRootBlock;
     const root = await this.loadNode(stableRootBlock);
     this.currentRoot = root;
+    // Cache the opened root
+    this.nodeCache.set(stableRootBlock, root);
     return root;
   }
 
@@ -151,6 +158,8 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     const blockNumber = await this.file.allocateBlock();
     const node = this.createInternalNode(blockNumber);
     await node.initWith(nodes, keys);
+    // Cache the newly allocated node
+    this.nodeCache.set(blockNumber, node);
     return node;
   }
 
@@ -168,6 +177,8 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     if (rootBlockNumber === this.stableRootBlock) {
       // Root is already in stable block
       this.currentRoot = root;
+      // Update cache with current root
+      this.nodeCache.set(this.stableRootBlock, root);
       return root;
     }
 
@@ -176,6 +187,9 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
       const stableRoot = this.createLeafNode(this.stableRootBlock);
       stableRoot.copyFrom(root);
       await stableRoot.flush();
+      // Invalidate the old block from cache and cache the new stable root
+      this.nodeCache.delete(root.getBlockNumber());
+      this.nodeCache.set(this.stableRootBlock, stableRoot);
       await this.file.freeBlock(root.getBlockNumber());
       this.currentRoot = stableRoot;
       return stableRoot;
@@ -191,6 +205,9 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     const stableRoot = this.createInternalNode(this.stableRootBlock);
     stableRoot.copyFrom(internalRoot);
     await stableRoot.flush();
+    // Invalidate the old block from cache and cache the new stable root
+    this.nodeCache.delete(internalRoot.getBlockNumber());
+    this.nodeCache.set(this.stableRootBlock, stableRoot);
     await this.file.freeBlock(internalRoot.getBlockNumber());
     this.currentRoot = stableRoot;
     return stableRoot;
@@ -214,6 +231,8 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     const blockNumber = await this.file.allocateBlock();
     const node = this.createLeafNode(blockNumber);
     await node.initEmpty();
+    // Cache the newly allocated node
+    this.nodeCache.set(blockNumber, node);
     return node;
   }
 
@@ -221,21 +240,30 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    * Load a node from disk by block number.
    */
   async loadNode(blockNumber: number): Promise<BlockLeafNode | BlockInternalNode> {
+    // Check cache first
+    const cached = this.nodeCache.get(blockNumber);
+    if (cached) {
+      return cached;
+    }
+
     const rawBuffer = await this.file.readBlock(blockNumber);
     // FreeBlockFile stores block type at byte 0, our data starts at byte 1
     const nodeType = rawBuffer.readUInt8(1);
 
+    let node: BlockLeafNode | BlockInternalNode;
     if (nodeType === BLOCK_NODE_TYPE_LEAF) {
-      const node = this.createLeafNode(blockNumber);
+      node = this.createLeafNode(blockNumber);
       await node.load();
-      return node;
     } else if (nodeType === BLOCK_NODE_TYPE_INTERNAL) {
-      const node = this.createInternalNode(blockNumber);
+      node = this.createInternalNode(blockNumber);
       await node.load();
-      return node;
     } else {
       throw new Error(`Unknown node type: ${nodeType}`);
     }
+
+    // Cache the loaded node
+    this.nodeCache.set(blockNumber, node);
+    return node;
   }
 
   private createLeafNode(blockNumber: number): BlockLeafNode {

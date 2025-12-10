@@ -33,6 +33,10 @@ export class FreeBlockFile {
 
   private isOpen = false;
 
+  // Cached physical block count to avoid repeated stat() calls
+  // Updated on open() and commit()
+  private cachedPhysicalBlockCount: number = 0;
+
   /**
    * Creates a new FreeBlockFile instance controlling a block-structured file.
    *
@@ -98,6 +102,7 @@ export class FreeBlockFile {
    *
    * @returns {Promise<void>} Opened file
    * @throws {Error} If the file is already open.
+   * @throws {Error} If the file size is not a multiple of block size (corrupted file).
    *
    * @author Arthur Cukier
    */
@@ -105,6 +110,12 @@ export class FreeBlockFile {
     if (this.isOpen) throw new Error('File already open');
     await this.file.open();
     this.isOpen = true;
+    // Initialize cached block count from file size
+    const stats = await this.file.stat();
+    if (stats.size % this.blockSize !== 0) {
+      throw new Error(`Corrupt file: size ${stats.size} is not a multiple of block size ${this.blockSize}`);
+    }
+    this.cachedPhysicalBlockCount = Math.floor(stats.size / this.blockSize);
   }
 
   /**
@@ -329,6 +340,10 @@ export class FreeBlockFile {
   }
 
   _clearDirty() {
+    // Update cached block count if we wrote beyond the previous physical size
+    if (this.highestDirtyBlock >= this.cachedPhysicalBlockCount) {
+      this.cachedPhysicalBlockCount = this.highestDirtyBlock + 1;
+    }
     this.dirtyBlocks.clear();
     this.highestDirtyBlock = -1;
   }
@@ -343,5 +358,13 @@ export class FreeBlockFile {
 
   _ensureOpen(): void {
     if (!this.isOpen) throw new Error('File not open');
+  }
+
+  /**
+   * Get the cached physical block count.
+   * This avoids repeated stat() calls for better performance.
+   */
+  _getCachedBlockCount(): number {
+    return this.cachedPhysicalBlockCount;
   }
 }
