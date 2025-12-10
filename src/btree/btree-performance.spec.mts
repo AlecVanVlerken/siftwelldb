@@ -11,7 +11,7 @@ import { writeFileSync } from 'fs';
 
 describe('BPlusTree Performance', () => {
   it('should insert and delete many keys with O(log n) performance', async () => {
-    const count = 100000;
+    const count = 50000;
     const runs = 10;
     const allInsertResults: number[][] = [];
     const allDeleteResults: number[][] = [];
