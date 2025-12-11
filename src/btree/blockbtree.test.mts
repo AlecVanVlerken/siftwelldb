@@ -95,7 +95,8 @@ describe('Block-based BPlusTree', () => {
 
   it('creates an empty tree', async () => {
     const tree = await BPlusTree.create(storage);
-    expect(storage.getStableRootBlock()).toBeGreaterThan(0);
+    // Root should be allocated at a valid block (not header block 0)
+    expect(tree.getRoot().getBlockNumber()).toBeGreaterThan(0);
 
     const result = await tree.get(key('nonexistent'));
     expect(result).toBeNull();
@@ -205,25 +206,35 @@ describe('Block-based BPlusTree', () => {
     expect(keys).toEqual(keys.slice().sort());
   });
 
-  it('maintains stable root block across splits', async () => {
+  it('root block can change after splits', async () => {
     const tree = await BPlusTree.create(storage);
-    const rootBlock = storage.getStableRootBlock();
+    const initialRootBlock = tree.getRoot().getBlockNumber();
 
     // Insert enough to cause splits
     for (let i = 0; i < 50; i++) {
       await tree.insert(key(`key${i.toString().padStart(3, '0')}`), val(`val${i}`));
     }
 
-    // Root block should not have changed
-    expect(storage.getStableRootBlock()).toBe(rootBlock);
+    // With dynamic root, root block may have changed after splits
+    // The important thing is that the tree is still functional
+    const currentRootBlock = tree.getRoot().getBlockNumber();
+    expect(currentRootBlock).toBeGreaterThan(0);
+
+    // Verify all data is accessible
+    for (let i = 0; i < 50; i++) {
+      const result = await tree.get(key(`key${i.toString().padStart(3, '0')}`));
+      expect(result?.toString()).toBe(`val${i}`);
+    }
   });
 
   it('can reopen tree from root block', async () => {
     const tree1 = await BPlusTree.create(storage);
-    const rootBlock = storage.getStableRootBlock();
 
     await tree1.insert(key('test'), val('value'));
     await file.commit();
+
+    // Track the root block number after operations
+    const rootBlock = tree1.getRoot().getBlockNumber();
 
     // Create new storage and reopen the tree using proper API
     const storage2 = new BlockNodeStorage(file);
@@ -259,7 +270,8 @@ describe('Block-based BPlusTree', () => {
     await tree1.insert(key('b'), val('2'));
     await file.commit();
 
-    const rootBlock = storage.getStableRootBlock();
+    // Track root block after operations
+    const rootBlock = tree1.getRoot().getBlockNumber();
 
     // Open the tree using the new open() method
     const storage2 = new BlockNodeStorage(file);
@@ -278,11 +290,13 @@ describe('Block-based BPlusTree', () => {
   it('persists data after commit and reopen', async () => {
     // Create and populate tree
     const tree1 = await BPlusTree.create(storage);
-    const rootBlock = storage.getStableRootBlock();
 
     await tree1.insert(key('hello'), val('world'));
     await tree1.insert(key('foo'), val('bar'));
     await file.commit();
+
+    // Track root block after operations
+    const rootBlock = tree1.getRoot().getBlockNumber();
 
     // Simulate reopening by creating new storage and using proper API
     const storage2 = new BlockNodeStorage(file);
@@ -343,8 +357,8 @@ describe('Block-based BPlusTree', () => {
     }
     expect(iterCount).toBe(count);
 
-    // Root should still be stable
-    expect(storage.getStableRootBlock()).toBeGreaterThan(0);
+    // Root should be at a valid block
+    expect(tree.getRoot().getBlockNumber()).toBeGreaterThan(0);
   });
 
   it('handles deletion from deep multi-level tree', async () => {
@@ -473,34 +487,33 @@ describe('Block-based BPlusTree', () => {
     expect(count).toBe(data.size);
   });
 
-  it('stable root survives many splits and merges', async () => {
+  it('tree survives many splits and merges', async () => {
     const tree = await BPlusTree.create(storage);
-    const rootBlock = storage.getStableRootBlock();
 
     // Insert many
     for (let i = 0; i < 100; i++) {
       await tree.insert(key(i.toString().padStart(3, '0')), val(`v${i}`));
     }
-    expect(storage.getStableRootBlock()).toBe(rootBlock);
 
     // Delete most
     for (let i = 0; i < 90; i++) {
       await tree.delete(key(i.toString().padStart(3, '0')));
     }
-    expect(storage.getStableRootBlock()).toBe(rootBlock);
 
     // Insert again
     for (let i = 100; i < 150; i++) {
       await tree.insert(key(i.toString().padStart(3, '0')), val(`v${i}`));
     }
-    expect(storage.getStableRootBlock()).toBe(rootBlock);
 
-    // Verify data
+    // Verify data - this tests that dynamic root tracking works correctly
     let count = 0;
     for await (const [_k] of tree.iterate()) {
       count++;
     }
     expect(count).toBe(60); // 10 remaining + 50 new
+
+    // Root should still be valid
+    expect(tree.getRoot().getBlockNumber()).toBeGreaterThan(0);
   });
 
   // ==========================================================================
@@ -895,10 +908,12 @@ describe('Block-based BPlusTree', () => {
 
     it('operations interleaved with commit and reopen', async () => {
       let tree = await BPlusTree.create(storage);
-      const rootBlock = storage.getStableRootBlock();
 
       await tree.insert(key('a'), val('1'));
       await file.commit();
+
+      // Track root block after first operation
+      let rootBlock = tree.getRoot().getBlockNumber();
 
       // Simulate reopen
       const storage2 = new BlockNodeStorage(file);
@@ -926,10 +941,12 @@ describe('Block-based BPlusTree', () => {
 
     it('uncommitted inserts are not persisted after reopen', async () => {
       const tree1 = await BPlusTree.create(storage);
-      const rootBlock = storage.getStableRootBlock();
 
       await tree1.insert(key('committed'), val('yes'));
       await file.commit();
+
+      // Track root block after committed insert
+      const rootBlock = tree1.getRoot().getBlockNumber();
 
       await tree1.insert(key('uncommitted'), val('no'));
       // No commit here!

@@ -10,9 +10,9 @@ export interface NodeStorage<
   createTree(): Promise<LeafNodeType>;
   allocateInternalNode(nodes: (LeafNodeType | InternalNodeType)[], keys: K[]): Promise<InternalNodeType>;
   /**
-   * Ensures root is in the stable location (for persistent storage).
-   * For block storage: moves root to stable root block if needed.
-   * For in-memory storage: no-op, returns the same root.
+   * Called after tree operations to finalize the root.
+   * For all storage types: returns the root unchanged.
+   * The caller is responsible for tracking the root block number.
    */
   finalizeRoot(root: LeafNodeType | InternalNodeType): Promise<LeafNodeType | InternalNodeType>;
 }

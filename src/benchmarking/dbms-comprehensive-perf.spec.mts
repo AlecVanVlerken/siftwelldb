@@ -1,5 +1,5 @@
 // Comprehensive DBMS Performance Tests
-// Outputs time-series data for graphing (same format as simpledbms-performance.spec.mts)
+// Same format as btree-comprehensive-perf.spec.mts: X-axis = database size, Y-axis = operation time
 
 import { describe, it, expect } from 'vitest';
 import { MockFile } from '../core/mockfile.mjs';
@@ -33,10 +33,12 @@ describe('DBMS Comprehensive Performance', () => {
   const COMMIT_INTERVAL = 500;
 
   // ============================================================
-  // TEST 1: GET/READ PERFORMANCE (time-series)
+  // TEST 1: GET PERFORMANCE (time as database grows)
+  // Format: [[get_times...], []] - same as B+ tree
+  // X-axis = database size when GET was performed
   // ============================================================
-  it('GET performance after populating database', async () => {
-    const count = 10000;
+  it('GET performance as database grows', async () => {
+    const count = 200000;
     const runs = 3;
     const allGetResults: number[][] = [];
 
@@ -46,24 +48,31 @@ describe('DBMS Comprehensive Performance', () => {
       const db = await SimpleDbms.create(dataFile, logFile);
       const getResult: number[] = [];
 
-      // Pre-populate
-      for (let i = 0; i < count; i++) {
-        await db.insertDocument('test', makeDoc(`doc${i}`, 1));
-        if ((i + 1) % COMMIT_INTERVAL === 0) {
+      // Shuffle indices for random insert order
+      const indices = shuffle(Array.from({ length: count }, (_, i) => i));
+      const insertedIds: string[] = [];
+
+      // Insert docs one by one, and after each insert, do a GET on a random existing doc
+      for (let idx = 0; idx < count; idx++) {
+        const i = indices[idx];
+        const docId = `doc${i}`;
+        await db.insertDocument('test', makeDoc(docId, 1));
+        insertedIds.push(docId);
+
+        // GET a random doc from what we've inserted so far
+        const randomIdx = Math.floor(Math.random() * insertedIds.length);
+        const queryId = insertedIds[randomIdx];
+
+        const start = performance.now();
+        await db.getDocumentById('test', queryId);
+        getResult.push(performance.now() - start);
+
+        if ((idx + 1) % COMMIT_INTERVAL === 0) {
           await db.commit();
         }
       }
+
       await db.commit();
-
-      // Measure get() for each document (random order)
-      const indices = shuffle(Array.from({ length: count }, (_, i) => i));
-      for (let idx = 0; idx < count; idx++) {
-        const docId = `doc${indices[idx]}`;
-        const start = performance.now();
-        await db.getDocumentById('test', docId);
-        getResult.push(performance.now() - start);
-      }
-
       allGetResults.push(getResult);
       await db.close();
       console.log(`DBMS GET: Run ${run + 1}/${runs} complete`);
@@ -79,20 +88,24 @@ describe('DBMS Comprehensive Performance', () => {
       `[[${avgGetResult.join(', ')}], []]`
     );
 
-    console.log(`DBMS GET: Mean=${(avgGetResult.reduce((a, b) => a + b) / count).toFixed(4)}ms`);
+    const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
+    console.log(`DBMS GET avg first 1000: ${avg(avgGetResult.slice(0, 1000)).toFixed(4)} ms`);
+    console.log(`DBMS GET avg last 1000: ${avg(avgGetResult.slice(-1000)).toFixed(4)} ms`);
     expect(avgGetResult.length).toBe(count);
   }, 600000);
 
   // ============================================================
   // TEST 2: MULTIPLE COLLECTIONS
+  // Format: [[insert_times...], [delete_times...]]
+  // Uses FIXED total document count for fair comparison
   // ============================================================
   it('performance across multiple collections', async () => {
     const collectionCounts = [1, 5, 10];
-    const docsPerCollection = 5000;
+    const totalDocs = 50000; // Fixed total for fair comparison
     const runs = 3;
 
     for (const numCollections of collectionCounts) {
-      const totalDocs = numCollections * docsPerCollection;
+      const docsPerCollection = Math.floor(totalDocs / numCollections);
       const allInsertResults: number[][] = [];
       const allDeleteResults: number[][] = [];
 
@@ -104,26 +117,33 @@ describe('DBMS Comprehensive Performance', () => {
         const insertResult: number[] = [];
         const deleteResult: number[] = [];
 
-        // Insert across collections (round-robin)
-        for (let i = 0; i < totalDocs; i++) {
-          const collection = `collection${i % numCollections}`;
-          const docId = `doc${Math.floor(i / numCollections)}`;
+        // Insert across collections (round-robin distribution)
+        // With totalDocs fixed, each collection gets docsPerCollection documents
+        const insertIndices = shuffle(Array.from({ length: totalDocs }, (_, i) => i));
+        for (let idx = 0; idx < totalDocs; idx++) {
+          const i = insertIndices[idx];
+          const collectionIdx = i % numCollections;
+          const docIdx = Math.floor(i / numCollections);
+          const collection = `collection${collectionIdx}`;
+          const docId = `doc${docIdx}`;
           const doc = makeDoc(docId, 1);
           const start = performance.now();
           await db.insertDocument(collection, doc);
           insertResult.push(performance.now() - start);
-          if ((i + 1) % COMMIT_INTERVAL === 0) {
+          if ((idx + 1) % COMMIT_INTERVAL === 0) {
             await db.commit();
           }
         }
         await db.commit();
 
-        // Delete (random order)
-        const indices = shuffle(Array.from({ length: totalDocs }, (_, i) => i));
+        // Delete (different random order)
+        const deleteIndices = shuffle(Array.from({ length: totalDocs }, (_, i) => i));
         for (let idx = 0; idx < totalDocs; idx++) {
-          const i = indices[idx];
-          const collection = `collection${i % numCollections}`;
-          const docId = `doc${Math.floor(i / numCollections)}`;
+          const i = deleteIndices[idx];
+          const collectionIdx = i % numCollections;
+          const docIdx = Math.floor(i / numCollections);
+          const collection = `collection${collectionIdx}`;
+          const docId = `doc${docIdx}`;
           const start = performance.now();
           await db.deleteDocumentById(collection, docId);
           deleteResult.push(performance.now() - start);
@@ -150,15 +170,17 @@ describe('DBMS Comprehensive Performance', () => {
         `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`
       );
 
-      console.log(`${numCollections} collections: Insert=${(avgInsert.reduce((a, b) => a + b) / totalDocs).toFixed(4)}ms, Delete=${(avgDelete.reduce((a, b) => a + b) / totalDocs).toFixed(4)}ms`);
+      const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
+      console.log(`${numCollections} collections: Insert=${avg(avgInsert).toFixed(4)}ms, Delete=${avg(avgDelete).toFixed(4)}ms`);
     }
   }, 900000);
 
   // ============================================================
   // TEST 3: NUMBER OF INDEXED FIELDS
+  // Format: [[insert_times...], [delete_times...]]
   // ============================================================
   it('performance with different numbers of indexed fields', async () => {
-    const count = 10000;
+    const count = 200000;
     const runs = 3;
     const indexedFieldCounts = [1, 3, 5];
 
@@ -218,15 +240,17 @@ describe('DBMS Comprehensive Performance', () => {
         `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`
       );
 
-      console.log(`${numIndexed} indexed fields: Insert=${(avgInsert.reduce((a, b) => a + b) / count).toFixed(4)}ms, Delete=${(avgDelete.reduce((a, b) => a + b) / count).toFixed(4)}ms`);
+      const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
+      console.log(`${numIndexed} indexed fields: Insert=${avg(avgInsert).toFixed(4)}ms, Delete=${avg(avgDelete).toFixed(4)}ms`);
     }
   }, 900000);
 
   // ============================================================
   // TEST 4: DOCUMENT SIZE (via field size)
+  // Format: [[insert_times...], [delete_times...]]
   // ============================================================
   it('performance with different document sizes', async () => {
-    const count = 10000;
+    const count = 200000;
     const runs = 3;
     const docSizes = [
       { name: 'small', fields: 1, fieldSize: 10 },
@@ -290,8 +314,8 @@ describe('DBMS Comprehensive Performance', () => {
         `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`
       );
 
-      console.log(`${config.name} docs: Insert=${(avgInsert.reduce((a, b) => a + b) / count).toFixed(4)}ms, Delete=${(avgDelete.reduce((a, b) => a + b) / count).toFixed(4)}ms`);
+      const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
+      console.log(`${config.name} docs: Insert=${avg(avgInsert).toFixed(4)}ms, Delete=${avg(avgDelete).toFixed(4)}ms`);
     }
   }, 900000);
 });
-

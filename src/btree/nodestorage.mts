@@ -3,18 +3,6 @@ import { InternalNodeImpl, BlockInternalNode } from './internalnode.mjs';
 import { LeafNodeImpl, BlockLeafNode } from './leafnode.mjs';
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 
-// Interface to help TypeScript resolve the method type correctly
-interface HasRelocateChildFromBlock {
-  relocateChildFromBlock(
-    blockNumber: number,
-    allocateLeafNode: () => Promise<BlockLeafNode>,
-    allocateInternalNodeBlock?: () => Promise<number>,
-  ): Promise<void>;
-  getBlockNumber(): number;
-  copyFrom(other: unknown): void;
-  flush(): Promise<void>;
-}
-
 export type NodeStorageOptions<K> = {
   compareKeys?: (a: K, b: K) => number;
   keySize?: (key: K) => number;
@@ -94,14 +82,15 @@ export type BlockNodeStorageOptions = {
 
 /**
  * Block-based node storage implementation.
- * Stores B+ tree nodes in a FreeBlockFile with stable root block.
+ * Stores B+ tree nodes in a FreeBlockFile with dynamic root.
+ * The root block can change after splits/merges - the caller is responsible
+ * for tracking the current root block number.
  */
 export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNode, BlockInternalNode> {
   readonly compareKeys: (a: Buffer, b: Buffer) => number;
   readonly keySize: (key: Buffer) => number = (key) => key.length;
 
   private readonly blockSize: number;
-  private stableRootBlock: number = 0;
   private currentRoot: BlockLeafNode | BlockInternalNode | null = null;
 
   // Cache for loaded nodes to avoid repeated disk reads
@@ -121,36 +110,25 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   }
 
   /**
-   * Get the stable root block number.
-   * This number never changes after tree creation.
-   */
-  getStableRootBlock(): number {
-    return this.stableRootBlock;
-  }
-
-  /**
    * Create a new empty tree.
-   * Allocates a stable root block.
+   * Returns the root node. The caller should store the root block number.
    */
   async createTree(): Promise<BlockLeafNode> {
-    this.stableRootBlock = await this.file.allocateBlock();
-    const root = this.createLeafNode(this.stableRootBlock);
+    const blockNumber = await this.file.allocateBlock();
+    const root = this.createLeafNode(blockNumber);
     await root.initEmpty();
     this.currentRoot = root;
     // Cache the newly created root
-    this.nodeCache.set(this.stableRootBlock, root);
+    this.nodeCache.set(blockNumber, root);
     return root;
   }
 
   /**
-   * Open an existing tree from its stable root block.
+   * Open an existing tree from its root block.
    */
-  async openTree(stableRootBlock: number): Promise<BlockLeafNode | BlockInternalNode> {
-    this.stableRootBlock = stableRootBlock;
-    const root = await this.loadNode(stableRootBlock);
+  async openTree(rootBlock: number): Promise<BlockLeafNode | BlockInternalNode> {
+    const root = await this.loadNode(rootBlock);
     this.currentRoot = root;
-    // Cache the opened root
-    this.nodeCache.set(stableRootBlock, root);
     return root;
   }
 
@@ -164,64 +142,13 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   }
 
   /**
-   * Ensures root is in the stable root block.
-   * If root has moved (due to split), copies content to stable block.
-   *
-   * IMPORTANT: When the root is an internal node, we must check if any of its
-   * children point to the stable root block. If so, we must move that child
-   * to a new block first to avoid circular references.
+   * For block storage with dynamic root, finalizeRoot is a no-op.
+   * The root can be at any block - the caller tracks the root block number.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async finalizeRoot(root: BlockLeafNode | BlockInternalNode): Promise<BlockLeafNode | BlockInternalNode> {
-    const rootBlockNumber = root instanceof BlockInternalNode ? root.getBlockNumber() : root.getBlockNumber();
-
-    if (rootBlockNumber === this.stableRootBlock) {
-      // Root is already in stable block
-      this.currentRoot = root;
-      // Update cache with current root
-      this.nodeCache.set(this.stableRootBlock, root);
-      return root;
-    }
-
-    // Root has moved - copy content to stable block
-    if (root instanceof BlockLeafNode) {
-      const stableRoot = this.createLeafNode(this.stableRootBlock);
-      stableRoot.copyFrom(root);
-      await stableRoot.flush();
-      // Invalidate the old block from cache and cache the new stable root
-      this.nodeCache.delete(root.getBlockNumber());
-      this.nodeCache.set(this.stableRootBlock, stableRoot);
-      await this.file.freeBlock(root.getBlockNumber());
-      this.currentRoot = stableRoot;
-      return stableRoot;
-    }
-
-    // For internal nodes, we must check if any child points to the stable root block.
-    // This can happen when a leaf at the stable root splits and becomes an internal node.
-    // If we copy the internal node to stable root without moving the child that points
-    // to stable root, we create a circular reference.
-    const internalRoot = root;
-    await this.relocateChildFromStableRoot(internalRoot);
-
-    const stableRoot = this.createInternalNode(this.stableRootBlock);
-    stableRoot.copyFrom(internalRoot);
-    await stableRoot.flush();
-    // Invalidate the old block from cache and cache the new stable root
-    this.nodeCache.delete(internalRoot.getBlockNumber());
-    this.nodeCache.set(this.stableRootBlock, stableRoot);
-    await this.file.freeBlock(internalRoot.getBlockNumber());
-    this.currentRoot = stableRoot;
-    return stableRoot;
-  }
-
-  /**
-   * Helper to relocate any child that points to the stable root block.
-   */
-  private async relocateChildFromStableRoot(node: HasRelocateChildFromBlock): Promise<void> {
-    await node.relocateChildFromBlock(
-      this.stableRootBlock,
-      () => this.allocateLeafNode(),
-      async () => this.file.allocateBlock(),
-    );
+    this.currentRoot = root;
+    return root;
   }
 
   /**
@@ -289,7 +216,6 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
         const bn = await this.file.allocateBlock();
         return this.createInternalNode(bn);
       },
-      this.stableRootBlock,
       (bn) => this.invalidateNode(bn),
     );
   }
