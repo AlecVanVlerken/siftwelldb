@@ -101,10 +101,6 @@ export class AtomicFile implements File {
     await this.logFile.close();
   }
 
-  // ----------------------------
-  // File interface passthroughs
-  // ----------------------------
-
   get sectorSize(): number {
     return this.dataFile.sectorSize;
   }
