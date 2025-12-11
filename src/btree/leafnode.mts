@@ -455,12 +455,4 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     };
   }
 
-  /**
-   * Copy content from another leaf node (used for stable root).
-   */
-  copyFrom(other: BlockLeafNode): void {
-    this.entries = [...other.entries];
-    this.nextLeafBlock = other.nextLeafBlock;
-    this.dirty = true;
-  }
 }
