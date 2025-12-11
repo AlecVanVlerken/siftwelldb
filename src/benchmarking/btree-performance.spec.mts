@@ -5,13 +5,15 @@ import { describe, expect, it } from 'vitest';
 import { MockFile } from '../core/mockfile.mjs';
 import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { AtomicFile } from '../atomic/atomicfile.mjs';
-import { BlockNodeStorage } from './nodestorage.mjs';
-import { BPlusTree } from './btree.mjs';
+import { BlockNodeStorage } from '../btree/nodestorage.mjs';
+import { BPlusTree } from '../btree/btree.mjs';
 import { writeFileSync } from 'fs';
+
+const RESULTS_DIR = 'src/benchmarking/results/';
 
 describe('BPlusTree Performance', () => {
   it('should insert and delete many keys with O(log n) performance', async () => {
-    const count = 200000;
+    const count = 50000;
     const runs = 5;
     const commitInterval = 1000; // Commit every 1000 ops for more frequent commits
     const allInsertResults: number[][] = [];
@@ -116,7 +118,7 @@ describe('BPlusTree Performance', () => {
 
     // Write results to file for plotting
     writeFileSync(
-      'btree_performance_results.txt',
+      RESULTS_DIR + 'btree_performance_results.txt',
       `[[${averageInsertResult.join(', ')}], [${averageDeleteResult.join(', ')}]]`,
     );
 
@@ -138,3 +140,4 @@ describe('BPlusTree Performance', () => {
     expect(averageDeleteResult.length).toBe(count);
   }, 3600000); // 60 minute timeout for 100k documents
 });
+

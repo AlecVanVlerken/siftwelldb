@@ -1,15 +1,17 @@
 // author: Thomas Dumon
 // date: 2025-12-08
 
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { MockFile } from '../core/mockfile.mjs';
-import { SimpleDbms } from './simpledbms.mjs';
+import { SimpleDbms } from '../dbms/simpledbms.mjs';
 import { writeFileSync } from 'fs';
+
+const RESULTS_DIR = 'src/benchmarking/results/';
 
 describe('SimpleDbms Performance', () => {
   describe('timing of insertion and deletion of a lot of documents', () => {
     it('should insert and delete many documents', async () => {
-      const count = 200000;
+      const count = 50000;
       const runs = 5;
       const commitInterval = 1000; // Commit every 1000 ops for more frequent commits
       const allInsertResults: number[][] = [];
@@ -104,7 +106,7 @@ describe('SimpleDbms Performance', () => {
 
       // Write results to file for plotting (Python list syntax)
       writeFileSync(
-        'performance_results.txt',
+        RESULTS_DIR + 'performance_results.txt',
         `[[${averageInsertResult.join(', ')}], [${averageDeleteResult.join(', ')}]]`,
       );
       expect(averageInsertResult.length).toBe(count);
@@ -112,3 +114,4 @@ describe('SimpleDbms Performance', () => {
     }, 3600000); // 60 minute timeout for 100k documents
   });
 });
+

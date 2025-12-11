@@ -2,12 +2,15 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 
+RESULTS_DIR = 'results/'
+IMAGES_DIR = 'results/images/'
+
 # Load B+ tree data
-with open('btree_performance_results.txt', 'r') as f:
+with open(RESULTS_DIR + 'btree_performance_results.txt', 'r') as f:
     btree_data = json.load(f)
 
 # Load DBMS data
-with open('performance_results.txt', 'r') as f:
+with open(RESULTS_DIR + 'performance_results.txt', 'r') as f:
     dbms_data = json.load(f)
 
 btree_inserts = np.array(btree_data[0])
@@ -127,8 +130,8 @@ ax.grid(True, alpha=0.3)
 
 plt.suptitle(f'Performance Comparison: B+ Tree ({N_btree:,}) vs DBMS ({N_dbms:,} documents)', fontsize=14)
 plt.tight_layout()
-plt.savefig('btree_vs_dbms_performance.png', dpi=150, bbox_inches='tight')
-print("Saved btree_vs_dbms_performance.png")
+plt.savefig(IMAGES_DIR + 'btree_vs_dbms_performance.png', dpi=150, bbox_inches='tight')
+print("Saved " + IMAGES_DIR + "btree_vs_dbms_performance.png")
 
 # Print summary
 print("\n" + "=" * 70)

@@ -3,8 +3,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
+RESULTS_DIR = 'results/'
+IMAGES_DIR = 'results/images/'
+
 # Load DBMS performance data
-with open('performance_results.txt', 'r') as f:
+with open(RESULTS_DIR + 'performance_results.txt', 'r') as f:
     data = json.load(f)
     insert_times = data[0]
     delete_times = data[1]
@@ -259,8 +262,8 @@ for idx, (op_name, n_vals, times) in enumerate([('Insert', n_insert, insert_time
                 f'{r2:.4f}', va='center', fontsize=9)
 
 plt.tight_layout()
-plt.savefig('complexity_analysis.png', dpi=150, bbox_inches='tight')
-print(f"\nSaved complexity_analysis.png")
+plt.savefig(IMAGES_DIR + 'complexity_analysis.png', dpi=150, bbox_inches='tight')
+print(f"\nSaved {IMAGES_DIR}complexity_analysis.png")
 
 # Summary
 print("\n" + "=" * 80)
