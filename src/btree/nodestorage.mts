@@ -267,7 +267,15 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   }
 
   private createLeafNode(blockNumber: number): BlockLeafNode {
-    return new BlockLeafNode(this.file, blockNumber, this.compareKeys, this.blockSize, () => this.allocateLeafNode());
+    return new BlockLeafNode(
+      this.file,
+      blockNumber,
+      this.compareKeys,
+      this.blockSize,
+      () => this.allocateLeafNode(),
+      (bn) => this.loadNode(bn),
+      (bn) => this.invalidateNode(bn),
+    );
   }
 
   private createInternalNode(blockNumber: number): BlockInternalNode {
@@ -282,6 +290,14 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
         return this.createInternalNode(bn);
       },
       this.stableRootBlock,
+      (bn) => this.invalidateNode(bn),
     );
+  }
+
+  /**
+   * Remove a node from the cache when it is freed (e.g., after merge).
+   */
+  private invalidateNode(blockNumber: number): void {
+    this.nodeCache.delete(blockNumber);
   }
 }

@@ -130,14 +130,108 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
 
   private async propagateChange(path: PathEntry<K, V, L, I>[], descriptor: NodeDescriptor<K, V, L, I>): Promise<void> {
     let currentDescriptor = descriptor;
+    let replaceCount = 1; // How many children to replace (normally 1, 2 after merge)
+
     for (let i = path.length - 1; i >= 0; i--) {
-      currentDescriptor = await path[i].cursor.replaceKeysAndChildrenAfterBy(
-        1,
+      const cursor = path[i].cursor;
+
+      // Try to merge with siblings before propagating up
+      // This handles underflow by combining sparse nodes
+      if (currentDescriptor.nodes.length === 1) {
+        const mergeResult = await this.tryMergeWithSibling(cursor, currentDescriptor);
+        currentDescriptor = mergeResult.descriptor;
+        replaceCount = mergeResult.mergedWithPrev ? 2 : mergeResult.mergedWithNext ? 2 : 1;
+      }
+
+      currentDescriptor = await cursor.replaceKeysAndChildrenAfterBy(
+        replaceCount,
         currentDescriptor.keys,
         currentDescriptor.nodes,
       );
+      replaceCount = 1; // Reset for next level
     }
     await this.rebuildRoot(currentDescriptor);
+  }
+
+  /**
+   * Attempt to merge a node with its sibling if possible.
+   * This is called during delete to keep the tree compact.
+   * Returns the updated descriptor and flags indicating if merge occurred.
+   * 
+   * IMPORTANT: When merging, cursor position matters for replaceKeysAndChildrenAfterBy:
+   * - mergedWithPrev: cursor stays at prev position, replace 2 children from there
+   * - mergedWithNext: cursor stays at current position, replace 2 children from there
+   */
+  private async tryMergeWithSibling(
+    cursor: ChildCursor<K, V, L, I>,
+    descriptor: NodeDescriptor<K, V, L, I>,
+  ): Promise<{ descriptor: NodeDescriptor<K, V, L, I>; mergedWithPrev: boolean; mergedWithNext: boolean }> {
+    const noMerge = { descriptor, mergedWithPrev: false, mergedWithNext: false };
+
+    if (descriptor.nodes.length !== 1) {
+      return noMerge;
+    }
+
+    const node = descriptor.nodes[0];
+    const nodeKey = descriptor.keys[0];
+
+    // Try to merge with next sibling FIRST (simpler cursor handling)
+    // When merging with next, cursor stays at current position
+    if (!cursor.isLastChild()) {
+      try {
+        cursor.moveNext();
+        const nextSibling = await cursor.getChild();
+        const nextKey = cursor.getKeyAfter();
+
+        if (node.canMergeWithNext(nodeKey, nextSibling)) {
+          // Merge: node absorbs nextSibling
+          await node.mergeWithNext(nodeKey, nextSibling);
+          cursor.movePrevious(); // Move back to original position (at node)
+          // Parent will replace node + nextSibling with just node
+          return {
+            descriptor: {
+              nodes: [node],
+              keys: [nextKey], // Use the larger key
+            },
+            mergedWithPrev: false,
+            mergedWithNext: true,
+          };
+        }
+        cursor.movePrevious(); // Move back to original position
+      } catch {
+        // If movement fails, continue without merging
+      }
+    }
+
+    // Try to merge with previous sibling
+    // When merging with prev, we need cursor at prev position for correct replacement
+    if (!cursor.isFirstChild()) {
+      try {
+        cursor.movePrevious();
+        const prevSibling = await cursor.getChild();
+        const separatorKey = cursor.getKeyAfter();
+
+        if (prevSibling.canMergeWithNext(separatorKey, node)) {
+          // Merge: prevSibling absorbs node
+          await prevSibling.mergeWithNext(separatorKey, node);
+          // Cursor STAYS at prevSibling position (don't move back!)
+          // Parent will replace prevSibling + node with just prevSibling
+          return {
+            descriptor: {
+              nodes: [prevSibling],
+              keys: [nodeKey], // Use the larger key
+            },
+            mergedWithPrev: true,
+            mergedWithNext: false,
+          };
+        }
+        cursor.moveNext(); // Move back to original position
+      } catch {
+        // If movement fails, continue without merging
+      }
+    }
+
+    return noMerge;
   }
 
   private async rebuildRoot(descriptor: NodeDescriptor<K, V, L, I>): Promise<void> {

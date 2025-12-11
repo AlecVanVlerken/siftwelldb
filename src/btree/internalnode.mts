@@ -242,6 +242,7 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     private readonly loadNode: (blockNumber: number) => Promise<BlockLeafNode | BlockInternalNode>,
     private readonly allocateInternalNode: () => Promise<BlockInternalNode>,
     private readonly stableRootBlock: number = -1,
+    private readonly onNodeFreed?: (blockNumber: number) => void,
   ) {}
 
   getBlockNumber(): number {
@@ -375,6 +376,8 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     const child = await this.getChildAt(0);
     // Don't free the stable root block - finalizeRoot will handle it
     if (this.blockNumber !== this.stableRootBlock) {
+      // Invalidate this node from cache before freeing
+      this.onNodeFreed?.(this.blockNumber);
       await this.file.freeBlock(this.blockNumber);
     }
     return child;
@@ -419,8 +422,14 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       throw new Error('Cannot merge internal node with non-internal node');
     }
     this.children.push(...nextNode.children);
+    // Copy the loaded children cache from the merged node
+    for (const [blockNum, child] of nextNode.childrenLoaded) {
+      this.childrenLoaded.set(blockNum, child);
+    }
     this.dirty = true;
     await this.flush();
+    // Invalidate the merged node from cache before freeing its block
+    this.onNodeFreed?.(nextNode.blockNumber);
     await this.file.freeBlock(nextNode.blockNumber);
   }
 
@@ -430,6 +439,13 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     newChildren: (BlockLeafNode | BlockInternalNode)[],
     newKeys: Buffer[],
   ): void {
+    // Clear cache entries for old children being removed
+    // This prevents stale cache hits if blocks are reallocated
+    for (let i = startIndex; i < startIndex + count && i < this.children.length; i++) {
+      const oldBlockNum = this.children[i].blockNumber;
+      this.childrenLoaded.delete(oldBlockNum);
+    }
+
     const newChildEntries: BlockChild[] = [];
     for (let i = 0; i < newChildren.length; i++) {
       const child = newChildren[i];

@@ -9,8 +9,9 @@ import { writeFileSync } from 'fs';
 describe('SimpleDbms Performance', () => {
   describe('timing of insertion and deletion of a lot of documents', () => {
     it('should insert and delete many documents', async () => {
-      const count = 50000;
-      const runs = 10;
+      const count = 200000;
+      const runs = 5;
+      const commitInterval = 1000; // Commit every 1000 ops for more frequent commits
       const allInsertResults: number[][] = [];
       const allDeleteResults: number[][] = [];
 
@@ -30,8 +31,9 @@ describe('SimpleDbms Performance', () => {
           [indices[i], indices[j]] = [indices[j], indices[i]];
         }
 
-        // Insert documents in random order
-        for (const i of indices) {
+        // Insert documents in random order with periodic commits
+        for (let idx = 0; idx < indices.length; idx++) {
+          const i = indices[idx];
           const doc = {
             id: `rapid${i}`,
             value: i,
@@ -42,6 +44,11 @@ describe('SimpleDbms Performance', () => {
           //stop timer
           const end = performance.now();
           insertResult.push(end - start);
+
+          // Periodic commit to avoid GC spikes
+          if ((idx + 1) % commitInterval === 0) {
+            await simpleDbms.commit();
+          }
         }
         await simpleDbms.commit();
         console.log(`All ${count} documents inserted.`);
@@ -52,14 +59,20 @@ describe('SimpleDbms Performance', () => {
           [indices[i], indices[j]] = [indices[j], indices[i]];
         }
         console.log(`Deletion order randomized.`);
-        // Delete documents in random order
-        for (const i of indices) {
+        // Delete documents in random order with periodic commits
+        for (let idx = 0; idx < indices.length; idx++) {
+          const i = indices[idx];
           //start timer
           const start = performance.now();
           await simpleDbms.deleteDocumentById('rapid', `rapid${i}`);
           //stop timer
           const end = performance.now();
           deleteResult.push(end - start);
+
+          // Periodic commit to avoid GC spikes
+          if ((idx + 1) % commitInterval === 0) {
+            await simpleDbms.commit();
+          }
         }
         await simpleDbms.commit();
         console.log(`All ${count} documents deleted.`);
@@ -96,6 +109,6 @@ describe('SimpleDbms Performance', () => {
       );
       expect(averageInsertResult.length).toBe(count);
       expect(averageDeleteResult.length).toBe(count);
-    }, 1200000); // 20 minute timeout
+    }, 3600000); // 60 minute timeout for 100k documents
   });
 });
