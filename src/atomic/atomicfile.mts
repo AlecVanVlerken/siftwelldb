@@ -1,13 +1,6 @@
-// atomicfile.mts
-// WAL-based atomic wrapper around a data File with multi-range support.
-//
-// Protocol for atomicWrite():
-//   1. Build a LogRecord with a compact binary payload describing all block updates
-//   2. writeAndSyncLog(): truncate log, write record in a single
-//      sector-sized write, fsync
-//   3. Write all blocks into the main file (+ fsync data)
-//   4. Truncate the log (optional cleanup; presence of a log means
-//      "redo me" on crash)
+// @author Henry Delacroix, Alexandre Bienfet
+// @date 2025-12-2
+ 
 
 import type { File } from '../core/file.mjs';
 import type { LogRecord } from './logrecord.mjs';
