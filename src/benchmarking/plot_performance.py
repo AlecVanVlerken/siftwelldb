@@ -2,8 +2,11 @@ import json
 import matplotlib.pyplot as plt
 import numpy as np
 
+RESULTS_DIR = 'results/'
+IMAGES_DIR = 'results/images/'
+
 # Load the performance data
-with open('performance_results.txt', 'r') as f:
+with open(RESULTS_DIR + 'performance_results.txt', 'r') as f:
     data = json.load(f)
 
 inserts = np.array(data[0])
@@ -78,7 +81,7 @@ ax4.legend()
 ax4.grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig('performance_graphs.png', dpi=150)
+plt.savefig(IMAGES_DIR + 'performance_graphs.png', dpi=150)
 # plt.show()  # Skip interactive display
 
 print("\n" + "=" * 60)
