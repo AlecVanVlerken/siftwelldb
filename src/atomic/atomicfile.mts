@@ -1,6 +1,5 @@
 // @author Henry Delacroix, Alexandre Bienfet
 // @date 2025-12-2
- 
 
 import type { File } from '../core/file.mjs';
 import type { LogRecord } from './logrecord.mjs';
