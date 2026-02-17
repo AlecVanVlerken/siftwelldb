@@ -1,6 +1,8 @@
 node_modules/
 build/
 coverage/
+*.data
+*.log
 
 .DS_Store
 Thumbs.db
