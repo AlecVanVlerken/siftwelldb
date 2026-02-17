@@ -74,14 +74,12 @@ describe('GET Performance Comparison', () => {
       console.log(`B+ Tree GET: Run ${run + 1}/${RUNS} complete`);
     }
 
-    const avgGetResult = Array.from({ length: COUNT }, (_, i) =>
-      allGetResults.reduce((sum, r) => sum + r[i], 0) / RUNS
+    const avgGetResult = Array.from(
+      { length: COUNT },
+      (_, i) => allGetResults.reduce((sum, r) => sum + r[i], 0) / RUNS,
     );
 
-    writeFileSync(
-      RESULTS_DIR + 'btree_get_200k.txt',
-      `[${avgGetResult.join(', ')}]`
-    );
+    writeFileSync(RESULTS_DIR + 'btree_get_200k.txt', `[${avgGetResult.join(', ')}]`);
 
     const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
     console.log(`B+ Tree GET avg first 1000: ${avg(avgGetResult.slice(0, 1000)).toFixed(4)} ms`);
@@ -127,14 +125,12 @@ describe('GET Performance Comparison', () => {
       console.log(`DBMS GET: Run ${run + 1}/${RUNS} complete`);
     }
 
-    const avgGetResult = Array.from({ length: COUNT }, (_, i) =>
-      allGetResults.reduce((sum, r) => sum + r[i], 0) / RUNS
+    const avgGetResult = Array.from(
+      { length: COUNT },
+      (_, i) => allGetResults.reduce((sum, r) => sum + r[i], 0) / RUNS,
     );
 
-    writeFileSync(
-      RESULTS_DIR + 'dbms_get_200k.txt',
-      `[${avgGetResult.join(', ')}]`
-    );
+    writeFileSync(RESULTS_DIR + 'dbms_get_200k.txt', `[${avgGetResult.join(', ')}]`);
 
     const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
     console.log(`DBMS GET avg first 1000: ${avg(avgGetResult.slice(0, 1000)).toFixed(4)} ms`);
@@ -142,4 +138,3 @@ describe('GET Performance Comparison', () => {
     expect(avgGetResult.length).toBe(COUNT);
   }, 3600000);
 });
-

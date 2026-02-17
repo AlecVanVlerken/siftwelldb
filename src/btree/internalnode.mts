@@ -550,5 +550,4 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       describe: () => this.describe(),
     };
   }
-
 }
