@@ -31,7 +31,7 @@ describe('QueryLanguage', () => {
   });
 
   it('parses select with where and specific fields', () => {
-    const parsed = ql.parse("SELECT id, population FROM cities WHERE population = 101032");
+    const parsed = ql.parse('SELECT id, population FROM cities WHERE population = 101032');
     expect(parsed.kind).toBe('select');
     if (parsed.kind === 'select') {
       expect(parsed.fields).toEqual(['id', 'population']);
@@ -51,9 +51,7 @@ describe('QueryLanguage', () => {
 
   it('executes select * with numeric where', async () => {
     const rows = await ql.execute('SELECT * FROM cities WHERE population = 101032');
-    expect(rows).toEqual([
-      { id: 'Leuven', population: 101032, country: 'Belgium' },
-    ]);
+    expect(rows).toEqual([{ id: 'Leuven', population: 101032, country: 'Belgium' }]);
   });
 
   it('executes projection without where', async () => {
@@ -72,7 +70,9 @@ describe('QueryLanguage', () => {
   });
 
   it('executes insert and can read it back', async () => {
-    const insertResult = await ql.execute("INSERT INTO cities VALUES {id: 'Antwerp', population: 530000, country: 'Belgium'}");
+    const insertResult = await ql.execute(
+      "INSERT INTO cities VALUES {id: 'Antwerp', population: 530000, country: 'Belgium'}",
+    );
     expect(insertResult).toEqual([]);
 
     const rows = await ql.execute("SELECT * FROM cities WHERE id = 'Antwerp'");
