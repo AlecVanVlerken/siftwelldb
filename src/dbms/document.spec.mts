@@ -2,7 +2,7 @@
 // date: 2025-12-08
 
 import { describe, expect, it } from 'vitest';
-import { JSONtoDocument, defaultIndexPredicate, parseRawDocument, type FieldValue } from './document.mjs';
+import { JSONtoDocument, defaultIndexPredicate, parseRawDocument } from './document.mjs';
 
 describe('document.mts', () => {
   it('parses a document string and splits iterable vs non-iterable fields', () => {
@@ -34,11 +34,6 @@ describe('document.mts', () => {
   });
 
   it('rejects unsupported value types', () => {
-    const bad: Record<string, FieldValue | Record<string, unknown>> = {
-      id: 'bad',
-      ok: true,
-      nested: { nope: true },
-    };
     const str = `{id: 'bad', ok: true, nested: { nope: true }}`;
     expect(() => JSONtoDocument(str, 'c')).toThrow();
   });

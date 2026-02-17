@@ -64,7 +64,8 @@ export class RecordStore {
 
     // allocate blocks for all chunks (in reversed order for linking)
     const blockIDs: number[] = [];
-    for (const chunk of chunks) {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    for (const _chunk of chunks) {
       blockIDs.push(await this.freeBlockFile.allocateBlock());
     }
 

@@ -11,8 +11,7 @@ import { BlockInternalNode } from './internalnode.mjs';
 type AnyNode = BlockLeafNode | BlockInternalNode;
 
 // Helper to count entries in tree via iteration
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function countEntries(tree: any): Promise<number> {
+async function countEntries<K, V>(tree: BPlusTree<K, V, BlockLeafNode, BlockInternalNode>): Promise<number> {
   let count = 0;
   for await (const [_k] of tree.iterate()) {
     count++;
@@ -21,11 +20,10 @@ async function countEntries(tree: any): Promise<number> {
 }
 
 // Helper to get all keys from tree
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getAllKeys(tree: any): Promise<string[]> {
+async function getAllKeys(tree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>): Promise<string[]> {
   const keys: string[] = [];
   for await (const [k] of tree.iterate()) {
-    keys.push((k as Buffer).toString());
+    keys.push(k.toString());
   }
   return keys;
 }
@@ -35,7 +33,7 @@ async function getTreeHeight(root: AnyNode): Promise<number> {
   let height = 1;
   let node: AnyNode = root;
   while (!node.isLeaf) {
-    const internal = node as BlockInternalNode;
+    const internal = node;
     const cursor = await internal.getChildCursorAtFirstChild();
     node = await cursor.getChild();
     height++;
@@ -48,14 +46,14 @@ async function verifyLeafChain(root: AnyNode): Promise<{ count: number; keys: st
   // Find leftmost leaf
   let node: AnyNode = root;
   while (!node.isLeaf) {
-    const internal = node as BlockInternalNode;
+    const internal = node;
     const cursor = await internal.getChildCursorAtFirstChild();
     node = await cursor.getChild();
   }
 
   // Traverse leaf chain
   const keys: string[] = [];
-  let leaf: BlockLeafNode | null = node as BlockLeafNode;
+  let leaf: BlockLeafNode | null = node;
   let leafCount = 0;
 
   while (leaf) {
@@ -208,7 +206,6 @@ describe('Block-based BPlusTree', () => {
 
   it('root block can change after splits', async () => {
     const tree = await BPlusTree.create(storage);
-    const initialRootBlock = tree.getRoot().getBlockNumber();
 
     // Insert enough to cause splits
     for (let i = 0; i < 50; i++) {
@@ -812,8 +809,8 @@ describe('Block-based BPlusTree', () => {
       const keys = [
         Buffer.from([0x00]),
         Buffer.from([0x00, 0x01]),
-        Buffer.from([0xFF]),
-        Buffer.from([0x7F]),
+        Buffer.from([0xff]),
+        Buffer.from([0x7f]),
         Buffer.from([0x80]),
       ];
 
@@ -913,7 +910,7 @@ describe('Block-based BPlusTree', () => {
       await file.commit();
 
       // Track root block after first operation
-      let rootBlock = tree.getRoot().getBlockNumber();
+      const rootBlock = tree.getRoot().getBlockNumber();
 
       // Simulate reopen
       const storage2 = new BlockNodeStorage(file);
