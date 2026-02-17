@@ -435,6 +435,34 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     newChildren: (BlockLeafNode | BlockInternalNode)[],
     newKeys: Buffer[],
   ): void {
+    // Fast path: detect no-op replacement (same children, same keys)
+    // This avoids marking the node dirty and triggering an unnecessary flush
+    if (count === newChildren.length) {
+      let unchanged = true;
+      for (let i = 0; i < count; i++) {
+        const oldChild = this.children[startIndex + i];
+        if (!oldChild) {
+          unchanged = false;
+          break;
+        }
+        const newChild = newChildren[i];
+        const newBlockNum = newChild instanceof BlockInternalNode ? newChild.blockNumber : newChild.getBlockNumber();
+        if (oldChild.blockNumber !== newBlockNum || this.compareKeys(oldChild.key, newKeys[i]) !== 0) {
+          unchanged = false;
+          break;
+        }
+      }
+      if (unchanged) {
+        // Still update the in-memory cache references
+        for (let i = 0; i < count; i++) {
+          const child = newChildren[i];
+          const blockNum = child instanceof BlockInternalNode ? child.blockNumber : child.getBlockNumber();
+          this.childrenLoaded.set(blockNum, child);
+        }
+        return;
+      }
+    }
+
     // Clear cache entries for old children being removed
     // This prevents stale cache hits if blocks are reallocated
     for (let i = startIndex; i < startIndex + count && i < this.children.length; i++) {

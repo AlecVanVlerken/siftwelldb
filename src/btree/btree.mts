@@ -57,7 +57,7 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
       throw new Error('Duplicate keys are not allowed in B+ trees.');
     }
     const descriptor = await cursor.insert(key, value);
-    await this.propagateChange(path, descriptor);
+    await this.propagateChange(path, descriptor, false);
   }
 
   async delete(key: K): Promise<boolean> {
@@ -68,7 +68,7 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
     }
     await cursor.removeKeyValuePairAfter();
     const descriptor = leaf.describe();
-    await this.propagateChange(path, descriptor);
+    await this.propagateChange(path, descriptor, true);
     return true;
   }
 
@@ -84,7 +84,7 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
       return false;
     }
     const descriptor = await cursor.updateValueAfter(value);
-    await this.propagateChange(path, descriptor);
+    await this.propagateChange(path, descriptor, false);
     return true;
   }
 
@@ -128,16 +128,20 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
     return { leaf: node, path };
   }
 
-  private async propagateChange(path: PathEntry<K, V, L, I>[], descriptor: NodeDescriptor<K, V, L, I>): Promise<void> {
+  private async propagateChange(
+    path: PathEntry<K, V, L, I>[],
+    descriptor: NodeDescriptor<K, V, L, I>,
+    attemptMerge: boolean,
+  ): Promise<void> {
     let currentDescriptor = descriptor;
     let replaceCount = 1; // How many children to replace (normally 1, 2 after merge)
 
     for (let i = path.length - 1; i >= 0; i--) {
       const cursor = path[i].cursor;
 
-      // Try to merge with siblings before propagating up
-      // This handles underflow by combining sparse nodes
-      if (currentDescriptor.nodes.length === 1) {
+      // Try to merge with siblings before propagating up (only during deletes)
+      // During inserts/updates, nodes only grow, so merging is never needed
+      if (attemptMerge && currentDescriptor.nodes.length === 1) {
         const mergeResult = await this.tryMergeWithSibling(cursor, currentDescriptor);
         currentDescriptor = mergeResult.descriptor;
         replaceCount = mergeResult.mergedWithPrev ? 2 : mergeResult.mergedWithNext ? 2 : 1;
