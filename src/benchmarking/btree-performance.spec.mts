@@ -140,4 +140,3 @@ describe('BPlusTree Performance', () => {
     expect(averageDeleteResult.length).toBe(count);
   }, 3600000); // 60 minute timeout for 100k documents
 });
-

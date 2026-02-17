@@ -815,8 +815,8 @@ describe('Block-based BPlusTree', () => {
       const keys = [
         Buffer.from([0x00]),
         Buffer.from([0x00, 0x01]),
-        Buffer.from([0xFF]),
-        Buffer.from([0x7F]),
+        Buffer.from([0xff]),
+        Buffer.from([0x7f]),
         Buffer.from([0x80]),
       ];
 
