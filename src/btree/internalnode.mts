@@ -1,7 +1,7 @@
 import type { ChildCursor, InternalNode } from './interfaces.mts';
 import { NodeBaseImpl, type NodeDescriptor } from './nodebase.mjs';
 import { ChildCursorImpl, type ChildAccess } from './childcursor.mjs';
-import type { LeafNodeImpl, BlockLeafNode } from './leafnode.mts';
+import { BlockLeafNode, type LeafNodeImpl } from './leafnode.mjs';
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 
 type BlockInternalDescriptor = NodeDescriptor<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
@@ -241,7 +241,7 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     private readonly blockSize: number,
     private readonly loadNode: (blockNumber: number) => Promise<BlockLeafNode | BlockInternalNode>,
     private readonly allocateInternalNode: () => Promise<BlockInternalNode>,
-    private readonly stableRootBlock: number = -1,
+    private readonly onNodeFreed?: (blockNumber: number) => void,
   ) {}
 
   getBlockNumber(): number {
@@ -373,10 +373,9 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       throw new Error('Internal node can only be deallocated when it has exactly one child.');
     }
     const child = await this.getChildAt(0);
-    // Don't free the stable root block - finalizeRoot will handle it
-    if (this.blockNumber !== this.stableRootBlock) {
-      await this.file.freeBlock(this.blockNumber);
-    }
+    // Invalidate this node from cache before freeing
+    this.onNodeFreed?.(this.blockNumber);
+    await this.file.freeBlock(this.blockNumber);
     return child;
   }
 
@@ -419,8 +418,14 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       throw new Error('Cannot merge internal node with non-internal node');
     }
     this.children.push(...nextNode.children);
+    // Copy the loaded children cache from the merged node
+    for (const [blockNum, child] of nextNode.childrenLoaded) {
+      this.childrenLoaded.set(blockNum, child);
+    }
     this.dirty = true;
     await this.flush();
+    // Invalidate the merged node from cache before freeing its block
+    this.onNodeFreed?.(nextNode.blockNumber);
     await this.file.freeBlock(nextNode.blockNumber);
   }
 
@@ -430,6 +435,13 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     newChildren: (BlockLeafNode | BlockInternalNode)[],
     newKeys: Buffer[],
   ): void {
+    // Clear cache entries for old children being removed
+    // This prevents stale cache hits if blocks are reallocated
+    for (let i = startIndex; i < startIndex + count && i < this.children.length; i++) {
+      const oldBlockNum = this.children[i].blockNumber;
+      this.childrenLoaded.delete(oldBlockNum);
+    }
+
     const newChildEntries: BlockChild[] = [];
     for (let i = 0; i < newChildren.length; i++) {
       const child = newChildren[i];
@@ -537,14 +549,5 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       splitIfNeeded: () => this.splitIfNeeded(),
       describe: () => this.describe(),
     };
-  }
-
-  /**
-   * Copy content from another internal node (used for stable root).
-   */
-  copyFrom(other: BlockInternalNode): void {
-    this.children = [...other.children];
-    this.childrenLoaded = new Map(other.childrenLoaded);
-    this.dirty = true;
   }
 }

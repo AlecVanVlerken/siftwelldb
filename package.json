@@ -6,9 +6,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run --dir src",
+    "test": "vitest run --dir src --exclude '**/benchmarking/**'",
     "test-build": "vitest run --dir build",
-    "coverage": "vitest run --coverage",
+    "coverage": "vitest run --coverage --exclude '**/benchmarking/**'",
     "build": "tsc --build",
     "clean": "tsc --build --clean",
     "lint": "eslint src/",

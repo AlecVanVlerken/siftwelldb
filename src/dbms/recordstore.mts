@@ -64,6 +64,7 @@ export class RecordStore {
 
     // allocate blocks for all chunks (in reversed order for linking)
     const blockIDs: number[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     for (const chunk of chunks) {
       blockIDs.push(await this.freeBlockFile.allocateBlock());
     }
@@ -82,8 +83,7 @@ export class RecordStore {
       await this.freeBlockFile.writeBlock(blockID, blockBuffer);
     }
 
-    // commit changes to FreeBlockFile
-    await this.freeBlockFile.commit();
+    // Note: commit is handled by the caller (DbmsBack.commit())
 
     // return the first block ID (head of the chain)
     return blockIDs[0];
@@ -173,8 +173,7 @@ export class RecordStore {
       await this.freeBlockFile.freeBlock(blockToFree);
     }
 
-    // Commit to make the changes persistent
-    await this.freeBlockFile.commit();
+    // Note: commit is handled by the caller (DbmsBack.commit())
   }
 
   /**
