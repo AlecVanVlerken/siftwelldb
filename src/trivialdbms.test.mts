@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { Database } from './trivialdbms.mjs';
-import { type File, RealFile } from './core/file.mjs';
+import { RealFile } from './core/file.mjs';
 import { MockFile } from './core/mockfile.mjs';
 
 async function testOneCommit(deepEqual: (x: unknown, y: unknown) => void) {

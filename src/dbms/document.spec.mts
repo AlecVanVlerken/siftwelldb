@@ -34,6 +34,7 @@ describe('document.mts', () => {
   });
 
   it('rejects unsupported value types', () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const bad: Record<string, FieldValue | Record<string, unknown>> = {
       id: 'bad',
       ok: true,
