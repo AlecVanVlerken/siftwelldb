@@ -79,14 +79,12 @@ describe('DBMS Comprehensive Performance', () => {
     }
 
     // Average
-    const avgGetResult = Array.from({ length: count }, (_, i) =>
-      allGetResults.reduce((sum, r) => sum + r[i], 0) / runs
+    const avgGetResult = Array.from(
+      { length: count },
+      (_, i) => allGetResults.reduce((sum, r) => sum + r[i], 0) / runs,
     );
 
-    writeFileSync(
-      RESULTS_DIR + 'dbms_get_performance.txt',
-      `[[${avgGetResult.join(', ')}], []]`
-    );
+    writeFileSync(RESULTS_DIR + 'dbms_get_performance.txt', `[[${avgGetResult.join(', ')}], []]`);
 
     const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
     console.log(`DBMS GET avg first 1000: ${avg(avgGetResult.slice(0, 1000)).toFixed(4)} ms`);
@@ -159,20 +157,24 @@ describe('DBMS Comprehensive Performance', () => {
       }
 
       // Average
-      const avgInsert = Array.from({ length: totalDocs }, (_, i) =>
-        allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs
+      const avgInsert = Array.from(
+        { length: totalDocs },
+        (_, i) => allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs,
       );
-      const avgDelete = Array.from({ length: totalDocs }, (_, i) =>
-        allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs
+      const avgDelete = Array.from(
+        { length: totalDocs },
+        (_, i) => allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs,
       );
 
       writeFileSync(
         RESULTS_DIR + `dbms_${numCollections}collections_performance.txt`,
-        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`
+        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`,
       );
 
       const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
-      console.log(`${numCollections} collections: Insert=${avg(avgInsert).toFixed(4)}ms, Delete=${avg(avgDelete).toFixed(4)}ms`);
+      console.log(
+        `${numCollections} collections: Insert=${avg(avgInsert).toFixed(4)}ms, Delete=${avg(avgDelete).toFixed(4)}ms`,
+      );
     }
   }, 900000);
 
@@ -229,20 +231,24 @@ describe('DBMS Comprehensive Performance', () => {
       }
 
       // Average
-      const avgInsert = Array.from({ length: count }, (_, i) =>
-        allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs
+      const avgInsert = Array.from(
+        { length: count },
+        (_, i) => allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs,
       );
-      const avgDelete = Array.from({ length: count }, (_, i) =>
-        allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs
+      const avgDelete = Array.from(
+        { length: count },
+        (_, i) => allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs,
       );
 
       writeFileSync(
         RESULTS_DIR + `dbms_${numIndexed}indexed_performance.txt`,
-        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`
+        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`,
       );
 
       const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
-      console.log(`${numIndexed} indexed fields: Insert=${avg(avgInsert).toFixed(4)}ms, Delete=${avg(avgDelete).toFixed(4)}ms`);
+      console.log(
+        `${numIndexed} indexed fields: Insert=${avg(avgInsert).toFixed(4)}ms, Delete=${avg(avgDelete).toFixed(4)}ms`,
+      );
     }
   }, 900000);
 
@@ -303,16 +309,18 @@ describe('DBMS Comprehensive Performance', () => {
       }
 
       // Average
-      const avgInsert = Array.from({ length: count }, (_, i) =>
-        allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs
+      const avgInsert = Array.from(
+        { length: count },
+        (_, i) => allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs,
       );
-      const avgDelete = Array.from({ length: count }, (_, i) =>
-        allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs
+      const avgDelete = Array.from(
+        { length: count },
+        (_, i) => allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs,
       );
 
       writeFileSync(
         RESULTS_DIR + `dbms_${config.name}docs_performance.txt`,
-        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`
+        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`,
       );
 
       const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;

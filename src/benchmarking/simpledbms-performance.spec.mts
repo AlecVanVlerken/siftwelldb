@@ -114,4 +114,3 @@ describe('SimpleDbms Performance', () => {
     }, 3600000); // 60 minute timeout for 100k documents
   });
 });
-
