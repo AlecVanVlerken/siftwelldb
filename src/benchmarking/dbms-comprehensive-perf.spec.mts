@@ -253,10 +253,9 @@ describe('DBMS Comprehensive Performance', () => {
   // ============================================================
   // TEST 4: DOCUMENT SIZE (via field size)
   // Format: [[insert_times...], [delete_times...]]
-  // Uses 50,000 docs for consistent comparison (large docs are slower)
   // ============================================================
   it('performance with different document sizes', async () => {
-    const count = 50000;
+    const count = 200000;
     const runs = 3;
     const docSizes = [
       { name: 'small', fields: 1, fieldSize: 10 },
