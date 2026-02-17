@@ -60,7 +60,7 @@ async function getFirstFreeBlock(fbf: FreeBlockFile): Promise<number> {
 async function setFirstFreeBlock(fbf: FreeBlockFile, blockNum: number): Promise<void> {
   fbf._ensureOpen();
   if (blockNum !== 0) {
-    validateBlockNumber(fbf, blockNum);
+    await validateBlockNumber(fbf, blockNum);
   }
 
   const header = await getHeader(fbf);
@@ -81,8 +81,8 @@ async function setFirstFreeBlock(fbf: FreeBlockFile, blockNum: number): Promise<
  *
  * @author Alec Van Vlerken
  */
-function allocateNewBlock(fbf: FreeBlockFile): number {
-  const blockCount = getBlockCount(fbf);
+async function allocateNewBlock(fbf: FreeBlockFile): Promise<number> {
+  const blockCount = await getBlockCount(fbf);
   const newBlockNum = blockCount;
 
   const buf = Buffer.alloc(fbf._getBlockSize());
@@ -103,10 +103,10 @@ export async function allocateBlock(fbf: FreeBlockFile): Promise<number> {
 
   const head = await getFirstFreeBlock(fbf);
   if (head === 0) {
-    return allocateNewBlock(fbf);
+    return await allocateNewBlock(fbf);
   }
 
-  validateBlockNumber(fbf, head);
+  await validateBlockNumber(fbf, head);
 
   let headBuf = fbf._getDirtyBlock(head);
   if (!headBuf) {
@@ -134,7 +134,7 @@ export async function freeBlock(fbf: FreeBlockFile, blockNumber: number): Promis
   fbf._ensureOpen();
   if (blockNumber === 0) throw new Error('Cannot free block 0');
 
-  validateBlockNumber(fbf, blockNumber);
+  await validateBlockNumber(fbf, blockNumber);
 
   const currentHead = await getFirstFreeBlock(fbf);
 
@@ -164,7 +164,7 @@ export async function freeBlock(fbf: FreeBlockFile, blockNumber: number): Promis
 export async function getFreeBlockCount(fbf: FreeBlockFile): Promise<number> {
   fbf._ensureOpen();
 
-  const blockCount = getBlockCount(fbf);
+  const blockCount = await getBlockCount(fbf);
   let count = 0;
   let current = await getFirstFreeBlock(fbf);
   let steps = 0;

@@ -74,7 +74,7 @@ describe('B+ Tree Comprehensive Performance', () => {
         // GET a random key from what we've inserted so far
         const randomIdx = Math.floor(Math.random() * insertedKeys.length);
         const queryKey = insertedKeys[randomIdx];
-
+        
         const start = performance.now();
         await tree.get(makeKey(queryKey));
         getResult.push(performance.now() - start);
@@ -91,12 +91,14 @@ describe('B+ Tree Comprehensive Performance', () => {
     }
 
     // Average across runs
-    const avgGetResult = Array.from(
-      { length: count },
-      (_, i) => allGetResults.reduce((sum, r) => sum + r[i], 0) / runs,
+    const avgGetResult = Array.from({ length: count }, (_, i) =>
+      allGetResults.reduce((sum, r) => sum + r[i], 0) / runs
     );
 
-    writeFileSync(RESULTS_DIR + 'btree_get_performance.txt', `[[${avgGetResult.join(', ')}], []]`);
+    writeFileSync(
+      RESULTS_DIR + 'btree_get_performance.txt',
+      `[[${avgGetResult.join(', ')}], []]`
+    );
 
     const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
     console.log(`GET avg first 1000: ${avg(avgGetResult.slice(0, 1000)).toFixed(4)} ms`);
@@ -138,11 +140,11 @@ describe('B+ Tree Comprehensive Performance', () => {
           const key = Buffer.alloc(keySize);
           key.writeDoubleBE(i, 0);
           const value = makeValue(i, 20);
-
+          
           const start = performance.now();
           await tree.insert(key, value);
           insertResult.push(performance.now() - start);
-
+          
           if ((idx + 1) % COMMIT_INTERVAL === 0) {
             await freeBlockFile.commit();
           }
@@ -155,11 +157,11 @@ describe('B+ Tree Comprehensive Performance', () => {
           const i = deleteOrder[idx];
           const key = Buffer.alloc(keySize);
           key.writeDoubleBE(i, 0);
-
+          
           const start = performance.now();
           await tree.delete(key);
           deleteResult.push(performance.now() - start);
-
+          
           if ((idx + 1) % COMMIT_INTERVAL === 0) {
             await freeBlockFile.commit();
           }
@@ -171,18 +173,16 @@ describe('B+ Tree Comprehensive Performance', () => {
       }
 
       // Average
-      const avgInsert = Array.from(
-        { length: count },
-        (_, i) => allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs,
+      const avgInsert = Array.from({ length: count }, (_, i) =>
+        allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs
       );
-      const avgDelete = Array.from(
-        { length: count },
-        (_, i) => allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs,
+      const avgDelete = Array.from({ length: count }, (_, i) =>
+        allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs
       );
 
       writeFileSync(
         RESULTS_DIR + `btree_keysize_${keySize}_performance.txt`,
-        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`,
+        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`
       );
 
       const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
@@ -223,11 +223,11 @@ describe('B+ Tree Comprehensive Performance', () => {
           const i = indices[idx];
           const key = makeKey(i);
           const value = makeValue(i, valueSize);
-
+          
           const start = performance.now();
           await tree.insert(key, value);
           insertResult.push(performance.now() - start);
-
+          
           if ((idx + 1) % COMMIT_INTERVAL === 0) {
             await freeBlockFile.commit();
           }
@@ -239,11 +239,11 @@ describe('B+ Tree Comprehensive Performance', () => {
         for (let idx = 0; idx < count; idx++) {
           const i = deleteOrder[idx];
           const key = makeKey(i);
-
+          
           const start = performance.now();
           await tree.delete(key);
           deleteResult.push(performance.now() - start);
-
+          
           if ((idx + 1) % COMMIT_INTERVAL === 0) {
             await freeBlockFile.commit();
           }
@@ -255,24 +255,20 @@ describe('B+ Tree Comprehensive Performance', () => {
       }
 
       // Average
-      const avgInsert = Array.from(
-        { length: count },
-        (_, i) => allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs,
+      const avgInsert = Array.from({ length: count }, (_, i) =>
+        allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs
       );
-      const avgDelete = Array.from(
-        { length: count },
-        (_, i) => allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs,
+      const avgDelete = Array.from({ length: count }, (_, i) =>
+        allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs
       );
 
       writeFileSync(
         RESULTS_DIR + `btree_valuesize_${valueSize}_performance.txt`,
-        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`,
+        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`
       );
 
       const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
-      console.log(
-        `ValueSize ${valueSize}: Insert=${avg(avgInsert).toFixed(4)}ms, Delete=${avg(avgDelete).toFixed(4)}ms`,
-      );
+      console.log(`ValueSize ${valueSize}: Insert=${avg(avgInsert).toFixed(4)}ms, Delete=${avg(avgDelete).toFixed(4)}ms`);
     }
   }, 900000);
 
@@ -313,11 +309,11 @@ describe('B+ Tree Comprehensive Performance', () => {
           const i = indices[idx];
           const key = makeKey(i);
           const value = makeValue(i);
-
+          
           const start = performance.now();
           await tree.insert(key, value);
           insertResult.push(performance.now() - start);
-
+          
           if ((idx + 1) % COMMIT_INTERVAL === 0) {
             await freeBlockFile.commit();
           }
@@ -331,11 +327,11 @@ describe('B+ Tree Comprehensive Performance', () => {
         for (let idx = 0; idx < count; idx++) {
           const i = indices[idx];
           const key = makeKey(i);
-
+          
           const start = performance.now();
           await tree.delete(key);
           deleteResult.push(performance.now() - start);
-
+          
           if ((idx + 1) % COMMIT_INTERVAL === 0) {
             await freeBlockFile.commit();
           }
@@ -347,18 +343,16 @@ describe('B+ Tree Comprehensive Performance', () => {
       }
 
       // Average
-      const avgInsert = Array.from(
-        { length: count },
-        (_, i) => allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs,
+      const avgInsert = Array.from({ length: count }, (_, i) =>
+        allInsertResults.reduce((sum, r) => sum + r[i], 0) / runs
       );
-      const avgDelete = Array.from(
-        { length: count },
-        (_, i) => allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs,
+      const avgDelete = Array.from({ length: count }, (_, i) =>
+        allDeleteResults.reduce((sum, r) => sum + r[i], 0) / runs
       );
 
       writeFileSync(
         RESULTS_DIR + `btree_${pattern}_performance.txt`,
-        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`,
+        `[[${avgInsert.join(', ')}], [${avgDelete.join(', ')}]]`
       );
 
       const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
