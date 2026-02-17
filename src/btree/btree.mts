@@ -157,7 +157,7 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
    * Attempt to merge a node with its sibling if possible.
    * This is called during delete to keep the tree compact.
    * Returns the updated descriptor and flags indicating if merge occurred.
-   *
+   * 
    * IMPORTANT: When merging, cursor position matters for replaceKeysAndChildrenAfterBy:
    * - mergedWithPrev: cursor stays at prev position, replace 2 children from there
    * - mergedWithNext: cursor stays at current position, replace 2 children from there

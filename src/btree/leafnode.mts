@@ -454,4 +454,5 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
       flush: () => this.flush(),
     };
   }
+
 }

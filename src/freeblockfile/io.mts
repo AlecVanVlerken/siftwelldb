@@ -34,7 +34,7 @@ export async function readBlock(fbf: FreeBlockFile, blockNumber: number): Promis
     return Buffer.from(cached);
   }
 
-  validateBlockNumber(fbf, blockNumber);
+  await validateBlockNumber(fbf, blockNumber);
 
   const offset = offsetOf(fbf, blockNumber);
   const buffer = Buffer.alloc(fbf._getBlockSize());
@@ -47,7 +47,7 @@ export async function readBlock(fbf: FreeBlockFile, blockNumber: number): Promis
  */
 export async function writeBlock(fbf: FreeBlockFile, blockNumber: number, data: Buffer): Promise<void> {
   fbf._ensureOpen();
-  validateBlockNumber(fbf, blockNumber);
+  await validateBlockNumber(fbf, blockNumber);
 
   if (data.length > fbf._getBlockSize() - 1) {
     throw new Error(`Block too large (${data.length})`);
@@ -104,7 +104,7 @@ export function offsetOf(fbf: FreeBlockFile, blockNum: number): number {
  *
  * @author Arthur Cukier, Alec Van Vlerken
  */
-export function getBlockCount(fbf: FreeBlockFile): number {
+export async function getBlockCount(fbf: FreeBlockFile): Promise<number> {
   fbf._ensureOpen();
   // Use cached block count instead of calling stat() every time
   const physicalBlocks = fbf._getCachedBlockCount();
@@ -139,8 +139,8 @@ function getHighestDirtyBlock(fbf: FreeBlockFile): number {
  *
  * @author Alec Van Vlerken
  */
-export function validateBlockNumber(fbf: FreeBlockFile, blockNum: number): void {
-  const blockCount = getBlockCount(fbf);
+export async function validateBlockNumber(fbf: FreeBlockFile, blockNum: number): Promise<void> {
+  const blockCount = await getBlockCount(fbf);
   if (blockNum < 0 || blockNum >= blockCount) {
     throw new Error(`Invalid block number ${blockNum.toString()} (block count = ${blockCount.toString()})`);
   }

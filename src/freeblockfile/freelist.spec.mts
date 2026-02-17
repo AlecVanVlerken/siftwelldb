@@ -62,9 +62,9 @@ describe('freelist.mjs', () => {
   });
 
   it('newly allocated block increases logical block count before commit', async () => {
-    const before = getBlockCount(fbf);
+    const before = await getBlockCount(fbf);
     await allocateBlock(fbf);
-    const after = getBlockCount(fbf);
+    const after = await getBlockCount(fbf);
     assert.strictEqual(after, before + 1);
   });
 
@@ -77,7 +77,7 @@ describe('freelist.mjs', () => {
     fbf = new FreeBlockFile(atomic, fbf._getBlockSize());
     await fbf.open();
 
-    const count = getBlockCount(fbf);
+    const count = await getBlockCount(fbf);
     assert.strictEqual(count, 1);
   });
 
