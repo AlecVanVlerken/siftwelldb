@@ -105,6 +105,7 @@ describe('DBMS Comprehensive Performance', () => {
     const runs = 3;
 
     for (const numCollections of collectionCounts) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const docsPerCollection = Math.floor(totalDocs / numCollections);
       const allInsertResults: number[][] = [];
       const allDeleteResults: number[][] = [];

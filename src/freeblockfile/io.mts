@@ -104,6 +104,7 @@ export function offsetOf(fbf: FreeBlockFile, blockNum: number): number {
  *
  * @author Arthur Cukier, Alec Van Vlerken
  */
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function getBlockCount(fbf: FreeBlockFile): Promise<number> {
   fbf._ensureOpen();
   // Use cached block count instead of calling stat() every time
