@@ -206,6 +206,8 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     private readonly compareKeys: (a: Buffer, b: Buffer) => number,
     private readonly blockSize: number,
     private readonly allocateNode: () => Promise<BlockLeafNode>,
+    private readonly loadNode?: (blockNumber: number) => Promise<BlockLeafNode | BlockInternalNode>,
+    private readonly onNodeFreed?: (blockNumber: number) => void,
   ) {}
 
   getBlockNumber(): number {
@@ -300,6 +302,15 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     if (this.nextLeafBlock === 0) {
       return null;
     }
+    // Use the storage cache if loadNode callback is available
+    if (this.loadNode) {
+      const node = await this.loadNode(this.nextLeafBlock);
+      if (node instanceof BlockLeafNode) {
+        return node;
+      }
+      throw new Error(`Expected leaf node at block ${this.nextLeafBlock}, got internal node`);
+    }
+    // Fallback: create new node and load from disk (no caching)
     const nextLeaf = new BlockLeafNode(
       this.file,
       this.nextLeafBlock,
@@ -338,6 +349,8 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     this.nextLeafBlock = nextNode.nextLeafBlock;
     this.dirty = true;
     await this.flush();
+    // Invalidate the merged node from cache before freeing its block
+    this.onNodeFreed?.(nextNode.blockNumber);
     await this.file.freeBlock(nextNode.blockNumber);
   }
 
@@ -440,14 +453,5 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
       splitIfNeeded: () => this.splitIfNeeded(),
       flush: () => this.flush(),
     };
-  }
-
-  /**
-   * Copy content from another leaf node (used for stable root).
-   */
-  copyFrom(other: BlockLeafNode): void {
-    this.entries = [...other.entries];
-    this.nextLeafBlock = other.nextLeafBlock;
-    this.dirty = true;
   }
 }

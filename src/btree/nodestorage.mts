@@ -82,15 +82,19 @@ export type BlockNodeStorageOptions = {
 
 /**
  * Block-based node storage implementation.
- * Stores B+ tree nodes in a FreeBlockFile with stable root block.
+ * Stores B+ tree nodes in a FreeBlockFile with dynamic root.
+ * The root block can change after splits/merges - the caller is responsible
+ * for tracking the current root block number.
  */
 export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNode, BlockInternalNode> {
   readonly compareKeys: (a: Buffer, b: Buffer) => number;
   readonly keySize: (key: Buffer) => number = (key) => key.length;
 
   private readonly blockSize: number;
-  private stableRootBlock: number = 0;
   private currentRoot: BlockLeafNode | BlockInternalNode | null = null;
+
+  // Cache for loaded nodes to avoid repeated disk reads
+  private readonly nodeCache: Map<number, BlockLeafNode | BlockInternalNode> = new Map();
 
   constructor(
     private readonly file: FreeBlockFile,
@@ -106,31 +110,24 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   }
 
   /**
-   * Get the stable root block number.
-   * This number never changes after tree creation.
-   */
-  getStableRootBlock(): number {
-    return this.stableRootBlock;
-  }
-
-  /**
    * Create a new empty tree.
-   * Allocates a stable root block.
+   * Returns the root node. The caller should store the root block number.
    */
   async createTree(): Promise<BlockLeafNode> {
-    this.stableRootBlock = await this.file.allocateBlock();
-    const root = this.createLeafNode(this.stableRootBlock);
+    const blockNumber = await this.file.allocateBlock();
+    const root = this.createLeafNode(blockNumber);
     await root.initEmpty();
     this.currentRoot = root;
+    // Cache the newly created root
+    this.nodeCache.set(blockNumber, root);
     return root;
   }
 
   /**
-   * Open an existing tree from its stable root block.
+   * Open an existing tree from its root block.
    */
-  async openTree(stableRootBlock: number): Promise<BlockLeafNode | BlockInternalNode> {
-    this.stableRootBlock = stableRootBlock;
-    const root = await this.loadNode(stableRootBlock);
+  async openTree(rootBlock: number): Promise<BlockLeafNode | BlockInternalNode> {
+    const root = await this.loadNode(rootBlock);
     this.currentRoot = root;
     return root;
   }
@@ -139,38 +136,19 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     const blockNumber = await this.file.allocateBlock();
     const node = this.createInternalNode(blockNumber);
     await node.initWith(nodes, keys);
+    // Cache the newly allocated node
+    this.nodeCache.set(blockNumber, node);
     return node;
   }
 
   /**
-   * Ensures root is in the stable root block.
-   * If root has moved (due to split), copies content to stable block.
+   * For block storage with dynamic root, finalizeRoot is a no-op.
+   * The root can be at any block - the caller tracks the root block number.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async finalizeRoot(root: BlockLeafNode | BlockInternalNode): Promise<BlockLeafNode | BlockInternalNode> {
-    const rootBlockNumber = root instanceof BlockInternalNode ? root.getBlockNumber() : root.getBlockNumber();
-
-    if (rootBlockNumber === this.stableRootBlock) {
-      // Root is already in stable block
-      this.currentRoot = root;
-      return root;
-    }
-
-    // Root has moved - copy content to stable block
-    if (root instanceof BlockLeafNode) {
-      const stableRoot = this.createLeafNode(this.stableRootBlock);
-      stableRoot.copyFrom(root);
-      await stableRoot.flush();
-      await this.file.freeBlock(root.getBlockNumber());
-      this.currentRoot = stableRoot;
-      return stableRoot;
-    } else {
-      const stableRoot = this.createInternalNode(this.stableRootBlock);
-      stableRoot.copyFrom(root);
-      await stableRoot.flush();
-      await this.file.freeBlock(root.getBlockNumber());
-      this.currentRoot = stableRoot;
-      return stableRoot;
-    }
+    this.currentRoot = root;
+    return root;
   }
 
   /**
@@ -180,6 +158,8 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     const blockNumber = await this.file.allocateBlock();
     const node = this.createLeafNode(blockNumber);
     await node.initEmpty();
+    // Cache the newly allocated node
+    this.nodeCache.set(blockNumber, node);
     return node;
   }
 
@@ -187,25 +167,42 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    * Load a node from disk by block number.
    */
   async loadNode(blockNumber: number): Promise<BlockLeafNode | BlockInternalNode> {
+    // Check cache first
+    const cached = this.nodeCache.get(blockNumber);
+    if (cached) {
+      return cached;
+    }
+
     const rawBuffer = await this.file.readBlock(blockNumber);
     // FreeBlockFile stores block type at byte 0, our data starts at byte 1
     const nodeType = rawBuffer.readUInt8(1);
 
+    let node: BlockLeafNode | BlockInternalNode;
     if (nodeType === BLOCK_NODE_TYPE_LEAF) {
-      const node = this.createLeafNode(blockNumber);
+      node = this.createLeafNode(blockNumber);
       await node.load();
-      return node;
     } else if (nodeType === BLOCK_NODE_TYPE_INTERNAL) {
-      const node = this.createInternalNode(blockNumber);
+      node = this.createInternalNode(blockNumber);
       await node.load();
-      return node;
     } else {
       throw new Error(`Unknown node type: ${nodeType}`);
     }
+
+    // Cache the loaded node
+    this.nodeCache.set(blockNumber, node);
+    return node;
   }
 
   private createLeafNode(blockNumber: number): BlockLeafNode {
-    return new BlockLeafNode(this.file, blockNumber, this.compareKeys, this.blockSize, () => this.allocateLeafNode());
+    return new BlockLeafNode(
+      this.file,
+      blockNumber,
+      this.compareKeys,
+      this.blockSize,
+      () => this.allocateLeafNode(),
+      (bn) => this.loadNode(bn),
+      (bn) => this.invalidateNode(bn),
+    );
   }
 
   private createInternalNode(blockNumber: number): BlockInternalNode {
@@ -219,7 +216,14 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
         const bn = await this.file.allocateBlock();
         return this.createInternalNode(bn);
       },
-      this.stableRootBlock,
+      (bn) => this.invalidateNode(bn),
     );
+  }
+
+  /**
+   * Remove a node from the cache when it is freed (e.g., after merge).
+   */
+  private invalidateNode(blockNumber: number): void {
+    this.nodeCache.delete(blockNumber);
   }
 }

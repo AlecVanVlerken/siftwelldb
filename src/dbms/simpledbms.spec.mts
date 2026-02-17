@@ -9,8 +9,8 @@ describe('SimpleDbms', () => {
   let simpleDbms: SimpleDbms;
 
   beforeEach(async () => {
-    const dataFile = new MockFile(4096);
-    const logFile = new MockFile(4000096);
+    const dataFile = new MockFile(256);
+    const logFile = new MockFile(4096);
     simpleDbms = await SimpleDbms.create(dataFile, logFile);
   });
 
@@ -836,10 +836,13 @@ describe('SimpleDbms', () => {
   });
 
   describe('stress tests', () => {
-    it('handles rapid sequential inserts', async () => {
-      const count = 50;
+    it('handles rapid sequential inserts and deletions', async () => {
+      const count = 1360;
       for (let i = 0; i < count; i++) {
-        const doc = { id: `rapid${i}`, value: i };
+        const doc = {
+          id: `rapid${i}`, // long id to test handling
+          value: i,
+        };
         await simpleDbms.insertDocument('rapid', JSON.stringify(doc));
       }
 
@@ -848,7 +851,18 @@ describe('SimpleDbms', () => {
       const last = await simpleDbms.getDocumentById('rapid', `rapid${count - 1}`);
 
       expect(JSON.parse(first)).toEqual({ id: 'rapid0', value: 0 });
-      expect(JSON.parse(last)).toEqual({ id: `rapid${count - 1}`, value: count - 1 });
+      expect(JSON.parse(last)).toEqual({
+        id: `rapid${count - 1}`,
+        value: count - 1,
+      });
+
+      for (let i = 0; i < count; i++) {
+        await simpleDbms.deleteDocumentById('rapid', `rapid${i}`);
+      }
+      // Verify deletion
+      for (let i = 0; i < count; i++) {
+        await expect(simpleDbms.getDocumentById('rapid', `rapid${i}`)).rejects.toThrow();
+      }
     });
 
     it('handles documents with many indexed fields', async () => {

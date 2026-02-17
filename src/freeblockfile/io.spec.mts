@@ -238,9 +238,8 @@ describe('io.mjs', () => {
     raw.crash();
 
     fbf = new FreeBlockFile(atomic, fbf._getBlockSize());
-    await fbf.open();
-
-    await assert.rejects(() => getBlockCount(fbf));
+    // Corruption is now detected during open() instead of getBlockCount()
+    await assert.rejects(() => fbf.open());
   });
 
   it('getBlockCount includes dirty blocks even after commit and reopen', async () => {
