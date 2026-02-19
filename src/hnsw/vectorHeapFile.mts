@@ -1,3 +1,6 @@
+//@author: Thomas Dumon with usage of Claude sonnet 4.6
+//@date: 2026-02-18
+
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { VectorSerializer } from './vectorSerializer.mjs';
 
@@ -10,9 +13,9 @@ export interface VectorPointer {
  * VectorHeapFile
  * ---------------
  * Persistent heap-file storage for fixed-dimension float32 vectors.
- * Built on top of FreeBlockFile (the same block-layer used by the B+ tree).
+ * Built on top of FreeBlockFile.
  *
- * Lifecycle (mirrors BPlusTree / BlockNodeStorage):
+ * Lifecycle :
  *   const fbf = new FreeBlockFile(atomicFile, blockSize);
  *   await fbf.create();           // new file — or —
  *   await fbf.open();             // existing file
@@ -65,9 +68,7 @@ export class VectorHeapFile {
     this.dataOffset = 2 + this.bitmapBytes; // usedCount(2) + bitmap
   }
 
-  // ---------------------------------------------------------------------------
-  // Low-level page helpers
-  // ---------------------------------------------------------------------------
+  // LOW-LEVEL PAGE HELPERS
 
   /**
    * Read usable area of a page (bytes [1..blockSize-1] of the raw block).
@@ -129,9 +130,7 @@ export class VectorHeapFile {
     return this.dataOffset + slotId * this.vectorByteSize;
   }
 
-  // ---------------------------------------------------------------------------
-  // Finding a free slot
-  // ---------------------------------------------------------------------------
+  // FINDING A FREE SLOT
 
   /**
    * Find the first free slot in an existing page, or return -1 if full.
@@ -154,9 +153,7 @@ export class VectorHeapFile {
     return { pageId, usable };
   }
 
-  // ---------------------------------------------------------------------------
-  // Public API
-  // ---------------------------------------------------------------------------
+  // PUBLIC API
 
   /**
    * Insert `vector` and return a persistent pointer to its location.
@@ -270,5 +267,19 @@ export class VectorHeapFile {
         }
       }
     }
+  }
+
+  /**
+   * Atomically flush all dirty vector blocks to disk via the WAL.
+   * Must be called BEFORE the graph storage commit to preserve the
+   * "data before index" crash-consistency invariant.
+   */
+  async commit(): Promise<void> {
+    await this.file.commit();
+  }
+
+  /** Close the underlying file. Safe to call after commit(). */
+  async close(): Promise<void> {
+    await this.file.close();
   }
 }

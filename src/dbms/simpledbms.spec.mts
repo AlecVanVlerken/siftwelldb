@@ -4,6 +4,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { MockFile } from '../core/mockfile.mjs';
 import { SimpleDbms } from './simpledbms.mjs';
+import { type HnswConfig, type HnswFileFactory } from './dbmsback.mjs';
 
 describe('SimpleDbms', () => {
   let simpleDbms: SimpleDbms;
@@ -1189,6 +1190,628 @@ describe('SimpleDbms', () => {
 
       const result = await simpleDbms.getDocumentById('boundary', 'zero');
       expect(JSON.parse(result)).toEqual(doc);
+    });
+  });
+});
+
+// ─── Semantic Search (HNSW) ──────────────────────────────────────────────────
+//
+// The tests below verify the HNSW-backed semantic search feature of SimpleDbms.
+//
+// Design notes for helpers
+// ─────────────────────────
+// makeTestEmbeddingFn
+//   A real language model is not available in unit tests.  Instead we use a
+//   deterministic trigonometric hash: for every dimension i and every character
+//   at position j in the text we accumulate sin((charCode + i*17) * 0.1).  The
+//   result has the property that strings with very different characters end up
+//   in very different directions in the embedding space, which is sufficient for
+//   all nearest-neighbour assertions below.
+//
+// makeTestFileFactory
+//   HNSW needs two FreeBlockFile instances per collection ("graph" and
+//   "vector").  Each FreeBlockFile in turn owns two raw files (data + log).
+//   We back every one of these with MockFile so no disk I/O occurs.
+//   Crucially, the factory *caches* its MockFile pairs: the same objects are
+//   returned on every call for the same (collection, role) key.  This is
+//   essential for the reopen tests, where DbmsBack.open() calls the same
+//   factory and expects to see the data that was written by DbmsBack.create().
+
+/**
+ * Create a tiny, deterministic embedding function for unit tests.
+ *
+ * @param dim - Dimensionality of the output vector (keep small, e.g. 8, for speed).
+ */
+function makeTestEmbeddingFn(dim: number): (text: string) => Promise<Float32Array> {
+  return (text: string): Promise<Float32Array> => {
+    const v = new Float32Array(dim);
+    for (let i = 0; i < dim; i++) {
+      let sum = 0;
+      for (let j = 0; j < text.length; j++) {
+        // Spread characters across all dimensions deterministically.
+        sum += Math.sin((text.charCodeAt(j) + i * 17) * 0.1);
+      }
+      // Normalise by length so short and long strings have comparable magnitudes.
+      v[i] = sum / (text.length || 1);
+    }
+    return Promise.resolve(v);
+  };
+}
+
+/**
+ * Create an HnswFileFactory backed entirely by in-memory MockFiles.
+ *
+ * The factory caches by `"${collection}:${role}"` so that multiple calls
+ * (create then open) always operate on the same underlying MockFile objects.
+ */
+function makeTestFileFactory(): HnswFileFactory {
+  const cache = new Map<string, { dataFile: MockFile; logFile: MockFile }>();
+  return (col: string, role: 'graph' | 'vector') => {
+    const key = `${col}:${role}`;
+    if (!cache.has(key)) {
+      // Sector size 4096 matches the FreeBlockFile block size; log is larger for WAL.
+      cache.set(key, { dataFile: new MockFile(4096), logFile: new MockFile(65536) });
+    }
+    return cache.get(key)!;
+  };
+}
+
+describe('SimpleDbms – semantic search (HNSW)', () => {
+  /** Vector dimension kept small so tests run fast. */
+  const DIM = 8;
+
+  // Shared state for the HNSW-enabled database created in beforeEach.
+  let dataFile: MockFile;
+  let logFile: MockFile;
+  let fileFactory: HnswFileFactory;
+  let hnswConfig: HnswConfig;
+  let db: SimpleDbms;
+
+  beforeEach(async () => {
+    dataFile = new MockFile(4096);
+    logFile = new MockFile(4000096);
+    fileFactory = makeTestFileFactory();
+    hnswConfig = {
+      dimension: DIM,
+      embeddingFn: makeTestEmbeddingFn(DIM),
+      fileFactory,
+      // Use small HNSW parameters so the tests stay fast on CI.
+      M: 8,
+      efConstruction: 32,
+      efSearch: 16,
+    };
+    db = await SimpleDbms.create(dataFile, logFile, hnswConfig);
+  });
+
+  // ── 1. Error handling when HNSW is not configured ─────────────────────────
+
+  describe('error handling when HNSW is not configured', () => {
+    it('throws when semanticSearch is called without hnswConfig', async () => {
+      /**
+       * A SimpleDbms that was created *without* an HnswConfig must reject
+       * any call to semanticSearch immediately with a descriptive error.
+       * This prevents silent no-op behaviour when the developer forgets to
+       * pass the config.
+       */
+      const plainDb = await SimpleDbms.create(new MockFile(4096), new MockFile(4000096));
+      await expect(plainDb.semanticSearch('articles', 'any query', 5)).rejects.toThrow(/not configured|no hnswConfig/i);
+      await plainDb.close();
+    });
+  });
+
+  // ── 2. Basic insert and search ────────────────────────────────────────────
+
+  describe('basic insert and search', () => {
+    it('returns an empty array when the collection has no indexed documents', async () => {
+      /**
+       * Querying a brand-new collection that has never received any text
+       * document must return [] rather than throwing.  The HNSW metadata
+       * entry for that collection does not yet exist, so the fast-path that
+       * skips graph construction should engage.
+       */
+      const results = await db.semanticSearch('empty', 'hello world', 3);
+      expect(results).toEqual([]);
+    });
+
+    it('finds a single inserted document', async () => {
+      /**
+       * With exactly one text document in the graph, semanticSearch must
+       * return it for any query string (there is no other candidate).
+       */
+      const doc = { id: 'a1', title: 'Introduction to databases' };
+      await db.insertDocument('articles', JSON.stringify(doc));
+
+      const results = await db.semanticSearch('articles', 'databases', 1);
+      expect(results).toHaveLength(1);
+      expect(JSON.parse(results[0])).toEqual(doc);
+    });
+
+    it('returns at most k documents', async () => {
+      /**
+       * When k=1 but three documents exist, only one result may be returned.
+       * The caller controls result-set size via k.
+       */
+      await db.insertDocument('articles', JSON.stringify({ id: 'r1', text: 'alpha topic' }));
+      await db.insertDocument('articles', JSON.stringify({ id: 'r2', text: 'beta topic' }));
+      await db.insertDocument('articles', JSON.stringify({ id: 'r3', text: 'gamma topic' }));
+
+      const results = await db.semanticSearch('articles', 'alpha', 1);
+      expect(results).toHaveLength(1);
+    });
+
+    it('returns fewer than k documents when the index is smaller than k', async () => {
+      /**
+       * If only 2 documents are indexed but k=10, the implementation must
+       * return at most 2 results without throwing an out-of-bounds error.
+       */
+      await db.insertDocument('articles', JSON.stringify({ id: 'x1', content: 'machine learning' }));
+      await db.insertDocument('articles', JSON.stringify({ id: 'x2', content: 'deep learning' }));
+
+      const results = await db.semanticSearch('articles', 'learning', 10);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.length).toBeLessThanOrEqual(2);
+    });
+
+    it('returns all JSON-serialised documents as valid JSON strings', async () => {
+      /**
+       * The semanticSearch contract is Promise<string[]> where each element
+       * is a JSON-serialised document.  Every returned string must round-trip
+       * through JSON.parse without throwing.
+       */
+      const doc = { id: 'j1', body: 'test document for JSON validation' };
+      await db.insertDocument('jscheck', JSON.stringify(doc));
+
+      const results = await db.semanticSearch('jscheck', 'json', 1);
+      expect(results.length).toBeGreaterThan(0);
+      for (const r of results) {
+        expect(() => {
+          JSON.parse(r);
+        }).not.toThrow();
+      }
+    });
+  });
+
+  // ── 3. Text field extraction rules ───────────────────────────────────────
+
+  describe('text field extraction rules', () => {
+    it('does not index documents that contain only numeric fields', async () => {
+      /**
+       * extractText() only concatenates string fields.  A document whose
+       * body consists entirely of numbers must not be added to the HNSW graph,
+       * so semanticSearch must return [] for that collection.
+       */
+      const numericDoc = { id: 'metrics1', count: 42, ratio: 0.95 };
+      await db.insertDocument('metrics', JSON.stringify(numericDoc));
+
+      const results = await db.semanticSearch('metrics', 'something', 3);
+      expect(results).toEqual([]);
+    });
+
+    it('does not use underscore-prefixed fields as embeddable text', async () => {
+      /**
+       * Fields starting with "_" are reserved for private/internal metadata
+       * (e.g. _isProvinceCapital in the city documents that appear throughout
+       * the test suite) and must be excluded from the embedding input.
+       * A document whose only string fields all start with "_" must therefore
+       * not be indexed.
+       */
+      const internalDoc = { id: 'priv1', _secret: 'do not embed this' };
+      await db.insertDocument('internals', JSON.stringify(internalDoc));
+
+      const results = await db.semanticSearch('internals', 'secret', 3);
+      expect(results).toEqual([]);
+    });
+
+    it('concatenates multiple public string fields for the embedding', async () => {
+      /**
+       * When a document has more than one public text field (e.g. "title" and
+       * "abstract"), both values must be joined and embedded together.  The
+       * document must be reachable via a query that matches either field.
+       */
+      const doc = { id: 'multi1', title: 'Graph databases', abstract: 'Nodes and edges' };
+      await db.insertDocument('papers', JSON.stringify(doc));
+
+      const results = await db.semanticSearch('papers', 'graph nodes', 1);
+      expect(results).toHaveLength(1);
+      expect(JSON.parse(results[0])).toEqual(doc);
+    });
+
+    it('indexes a document that mixes public text fields with underscore fields', async () => {
+      /**
+       * A document that has BOTH public text fields and underscore-prefixed
+       * fields must still be indexed (using only the public fields).  The
+       * underscore fields must be silently ignored but must not prevent the
+       * document from appearing in results.
+       */
+      const mixed = { id: 'mixed1', title: 'Public title', _internalTag: 'tag-xyz' };
+      await db.insertDocument('mixed', JSON.stringify(mixed));
+
+      const results = await db.semanticSearch('mixed', 'public title', 1);
+      expect(results).toHaveLength(1);
+      expect(JSON.parse(results[0])).toEqual(mixed);
+    });
+
+    it('a document with only the id field and no other text fields is not indexed', async () => {
+      /**
+       * The "id" field is the document key and is NOT included in the set of
+       * fields returned by document.getFields().  Therefore a document that
+       * carries nothing but an id has no embeddable text and must not be added
+       * to the HNSW graph — semanticSearch must return [].
+       * This behaviour is consistent with how numeric-only documents are
+       * treated; the id is metadata, not content.
+       */
+      const idOnly = { id: 'idonly1' };
+      await db.insertDocument('idtest', JSON.stringify(idOnly));
+
+      // No embeddable text: the document should NOT appear in search results.
+      const results = await db.semanticSearch('idtest', 'idonly1', 1);
+      expect(results).toEqual([]);
+    });
+  });
+
+  // ── 4. Delete removes document from semantic index ────────────────────────
+
+  describe('delete removes document from semantic index', () => {
+    it('deleted document does not appear in search results', async () => {
+      /**
+       * Deleting a document must remove it from the HNSW graph (soft-delete +
+       * graph re-wiring).  Subsequent semanticSearch calls must not return it.
+       */
+      await db.insertDocument('news', JSON.stringify({ id: 'n1', headline: 'Big news today' }));
+      await db.insertDocument('news', JSON.stringify({ id: 'n2', headline: 'Small local news' }));
+      await db.deleteDocumentById('news', 'n1');
+
+      const results = await db.semanticSearch('news', 'big news today', 5);
+      const ids = results.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(ids).not.toContain('n1');
+    });
+
+    it('remaining documents are still reachable after a deletion', async () => {
+      /**
+       * Deleting one node from the HNSW graph must not corrupt graph
+       * navigation to its former neighbours.  The surviving sibling must
+       * remain searchable.
+       */
+      await db.insertDocument('news', JSON.stringify({ id: 'stay', headline: 'Article that stays' }));
+      await db.insertDocument('news', JSON.stringify({ id: 'gone', headline: 'Article that is removed' }));
+      await db.deleteDocumentById('news', 'gone');
+
+      const results = await db.semanticSearch('news', 'article', 5);
+      const ids = results.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(ids).toContain('stay');
+    });
+
+    it('re-insert after delete works correctly', async () => {
+      /**
+       * After deleting a document and inserting a replacement, the replacement
+       * must be findable and the deleted document must not reappear.
+       * This exercises the docId reuse path inside HNSW.
+       */
+      await db.insertDocument('blog', JSON.stringify({ id: 'post1', body: 'Old content about cats' }));
+      await db.deleteDocumentById('blog', 'post1');
+      await db.insertDocument('blog', JSON.stringify({ id: 'post2', body: 'New content about dogs' }));
+
+      const results = await db.semanticSearch('blog', 'content about dogs', 5);
+      const ids = results.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(ids).not.toContain('post1');
+      expect(ids).toContain('post2');
+    });
+
+    it('deleting the only document leaves the collection empty for search', async () => {
+      /**
+       * Once all documents are deleted the HNSW graph is empty.  A search
+       * over an empty graph must return [] without throwing.
+       */
+      await db.insertDocument('solo', JSON.stringify({ id: 's1', text: 'the only one' }));
+      await db.deleteDocumentById('solo', 's1');
+
+      const results = await db.semanticSearch('solo', 'the only one', 3);
+      expect(results).toEqual([]);
+    });
+  });
+
+  // ── 5. Multiple independent collections ──────────────────────────────────
+
+  describe('multiple independent collections', () => {
+    it('searching one collection does not return documents from another', async () => {
+      /**
+       * Every collection gets its own independent HNSW index.  A document in
+       * "colA" must never surface in a search over "colB" and vice-versa.
+       */
+      await db.insertDocument('colA', JSON.stringify({ id: 'a1', text: 'content in collection A' }));
+      await db.insertDocument('colB', JSON.stringify({ id: 'b1', text: 'content in collection B' }));
+
+      const resultsA = await db.semanticSearch('colA', 'collection A', 5);
+      const idsA = resultsA.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(idsA).toContain('a1');
+      expect(idsA).not.toContain('b1');
+
+      const resultsB = await db.semanticSearch('colB', 'collection B', 5);
+      const idsB = resultsB.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(idsB).toContain('b1');
+      expect(idsB).not.toContain('a1');
+    });
+
+    it('deletions in one collection do not affect another collection', async () => {
+      /**
+       * Removing a document from "setA" must have no side-effect on the HNSW
+       * index of "setB" — their backing FBF files are completely separate.
+       */
+      await db.insertDocument('setA', JSON.stringify({ id: 'sa1', text: 'document in set A' }));
+      await db.insertDocument('setB', JSON.stringify({ id: 'sb1', text: 'document in set B' }));
+      await db.deleteDocumentById('setA', 'sa1');
+
+      const resultsB = await db.semanticSearch('setB', 'document', 5);
+      const idsB = resultsB.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(idsB).toContain('sb1');
+    });
+
+    it('each collection returns its own documents after insert', async () => {
+      /**
+       * Insert two documents with the same id into different collections and
+       * confirm that each collection's search only returns its own version.
+       */
+      const docA = { id: 'shared', topic: 'physics' };
+      const docB = { id: 'shared', topic: 'chemistry' };
+      await db.insertDocument('science1', JSON.stringify(docA));
+      await db.insertDocument('science2', JSON.stringify(docB));
+
+      const r1 = await db.semanticSearch('science1', 'physics', 1);
+      const r2 = await db.semanticSearch('science2', 'chemistry', 1);
+
+      expect(r1).toHaveLength(1);
+      expect((JSON.parse(r1[0]) as { topic: string }).topic).toBe('physics');
+
+      expect(r2).toHaveLength(1);
+      expect((JSON.parse(r2[0]) as { topic: string }).topic).toBe('chemistry');
+    });
+  });
+
+  // ── 6. Persistence: commit and reopen ────────────────────────────────────
+
+  describe('persistence: commit and reopen', () => {
+    it('HNSW index survives commit, close, and reopen', async () => {
+      /**
+       * This is the primary persistence test for the HNSW integration.
+       * It mirrors the "committed data persists after close and reopen" test
+       * already present for the B+ tree index, but also verifies that the
+       * HNSW vector/graph files are correctly restored on open().
+       *
+       * Steps:
+       *   1. Create a DB with HnswConfig, insert a text document, commit.
+       *   2. Close the DB.
+       *   3. Reopen using the *same* MockFile instances (dataFile / logFile)
+       *      and the *same* fileFactory so that DbmsBack.open() can locate
+       *      the HNSW FBF files by calling the same factory functions.
+       *   4. semanticSearch must find the persisted document.
+       */
+      const doc = { id: 'persist1', title: 'Persistent semantic search' };
+      await db.insertDocument('library', JSON.stringify(doc));
+      await db.commit();
+      await db.close();
+
+      const db2 = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+      const results = await db2.semanticSearch('library', 'persistent search', 3);
+      expect(results).toHaveLength(1);
+      expect(JSON.parse(results[0])).toEqual(doc);
+      await db2.close();
+    });
+
+    it('multiple documents persist after reopen', async () => {
+      /**
+       * All documents committed before close must be reachable via
+       * semanticSearch after reopening — not just the last one inserted.
+       */
+      const docs = [
+        { id: 'book1', title: 'Algorithms and data structures' },
+        { id: 'book2', title: 'Operating systems fundamentals' },
+        { id: 'book3', title: 'Computer networks explained' },
+      ];
+      for (const doc of docs) {
+        await db.insertDocument('books', JSON.stringify(doc));
+      }
+      await db.commit();
+      await db.close();
+
+      const db2 = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+      const results = await db2.semanticSearch('books', 'data structures algorithms', 3);
+      expect(results.length).toBeGreaterThan(0);
+
+      const ids = results.map((r) => (JSON.parse(r) as { id: string }).id);
+      // At least one of the three books must appear in the top results.
+      expect(['book1', 'book2', 'book3'].some((id) => ids.includes(id))).toBe(true);
+
+      await db2.close();
+    });
+
+    it('deletions committed before close are reflected after reopen', async () => {
+      /**
+       * A document that was inserted, committed, then deleted and committed
+       * again must NOT be returned by semanticSearch after reopening.
+       * The deletion is durable: the HNSW graph FBF was committed without
+       * the node, and the vector FBF no longer holds its embedding.
+       */
+      const doc = { id: 'gone2', headline: 'This article will be permanently removed' };
+      await db.insertDocument('news', JSON.stringify(doc));
+      await db.commit();
+
+      await db.deleteDocumentById('news', 'gone2');
+      await db.commit();
+      await db.close();
+
+      const db2 = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+      const results = await db2.semanticSearch('news', 'article removed', 5);
+      const ids = results.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(ids).not.toContain('gone2');
+      await db2.close();
+    });
+
+    it('HNSW metadata key is restored so open() needs no manual re-registration', async () => {
+      /**
+       * DbmsBack stores a marker in metaCache[HNSW_META_KEY] when an HNSW
+       * index is created for a collection.  After commit+close+reopen that
+       * marker must have been loaded from the FBF client area so that
+       * DbmsBack.open() automatically reopens the right HNSW FBF files —
+       * no manual "register index" call should be needed.
+       */
+      await db.insertDocument('docs', JSON.stringify({ id: 'd1', body: 'Hello world' }));
+      await db.commit();
+      await db.close();
+
+      // open() must automatically find and reopen the HNSW index for 'docs'.
+      const db2 = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+      const results = await db2.semanticSearch('docs', 'hello', 3);
+      // If metadata restoration failed we would get [] here.
+      expect(results.length).toBeGreaterThan(0);
+      await db2.close();
+    });
+
+    it('regular document operations still work after a reopen with HNSW', async () => {
+      /**
+       * Opening a database that already has HNSW indices must not break the
+       * ordinary B+ tree operations (getDocumentById, cursor, etc.).  Both
+       * subsystems must coexist correctly after reopen.
+       */
+      const doc = { id: 'dual1', title: 'Works on both indexes' };
+      await db.insertDocument('dual', JSON.stringify(doc));
+      await db.commit();
+      await db.close();
+
+      const db2 = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+
+      // B+ tree lookup must still work.
+      const retrieved = await db2.getDocumentById('dual', 'dual1');
+      expect(JSON.parse(retrieved)).toEqual(doc);
+
+      // Semantic search must also work.
+      const results = await db2.semanticSearch('dual', 'works', 1);
+      expect(results).toHaveLength(1);
+      expect(JSON.parse(results[0])).toEqual(doc);
+
+      await db2.close();
+    });
+
+    it('uncommitted HNSW inserts are lost after crash', async () => {
+      /**
+       * This test mirrors the existing WAL crash-recovery test and extends it
+       * to cover the HNSW index.
+       *
+       * A document committed before the crash must survive; a document that
+       * was only inserted (not committed) must vanish from semanticSearch
+       * results after recovery — just as it vanishes from the B+ tree index.
+       *
+       * Note: we only crash the main dataFile/logFile here because the HNSW
+       * FBF files (inside fileFactory) were also never committed for the
+       * second document, so their WAL rolls them back independently.
+       */
+      const committed = { id: 'safe1', text: 'This was safely committed' };
+      await db.insertDocument('crash', JSON.stringify(committed));
+      await db.commit();
+
+      // Insert but do NOT commit — this change is in-flight.
+      await db.insertDocument('crash', JSON.stringify({ id: 'unsafe1', text: 'This was NOT committed' }));
+
+      // Simulate crash.
+      dataFile.crash();
+      logFile.crash();
+
+      const db2 = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+      const results = await db2.semanticSearch('crash', 'committed', 5);
+      const ids = results.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(ids).not.toContain('unsafe1');
+      await db2.close();
+    });
+  });
+
+  // ── 7. Larger-scale correctness ───────────────────────────────────────────
+
+  describe('larger-scale semantic search correctness', () => {
+    it('handles 20 inserted documents without errors', async () => {
+      /**
+       * Insert 20 documents spread across 5 different topic prefixes.
+       * The HNSW graph must build without panics or assertion failures,
+       * and semanticSearch must return a non-empty, bounded result set.
+       */
+      const topics = ['database', 'network', 'operating system', 'compiler', 'algorithm'];
+      for (let i = 0; i < 20; i++) {
+        const topic = topics[i % topics.length];
+        await db.insertDocument(
+          'textbook',
+          JSON.stringify({ id: `doc${i}`, text: `${topic} fundamentals chapter ${i}` }),
+        );
+      }
+
+      const results = await db.semanticSearch('textbook', 'database fundamentals', 5);
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.length).toBeLessThanOrEqual(5);
+    });
+
+    it('handles interleaved inserts and deletes without graph corruption', async () => {
+      /**
+       * Insert 10 documents, then delete the even-indexed ones.  The HNSW
+       * graph must remain navigable — no null entry-point panics or infinite
+       * loops.  Every id in the search results must be an odd-indexed survivor.
+       */
+      for (let i = 0; i < 10; i++) {
+        await db.insertDocument('mixed2', JSON.stringify({ id: `m${i}`, text: `snippet number ${i}` }));
+      }
+      for (let i = 0; i < 10; i += 2) {
+        await db.deleteDocumentById('mixed2', `m${i}`);
+      }
+
+      // Survivors: m1, m3, m5, m7, m9
+      const results = await db.semanticSearch('mixed2', 'snippet', 5);
+      const ids = results.map((r) => (JSON.parse(r) as { id: string }).id);
+      for (const id of ids) {
+        expect(['m1', 'm3', 'm5', 'm7', 'm9']).toContain(id);
+      }
+    });
+
+    it('inserts into two collections and persists both after reopen', async () => {
+      /**
+       * Two separate collections each get their own committed HNSW index.
+       * After close+reopen both must remain independently searchable.
+       */
+      await db.insertDocument('sciA', JSON.stringify({ id: 'phys1', text: 'quantum mechanics' }));
+      await db.insertDocument('sciB', JSON.stringify({ id: 'chem1', text: 'organic chemistry' }));
+      await db.commit();
+      await db.close();
+
+      const db2 = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+
+      const rA = await db2.semanticSearch('sciA', 'quantum', 3);
+      expect(rA.length).toBeGreaterThan(0);
+      const idsA = rA.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(idsA).not.toContain('chem1');
+
+      const rB = await db2.semanticSearch('sciB', 'chemistry', 3);
+      expect(rB.length).toBeGreaterThan(0);
+      const idsB = rB.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(idsB).not.toContain('phys1');
+
+      await db2.close();
+    });
+
+    it('commit + reopen + insert more documents continues correctly', async () => {
+      /**
+       * After reopening a database that already has a persisted HNSW index,
+       * inserting additional documents into the same collection must work —
+       * the index is still "open" and mutable, not frozen.
+       */
+      await db.insertDocument('grow', JSON.stringify({ id: 'g1', text: 'first document' }));
+      await db.commit();
+      await db.close();
+
+      const db2 = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+      await db2.insertDocument('grow', JSON.stringify({ id: 'g2', text: 'second document' }));
+      await db2.commit();
+
+      const results = await db2.semanticSearch('grow', 'document', 5);
+      const ids = results.map((r) => (JSON.parse(r) as { id: string }).id);
+      expect(ids).toContain('g1');
+      expect(ids).toContain('g2');
+
+      await db2.close();
     });
   });
 });

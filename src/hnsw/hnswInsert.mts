@@ -1,4 +1,5 @@
-// hnsw/hnswInsert.ts
+//@author: Thomas Dumon with usage of Claude sonnet 4.6
+//@date: 2026-02-18
 
 import { HNSWNode, type NodeId } from './hnswNode.mjs';
 import { type SearchContext, HNSWSearch, type Candidate } from './hnswSearch.mjs';

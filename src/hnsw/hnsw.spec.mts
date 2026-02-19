@@ -699,8 +699,7 @@ describe('HNSWIndex', () => {
 
   it('insert survives a commit + reopen', async () => {
     await index.insert(77, vec(3, 4));
-    await graphFbf.commit();
-    await vectorFbf.commit();
+    await index.commit();
 
     const index2 = await reopenIndex(graphFbf, vectorFbf);
     const results = await index2.search(vec(3, 4), 1);
@@ -711,8 +710,7 @@ describe('HNSWIndex', () => {
     await index.insert(1, vec(0, 0));
     await index.insert(2, vec(50, 50));
     await index.delete(1);
-    await graphFbf.commit();
-    await vectorFbf.commit();
+    await index.commit();
 
     const index2 = await reopenIndex(graphFbf, vectorFbf);
     const results = await index2.search(vec(0, 0), 5);
@@ -722,12 +720,10 @@ describe('HNSWIndex', () => {
 
   it('multiple commits accumulate correctly', async () => {
     await index.insert(1, vec(1, 0));
-    await graphFbf.commit();
-    await vectorFbf.commit();
+    await index.commit();
 
     await index.insert(2, vec(2, 0));
-    await graphFbf.commit();
-    await vectorFbf.commit();
+    await index.commit();
 
     const index2 = await reopenIndex(graphFbf, vectorFbf);
     const results = await index2.search(vec(1.5, 0), 2);
@@ -841,8 +837,7 @@ describe('HNSWIndex', () => {
     for (let i = 0; i < 50; i++) {
       await index.insert(i, vec(i * 2, i * 2));
     }
-    await graphFbf.commit();
-    await vectorFbf.commit();
+    await index.commit();
 
     const index2 = await reopenIndex(graphFbf, vectorFbf);
 
@@ -851,6 +846,238 @@ describe('HNSWIndex', () => {
       const v = vec(docId * 2, docId * 2);
       const results = await index2.search(v, 3);
       expect(results).toContain(docId);
+    }
+  });
+
+  it('index.commit() and index.close() work without error on an empty index', async () => {
+    await expect(index.commit()).resolves.not.toThrow();
+    await expect(index.close()).resolves.not.toThrow();
+  });
+
+  it('index is usable after commit() without close()', async () => {
+    await index.insert(1, vec(1, 0));
+    await index.commit();
+    // Should be able to keep using the index after commit
+    await index.insert(2, vec(2, 0));
+    const results = await index.search(vec(1.5, 0), 2);
+    expect(results).toContain(1);
+    expect(results).toContain(2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. Level histogram correctness (maxLevel-after-delete bug regression)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('HNSWGraphStorage – level histogram', () => {
+  const M = 4;
+  const MAX_STORED_LEVEL = 4;
+  const BLOCK_SIZE = 1024;
+
+  let fbf: FreeBlockFile;
+  let gs: HNSWGraphStorage;
+
+  beforeEach(async () => {
+    fbf = await makeFbf(BLOCK_SIZE);
+    gs = await HNSWGraphStorage.create(fbf, M, MAX_STORED_LEVEL);
+  });
+
+  it('computedMaxLevel returns 0 on a fresh (empty) graph', () => {
+    expect(gs.computedMaxLevel()).toBe(0);
+  });
+
+  it('incrementLevel then computedMaxLevel returns the inserted level', () => {
+    gs.incrementLevel(3);
+    expect(gs.computedMaxLevel()).toBe(3);
+  });
+
+  it('multiple increments at different levels: computedMaxLevel returns the highest', () => {
+    gs.incrementLevel(0);
+    gs.incrementLevel(2);
+    gs.incrementLevel(1);
+    expect(gs.computedMaxLevel()).toBe(2);
+  });
+
+  it('decrementLevel on the sole highest-level entry lowers computedMaxLevel', () => {
+    gs.incrementLevel(3); // one node at level 3
+    gs.incrementLevel(2); // one node at level 2
+    gs.incrementLevel(1); // one node at level 1
+    expect(gs.computedMaxLevel()).toBe(3);
+
+    gs.decrementLevel(3); // delete the only level-3 node
+    expect(gs.computedMaxLevel()).toBe(2);
+  });
+
+  it('decrementLevel when count > 1 does NOT lower computedMaxLevel', () => {
+    gs.incrementLevel(3);
+    gs.incrementLevel(3); // two nodes at level 3
+    gs.decrementLevel(3); // remove one — still one left
+    expect(gs.computedMaxLevel()).toBe(3);
+  });
+
+  it('removing all nodes leaves computedMaxLevel at 0', () => {
+    gs.incrementLevel(2);
+    gs.incrementLevel(1);
+    gs.decrementLevel(2);
+    gs.decrementLevel(1);
+    expect(gs.computedMaxLevel()).toBe(0);
+  });
+
+  it('resetHistogram zeroes all counters', () => {
+    gs.incrementLevel(4);
+    gs.incrementLevel(2);
+    gs.resetHistogram();
+    expect(gs.computedMaxLevel()).toBe(0);
+  });
+
+  it('incrementLevel clamps to maxStoredLevel', () => {
+    // Level beyond maxStoredLevel should be clamped, not overflow the array
+    gs.incrementLevel(MAX_STORED_LEVEL + 99);
+    expect(gs.computedMaxLevel()).toBe(MAX_STORED_LEVEL);
+  });
+
+  // ── The exact bug scenario from the code review ───────────────────────────
+  //
+  // Entry point is the *sole* node at level 3.
+  // Its only neighbor (at the level-1 connection) lives at level 1.
+  // A third node at level 2 is elsewhere in the graph with no edge to the EP.
+  //
+  // Old code: Math.max(neighborLayer=1, neighbor.level=1) = 1  ← wrong
+  // New code: computedMaxLevel() after decrementLevel(3)    = 2 ← correct
+
+  it('[BUG REGRESSION] deleting sole EP at level 3 yields maxLevel 2, not 1', () => {
+    gs.incrementLevel(3); // entry point
+    gs.incrementLevel(2); // isolated node at level 2
+    gs.incrementLevel(1); // EP's only neighbor at layer 1
+    gs.setCurrentMaxLevel(3);
+
+    // Simulate deleting the entry point:
+    gs.decrementLevel(3);
+    gs.setCurrentMaxLevel(gs.computedMaxLevel());
+
+    expect(gs.currentMaxLevel).toBe(2); // old code returned 1 — regression check
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. currentMaxLevel invariant through HNSWIndex operations
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('HNSWIndex – currentMaxLevel invariant', () => {
+  const DIMENSION = 2;
+  const M = 8;
+  const EF_CONSTRUCTION = 50;
+  const EF_SEARCH = 50;
+  const MAX_STORED_LEVEL = 4;
+  const GRAPH_BLOCK_SIZE = 4096;
+  const VECTOR_BLOCK_SIZE = 512;
+
+  let index: HNSWIndex;
+  let graphFbf: FreeBlockFile;
+  let vectorFbf: FreeBlockFile;
+  let graphStorage: HNSWGraphStorage;
+
+  beforeEach(async () => {
+    graphFbf = await makeFbf(GRAPH_BLOCK_SIZE);
+    vectorFbf = await makeFbf(VECTOR_BLOCK_SIZE);
+    graphStorage = await HNSWGraphStorage.create(graphFbf, M, MAX_STORED_LEVEL);
+    const vectorHeap = new VectorHeapFile(vectorFbf, DIMENSION);
+    index = HNSWIndex.create(graphStorage, vectorHeap, {
+      M,
+      efConstruction: EF_CONSTRUCTION,
+      efSearch: EF_SEARCH,
+    });
+  });
+
+  async function reopenIndex2(
+    gFbf: FreeBlockFile,
+    vFbf: FreeBlockFile,
+  ): Promise<{
+    index: HNSWIndex;
+    graphStorage: HNSWGraphStorage;
+  }> {
+    const gs = await HNSWGraphStorage.open(gFbf);
+    const vh = new VectorHeapFile(vFbf, DIMENSION);
+    const idx = await HNSWIndex.open(gs, vh, { efSearch: EF_SEARCH, efConstruction: EF_CONSTRUCTION });
+    return { index: idx, graphStorage: gs };
+  }
+
+  it('currentMaxLevel equals computedMaxLevel after every insert', async () => {
+    for (let i = 0; i < 30; i++) {
+      await index.insert(i, vec(i, 0));
+      expect(graphStorage.currentMaxLevel).toBe(graphStorage.computedMaxLevel());
+    }
+  });
+
+  it('currentMaxLevel equals computedMaxLevel after every delete', async () => {
+    for (let i = 0; i < 30; i++) await index.insert(i, vec(i, 0));
+
+    for (let i = 0; i < 30; i++) {
+      await index.delete(i);
+      expect(graphStorage.currentMaxLevel).toBe(graphStorage.computedMaxLevel());
+    }
+  });
+
+  it('currentMaxLevel is 0 after deleting all nodes', async () => {
+    await index.insert(1, vec(1, 0));
+    await index.insert(2, vec(2, 0));
+    await index.delete(1);
+    await index.delete(2);
+    expect(graphStorage.currentMaxLevel).toBe(0);
+    expect(graphStorage.computedMaxLevel()).toBe(0);
+  });
+
+  it('currentMaxLevel after interleaved inserts + deletes always equals computedMaxLevel', async () => {
+    // Insert 20 nodes, delete every other one, check invariant throughout
+    for (let i = 0; i < 20; i++) await index.insert(i, vec(i, 0));
+
+    for (let i = 0; i < 20; i += 2) {
+      await index.delete(i);
+      expect(graphStorage.currentMaxLevel).toBe(graphStorage.computedMaxLevel());
+    }
+  });
+
+  it('computedMaxLevel is rebuilt correctly after commit + reopen', async () => {
+    for (let i = 0; i < 30; i++) await index.insert(i, vec(i, 0));
+
+    const maxLevelBeforeClose = graphStorage.currentMaxLevel;
+
+    await index.commit();
+
+    const { graphStorage: gs2 } = await reopenIndex2(graphFbf, vectorFbf);
+
+    // The histogram is rebuilt from scanNodes() in rebuildDocIdIndex().
+    // computedMaxLevel() must agree with the stored currentMaxLevel.
+    expect(gs2.computedMaxLevel()).toBe(gs2.currentMaxLevel);
+    expect(gs2.currentMaxLevel).toBe(maxLevelBeforeClose);
+  });
+
+  it('currentMaxLevel stays correct after deleting the entry point with higher-level nodes elsewhere', async () => {
+    // Insert 50 nodes; HNSW probabilistically assigns multi-level structure.
+    // The entry point is always the highest-level node in the graph.
+    // We delete it and verify that currentMaxLevel still equals computedMaxLevel
+    // (which reflects the true graph-wide maximum of remaining nodes).
+    for (let i = 0; i < 50; i++) await index.insert(i, vec(i, 0));
+
+    // Record the max level before any deletion
+    const maxBefore = graphStorage.currentMaxLevel;
+
+    // We cannot know the EP's docId without accessing private state, so we
+    // delete half the nodes and check the invariant holds throughout.
+    for (let i = 0; i < 25; i++) {
+      await index.delete(i);
+      const computed = graphStorage.computedMaxLevel();
+      expect(graphStorage.currentMaxLevel).toBe(computed);
+      // currentMaxLevel must never exceed what was the max before
+      expect(graphStorage.currentMaxLevel).toBeLessThanOrEqual(maxBefore);
+    }
+
+    // Search must still work on the remaining nodes
+    const results = await index.search(vec(40, 0), 5);
+    expect(results.length).toBeGreaterThan(0);
+    // No deleted docId should appear
+    for (const r of results) {
+      expect(r).toBeGreaterThanOrEqual(25);
     }
   });
 });
