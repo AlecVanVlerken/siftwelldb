@@ -1,7 +1,7 @@
 // author: Thomas Dumon
 // date: 2025-12-07
 
-import { DbmsBack } from './dbmsback.mjs';
+import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
 import { type File } from '../core/file.mjs';
 import { documentToJSON, type FieldValue } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
@@ -30,8 +30,8 @@ export class SimpleDbms {
    * @param logFile - The log file to use for the database.
    * @returns A Promise that resolves to a new instance of the SimpleDbms class.
    */
-  static async create(dataFile: File, logFile: File): Promise<SimpleDbms> {
-    const dbmsback = new DbmsBack(dataFile, logFile);
+  static async create(dataFile: File, logFile: File, hnswConfig?: HnswConfig): Promise<SimpleDbms> {
+    const dbmsback = new DbmsBack(dataFile, logFile, hnswConfig);
     await dbmsback.create();
     return new SimpleDbms(dbmsback);
   }
@@ -42,8 +42,8 @@ export class SimpleDbms {
    * @param logFile - The log file to use for the database.
    * @returns A Promise that resolves to a new instance of the SimpleDbms class.
    */
-  static async open(dataFile: File, logFile: File): Promise<SimpleDbms> {
-    const dbmsback = await DbmsBack.open(dataFile, logFile);
+  static async open(dataFile: File, logFile: File, hnswConfig?: HnswConfig): Promise<SimpleDbms> {
+    const dbmsback = await DbmsBack.open(dataFile, logFile, hnswConfig);
     return new SimpleDbms(dbmsback);
   }
 
@@ -140,5 +140,21 @@ export class SimpleDbms {
    */
   async commit(): Promise<void> {
     await this.dbmsback.commit();
+  }
+
+  /**
+   * Perform a semantic (approximate nearest-neighbour) search over all
+   * text-indexed documents in a collection.
+   *
+   * Requires an `HnswConfig` to have been passed to `create()` / `open()`.
+   *
+   * @param collection - The collection to search in.
+   * @param query      - A natural-language query string.
+   * @param k          - Maximum number of results to return.
+   * @returns Array of JSON-serialised documents ordered by semantic similarity.
+   */
+  async semanticSearch(collection: string, query: string, k: number): Promise<string[]> {
+    const documents = await this.dbmsback.semanticSearch(collection, query, k);
+    return documents.map(documentToJSON);
   }
 }

@@ -1,4 +1,5 @@
-// vector/vectorSerializer.ts
+//@author: Thomas Dumon with usage of Claude sonnet 4.6
+//@date: 2026-02-18
 
 export class VectorSerializer {
   /** Returns the number of bytes required to serialize a vector of the given dimension. */

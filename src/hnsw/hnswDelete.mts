@@ -1,4 +1,5 @@
-// hnsw/hnswDelete.ts
+//@author: Thomas Dumon with usage of Claude sonnet 4.6
+//@date: 2026-02-18
 
 import { HNSWNode, type NodeId } from './hnswNode.mjs';
 
@@ -106,10 +107,18 @@ export class HNSWDelete {
   /**
    * After deleting the entry point, pick a replacement from one of the former
    * neighbours at the highest available layer.
+   *
+   * NOTE: This method intentionally does NOT attempt to update `maxLevel`.
+   * The maximum level is a graph-wide property that cannot be derived from a
+   * single node's local neighbour list.  The caller (HNSWIndex.delete) is
+   * responsible for recomputing the true global max level via the level
+   * histogram (`graphStorage.computedMaxLevel()`).  We simply return the
+   * passed-in value so that the contract makes sense even for callers that do
+   * not have histogram access.
    */
   private async pickNewEntryPoint(
     deletedNode: HNSWNode,
-    _maxLevel: number,
+    maxLevel: number,
   ): Promise<{ entryPoint: NodeId | null; maxLevel: number }> {
     // Walk from the highest layer downward to find a live neighbour.
     for (let layer = deletedNode.level; layer >= 0; layer--) {
@@ -118,8 +127,10 @@ export class HNSWDelete {
         try {
           const n = await this.context.getNode(neighborId);
           if (!n.deleted) {
-            // Use this as the new entry point; the max level might decrease.
-            return { entryPoint: neighborId, maxLevel: Math.max(layer, n.level) };
+            // Return this neighbour as the new entry point.
+            // maxLevel is passed through unchanged — the true graph-wide
+            // maximum is maintained by the caller via the level histogram.
+            return { entryPoint: neighborId, maxLevel };
           }
         } catch {
           continue;

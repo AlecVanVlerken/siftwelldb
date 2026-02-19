@@ -1,4 +1,5 @@
-// hnsw/hnswIndex.ts
+//@author: Thomas Dumon with usage of Claude sonnet 4.6
+//@date: 2026-02-18
 
 import { VectorHeapFile } from './vectorHeapFile.mjs';
 import { HNSWNode, type NodeId } from './hnswNode.mjs';
@@ -31,7 +32,23 @@ export type HNSWParams = {
  * ----------
  * Top-level entry point for the HNSW approximate nearest-neighbour index.
  *
- * Mirrors the `BPlusTree` lifecycle exactly:
+ * ── Crash-consistency model ───────────────────────────────────────────────
+ * The index spans two FreeBlockFiles (graph + vectors), each backed by its
+ * own WAL-protected AtomicFile.  Each individual commit() call is atomic,
+ * but there is a window between the two.  Safety is achieved by always
+ * committing vectors BEFORE the graph ("data before index" rule):
+ *
+ *   • Crash after vectorFbf commits, before graphFbf commits:
+ *       Graph is in its previous state → the insert/delete never happened
+ *       from the graph's perspective.  One orphaned vector slot is leaked
+ *       but the graph remains fully consistent.  (Recoverable by a GC scan.)
+ *
+ *   • Crash after graphFbf commits, before vectorFbf commits:
+ *       Graph nodes would reference vectorPtrs that do not exist — dangling
+ *       pointers, silent corruption on reopen.  NEVER do this.
+ *
+ * Use index.commit() instead of calling fbf.commit() manually:
+ * it always applies the safe order.
  *
  *   // ── Creating a new index ─────────────────────────────────────────
  *   const graphFbf  = new FreeBlockFile(atomicFile1, blockSize);
@@ -44,11 +61,8 @@ export type HNSWParams = {
  *   const index = HNSWIndex.create(graphStorage, vectorHeap, { M, efConstruction, efSearch });
  *
  *   await index.insert(docId, vector);
- *   await graphFbf.commit();   // persist graph blocks atomically
- *   await vectorFbf.commit();  // persist vector blocks atomically
- *
- *   await graphFbf.close();
- *   await vectorFbf.close();
+ *   await index.commit();   // vectors first, graph second — crash-safe
+ *   await index.close();
  *
  *   // ── Reopening an existing index ──────────────────────────────────
  *   await graphFbf.open();
@@ -60,8 +74,7 @@ export type HNSWParams = {
  *
  *   const results = await index.search(queryVec, k);
  *
- *   await graphFbf.close();
- *   await vectorFbf.close();
+ *   await index.close();
  */
 // InsertContext already extends SearchContext, so listing SearchContext here
 // is redundant. Removing it avoids a circular-self-reference that confuses
@@ -154,6 +167,8 @@ export class HNSWIndex implements InsertContext, DeleteContext {
       deleted: false,
     });
     await this.graphStorage.insertNode(node); // sets node.nodeId
+    // Track this node in the level histogram before wiring.
+    this.graphStorage.incrementLevel(level);
 
     // 3. Wire the node into the HNSW graph layers.
     const { entryPoint: newEp, maxLevel: newMaxLevel } = await this.inserter.insert(
@@ -164,8 +179,10 @@ export class HNSWIndex implements InsertContext, DeleteContext {
     );
 
     // 4. Persist updated graph-level metadata to the dirty cache.
+    //    Use the histogram-derived max level — it is always correct even if the
+    //    inserter returns a stale value.
     this.graphStorage.setEntryPoint(newEp);
-    this.graphStorage.setCurrentMaxLevel(newMaxLevel);
+    this.graphStorage.setCurrentMaxLevel(Math.max(newMaxLevel, this.graphStorage.computedMaxLevel()));
     await this.graphStorage.saveMetadata();
 
     // 5. Update in-memory reverse index.
@@ -206,16 +223,24 @@ export class HNSWIndex implements InsertContext, DeleteContext {
     const node = await this.graphStorage.getNode(nodeId);
     await this.vectorHeap.delete(node.vectorPtr);
 
+    // Remove this node from the level histogram BEFORE soft-delete so that
+    // computedMaxLevel() reflects the state after deletion.
+    this.graphStorage.decrementLevel(node.level);
+
     // Soft-delete from the graph (marks deleted, removes back-links).
-    const { entryPoint: newEp, maxLevel: newMaxLevel } = await this.deleter.softDelete(
+    const { entryPoint: newEp } = await this.deleter.softDelete(
       nodeId,
       this.graphStorage.entryPoint,
       this.graphStorage.currentMaxLevel,
     );
 
+    // Derive the authoritative max level from the histogram — this is always
+    // correct, unlike the approximation previously returned by softDelete.
+    const correctMaxLevel = newEp !== null ? this.graphStorage.computedMaxLevel() : 0;
+
     // Persist updated metadata to the dirty cache.
     this.graphStorage.setEntryPoint(newEp);
-    this.graphStorage.setCurrentMaxLevel(newMaxLevel);
+    this.graphStorage.setCurrentMaxLevel(correctMaxLevel);
     await this.graphStorage.saveMetadata();
 
     this.docIdIndex.delete(docId);
@@ -244,6 +269,31 @@ export class HNSWIndex implements InsertContext, DeleteContext {
     await this.graphStorage.hardDeleteNode(nodeId);
   }
 
+  // ── Persistence ───────────────────────────────────────────────────────────
+
+  /**
+   * Atomically persist all pending changes to disk.
+   *
+   * Commits vector storage FIRST, graph storage SECOND.
+   * This order is mandatory for crash consistency: if a crash occurs between
+   * the two commits the graph remains in its previous valid state rather
+   * than holding dangling vectorPtr references.  See the class JSDoc for the
+   * full analysis.
+   */
+  async commit(): Promise<void> {
+    await this.vectorHeap.commit(); // data first
+    await this.graphStorage.commit(); // index second
+  }
+
+  /**
+   * Close both underlying files.  Always call commit() before close() to
+   * ensure the latest changes are durable.
+   */
+  async close(): Promise<void> {
+    await this.vectorHeap.close();
+    await this.graphStorage.close();
+  }
+
   // ── Private helpers ────────────────────────────────────────────────────────
 
   /**
@@ -252,9 +302,15 @@ export class HNSWIndex implements InsertContext, DeleteContext {
    */
   private async rebuildDocIdIndex(): Promise<void> {
     this.docIdIndex.clear();
+    this.graphStorage.resetHistogram();
     for await (const node of this.graphStorage.scanNodes()) {
+      // scanNodes() yields ALL slots (including deleted) — see note in graphStorage.
+      // We always count deleted nodes too, since decrementLevel() is called at
+      // delete-time; but soft-deleted nodes were already counted and then
+      // decremented. Here we only rebuild for live nodes.
       if (!node.deleted) {
         this.docIdIndex.set(node.docId, node.nodeId);
+        this.graphStorage.incrementLevel(node.level);
       }
     }
   }

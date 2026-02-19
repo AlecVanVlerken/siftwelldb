@@ -1,3 +1,6 @@
+//@author: Thomas Dumon with usage of Claude sonnet 4.6
+//@date: 2026-02-18
+
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { type NodeId, HNSWNode } from './hnswNode.mjs';
 import type { VectorPointer } from './vectorHeapFile.mjs';
@@ -86,7 +89,7 @@ const LAYER0_COUNT_OFFSET = 12; // byte index of count0 in the slot
  * -----------------
  * Persistent storage for HNSW graph nodes backed by a FreeBlockFile.
  *
- * Lifecycle (identical to BlockNodeStorage / VectorHeapFile):
+ * Lifecycle :
  *   const fbf = new FreeBlockFile(atomicFile, blockSize);
  *   await fbf.create();  // new file  — or —
  *   await fbf.open();    // existing file
@@ -108,6 +111,8 @@ export class HNSWGraphStorage {
 
   private _entryPoint: NodeId | null = null;
   private _currentMaxLevel: number = 0;
+  /** Per-level node count. Index = level (0..maxStoredLevel). Maintained via incrementLevel/decrementLevel. */
+  private _levelHistogram: number[];
 
   private insertHint: number = 0;
 
@@ -119,6 +124,7 @@ export class HNSWGraphStorage {
     this.M = M;
     this.maxStoredLevel = maxStoredLevel;
     this.nodeSize = computeNodeSize(M, maxStoredLevel);
+    this._levelHistogram = new Array<number>(maxStoredLevel + 1).fill(0);
     const blockSize = file._getBlockSize();
     this.slotsPerPage = Math.floor(((blockSize - 3) * 8) / (this.nodeSize * 8 + 1));
     if (this.slotsPerPage < 1) {
@@ -187,6 +193,43 @@ export class HNSWGraphStorage {
 
   setCurrentMaxLevel(level: number): void {
     this._currentMaxLevel = level;
+  }
+
+  /**
+   * Increment the level histogram for a newly inserted node.
+   * Call once per insert with the node's assigned level.
+   */
+  incrementLevel(level: number): void {
+    const l = Math.min(level, this.maxStoredLevel);
+    this._levelHistogram[l]++;
+  }
+
+  /**
+   * Decrement the level histogram for a node being deleted.
+   * Call once per delete with the node's level.
+   */
+  decrementLevel(level: number): void {
+    const l = Math.min(level, this.maxStoredLevel);
+    if (this._levelHistogram[l] > 0) this._levelHistogram[l]--;
+  }
+
+  /**
+   * Return the true graph-wide maximum level: the highest level whose
+   * histogram count is still > 0.  Returns 0 if the graph is empty.
+   */
+  computedMaxLevel(): number {
+    for (let l = this.maxStoredLevel; l >= 0; l--) {
+      if (this._levelHistogram[l] > 0) return l;
+    }
+    return 0;
+  }
+
+  /**
+   * Reset and recount all histogram buckets from scratch.
+   * Called by HNSWIndex.open() after scanning all live nodes.
+   */
+  resetHistogram(): void {
+    this._levelHistogram.fill(0);
   }
 
   /**
@@ -461,5 +504,20 @@ export class HNSWGraphStorage {
         }
       }
     }
+  }
+
+  /**
+   * Atomically flush all dirty graph blocks to disk via the WAL.
+   * Always call this AFTER the vector heap has been committed so that
+   * a crash between the two commits leaves the graph in its previous
+   * consistent state rather than with dangling vectorPtr references.
+   */
+  async commit(): Promise<void> {
+    await this.file.commit();
+  }
+
+  /** Close the underlying file. Safe to call after commit(). */
+  async close(): Promise<void> {
+    await this.file.close();
   }
 }
