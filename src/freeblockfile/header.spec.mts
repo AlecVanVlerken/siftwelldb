@@ -22,7 +22,6 @@ async function makeFBF(blockSize = 64) {
   const fbf = new FreeBlockFile(af, blockSize);
 
   await fbf.create();
-  await fbf.open();
   return fbf;
 }
 

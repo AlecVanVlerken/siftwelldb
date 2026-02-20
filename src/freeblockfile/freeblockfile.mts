@@ -76,24 +76,14 @@ export class FreeBlockFile {
    */
   async create() {
     await this.file.create();
-    const wasOpen = this.isOpen;
-    if (!wasOpen) {
-      await this.file.open();
-      this.isOpen = true;
-    }
-
+    this.isOpen = true;
     const header = Buffer.alloc(this.blockSize);
     header.writeUInt8(layout.BlockType.Header, layout.HEADER_TYPE_OFFSET);
     header.writeUInt32LE(0, layout.HEADER_FIRST_FREE_OFFSET);
     header.writeUInt32LE(0, layout.HEADER_ROOT_OFFSET);
 
-    this.dirtyBlocks.set(0, header);
+    this._setDirtyBlock(0, header);
     await this.commit();
-
-    if (!wasOpen) {
-      await this.file.close();
-      this.isOpen = false;
-    }
   }
 
   /**
