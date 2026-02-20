@@ -1,6 +1,7 @@
 node_modules/
 build/
 coverage/
+src/benchmarking/large-dataset/db/
 
 .DS_Store
 Thumbs.db
