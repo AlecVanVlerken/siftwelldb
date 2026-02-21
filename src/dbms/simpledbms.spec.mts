@@ -4,7 +4,7 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { MockFile } from '../core/mockfile.mjs';
 import { SimpleDbms } from './simpledbms.mjs';
-import { type HnswConfig, type HnswFileFactory } from './dbmsback.mjs';
+import { type HnswConfig } from './dbmsback.mjs';
 
 describe('SimpleDbms', () => {
   let simpleDbms: SimpleDbms;
@@ -1208,14 +1208,6 @@ describe('SimpleDbms', () => {
 //   in very different directions in the embedding space, which is sufficient for
 //   all nearest-neighbour assertions below.
 //
-// makeTestFileFactory
-//   HNSW needs two FreeBlockFile instances per collection ("graph" and
-//   "vector").  Each FreeBlockFile in turn owns two raw files (data + log).
-//   We back every one of these with MockFile so no disk I/O occurs.
-//   Crucially, the factory *caches* its MockFile pairs: the same objects are
-//   returned on every call for the same (collection, role) key.  This is
-//   essential for the reopen tests, where DbmsBack.open() calls the same
-//   factory and expects to see the data that was written by DbmsBack.create().
 
 /**
  * Create a tiny, deterministic embedding function for unit tests.
@@ -1238,24 +1230,6 @@ function makeTestEmbeddingFn(dim: number): (text: string) => Promise<Float32Arra
   };
 }
 
-/**
- * Create an HnswFileFactory backed entirely by in-memory MockFiles.
- *
- * The factory caches by `"${collection}:${role}"` so that multiple calls
- * (create then open) always operate on the same underlying MockFile objects.
- */
-function makeTestFileFactory(): HnswFileFactory {
-  const cache = new Map<string, { dataFile: MockFile; logFile: MockFile }>();
-  return (col: string, role: 'graph' | 'vector') => {
-    const key = `${col}:${role}`;
-    if (!cache.has(key)) {
-      // Sector size 4096 matches the FreeBlockFile block size; log is larger for WAL.
-      cache.set(key, { dataFile: new MockFile(4096), logFile: new MockFile(65536) });
-    }
-    return cache.get(key)!;
-  };
-}
-
 describe('SimpleDbms – semantic search (HNSW)', () => {
   /** Vector dimension kept small so tests run fast. */
   const DIM = 8;
@@ -1263,18 +1237,15 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
   // Shared state for the HNSW-enabled database created in beforeEach.
   let dataFile: MockFile;
   let logFile: MockFile;
-  let fileFactory: HnswFileFactory;
   let hnswConfig: HnswConfig;
   let db: SimpleDbms;
 
   beforeEach(async () => {
     dataFile = new MockFile(4096);
     logFile = new MockFile(4000096);
-    fileFactory = makeTestFileFactory();
     hnswConfig = {
       dimension: DIM,
       embeddingFn: makeTestEmbeddingFn(DIM),
-      fileFactory,
       // Use small HNSW parameters so the tests stay fast on CI.
       M: 8,
       efConstruction: 32,
@@ -1575,14 +1546,14 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
        * This is the primary persistence test for the HNSW integration.
        * It mirrors the "committed data persists after close and reopen" test
        * already present for the B+ tree index, but also verifies that the
-       * HNSW vector/graph files are correctly restored on open().
+       * HNSW graph nodes and vectors are correctly restored on open().
        *
        * Steps:
        *   1. Create a DB with HnswConfig, insert a text document, commit.
        *   2. Close the DB.
-       *   3. Reopen using the *same* MockFile instances (dataFile / logFile)
-       *      and the *same* fileFactory so that DbmsBack.open() can locate
-       *      the HNSW FBF files by calling the same factory functions.
+       *   3. Reopen using the *same* MockFile instances (dataFile / logFile).
+       *      HNSW data lives in the same single FBF, so no extra file handles
+       *      are needed — the metaCache stores the HNSW metadata block number.
        *   4. semanticSearch must find the persisted document.
        */
       const doc = { id: 'persist1', title: 'Persistent semantic search' };
@@ -1700,9 +1671,9 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
        * was only inserted (not committed) must vanish from semanticSearch
        * results after recovery — just as it vanishes from the B+ tree index.
        *
-       * Note: we only crash the main dataFile/logFile here because the HNSW
-       * FBF files (inside fileFactory) were also never committed for the
-       * second document, so their WAL rolls them back independently.
+       * Since HNSW data now shares the same single FreeBlockFile WAL as the
+       * rest of the database, crashing dataFile/logFile rolls back both the
+       * B+ tree insert and the HNSW insert atomically.
        */
       const committed = { id: 'safe1', text: 'This was safely committed' };
       await db.insertDocument('crash', JSON.stringify(committed));

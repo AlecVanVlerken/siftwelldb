@@ -5,6 +5,13 @@ import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { type NodeId, HNSWNode } from './hnswNode.mjs';
 import type { VectorPointer } from './vectorHeapFile.mjs';
 
+/**
+ * Magic byte written at usable[0] (= raw byte 1) of every HNSW graph node page.
+ * Allows HNSWGraphStorage.scanNodes() to skip pages belonging to other subsystems
+ * (B+ trees, RecordStore, VectorHeapFile) when everything shares a single FBF.
+ */
+const HNSW_GRAPH_PAGE_MAGIC = 0xa3;
+
 // ─── NodeId encoding ───────────────────────────────────────────────────────
 // NodeId = BigInt(pageId) << 32n | BigInt(slotId)
 // This is a unique, serialisable identifier for every node slot.
@@ -20,9 +27,13 @@ export function decodeNodeId(nodeId: NodeId): { pageId: number; slotId: number }
   };
 }
 
-// ─── Client-area metadata offsets ─────────────────────────────────────────
-// Layout of the 24-byte metadata block stored in the FreeBlockFile's
-// client area (starts at byte 9 of block 0):
+// ─── Per-collection metadata block offsets ──────────────────────────────────
+// When HNSWGraphStorage is used as part of a shared FreeBlockFile (DbmsBack
+// unified mode), metadata is written to a dedicated allocated block rather
+// than the FBF client area (which DbmsBack uses for its own JSON meta).
+//
+// Layout of the 22-byte metadata payload stored in the dedicated block
+// (bytes [1..22] of the raw block, i.e. the usable area):
 //   [0-3]  M              (uint32 LE)
 //   [4-7]  maxStoredLevel (uint32 LE)
 //   [8-11] nodeSize       (uint32 LE, validation)
@@ -40,7 +51,15 @@ const META_HAS_EP = 20;
 const META_CURRENT_MAX_LEVEL = 21;
 
 // ─── Per-node slot layout (within usable page area) ────────────────────────
-// Fixed header: 12 bytes
+// Each page starts with a 1-byte magic marker (HNSW_GRAPH_PAGE_MAGIC) at
+// usable[0], so the page header layout is:
+//
+//   [0]    page magic (HNSW_GRAPH_PAGE_MAGIC = 0xa3)
+//   [1-2]  usedCount (uint16 LE)
+//   [3 … 2+bitmapBytes] slot bitmap
+//   [3+bitmapBytes …]   node slots
+//
+// Fixed node header: 12 bytes per slot
 //   [0-3]  docId              (uint32 LE)
 //   [4]    level              (uint8)
 //   [5-8]  vectorPtr.pageId   (uint32 LE)
@@ -116,6 +135,13 @@ export class HNSWGraphStorage {
 
   private insertHint: number = 0;
 
+  /**
+   * Block number of the dedicated metadata block in the FreeBlockFile.
+   * Set by create() (which allocates the block) and by open() (which reads
+   * from the known block). saveMetadata() writes to this block.
+   */
+  private _metaBlockId: number = 0;
+
   private constructor(
     private readonly file: FreeBlockFile,
     M: number,
@@ -126,7 +152,10 @@ export class HNSWGraphStorage {
     this.nodeSize = computeNodeSize(M, maxStoredLevel);
     this._levelHistogram = new Array<number>(maxStoredLevel + 1).fill(0);
     const blockSize = file._getBlockSize();
-    this.slotsPerPage = Math.floor(((blockSize - 3) * 8) / (this.nodeSize * 8 + 1));
+    // usable area = blockSize - 1 (byte 0 is block-type owned by FreeBlockFile)
+    // page header = 1 byte magic + 2 bytes usedCount + bitmapBytes
+    // n * nodeSize + ceil(n/8) <= blockSize - 4
+    this.slotsPerPage = Math.floor(((blockSize - 4) * 8) / (this.nodeSize * 8 + 1));
     if (this.slotsPerPage < 1) {
       throw new Error(
         `Block size ${blockSize} is too small for nodeSize=${this.nodeSize} ` +
@@ -134,17 +163,25 @@ export class HNSWGraphStorage {
       );
     }
     this.bitmapBytes = Math.ceil(this.slotsPerPage / 8);
-    this.pageDataOffset = 2 + this.bitmapBytes;
+    // magic(1) + usedCount(2) + bitmap
+    this.pageDataOffset = 3 + this.bitmapBytes;
   }
 
   // ── Factory methods ────────────────────────────────────────────────────────
 
   /**
    * Initialise a brand-new HNSWGraphStorage on an already-open FreeBlockFile.
+   * Allocates one dedicated metadata block from the FBF and writes initial
+   * metadata there.  The block number is exposed via `gs.metaBlockId` and
+   * must be stored externally (e.g. in DbmsBack's metaCache) so that
+   * open() can locate it on reopen.
+   *
    * Call `await fbf.commit()` + `await fbf.close()` when done.
    */
   static async create(file: FreeBlockFile, M: number, maxStoredLevel: number): Promise<HNSWGraphStorage> {
     const gs = new HNSWGraphStorage(file, M, maxStoredLevel);
+    // Allocate a dedicated metadata block from the shared FBF.
+    gs._metaBlockId = await file.allocateBlock();
     await gs.saveMetadata();
     return gs;
   }
@@ -152,14 +189,20 @@ export class HNSWGraphStorage {
   /**
    * Open an existing HNSWGraphStorage from a previously-created FreeBlockFile.
    * Reads M, maxStoredLevel, entry point, and current max level from the
-   * header client area.
+   * dedicated metadata block whose block number is `metaBlockId`.
+   *
+   * `metaBlockId` was returned via `gs.metaBlockId` when the storage was
+   * first created and should have been persisted externally.
    */
-  static async open(file: FreeBlockFile): Promise<HNSWGraphStorage> {
-    const clientArea = await file.getClientArea();
+  static async open(file: FreeBlockFile, metaBlockId: number): Promise<HNSWGraphStorage> {
+    const raw = await file.readBlock(metaBlockId);
+    // Usable area starts at byte 1 (byte 0 is the block-type byte owned by FBF).
+    const clientArea = raw.subarray(1);
     const M = clientArea.readUInt32LE(META_M);
     const maxStoredLevel = clientArea.readUInt32LE(META_MAX_LEVEL);
     const storedNodeSize = clientArea.readUInt32LE(META_NODE_SIZE);
     const gs = new HNSWGraphStorage(file, M, maxStoredLevel);
+    gs._metaBlockId = metaBlockId;
     if (gs.nodeSize !== storedNodeSize) {
       throw new Error(
         `HNSWGraphStorage: stored nodeSize=${storedNodeSize} ≠ computed nodeSize=${gs.nodeSize}. ` +
@@ -178,6 +221,11 @@ export class HNSWGraphStorage {
   }
 
   // ── Accessors for HNSW metadata ────────────────────────────────────────────
+
+  /** Block number of the dedicated metadata block in the FreeBlockFile. */
+  get metaBlockId(): number {
+    return this._metaBlockId;
+  }
 
   get entryPoint(): NodeId | null {
     return this._entryPoint;
@@ -234,7 +282,7 @@ export class HNSWGraphStorage {
 
   /**
    * Persist graph-level metadata (entryPoint, currentMaxLevel, M, maxStoredLevel)
-   * to the FreeBlockFile's client area.
+   * to the dedicated metadata block in the FreeBlockFile.
    * Must call `file.commit()` afterwards to flush to disk.
    */
   async saveMetadata(): Promise<void> {
@@ -250,7 +298,9 @@ export class HNSWGraphStorage {
       metaBuf.writeUInt8(0, META_HAS_EP);
     }
     metaBuf.writeUInt8(this._currentMaxLevel, META_CURRENT_MAX_LEVEL);
-    await this.file.writeClientArea(metaBuf);
+    // Write to the dedicated metadata block (not the FBF client area, which is
+    // reserved for DbmsBack's JSON meta in the unified single-FBF design).
+    await this.file.writeBlock(this._metaBlockId, metaBuf);
   }
 
   // ── Low-level page helpers ────────────────────────────────────────────────
@@ -263,6 +313,9 @@ export class HNSWGraphStorage {
   private async readPageIfData(pageId: number): Promise<Buffer | null> {
     const raw = await this.file.readBlock(pageId);
     if (raw.readUInt8(0) !== 0x02) return null; // 0x02 = BlockType.Data
+    // Skip pages that belong to other subsystems (B+ trees, RecordStore, VectorHeapFile)
+    // when operating inside a shared FBF.  HNSW graph pages always carry the magic.
+    if (raw.readUInt8(1) !== HNSW_GRAPH_PAGE_MAGIC) return null;
     return raw.subarray(1);
   }
 
@@ -271,28 +324,34 @@ export class HNSWGraphStorage {
   }
 
   private newPageBuffer(): Buffer {
-    return Buffer.alloc(this.file._getBlockSize() - 1);
+    const buf = Buffer.alloc(this.file._getBlockSize() - 1);
+    // Mark this as an HNSW graph page so scanNodes() can identify it in a
+    // shared FBF where multiple subsystems coexist.
+    buf.writeUInt8(HNSW_GRAPH_PAGE_MAGIC, 0);
+    return buf;
   }
 
+  // usedCount lives at usable[1..2] (usable[0] is the page magic byte)
   private getUsedCount(usable: Buffer): number {
-    return usable.readUInt16LE(0);
+    return usable.readUInt16LE(1);
   }
 
   private setUsedCount(usable: Buffer, count: number): void {
-    usable.writeUInt16LE(count, 0);
+    usable.writeUInt16LE(count, 1);
   }
 
+  // Bitmap starts at usable[3] (magic[0] + usedCount[1..2])
   private isBitSet(usable: Buffer, slotId: number): boolean {
-    return (usable.readUInt8(2 + Math.floor(slotId / 8)) & (1 << slotId % 8)) !== 0;
+    return (usable.readUInt8(3 + Math.floor(slotId / 8)) & (1 << slotId % 8)) !== 0;
   }
 
   private setBit(usable: Buffer, slotId: number): void {
-    const idx = 2 + Math.floor(slotId / 8);
+    const idx = 3 + Math.floor(slotId / 8);
     usable.writeUInt8(usable.readUInt8(idx) | (1 << slotId % 8), idx);
   }
 
   private clearBit(usable: Buffer, slotId: number): void {
-    const idx = 2 + Math.floor(slotId / 8);
+    const idx = 3 + Math.floor(slotId / 8);
     usable.writeUInt8(usable.readUInt8(idx) & ~(1 << slotId % 8), idx);
   }
 
