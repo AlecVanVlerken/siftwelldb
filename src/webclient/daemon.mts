@@ -24,7 +24,6 @@ async function deleteIfExists(filePath: string) {
 // Global database instance
 let dbms: SimpleDbms | null = null;
 let currentDataFile: RealFile | null = null;
-let currentLogFile: RealFile | null = null;
 
 // MIME types mapping
 const MIME_TYPES: Record<string, string> = {
@@ -40,19 +39,21 @@ const MIME_TYPES: Record<string, string> = {
   '.ico': 'image/x-icon',
 };
 
+type JsonBody = Record<string, unknown>;
+
 /**
  * Parse JSON body from request
  */
-async function parseBody(req: http.IncomingMessage): Promise<any> {
+async function parseBody(req: http.IncomingMessage): Promise<JsonBody> {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', (chunk) => {
+    req.on('data', (chunk: Buffer) => {
       body += chunk.toString();
     });
     req.on('end', () => {
       try {
-        resolve(body ? JSON.parse(body) : {});
-      } catch (error) {
+        resolve((body ? (JSON.parse(body) as JsonBody) : {}) satisfies JsonBody);
+      } catch {
         reject(new Error('Invalid JSON'));
       }
     });
@@ -63,7 +64,7 @@ async function parseBody(req: http.IncomingMessage): Promise<any> {
 /**
  * Send JSON response
  */
-function sendJSON(res: http.ServerResponse, statusCode: number, data: any) {
+function sendJSON(res: http.ServerResponse, statusCode: number, data: JsonBody) {
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
@@ -80,31 +81,29 @@ function sendError(res: http.ServerResponse, statusCode: number, message: string
  */
 async function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse) {
   try {
-    let filePath = req.url === '/' ? '/index.html' : req.url || '/index.html';
-    
+    let filePath = req.url === '/' ? '/index.html' : (req.url ?? '/index.html');
+
     // Remove query string
     const queryIndex = filePath.indexOf('?');
     if (queryIndex !== -1) {
       filePath = filePath.substring(0, queryIndex);
     }
 
-    // Serve client.js from build directory (if exists) or src (if strict mode off? no browser needs JS)
+    // Serve client.js from the compiled build directory
     if (filePath === '/client.js') {
-      // Try build directory first
       const buildPath = path.join(import.meta.dirname, '../../build/webclient/client.js');
       try {
         const content = await fs.readFile(buildPath);
         res.writeHead(200, { 'Content-Type': 'text/javascript' });
         res.end(content);
         return;
-      } catch (e) {
-        // Fallback or ignore
-         console.log('Build file not found, trying to serve from src (might fail in browser if TS)');
+      } catch {
+        console.log('Build file not found for client.js');
       }
     }
 
     const fullPath = path.join(FRONTEND_DIR, filePath);
-    
+
     // Security: prevent directory traversal
     if (!fullPath.startsWith(FRONTEND_DIR)) {
       sendError(res, 403, 'Forbidden');
@@ -113,11 +112,11 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
 
     const content = await fs.readFile(fullPath);
     const ext = path.extname(fullPath);
-    const mimeType = MIME_TYPES[ext] || 'application/octet-stream';
+    const mimeType = MIME_TYPES[ext] ?? 'application/octet-stream';
 
     res.writeHead(200, { 'Content-Type': mimeType });
     res.end(content);
-  } catch (error) {
+  } catch {
     sendError(res, 404, 'File not found');
   }
 }
@@ -126,16 +125,16 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
  * Handle API routes
  */
 async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, url: URL) {
-  const method = req.method || 'GET';
+  const method = req.method ?? 'GET';
   const pathname = url.pathname;
 
   try {
     // POST /api/connect
     if (method === 'POST' && pathname === '/api/connect') {
       const body = await parseBody(req);
-      const { filepath } = body;
+      const filepath = body['filepath'];
 
-      if (!filepath) {
+      if (typeof filepath !== 'string' || !filepath) {
         sendError(res, 400, 'Missing filepath');
         return;
       }
@@ -145,7 +144,6 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
         await dbms.close();
         dbms = null;
         currentDataFile = null;
-        currentLogFile = null;
       }
 
       // Check if file exists to decide between open or create
@@ -161,27 +159,23 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
       const logFile = new RealFile(`${filepath}.log`);
 
       if (fileExists) {
-        // Try to open existing
         try {
           dbms = await SimpleDbms.open(dataFile, logFile);
           currentDataFile = dataFile;
-          currentLogFile = logFile;
           sendJSON(res, 200, { message: 'Connected to existing database', filepath });
         } catch (error) {
           console.error('Failed to open database:', error);
-          sendError(res, 500, `Failed to open existing database: ${error}`);
+          sendError(res, 500, `Failed to open existing database: ${String(error)}`);
         }
       } else {
-        // Create new
         try {
           dbms = await SimpleDbms.create(dataFile, logFile);
-          await dbms.commit(); // Persist initial metadata
+          await dbms.commit();
           currentDataFile = dataFile;
-          currentLogFile = logFile;
           sendJSON(res, 200, { message: 'Created new database', filepath });
         } catch (createError) {
           console.error('Failed to create database:', createError);
-          sendError(res, 500, `Failed to create database: ${createError}`);
+          sendError(res, 500, `Failed to create database: ${String(createError)}`);
         }
       }
       return;
@@ -190,9 +184,9 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
     // POST /api/create - Force create new database (deletes existing files first)
     if (method === 'POST' && pathname === '/api/create') {
       const body = await parseBody(req);
-      const { filepath } = body;
+      const filepath = body['filepath'];
 
-      if (!filepath) {
+      if (typeof filepath !== 'string' || !filepath) {
         sendError(res, 400, 'Missing filepath');
         return;
       }
@@ -202,7 +196,6 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
         await dbms.close();
         dbms = null;
         currentDataFile = null;
-        currentLogFile = null;
       }
 
       // Delete existing files so create() starts with a clean slate
@@ -214,13 +207,12 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
 
       try {
         dbms = await SimpleDbms.create(dataFile, logFile);
-        await dbms.commit(); // Persist initial metadata
+        await dbms.commit();
         currentDataFile = dataFile;
-        currentLogFile = logFile;
         sendJSON(res, 200, { message: 'Created new database', filepath });
       } catch (createError) {
         console.error('Failed to create database:', createError);
-        sendError(res, 500, `Failed to create database: ${createError}`);
+        sendError(res, 500, `Failed to create database: ${String(createError)}`);
       }
       return;
     }
@@ -235,7 +227,6 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
       await dbms.close();
       dbms = null;
       currentDataFile = null;
-      currentLogFile = null;
       sendJSON(res, 200, { message: 'Disconnected' });
       return;
     }
@@ -273,7 +264,6 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
       dbms = await SimpleDbms.create(dataFile, logFile);
       await dbms.commit();
       currentDataFile = dataFile;
-      currentLogFile = logFile;
 
       sendJSON(res, 200, { message: 'Database reset' });
       return;
@@ -287,9 +277,10 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
     // GET /api/documents/:collection
     if (method === 'GET' && collectionMatch) {
       const collection = decodeURIComponent(collectionMatch[1]);
-      const iterableKey = url.searchParams.get('iterableKey') || 'id';
-      const value = url.searchParams.get('value') || undefined;
-      const limit = parseInt(url.searchParams.get('limit') || '100', 10);
+      const iterableKey = url.searchParams.get('iterableKey') ?? 'id';
+      const rawValue = url.searchParams.get('value');
+      const value = rawValue ?? undefined;
+      const limit = parseInt(url.searchParams.get('limit') ?? '100', 10);
 
       const documents: string[] = [];
       const cursor = dbms.cursor(collection, iterableKey, value);
@@ -309,9 +300,9 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
     if (method === 'POST' && collectionMatch) {
       const collection = decodeURIComponent(collectionMatch[1]);
       const body = await parseBody(req);
-      const { document } = body;
+      const document = body['document'];
 
-      if (!document) {
+      if (document === undefined || document === null) {
         sendError(res, 400, 'Missing document');
         return;
       }
@@ -341,14 +332,15 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
       const collection = decodeURIComponent(editMatch[1]);
       const id = decodeURIComponent(editMatch[2]);
       const body = await parseBody(req);
-      const { field, value } = body;
+      const field = body['field'];
+      const value = body['value'];
 
-      if (!field) {
+      if (typeof field !== 'string' || !field) {
         sendError(res, 400, 'Missing field');
         return;
       }
 
-      await dbms.editDocument(collection, id, field, value);
+      await dbms.editDocument(collection, id, field, value as Parameters<SimpleDbms['editDocument']>[3]);
       await dbms.commit();
 
       sendJSON(res, 200, { message: 'Document edited' });
@@ -359,22 +351,22 @@ async function handleAPI(req: http.IncomingMessage, res: http.ServerResponse, ur
     sendError(res, 404, 'API endpoint not found');
   } catch (error) {
     console.error('API Error:', error);
-    sendError(res, 500, `Internal server error: ${error}`);
+    sendError(res, 500, `Internal server error: ${String(error)}`);
   }
 }
 
 /**
  * Main request handler
  */
-async function requestHandler(req: http.IncomingMessage, res: http.ServerResponse) {
-  const url = new URL(req.url || '/', `http://${req.headers.host}`);
+function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
 
   console.log(`${req.method} ${url.pathname}`);
 
   if (url.pathname.startsWith('/api/')) {
-    await handleAPI(req, res, url);
+    void handleAPI(req, res, url);
   } else {
-    await serveStaticFile(req, res);
+    void serveStaticFile(req, res);
   }
 }
 
@@ -389,13 +381,16 @@ server.listen(PORT, () => {
 });
 
 // Graceful shutdown
-process.on('SIGINT', async () => {
+process.on('SIGINT', () => {
   console.log('\nShutting down...');
-  if (dbms) {
-    await dbms.close();
-  }
-  server.close(() => {
-    console.log('Server closed.');
-    process.exit(0);
-  });
+  const shutdown = async () => {
+    if (dbms) {
+      await dbms.close();
+    }
+    server.close(() => {
+      console.log('Server closed.');
+      process.exit(0);
+    });
+  };
+  void shutdown();
 });

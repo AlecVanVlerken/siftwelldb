@@ -9,7 +9,6 @@ interface Document {
 let currentCollection: string | null = null;
 let collections: string[] = [];
 let allDocuments: Document[] = []; // Cache for client-side filter
-let connectedFilepath: string | null = null;
 
 // DOM Elements
 const connectionStatus = document.getElementById('connection-status') as HTMLElement;
@@ -32,10 +31,10 @@ const docModalTitle = document.getElementById('doc-modal-title') as HTMLElement;
 const modalCloseBtns = document.querySelectorAll('.close-btn');
 const resetDbBtn = document.getElementById('reset-db-btn') as HTMLButtonElement | null;
 const newCollectionBtn = document.getElementById('new-collection-btn') as HTMLButtonElement | null;
-const newCollectionModal = document.getElementById('new-collection-modal') as HTMLElement | null;
+const newCollectionModal = document.getElementById('new-collection-modal');
 const newCollectionInput = document.getElementById('new-collection-name') as HTMLInputElement | null;
 const newCollectionConfirmBtn = document.getElementById('new-collection-confirm-btn') as HTMLButtonElement | null;
-const newCollectionError = document.getElementById('new-collection-error') as HTMLElement | null;
+const newCollectionError = document.getElementById('new-collection-error');
 
 // API Helper
 async function apiCall(endpoint: string, method: string = 'GET', body?: unknown) {
@@ -49,7 +48,7 @@ async function apiCall(endpoint: string, method: string = 'GET', body?: unknown)
   const response = await fetch(endpoint, options);
   const data = (await response.json()) as { error?: string; [key: string]: unknown };
   if (!response.ok) {
-    throw new Error((data['error'] as string | undefined) ?? 'API Error');
+    throw new Error(data['error'] ?? 'API Error');
   }
   return data;
 }
@@ -60,7 +59,6 @@ async function connect(filepath: string) {
   connectError.textContent = '';
   try {
     await apiCall('/api/connect', 'POST', { filepath });
-    connectedFilepath = filepath;
     onConnected(filepath);
     await loadCollections();
   } catch (error) {
@@ -72,7 +70,6 @@ async function createNew(filepath: string) {
   connectError.textContent = '';
   try {
     await apiCall('/api/create', 'POST', { filepath });
-    connectedFilepath = filepath;
     onConnected(filepath);
     await loadCollections();
   } catch (error) {
@@ -92,7 +89,6 @@ function onConnected(filepath: string) {
 async function disconnect() {
   try {
     await apiCall('/api/disconnect', 'POST');
-    connectedFilepath = null;
     connectionStatus.textContent = 'Disconnected';
     connectionStatus.style.color = '';
     disconnectBtn.disabled = true;
@@ -240,8 +236,10 @@ function renderTable(documents: Document[]) {
       const value = doc[key];
       if (typeof value === 'object' && value !== null) {
         td.textContent = JSON.stringify(value);
+      } else if (value !== null && value !== undefined) {
+        td.textContent = String(value as string | number | boolean);
       } else {
-        td.textContent = String(value ?? '');
+        td.textContent = '';
       }
       tr.appendChild(td);
     });
@@ -282,7 +280,10 @@ async function addDocument(content: string) {
 async function deleteDocument(id: string | number) {
   if (!currentCollection || !confirm('Are you sure you want to delete this document?')) return;
   try {
-    await apiCall(`/api/documents/${encodeURIComponent(currentCollection)}/${encodeURIComponent(String(id))}`, 'DELETE');
+    await apiCall(
+      `/api/documents/${encodeURIComponent(currentCollection)}/${encodeURIComponent(String(id))}`,
+      'DELETE',
+    );
     await loadDocuments(currentCollection);
   } catch (error) {
     alert('Failed to delete: ' + (error as Error).message);
@@ -299,20 +300,16 @@ function openNewCollectionModal() {
   newCollectionInput.focus();
 }
 
-async function createCollection(name: string) {
+function createCollection(name: string) {
   if (!newCollectionModal || !newCollectionError) return;
   const trimmed = name.trim();
   if (!trimmed) {
     newCollectionError.textContent = 'Collection name cannot be empty.';
     return;
   }
-  // Create the collection by inserting a placeholder document with the given collection name
-  // The backend creates a collection automatically when the first document is inserted.
-  // We immediately tell the user to insert documents now.
-  // Actually, since there's no standalone "create collection" API, we select it and let the user add docs.
-  // Close modal and select the collection name (it won't appear in the sidebar until a doc is inserted).
+  // Close modal and pre-select the collection name.
+  // The backend creates the collection on first document insert.
   newCollectionModal.classList.add('hidden');
-  // Pre-select and open add-document modal
   currentCollection = trimmed;
   renderCollectionList();
   addDocBtn.disabled = false;
@@ -368,26 +365,25 @@ filterInput.addEventListener('input', () => {
   applyFilter();
 });
 
-// New collection button (optional — only if element exists in HTML)
 if (newCollectionBtn) {
   newCollectionBtn.addEventListener('click', openNewCollectionModal);
 }
 
 if (newCollectionConfirmBtn) {
   newCollectionConfirmBtn.addEventListener('click', () => {
-    void createCollection(newCollectionInput?.value ?? '');
+    createCollection(newCollectionInput?.value ?? '');
   });
 }
 
 if (newCollectionInput) {
   newCollectionInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') void createCollection(newCollectionInput.value);
+    if (e.key === 'Enter') createCollection(newCollectionInput.value);
   });
 }
 
 modalCloseBtns.forEach((btn) => {
   btn.addEventListener('click', () => {
-    const modal = btn.closest('.modal') as HTMLElement | null;
+    const modal = btn.closest('.modal');
     if (modal) modal.classList.add('hidden');
   });
 });
