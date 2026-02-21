@@ -1,192 +1,212 @@
 :root {
-    --primary-color: #007bff;
-    --bg-color: #f4f4f9;
-    --sidebar-bg: #2c3e50;
-    --sidebar-text: #ecf0f1;
-    --header-bg: #fff;
-    --border-color: #ddd;
+  --primary-color: #007bff;
+  --bg-color: #f4f4f9;
+  --sidebar-bg: #2c3e50;
+  --sidebar-text: #ecf0f1;
+  --header-bg: #fff;
+  --border-color: #ddd;
 }
 
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    margin: 0;
-    padding: 0;
-    background-color: var(--bg-color);
-    color: #333;
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-color);
+  color: #333;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 #app {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
 header {
-    background-color: var(--header-bg);
-    padding: 1rem 2rem;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    z-index: 10;
+  background-color: var(--header-bg);
+  padding: 1rem 2rem;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 10;
 }
 
-h1 { margin: 0; font-size: 1.5rem; }
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+}
 
 .main-container {
-    display: flex;
-    flex: 1;
-    overflow: hidden;
+  display: flex;
+  flex: 1;
+  overflow: hidden;
 }
 
 #sidebar {
-    width: 250px;
-    background-color: var(--sidebar-bg);
-    color: var(--sidebar-text);
-    padding: 1rem;
-    overflow-y: auto;
+  width: 250px;
+  background-color: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  padding: 1rem;
+  overflow-y: auto;
 }
 
-#sidebar h3 { margin-top: 0; border-bottom: 1px solid #34495e; padding-bottom: 0.5rem; }
+#sidebar h3 {
+  margin-top: 0;
+  border-bottom: 1px solid #34495e;
+  padding-bottom: 0.5rem;
+}
 
 #collection-list {
-    list-style: none;
-    padding: 0;
+  list-style: none;
+  padding: 0;
 }
 
 #collection-list li {
-    padding: 0.5rem;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: background 0.2s;
+  padding: 0.5rem;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.2s;
 }
 
-#collection-list li:hover, #collection-list li.active {
-    background-color: #34495e;
+#collection-list li:hover,
+#collection-list li.active {
+  background-color: #34495e;
 }
 
 #content {
-    flex: 1;
-    padding: 2rem;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
+  flex: 1;
+  padding: 2rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 #toolbar {
-    margin-bottom: 1rem;
-    display: flex;
-    gap: 10px;
+  margin-bottom: 1rem;
+  display: flex;
+  gap: 10px;
 }
 
 #toolbar input {
-    padding: 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    flex: 1;
-    max-width: 300px;
+  padding: 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  flex: 1;
+  max-width: 300px;
 }
 
 button {
-    padding: 0.5rem 1rem;
-    border: none;
-    background-color: var(--primary-color);
-    color: white;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.2s;
+  padding: 0.5rem 1rem;
+  border: none;
+  background-color: var(--primary-color);
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.2s;
 }
 
 button:disabled {
-    background-color: #ccc;
-    cursor: not-allowed;
+  background-color: #ccc;
+  cursor: not-allowed;
 }
 
 button:hover:not(:disabled) {
-    background-color: #0056b3;
+  background-color: #0056b3;
 }
 
 table {
-    width: 100%;
-    border-collapse: collapse;
-    background: white;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  width: 100%;
+  border-collapse: collapse;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
-th, td {
-    padding: 0.75rem;
-    text-align: left;
-    border-bottom: 1px solid var(--border-color);
+th,
+td {
+  padding: 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border-color);
 }
 
 th {
-    background-color: #f8f9fa;
-    font-weight: 600;
+  background-color: #f8f9fa;
+  font-weight: 600;
 }
 
-tr:hover { background-color: #f1f1f1; }
+tr:hover {
+  background-color: #f1f1f1;
+}
 
 .modal {
-    position: fixed;
-    top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(0,0,0,0.5);
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 100;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 100;
 }
 
-.modal.hidden { display: none; }
+.modal.hidden {
+  display: none;
+}
 
 .modal-content {
-    background: white;
-    padding: 2rem;
-    border-radius: 8px;
-    width: 400px;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    position: relative;
+  background: white;
+  padding: 2rem;
+  border-radius: 8px;
+  width: 400px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  position: relative;
 }
 
 .close-btn {
-    position: absolute;
-    top: 10px; right: 10px;
-    font-size: 1.5rem;
-    cursor: pointer;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 1.5rem;
+  cursor: pointer;
 }
 
 textarea {
-    width: 100%;
-    padding: 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    margin-bottom: 1rem;
-    box-sizing: border-box;
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  box-sizing: border-box;
 }
 
-.error { color: rgb(213, 82, 82); font-size: 0.9rem; margin-top: 0.5rem; }
+.error {
+  color: rgb(213, 82, 82);
+  font-size: 0.9rem;
+  margin-top: 0.5rem;
+}
 
-.modal-content input[type="text"] {
-    width: 100%;
-    padding: 0.5rem;
-    border: 1px solid var(--border-color);
-    border-radius: 4px;
-    margin-bottom: 0.75rem;
-    box-sizing: border-box;
-    font-size: 1rem;
+.modal-content input[type='text'] {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  margin-bottom: 0.75rem;
+  box-sizing: border-box;
+  font-size: 1rem;
 }
 
 #pagination {
-    margin-top: 1rem;
-    display: flex;
-    gap: 10px;
-    align-items: center;
+  margin-top: 1rem;
+  display: flex;
+  gap: 10px;
+  align-items: center;
 }
 
 #new-collection-btn:disabled {
-    background-color: #ccc;
-    cursor: not-allowed;
+  background-color: #ccc;
+  cursor: not-allowed;
 }
-
