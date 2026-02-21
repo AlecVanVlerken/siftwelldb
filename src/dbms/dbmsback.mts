@@ -82,8 +82,8 @@ export class DbmsBack {
    * Retrieves a list of all collection names in the database.
    * @returns A Promise that resolves to an array of collection names.
    */
-  async getCollections(): Promise<string[]> {
-    return Object.keys(this.metaCache);
+  getCollections(): Promise<string[]> {
+    return Promise.resolve(Object.keys(this.metaCache));
   }
 
   /**
