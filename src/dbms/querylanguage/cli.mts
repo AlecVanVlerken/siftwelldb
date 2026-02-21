@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// author: Frederik Caeyman
+// date: 2026-02-17
+
 import fs from 'node:fs';
 import { RealFile } from '../../core/file.mjs';
 import { SimpleDbms } from '../simpledbms.mjs';
