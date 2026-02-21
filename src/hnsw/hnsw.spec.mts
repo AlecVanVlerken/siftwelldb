@@ -303,10 +303,13 @@ describe('HNSWGraphStorage', () => {
 
   let fbf: FreeBlockFile;
   let gs: HNSWGraphStorage;
+  /** Captured from gs.metaBlockId in beforeEach; passed to HNSWGraphStorage.open(). */
+  let metaBlockId: number;
 
   beforeEach(async () => {
     fbf = await makeFbf(BLOCK_SIZE);
     gs = await HNSWGraphStorage.create(fbf, M, MAX_STORED_LEVEL);
+    metaBlockId = gs.metaBlockId;
   });
 
   /** Build a minimal HNSWNode with the given properties. */
@@ -324,20 +327,20 @@ describe('HNSWGraphStorage', () => {
 
   // ── create / open ─────────────────────────────────────────────────────────
 
-  it('create stores M and maxStoredLevel in the client area', async () => {
+  it('create stores M and maxStoredLevel in the metadata block', async () => {
     await fbf.commit();
-    const gs2 = await HNSWGraphStorage.open(fbf);
+    const gs2 = await HNSWGraphStorage.open(fbf, metaBlockId);
     expect(gs2.M).toBe(M);
     expect(gs2.maxStoredLevel).toBe(MAX_STORED_LEVEL);
   });
 
   it('open with mismatched nodeSize throws', async () => {
     await fbf.commit();
-    // Open with different M — nodeSize will differ → should throw
-    await expect(HNSWGraphStorage.open(fbf)).resolves.toBeDefined(); // same params: ok
+    // Open with same params — should succeed.
+    await expect(HNSWGraphStorage.open(fbf, metaBlockId)).resolves.toBeDefined();
     // We can't directly test mismatch without a second file, so we verify the
     // computed nodeSize is consistent.
-    const gs2 = await HNSWGraphStorage.open(fbf);
+    const gs2 = await HNSWGraphStorage.open(fbf, metaBlockId);
     expect(gs2.nodeSize).toBe(gs.nodeSize);
   });
 
@@ -509,7 +512,7 @@ describe('HNSWGraphStorage', () => {
     await gs.saveMetadata();
     await fbf.commit();
 
-    const gs2 = await HNSWGraphStorage.open(fbf);
+    const gs2 = await HNSWGraphStorage.open(fbf, metaBlockId);
     expect(gs2.entryPoint).toBe(node.nodeId);
     expect(gs2.currentMaxLevel).toBe(2);
   });
@@ -517,7 +520,7 @@ describe('HNSWGraphStorage', () => {
   it('open with no saved entry point returns null', async () => {
     await gs.saveMetadata();
     await fbf.commit();
-    const gs2 = await HNSWGraphStorage.open(fbf);
+    const gs2 = await HNSWGraphStorage.open(fbf, metaBlockId);
     expect(gs2.entryPoint).toBeNull();
     expect(gs2.currentMaxLevel).toBe(0);
   });
@@ -528,7 +531,7 @@ describe('HNSWGraphStorage', () => {
     await gs.insertNode(node);
     await fbf.commit();
 
-    const gs2 = await HNSWGraphStorage.open(fbf);
+    const gs2 = await HNSWGraphStorage.open(fbf, metaBlockId);
     const loaded = await gs2.getNode(node.nodeId);
     expect(loaded.docId).toBe(77);
     expect(loaded.level).toBe(1);
@@ -556,11 +559,14 @@ describe('HNSWIndex', () => {
   let index: HNSWIndex;
   let graphFbf: FreeBlockFile;
   let vectorFbf: FreeBlockFile;
+  /** metaBlockId captured from graphStorage in beforeEach — needed by reopenIndex(). */
+  let graphMetaBlockId: number;
 
   beforeEach(async () => {
     graphFbf = await makeFbf(GRAPH_BLOCK_SIZE);
     vectorFbf = await makeFbf(VECTOR_BLOCK_SIZE);
     const graphStorage = await HNSWGraphStorage.create(graphFbf, M, MAX_STORED_LEVEL);
+    graphMetaBlockId = graphStorage.metaBlockId;
     const vectorHeap = new VectorHeapFile(vectorFbf, DIMENSION);
     index = HNSWIndex.create(graphStorage, vectorHeap, {
       M,
@@ -571,7 +577,7 @@ describe('HNSWIndex', () => {
 
   /** Open an existing persisted index from `graphFbf` + `vectorFbf`. */
   async function reopenIndex(gFbf: FreeBlockFile, vFbf: FreeBlockFile): Promise<HNSWIndex> {
-    const gs = await HNSWGraphStorage.open(gFbf);
+    const gs = await HNSWGraphStorage.open(gFbf, graphMetaBlockId);
     const vh = new VectorHeapFile(vFbf, DIMENSION);
     return HNSWIndex.open(gs, vh, { efSearch: EF_SEARCH, efConstruction: EF_CONSTRUCTION });
   }
@@ -976,11 +982,14 @@ describe('HNSWIndex – currentMaxLevel invariant', () => {
   let graphFbf: FreeBlockFile;
   let vectorFbf: FreeBlockFile;
   let graphStorage: HNSWGraphStorage;
+  /** metaBlockId captured from graphStorage in beforeEach — needed by reopenIndex2(). */
+  let graphMetaBlockId: number;
 
   beforeEach(async () => {
     graphFbf = await makeFbf(GRAPH_BLOCK_SIZE);
     vectorFbf = await makeFbf(VECTOR_BLOCK_SIZE);
     graphStorage = await HNSWGraphStorage.create(graphFbf, M, MAX_STORED_LEVEL);
+    graphMetaBlockId = graphStorage.metaBlockId;
     const vectorHeap = new VectorHeapFile(vectorFbf, DIMENSION);
     index = HNSWIndex.create(graphStorage, vectorHeap, {
       M,
@@ -996,7 +1005,7 @@ describe('HNSWIndex – currentMaxLevel invariant', () => {
     index: HNSWIndex;
     graphStorage: HNSWGraphStorage;
   }> {
-    const gs = await HNSWGraphStorage.open(gFbf);
+    const gs = await HNSWGraphStorage.open(gFbf, graphMetaBlockId);
     const vh = new VectorHeapFile(vFbf, DIMENSION);
     const idx = await HNSWIndex.open(gs, vh, { efSearch: EF_SEARCH, efConstruction: EF_CONSTRUCTION });
     return { index: idx, graphStorage: gs };

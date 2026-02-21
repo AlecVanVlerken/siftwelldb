@@ -18,18 +18,16 @@ import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
 // ── HNSW semantic-search integration ─────────────────────────────────────────
 
 /**
- * Factory that produces the two File pairs needed for a per-collection HNSW
- * index (graph storage + vector heap).  Called once per role and collection.
- */
-export type HnswFileFactory = (collectionName: string, role: 'graph' | 'vector') => { dataFile: File; logFile: File };
-
-/**
  * Optional configuration block that enables per-collection HNSW semantic
  * search inside a `DbmsBack` / `SimpleDbms` instance.
  *
  * When present, every document that contains at least one non-`_`-prefixed
  * string field will have those string values concatenated and embedded into
  * the collection's HNSW index upon insertion.
+ *
+ * HNSW graph and vector data are stored inside the same single FreeBlockFile
+ * as the rest of the database (records + B+ tree indexes), giving one unified
+ * WAL domain and fully atomic commits.
  */
 export type HnswConfig = {
   /** Dimensionality of the vectors produced by `embeddingFn`. */
@@ -39,12 +37,6 @@ export type HnswConfig = {
    * float32 embedding vector — supply any HuggingFace (or other) model here.
    */
   embeddingFn: (text: string) => Promise<Float32Array>;
-  /**
-   * Factory that returns File pairs for each collection's HNSW storage.
-   * For a production deployment, return real OS-backed Files.
-   * For tests, return MockFiles.
-   */
-  fileFactory: HnswFileFactory;
   /** HNSW M parameter (max neighbours per node). Default: 16. */
   M?: number;
   /** Maximum level stored per node. Default: 4. */
@@ -140,12 +132,11 @@ export class DbmsBack {
 
   /**
    * Closes the database backend.
+   * All HNSW indices share the same FreeBlockFile as the rest of the
+   * database and therefore do not need to be closed separately.
    * @returns A Promise that resolves when the database backend is closed.
    */
   async close(): Promise<void> {
-    for (const idx of this.hnswIndexCache.values()) {
-      await idx.close();
-    }
     await this.freeblockFile.close();
   }
 
@@ -194,17 +185,13 @@ export class DbmsBack {
 
   /**
    * Commits all changes to the database.
+   * A single commit atomically flushes records, B+ tree indexes, HNSW graph
+   * nodes, and HNSW vector data — they all share the same FreeBlockFile WAL.
    * @returns A Promise that resolves when the commit is complete.
    */
   async commit(): Promise<void> {
     await this.metaWriteJSON(this.metaCache);
     await this.freeblockFile.commit();
-    // Commit HNSW AFTER the main FBF so the "data before index" crash-safety
-    // invariant is preserved: if a crash occurs between the two commits, the
-    // main store is in a consistent state and the HNSW index is just stale.
-    for (const idx of this.hnswIndexCache.values()) {
-      await idx.commit();
-    }
   }
 
   /**
@@ -518,7 +505,8 @@ export class DbmsBack {
 
   /**
    * Return the in-memory HNSW index for `collectionName`, creating it (and
-   * its backing FreeBlockFiles) if it does not yet exist.
+   * its backing blocks inside the shared FreeBlockFile) if it does not yet
+   * exist.
    */
   private async getOrCreateHnswIndex(collectionName: string): Promise<HNSWIndex> {
     const cached = this.hnswIndexCache.get(collectionName);
@@ -528,60 +516,49 @@ export class DbmsBack {
     let idx: HNSWIndex;
 
     if (hnswMeta && collectionName in hnswMeta) {
-      // FBF files already exist for this collection — open them.
+      // Blocks already exist for this collection — open them.
       idx = await this.openHnswIndex(collectionName);
     } else {
-      // First time this collection is seen — create fresh FBF files.
+      // First time this collection is seen — allocate blocks and initialise.
       idx = await this.createHnswIndex(collectionName);
-      if (!(HNSW_META_KEY in this.metaCache)) {
-        this.metaCache[HNSW_META_KEY] = {};
-      }
-      this.metaCache[HNSW_META_KEY][collectionName] = [1, 'hnsw'];
     }
 
     this.hnswIndexCache.set(collectionName, idx);
     return idx;
   }
 
-  /** Create brand-new HNSW FBF files for `collectionName`. */
+  /** Create brand-new HNSW structures for `collectionName` inside the shared FBF. */
   private async createHnswIndex(collectionName: string): Promise<HNSWIndex> {
     const cfg = this.hnswConfig!;
-    const { dataFile: gData, logFile: gLog } = cfg.fileFactory(collectionName, 'graph');
-    const { dataFile: vData, logFile: vLog } = cfg.fileFactory(collectionName, 'vector');
-
-    const graphFbf = new FreeBlockFile(new AtomicFile(gData, gLog), 4096);
-    const vectorFbf = new FreeBlockFile(new AtomicFile(vData, vLog), 4096);
-    await graphFbf.create();
-    await graphFbf.open();
-    await vectorFbf.create();
-    await vectorFbf.open();
-
     const M = cfg.M ?? 16;
     const maxStoredLevel = cfg.maxStoredLevel ?? 4;
     const efConstruction = cfg.efConstruction ?? 200;
     const efSearch = cfg.efSearch ?? 50;
 
-    const graphStorage = await HNSWGraphStorage.create(graphFbf, M, maxStoredLevel);
-    const vectorHeap = new VectorHeapFile(vectorFbf, cfg.dimension);
+    // Both graph storage and vector heap live inside the shared FBF.
+    const graphStorage = await HNSWGraphStorage.create(this.freeblockFile, M, maxStoredLevel);
+    const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
+
+    // Persist the metadata block number so we can reopen on next open().
+    if (!(HNSW_META_KEY in this.metaCache)) {
+      this.metaCache[HNSW_META_KEY] = {};
+    }
+    this.metaCache[HNSW_META_KEY][collectionName] = [graphStorage.metaBlockId, 'hnsw'];
+
     return HNSWIndex.create(graphStorage, vectorHeap, { M, efConstruction, efSearch });
   }
 
-  /** Open existing HNSW FBF files for `collectionName`. */
+  /** Open existing HNSW structures for `collectionName` from the shared FBF. */
   private async openHnswIndex(collectionName: string): Promise<HNSWIndex> {
     const cfg = this.hnswConfig!;
-    const { dataFile: gData, logFile: gLog } = cfg.fileFactory(collectionName, 'graph');
-    const { dataFile: vData, logFile: vLog } = cfg.fileFactory(collectionName, 'vector');
-
-    const graphFbf = new FreeBlockFile(new AtomicFile(gData, gLog), 4096);
-    const vectorFbf = new FreeBlockFile(new AtomicFile(vData, vLog), 4096);
-    await graphFbf.open();
-    await vectorFbf.open();
+    // metaBlockId is stored in [0] of the tuple
+    const metaBlockId = this.metaCache[HNSW_META_KEY][collectionName][0];
 
     const efConstruction = cfg.efConstruction ?? 200;
     const efSearch = cfg.efSearch ?? 50;
 
-    const graphStorage = await HNSWGraphStorage.open(graphFbf);
-    const vectorHeap = new VectorHeapFile(vectorFbf, cfg.dimension);
+    const graphStorage = await HNSWGraphStorage.open(this.freeblockFile, metaBlockId);
+    const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
     return HNSWIndex.open(graphStorage, vectorHeap, { efSearch, efConstruction });
   }
 

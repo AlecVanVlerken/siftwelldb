@@ -4,6 +4,13 @@
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { VectorSerializer } from './vectorSerializer.mjs';
 
+/**
+ * Magic byte written at usable[0] (= raw byte 1) of every VectorHeapFile page.
+ * Allows VectorHeapFile.scan() to skip pages owned by other subsystems when
+ * operating inside a shared FreeBlockFile.
+ */
+const HNSW_VECTOR_PAGE_MAGIC = 0xa5;
+
 export interface VectorPointer {
   pageId: number;
   slotId: number;
@@ -27,9 +34,10 @@ export interface VectorPointer {
  * Page layout (within usable area = bytes [1, blockSize-1] of a raw block;
  * byte 0 is the block-type byte owned by FreeBlockFile):
  *
- *   Offset 0–1  : usedCount   (uint16 LE) — number of occupied slots
- *   Offset 2 … 2+bitmapBytes-1 : slot bitmap (1 bit per slot, 1=occupied)
- *   Offset 2+bitmapBytes … : vector data  (slotsPerPage × vectorByteSize bytes)
+ *   Offset 0    : page magic (HNSW_VECTOR_PAGE_MAGIC = 0xa5)
+ *   Offset 1–2  : usedCount   (uint16 LE) — number of occupied slots
+ *   Offset 3 … 2+bitmapBytes : slot bitmap (1 bit per slot, 1=occupied)
+ *   Offset 3+bitmapBytes … : vector data  (slotsPerPage × vectorByteSize bytes)
  */
 export class VectorHeapFile {
   /** Number of float32 values per vector slot. */
@@ -54,10 +62,10 @@ export class VectorHeapFile {
     this.vectorByteSize = VectorSerializer.byteSize(dimension);
     const blockSize = file._getBlockSize();
     // usable area = blockSize − 1 (byte 0 is block-type, owned by FreeBlockFile)
-    // page header = 2 bytes usedCount + bitmapBytes
-    // n * vectorByteSize + ceil(n/8) ≤ blockSize − 3
-    // n ≤ (blockSize − 3) × 8 / (vectorByteSize × 8 + 1)
-    this.slotsPerPage = Math.floor(((blockSize - 3) * 8) / (this.vectorByteSize * 8 + 1));
+    // page header = 1 byte magic + 2 bytes usedCount + bitmapBytes
+    // n * vectorByteSize + ceil(n/8) ≤ blockSize − 4
+    // n ≤ (blockSize − 4) × 8 / (vectorByteSize × 8 + 1)
+    this.slotsPerPage = Math.floor(((blockSize - 4) * 8) / (this.vectorByteSize * 8 + 1));
     if (this.slotsPerPage < 1) {
       throw new Error(
         `Block size ${blockSize} is too small for dimension ${dimension} ` +
@@ -65,7 +73,8 @@ export class VectorHeapFile {
       );
     }
     this.bitmapBytes = Math.ceil(this.slotsPerPage / 8);
-    this.dataOffset = 2 + this.bitmapBytes; // usedCount(2) + bitmap
+    // magic(1) + usedCount(2) + bitmap
+    this.dataOffset = 3 + this.bitmapBytes;
   }
 
   // LOW-LEVEL PAGE HELPERS
@@ -80,12 +89,15 @@ export class VectorHeapFile {
   }
 
   /**
-   * Like readPage, but returns null if the block is not a Data block (e.g. freed).
-   * Used in scan/insert loops to safely skip freed pages.
+   * Like readPage, but returns null if the block is not a VectorHeapFile page.
+   * Checks both the FBF block type (0x02 = Data) and the HNSW vector page magic
+   * so that foreign pages (B+ tree nodes, RecordStore blocks, HNSW graph pages)
+   * are transparently skipped during scan/insert loops in a shared FBF.
    */
   private async readPageIfData(pageId: number): Promise<Buffer | null> {
     const raw = await this.file.readBlock(pageId);
     if (raw.readUInt8(0) !== 0x02) return null; // 0x02 = BlockType.Data
+    if (raw.readUInt8(1) !== HNSW_VECTOR_PAGE_MAGIC) return null; // not a vector page
     return raw.subarray(1);
   }
 
@@ -97,32 +109,38 @@ export class VectorHeapFile {
     await this.file.writeBlock(pageId, usable);
   }
 
-  /** Create a fresh, empty usable-area buffer. */
+  /** Create a fresh, empty usable-area buffer with the page magic byte set. */
   private newPageBuffer(): Buffer {
     const blockSize = this.file._getBlockSize();
-    return Buffer.alloc(blockSize - 1); // zeros → usedCount=0, bitmap all 0
+    const buf = Buffer.alloc(blockSize - 1);
+    // Mark this as a VectorHeapFile page so scan() can identify it in a
+    // shared FBF where multiple subsystems coexist.
+    buf.writeUInt8(HNSW_VECTOR_PAGE_MAGIC, 0);
+    return buf;
   }
 
+  // usedCount lives at usable[1..2] (usable[0] is the page magic byte)
   private getUsedCount(usable: Buffer): number {
-    return usable.readUInt16LE(0);
+    return usable.readUInt16LE(1);
   }
 
   private setUsedCount(usable: Buffer, count: number): void {
-    usable.writeUInt16LE(count, 0);
+    usable.writeUInt16LE(count, 1);
   }
 
+  // Bitmap starts at usable[3] (magic[0] + usedCount[1..2])
   private isBitSet(usable: Buffer, slotId: number): boolean {
-    const byte = usable.readUInt8(2 + Math.floor(slotId / 8));
+    const byte = usable.readUInt8(3 + Math.floor(slotId / 8));
     return (byte & (1 << slotId % 8)) !== 0;
   }
 
   private setBit(usable: Buffer, slotId: number): void {
-    const byteIdx = 2 + Math.floor(slotId / 8);
+    const byteIdx = 3 + Math.floor(slotId / 8);
     usable.writeUInt8(usable.readUInt8(byteIdx) | (1 << slotId % 8), byteIdx);
   }
 
   private clearBit(usable: Buffer, slotId: number): void {
-    const byteIdx = 2 + Math.floor(slotId / 8);
+    const byteIdx = 3 + Math.floor(slotId / 8);
     usable.writeUInt8(usable.readUInt8(byteIdx) & ~(1 << slotId % 8), byteIdx);
   }
 
