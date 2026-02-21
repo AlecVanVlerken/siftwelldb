@@ -58,6 +58,14 @@ export class SimpleDbms {
   }
 
   /**
+   * Retrieves a list of all collection names in the database.
+   * @returns A Promise that resolves to an array of collection names.
+   */
+  async getCollections(): Promise<string[]> {
+    return this.dbmsback.getCollections();
+  }
+
+  /**
    * Closes the database management system.
    * @returns A Promise that resolves when the database is closed.
    */
