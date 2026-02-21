@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimpleDBMS Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>SimpleDBMS Team-03</h1>
+            <div id="connection-status">Disconnected</div>
+            <div style="display: flex; gap: 8px;">
+                <button id="reset-db-btn" disabled style="background: #e67e22;">Reset DB</button>
+                <button id="disconnect-btn" disabled>Disconnect</button>
+            </div>
+        </header>
+        <div class="main-container">
+            <aside id="sidebar">
+                <h3>Collections</h3>
+                <ul id="collection-list">
+                    <!-- Collections will be populated here -->
+                </ul>
+                <button id="new-collection-btn" disabled style="margin-top: 1rem; width: 100%; background: #27ae60;">+ New Collection</button>
+            </aside>
+            <main id="content">
+                <div id="toolbar">
+                    <button id="add-doc-btn" disabled>Add Document</button>
+                    <input type="text" id="filter-input" placeholder="Filter documents..." disabled>
+                    <button id="refresh-btn" disabled>Refresh</button>
+                </div>
+                <div id="data-view">
+                    <table id="data-table">
+                        <thead>
+                            <!-- Headers will be dynamic -->
+                        </thead>
+                        <tbody>
+                            <!-- Rows will be dynamic -->
+                        </tbody>
+                    </table>
+                </div>
+                <div id="pagination">
+                    <button id="prev-btn" disabled>Previous</button>
+                    <span id="page-info">Page 1</span>
+                    <button id="next-btn" disabled>Next</button>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Connect Modal -->
+    <div id="connect-modal" class="modal">
+        <div class="modal-content">
+            <h2>Connect to Database</h2>
+            <input type="text" id="db-filepath" placeholder="Database filepath (e.g. data.db)" value="data.db">
+            <div style="display: flex; gap: 10px;">
+                <button id="connect-confirm-btn">Open Existing</button>
+                <button id="create-new-btn" style="background: #28a745;">Create New</button>
+            </div>
+            <p id="connect-error" class="error"></p>
+        </div>
+    </div>
+
+    <!-- Add/Edit Document Modal -->
+    <div id="document-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h2 id="doc-modal-title">Add Document</h2>
+            <textarea id="doc-content" rows="10" placeholder='{"name": "Alice", "age": 30}'></textarea>
+            <button id="save-doc-btn">Save</button>
+            <p id="doc-error" class="error"></p>
+        </div>
+    </div>
+
+    <!-- New Collection Modal -->
+    <div id="new-collection-modal" class="modal hidden">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h2>New Collection</h2>
+            <p style="font-size: 0.9rem; color: #666;">Enter a collection name. You'll be prompted to add the first document.</p>
+            <input type="text" id="new-collection-name" placeholder="e.g. users">
+            <button id="new-collection-confirm-btn" style="margin-top: 0.5rem;">Create</button>
+            <p id="new-collection-error" class="error"></p>
+        </div>
+    </div>
+
+    <script type="module" src="client.js"></script>
+</body>
+</html>
