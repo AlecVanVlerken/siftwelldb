@@ -15,8 +15,6 @@ import { HNSWIndex } from '../hnsw/hnswIndex.mjs';
 import { HNSWGraphStorage } from '../hnsw/hnswGraphStorage.mjs';
 import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
 
-// ── HNSW semantic-search integration ─────────────────────────────────────────
-
 /**
  * Optional configuration block that enables per-collection HNSW semantic
  * search inside a `DbmsBack` / `SimpleDbms` instance.
@@ -76,7 +74,7 @@ export class DbmsBack {
   // Cache for B+ trees: key = "collection:field"
   private treeCache: Map<string, CachedTree> = new Map();
 
-  // ── HNSW fields ────────────────────────────────────────────────────────────
+  // HNSW fields
   private hnswConfig: HnswConfig | undefined;
   /** In-memory cache of per-collection HNSW indices. */
   private hnswIndexCache: Map<string, HNSWIndex> = new Map();
@@ -132,8 +130,6 @@ export class DbmsBack {
 
   /**
    * Closes the database backend.
-   * All HNSW indices share the same FreeBlockFile as the rest of the
-   * database and therefore do not need to be closed separately.
    * @returns A Promise that resolves when the database backend is closed.
    */
   async close(): Promise<void> {
@@ -276,7 +272,7 @@ export class DbmsBack {
     }
     // END FOR LOOP
 
-    // ── HNSW: embed and index text fields ────────────────────────────────────
+    // HNSW: embed and index text fields if HNSW is configured and the document has embeddable text.
     if (this.hnswConfig) {
       const text = this.extractText(document);
       if (text !== null) {
@@ -454,7 +450,7 @@ export class DbmsBack {
     return documentGenerator();
   }
 
-  // ── Public semantic-search API ────────────────────────────────────────────
+  // **Public semantic-search API**
 
   /**
    * Perform a semantic (approximate nearest-neighbour) search over the
@@ -486,7 +482,7 @@ export class DbmsBack {
     return results;
   }
 
-  // ── Private HNSW helpers ──────────────────────────────────────────────────
+  // Private HNSW helpers
 
   /**
    * Concatenate all non-`_`-prefixed string field values into a single

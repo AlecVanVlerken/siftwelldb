@@ -12,7 +12,7 @@ import type { VectorPointer } from './vectorHeapFile.mjs';
  */
 const HNSW_GRAPH_PAGE_MAGIC = 0xa3;
 
-// ─── NodeId encoding ───────────────────────────────────────────────────────
+// ** NodeId encoding **
 // NodeId = BigInt(pageId) << 32n | BigInt(slotId)
 // This is a unique, serialisable identifier for every node slot.
 
@@ -27,7 +27,7 @@ export function decodeNodeId(nodeId: NodeId): { pageId: number; slotId: number }
   };
 }
 
-// ─── Per-collection metadata block offsets ──────────────────────────────────
+// ** Per-collection metadata block offsets **
 // When HNSWGraphStorage is used as part of a shared FreeBlockFile (DbmsBack
 // unified mode), metadata is written to a dedicated allocated block rather
 // than the FBF client area (which DbmsBack uses for its own JSON meta).
@@ -50,7 +50,7 @@ const META_EP_LOW = 16;
 const META_HAS_EP = 20;
 const META_CURRENT_MAX_LEVEL = 21;
 
-// ─── Per-node slot layout (within usable page area) ────────────────────────
+// ** Per-node slot layout (within usable page area) **
 // Each page starts with a 1-byte magic marker (HNSW_GRAPH_PAGE_MAGIC) at
 // usable[0], so the page header layout is:
 //
@@ -97,28 +97,30 @@ function layerNCountOffset(M: number, layer: number): number {
 
 const LAYER0_COUNT_OFFSET = 12; // byte index of count0 in the slot
 
-// ─── Page layout (usable area = bytes [1, blockSize-1] of raw block) ───────
-// Identical structure to VectorHeapFile pages:
-//   [0-1]  usedCount  (uint16 LE)
-//   [2 … 2+bitmapBytes-1]  slot bitmap
-//   [2+bitmapBytes … ]     node slots
+// ** Page layout (usable area = bytes [1, blockSize-1] of raw block) **
+// Mirror of the VectorHeapFile page layout (magic byte differs):
+//   [0]              page magic (HNSW_GRAPH_PAGE_MAGIC = 0xa3)
+//   [1-2]            usedCount  (uint16 LE)
+//   [3 … 2+bitmapBytes] slot bitmap
+//   [3+bitmapBytes … ]  node slots
 
 /**
  * HNSWGraphStorage
  * -----------------
  * Persistent storage for HNSW graph nodes backed by a FreeBlockFile.
  *
- * Lifecycle :
- *   const fbf = new FreeBlockFile(atomicFile, blockSize);
- *   await fbf.create();  // new file  — or —
- *   await fbf.open();    // existing file
- *   const gs = HNSWGraphStorage.create(fbf, M, maxStoredLevel);  // new index
- *   // — or —
- *   const gs = HNSWGraphStorage.open(fbf);                        // existing
+ * Lifecycle (sharedFbf is the FreeBlockFile already open by DbmsBack):
+ *   // New index:
+ *   const gs = await HNSWGraphStorage.create(sharedFbf, M, maxStoredLevel);
+ *   // store gs.metaBlockId in DbmsBack's metaCache for later reopen
+ *
+ *   // Existing index:
+ *   const gs = await HNSWGraphStorage.open(sharedFbf, metaBlockId);
+ *
  *   …use gs.insertNode / getNode / saveNode / deleteNode…
  *   await gs.saveMetadata();   // persist entry-point + level changes
- *   await fbf.commit();        // atomic flush to disk
- *   await fbf.close();
+ *   await sharedFbf.commit();  // one atomic WAL flush (covers all subsystems)
+ *   await sharedFbf.close();   // managed by DbmsBack
  */
 export class HNSWGraphStorage {
   readonly M: number;
@@ -167,7 +169,7 @@ export class HNSWGraphStorage {
     this.pageDataOffset = 3 + this.bitmapBytes;
   }
 
-  // ── Factory methods ────────────────────────────────────────────────────────
+  // ** Factory methods for create/open **
 
   /**
    * Initialise a brand-new HNSWGraphStorage on an already-open FreeBlockFile.
@@ -193,6 +195,10 @@ export class HNSWGraphStorage {
    *
    * `metaBlockId` was returned via `gs.metaBlockId` when the storage was
    * first created and should have been persisted externally.
+   *
+   * NOTE: The level histogram is initialised to all-zeros after `open()`.
+   * It is the caller's responsibility to rebuild it — `HNSWIndex.open()`
+   * does this automatically via `rebuildDocIdIndex()`.
    */
   static async open(file: FreeBlockFile, metaBlockId: number): Promise<HNSWGraphStorage> {
     const raw = await file.readBlock(metaBlockId);
@@ -220,7 +226,7 @@ export class HNSWGraphStorage {
     return gs;
   }
 
-  // ── Accessors for HNSW metadata ────────────────────────────────────────────
+  // ** Accessors and mutators for graph-level metadata (entry point, max level, histogram) **
 
   /** Block number of the dedicated metadata block in the FreeBlockFile. */
   get metaBlockId(): number {
@@ -283,7 +289,7 @@ export class HNSWGraphStorage {
   /**
    * Persist graph-level metadata (entryPoint, currentMaxLevel, M, maxStoredLevel)
    * to the dedicated metadata block in the FreeBlockFile.
-   * Must call `file.commit()` afterwards to flush to disk.
+   * Must call `index.commit()` afterwards to flush to disk.
    */
   async saveMetadata(): Promise<void> {
     const metaBuf = Buffer.alloc(META_SIZE);
@@ -303,7 +309,7 @@ export class HNSWGraphStorage {
     await this.file.writeBlock(this._metaBlockId, metaBuf);
   }
 
-  // ── Low-level page helpers ────────────────────────────────────────────────
+  // ** Low-level page helpers **
 
   private async readPage(pageId: number): Promise<Buffer> {
     const raw = await this.file.readBlock(pageId);
@@ -367,7 +373,7 @@ export class HNSWGraphStorage {
     return -1;
   }
 
-  // ── Node serialisation helpers ────────────────────────────────────────────
+  // ** Node serialisation helpers **
 
   private serialiseNode(usable: Buffer, slotOffset: number, node: HNSWNode): void {
     usable.writeUInt32LE(node.docId, slotOffset + 0);
@@ -441,7 +447,7 @@ export class HNSWGraphStorage {
     return new HNSWNode({ nodeId, docId, level, vectorPtr, neighbors, deleted });
   }
 
-  // ── Public node API ────────────────────────────────────────────────────────
+  // ** Public node API **
 
   /**
    * Store a new node and return its persistent NodeId.
@@ -546,8 +552,10 @@ export class HNSWGraphStorage {
   }
 
   /**
-   * Async generator that yields every live (non-deleted) node in the graph.
-   * Used by `HNSWIndex.open()` to rebuild the in-memory docId → NodeId map.
+   * Async generator that yields every occupied node slot in the graph,
+   * including soft-deleted nodes.  Callers must check `node.deleted` themselves.
+   * Used by `HNSWIndex.open()` to rebuild the in-memory docId → NodeId map
+   * and level histogram.
    */
   async *scanNodes(): AsyncGenerator<HNSWNode> {
     const blockCount = Math.max(this.file._getCachedBlockCount(), this.file._getHighestDirtyBlock() + 1);
@@ -566,16 +574,21 @@ export class HNSWGraphStorage {
   }
 
   /**
-   * Atomically flush all dirty graph blocks to disk via the WAL.
-   * Always call this AFTER the vector heap has been committed so that
-   * a crash between the two commits leaves the graph in its previous
-   * consistent state rather than with dangling vectorPtr references.
+   * Flush all dirty graph blocks to disk via the shared WAL.
+   * Both HNSWGraphStorage and VectorHeapFile delegate to the same
+   * FreeBlockFile instance, so the call order only affects in-memory
+   * write ordering — the actual on-disk commit is one atomic operation.
+   * Always call vectorHeap.commit() first to preserve the
+   * "data before index" in-memory write ordering invariant.
    */
   async commit(): Promise<void> {
     await this.file.commit();
   }
 
-  /** Close the underlying file. Safe to call after commit(). */
+  /**
+   * No-op in the shared-FBF design — the underlying FreeBlockFile is owned
+   * and closed by DbmsBack.  Kept for symmetry with VectorHeapFile.
+   */
   async close(): Promise<void> {
     await this.file.close();
   }

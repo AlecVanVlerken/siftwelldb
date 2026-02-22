@@ -32,48 +32,39 @@ export type HNSWParams = {
  * ----------
  * Top-level entry point for the HNSW approximate nearest-neighbour index.
  *
- * ── Crash-consistency model ───────────────────────────────────────────────
- * The index spans two FreeBlockFiles (graph + vectors), each backed by its
- * own WAL-protected AtomicFile.  Each individual commit() call is atomic,
- * but there is a window between the two.  Safety is achieved by always
- * committing vectors BEFORE the graph ("data before index" rule):
+ * **STORAGE MODEL**
+ * Both graph nodes (HNSWGraphStorage, magic 0xa3) and raw vectors
+ * (VectorHeapFile, magic 0xa5) share the single FreeBlockFile owned by
+ * DbmsBack.  All dirty pages — from both storage objects — are flushed by
+ * one WAL commit.  In normal usage `DbmsBack.commit()` handles this
+ * automatically; `HNSWIndex.commit()` is provided only for standalone
+ * use (e.g. unit tests that construct an index without DbmsBack).
  *
- *   • Crash after vectorFbf commits, before graphFbf commits:
- *       Graph is in its previous state → the insert/delete never happened
- *       from the graph's perspective.  One orphaned vector slot is leaked
- *       but the graph remains fully consistent.  (Recoverable by a GC scan.)
+ * **CRASH-CONSISTENCY MODEL**
+ * In-memory writes are always ordered: vectors are written BEFORE graph
+ * connections ("data before index" rule).  This ensures the graph only
+ * ever references vector slots that actually exist on disk:
  *
- *   • Crash after graphFbf commits, before vectorFbf commits:
- *       Graph nodes would reference vectorPtrs that do not exist — dangling
- *       pointers, silent corruption on reopen.  NEVER do this.
+ *   • Vector written, graph not yet wired → orphaned vector slot at worst;
+ *       the graph remains fully consistent.  (Recoverable by a GC scan.)
  *
- * Use index.commit() instead of calling fbf.commit() manually:
- * it always applies the safe order.
+ *   • Graph wired, vector not yet written → dangling vectorPtr reference,
+ *       silent corruption on reopen.  NEVER allow this order.
  *
- *   // ── Creating a new index ─────────────────────────────────────────
- *   const graphFbf  = new FreeBlockFile(atomicFile1, blockSize);
- *   const vectorFbf = new FreeBlockFile(atomicFile2, blockSize);
- *   await graphFbf.create();   await graphFbf.open();
- *   await vectorFbf.create();  await vectorFbf.open();
+ *   // ** NORMAL USAGE (through DbmsBack) **
+ *   //  DbmsBack creates/opens graph storage and vector heap internally.
+ *   //  All commits go through db.commit() — never call index.commit().
+ *   await db.insert(collection, document);   // internally calls index.insert()
+ *   await db.commit();                       // freeblockFile.commit() covers everything
  *
- *   const graphStorage = await HNSWGraphStorage.create(graphFbf, M, maxStoredLevel);
- *   const vectorHeap   = new VectorHeapFile(vectorFbf, dimension);
+ *   // ** STANDALONE USAGE (e.g. unit tests) **
+ *   //  (sharedFbf is a FreeBlockFile you manage yourself)
+ *   const graphStorage = await HNSWGraphStorage.create(sharedFbf, M, maxStoredLevel);
+ *   const vectorHeap   = new VectorHeapFile(sharedFbf, dimension);
  *   const index = HNSWIndex.create(graphStorage, vectorHeap, { M, efConstruction, efSearch });
  *
  *   await index.insert(docId, vector);
- *   await index.commit();   // vectors first, graph second — crash-safe
- *   await index.close();
- *
- *   // ── Reopening an existing index ──────────────────────────────────
- *   await graphFbf.open();
- *   await vectorFbf.open();
- *
- *   const graphStorage = await HNSWGraphStorage.open(graphFbf);
- *   const vectorHeap   = new VectorHeapFile(vectorFbf, dimension);
- *   const index = await HNSWIndex.open(graphStorage, vectorHeap, { efSearch });
- *
- *   const results = await index.search(queryVec, k);
- *
+ *   await index.commit();   // flush sharedFbf WAL — only needed in standalone mode
  *   await index.close();
  */
 // InsertContext already extends SearchContext, so listing SearchContext here
@@ -106,14 +97,14 @@ export class HNSWIndex implements InsertContext, DeleteContext {
     this.deleter = new HNSWDelete(this as DeleteContext);
   }
 
-  // ── Factory methods ───────────────────────────────────────────────────────
+  // ** Static factory methods **
 
   /**
    * Create a new (empty) `HNSWIndex` on top of a freshly-initialised
    * `HNSWGraphStorage` and `VectorHeapFile`.
    *
    * The storage objects must already be constructed; this method only wires
-   * them together and returns the index (just like `BPlusTree.create(storage)`).
+   * them together and returns the index.
    */
   static create(graphStorage: HNSWGraphStorage, vectorHeap: VectorHeapFile, params: HNSWParams): HNSWIndex {
     const { efConstruction, efSearch, distanceFn = squaredL2 } = params;
@@ -125,8 +116,9 @@ export class HNSWIndex implements InsertContext, DeleteContext {
    *
    * Reads `M`, `maxStoredLevel`, entry point, and current max level from the
    * graph storage's persisted metadata (already loaded by
-   * `HNSWGraphStorage.open(fbf)`), then rebuilds the `docId → NodeId` map by
-   * scanning all live nodes (analogous to `BPlusTree.open(storage, root)`).
+   * `HNSWGraphStorage.open(sharedFbf, metaBlockId)`), then rebuilds the
+   * `docId → NodeId` map by scanning all node slots and filtering for live
+   * (non-deleted) ones (analogous to `BPlusTree.open(storage, root)`).
    */
   static async open(
     graphStorage: HNSWGraphStorage,
@@ -139,14 +131,15 @@ export class HNSWIndex implements InsertContext, DeleteContext {
     return index;
   }
 
-  // ── Public index operations ───────────────────────────────────────────────
+  // ** PUBLIC INDEX API **
 
   /**
    * Insert a vector associated with `docId` into the index.
    * Throws if `docId` is already present.
    *
-   * After one or more inserts, call `graphFbf.commit()` and `vectorFbf.commit()`
-   * to durably persist all changes to disk.
+   * Changes are buffered in-memory until the next commit.  In normal usage
+   * `DbmsBack.commit()` handles flushing.  In standalone mode call
+   * `index.commit()` (or `sharedFbf.commit()`) directly.
    */
   async insert(docId: number, vector: Float32Array): Promise<void> {
     if (this.docIdIndex.has(docId)) {
@@ -213,7 +206,9 @@ export class HNSWIndex implements InsertContext, DeleteContext {
    * Soft-delete the node associated with `docId` from the index.
    * If `docId` is not in the index this is a no-op.
    *
-   * After deletion, call `graphFbf.commit()` and `vectorFbf.commit()` to flush.
+   * Changes are buffered in-memory until the next commit.  In normal usage
+   * `DbmsBack.commit()` handles flushing.  In standalone mode call
+   * `index.commit()` (or `sharedFbf.commit()`) directly.
    */
   async delete(docId: number): Promise<void> {
     const nodeId = this.docIdIndex.get(docId);
@@ -246,7 +241,7 @@ export class HNSWIndex implements InsertContext, DeleteContext {
     this.docIdIndex.delete(docId);
   }
 
-  // ── Context interface implementations ─────────────────────────────────────
+  // ** context interface implementations for inserter, searcher, deleter **
 
   async getNode(nodeId: NodeId): Promise<HNSWNode> {
     return this.graphStorage.getNode(nodeId);
@@ -269,16 +264,20 @@ export class HNSWIndex implements InsertContext, DeleteContext {
     await this.graphStorage.hardDeleteNode(nodeId);
   }
 
-  // ── Persistence ───────────────────────────────────────────────────────────
+  // ** persistance API for standalone use (not needed when using through DbmsBack) **
 
   /**
-   * Atomically persist all pending changes to disk.
+   * Flush all pending changes to disk via the shared FreeBlockFile WAL.
    *
-   * Commits vector storage FIRST, graph storage SECOND.
-   * This order is mandatory for crash consistency: if a crash occurs between
-   * the two commits the graph remains in its previous valid state rather
-   * than holding dangling vectorPtr references.  See the class JSDoc for the
-   * full analysis.
+   * **In normal usage this method is never called directly.**
+   * `DbmsBack.commit()` flushes `freeblockFile` directly, which covers
+   * all subsystems (records, B+ trees, HNSW graph, HNSW vectors) in one
+   * atomic operation.
+   *
+   * This method exists for standalone use (e.g. unit tests that construct
+   * an `HNSWIndex` without `DbmsBack`).  It preserves the "data before
+   * index" in-memory write order: vector heap is committed first, graph
+   * storage second.
    */
   async commit(): Promise<void> {
     await this.vectorHeap.commit(); // data first
@@ -286,15 +285,18 @@ export class HNSWIndex implements InsertContext, DeleteContext {
   }
 
   /**
-   * Close both underlying files.  Always call commit() before close() to
-   * ensure the latest changes are durable.
+   * Release any open handles held by the storage objects.
+   * Always call commit() before close() to ensure the latest changes are
+   * durable.  Note: since both objects share one FreeBlockFile (owned by
+   * DbmsBack), the actual file descriptor is closed by DbmsBack.close(),
+   * not here.
    */
   async close(): Promise<void> {
     await this.vectorHeap.close();
     await this.graphStorage.close();
   }
 
-  // ── Private helpers ────────────────────────────────────────────────────────
+  // **private helpers**
 
   /**
    * Scan all pages in the graph storage and rebuild the `docId → NodeId` map.

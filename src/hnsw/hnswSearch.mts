@@ -12,7 +12,7 @@ export interface SearchContext {
   computeDistance(a: Float32Array, b: Float32Array): number;
 }
 
-// ─── Internal priority-queue helpers ─────────────────────────────────────────
+// ** Internal priority-queue helpers **
 // We use simple sorted arrays here.  For large ef values a binary heap would
 // be faster, but sorted arrays are straightforward to reason about.
 
@@ -68,7 +68,7 @@ class CandidateList {
   }
 }
 
-// ─── HNSWSearch ──────────────────────────────────────────────────────────────
+// ** HNSWSearch **
 
 export class HNSWSearch {
   constructor(
