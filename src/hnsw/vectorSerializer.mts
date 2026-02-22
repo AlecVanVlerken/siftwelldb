@@ -1,6 +1,13 @@
 //@author: Thomas Dumon with usage of Claude sonnet 4.6
 //@date: 2026-02-18
 
+/**
+ * VectorSerializer
+ * -----------------
+ * Static helpers for encoding and decoding float32 vectors to/from a raw
+ * `Buffer`.  All values are stored in little-endian byte order.
+ * Used by `VectorHeapFile` to read and write vector slots on disk.
+ */
 export class VectorSerializer {
   /** Returns the number of bytes required to serialize a vector of the given dimension. */
   static byteSize(dimension: number): number {

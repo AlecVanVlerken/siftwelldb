@@ -22,14 +22,11 @@ export interface VectorPointer {
  * Persistent heap-file storage for fixed-dimension float32 vectors.
  * Built on top of FreeBlockFile.
  *
- * Lifecycle :
- *   const fbf = new FreeBlockFile(atomicFile, blockSize);
- *   await fbf.create();           // new file — or —
- *   await fbf.open();             // existing file
- *   const heap = new VectorHeapFile(fbf, dimension);
+ * Lifecycle (sharedFbf is the FreeBlockFile already open by DbmsBack):
+ *   const heap = new VectorHeapFile(sharedFbf, dimension);
  *   ...use heap.insert / get / delete / update / scan...
- *   await fbf.commit();           // persist all dirty blocks atomically
- *   await fbf.close();
+ *   await heap.commit();   // delegates to sharedFbf.commit() — one atomic WAL flush
+ *   await heap.close();    // no-op in shared-FBF design; DbmsBack owns the file
  *
  * Page layout (within usable area = bytes [1, blockSize-1] of a raw block;
  * byte 0 is the block-type byte owned by FreeBlockFile):
@@ -175,7 +172,7 @@ export class VectorHeapFile {
 
   /**
    * Insert `vector` and return a persistent pointer to its location.
-   * Call `file.commit()` to flush to disk.
+   * Call `index.commit()` (or `heap.commit()`) to flush to disk.
    */
   async insert(vector: Float32Array): Promise<VectorPointer> {
     if (vector.length !== this.dimension) {
@@ -288,15 +285,20 @@ export class VectorHeapFile {
   }
 
   /**
-   * Atomically flush all dirty vector blocks to disk via the WAL.
-   * Must be called BEFORE the graph storage commit to preserve the
-   * "data before index" crash-consistency invariant.
+   * Flush all dirty vector blocks to disk via the shared WAL.
+   * Both VectorHeapFile and HNSWGraphStorage delegate to the same
+   * FreeBlockFile instance, so the actual on-disk commit is one atomic
+   * operation.  Must be called BEFORE graphStorage.commit() to preserve
+   * the "data before index" in-memory write ordering invariant.
    */
   async commit(): Promise<void> {
     await this.file.commit();
   }
 
-  /** Close the underlying file. Safe to call after commit(). */
+  /**
+   * No-op in the shared-FBF design — the underlying FreeBlockFile is owned
+   * and closed by DbmsBack.  Kept for symmetry with HNSWGraphStorage.
+   */
   async close(): Promise<void> {
     await this.file.close();
   }
