@@ -10,6 +10,8 @@ Thumbs.db
 *.swp
 
 testdb
+demo-db/
+src/benchmarking/results/
 
 *.tsbuildinfo
 
