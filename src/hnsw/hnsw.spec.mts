@@ -18,7 +18,6 @@ async function makeFbf(blockSize: number): Promise<FreeBlockFile> {
   const atomicFile = new AtomicFile(mockData, mockLog);
   const fbf = new FreeBlockFile(atomicFile, blockSize);
   await fbf.create();
-  await fbf.open();
   return fbf;
 }
 
