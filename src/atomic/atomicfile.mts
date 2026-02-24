@@ -82,12 +82,10 @@ export class AtomicFile implements File {
     await this.dataFile.create();
     await this.dataFile.truncate(0);
     await this.dataFile.sync();
-    await this.dataFile.close();
 
     await this.logFile.create();
     await this.logFile.truncate(0);
     await this.logFile.sync();
-    await this.logFile.close();
   }
 
   async open(): Promise<void> {
