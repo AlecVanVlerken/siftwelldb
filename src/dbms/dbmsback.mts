@@ -101,7 +101,6 @@ export class DbmsBack {
    */
   async create(): Promise<void> {
     await this.freeblockFile.create(); // must be async
-    await this.freeblockFile.open();
     const initialMeta = Buffer.from(JSON.stringify([]));
     await this.freeblockFile.writeClientArea(initialMeta);
   }

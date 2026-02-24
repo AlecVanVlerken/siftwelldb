@@ -19,7 +19,6 @@ async function createRecordStore(blockSize = 256): Promise<StoreSetup> {
   const atomicFile = new AtomicFile(dataFile, logFile);
   const freeBlockFile = new FreeBlockFile(atomicFile, blockSize);
   await freeBlockFile.create();
-  await freeBlockFile.open();
   openFiles.push(freeBlockFile);
 
   return { recordStore: new RecordStore(freeBlockFile), freeBlockFile };
