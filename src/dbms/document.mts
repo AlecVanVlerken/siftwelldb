@@ -1,14 +1,24 @@
 // author: Frederik Caeyman
 // date: 2025-12-08
 
-export type FieldValue = string | number | boolean;
+export type FieldValue = string | number | boolean | Buffer;
 export type RawId = string | number;
 export type IndexPredicate = (field: string) => boolean;
 
-export const defaultIndexPredicate: IndexPredicate = (field) => field !== 'id' && !field.startsWith('_');
+/** File extensions that denote binary image fields. */
+export const IMAGE_EXTENSIONS = ['.jpeg', '.jpg', '.png', '.webp'] as const;
+
+/** Returns `true` when `fieldName` ends with a recognised image extension. */
+export function isImageField(fieldName: string): boolean {
+  const lower = fieldName.toLowerCase();
+  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+export const defaultIndexPredicate: IndexPredicate = (field) =>
+  field !== 'id' && !field.startsWith('_') && !isImageField(field);
 
 export function isFieldValue(value: unknown): value is FieldValue {
-  return ['string', 'number', 'boolean'].includes(typeof value);
+  return ['string', 'number', 'boolean'].includes(typeof value) || Buffer.isBuffer(value);
 }
 
 /**
@@ -107,8 +117,18 @@ export function parseRawDocument(
   const nonIterableEntries: [string, FieldValue][] = [];
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (key === 'id') continue;
-    if (!isFieldValue(value)) throw new Error(`Unsupported value type for field ${key}`);
-    const entry: [string, FieldValue] = [key, value];
+
+    let fieldValue: FieldValue;
+    if (isImageField(key) && typeof value === 'string') {
+      // Image field supplied as base64 string → decode to Buffer.
+      fieldValue = Buffer.from(value, 'base64');
+    } else if (!isFieldValue(value)) {
+      throw new Error(`Unsupported value type for field ${key}`);
+    } else {
+      fieldValue = value;
+    }
+
+    const entry: [string, FieldValue] = [key, fieldValue];
     if (isIndexable(key)) iterableEntries.push(entry);
     else nonIterableEntries.push(entry);
   }
@@ -126,7 +146,7 @@ export function JSONtoDocument(input: string, collection: string): Document {
   if (!body.startsWith('{') || !body.endsWith('}')) throw new Error('Input must be of the form { ... }');
 
   // Quote keys and convert single quotes to double quotes so JSON.parse can handle it safely.
-  const withQuotedKeys = body.replace(/([{,]\s*)([A-Za-z0-9_]+)\s*:/g, '$1"$2":');
+  const withQuotedKeys = body.replace(/([{,]\s*)([A-Za-z0-9_.]+)\s*:/g, '$1"$2":');
   const normalizedStrings = withQuotedKeys.replace(/'([^']*)'/g, '"$1"');
 
   let parsed: unknown;
@@ -145,6 +165,10 @@ export function JSONtoDocument(input: string, collection: string): Document {
  * @author: thomas Dumon
  */
 export function documentToJSON(document: Document): string {
-  const obj = document.asDocument();
-  return JSON.stringify(obj);
+  const raw = document.asDocument();
+  const serialisable: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    serialisable[key] = Buffer.isBuffer(value) ? value.toString('base64') : value;
+  }
+  return JSON.stringify(serialisable);
 }
