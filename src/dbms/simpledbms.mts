@@ -48,6 +48,47 @@ import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
  * // → string[] of the 5 closest documents, serialised as JSON
  * ```
  *
+ * ### Image support (CLIP)
+ *
+ * Fields whose names end in `.jpeg`, `.jpg`, `.png` or `.webp` are treated as
+ * binary image fields.  Their values are stored as `Buffer`s (pass a base64
+ * string through `JSON.stringify` and the DBMS decodes it automatically).
+ * Image fields are **not** indexed in the B+ tree, but when
+ * `imageEmbeddingFn` is provided they are embedded into the collection's
+ * HNSW graph so you can search images by natural-language description.
+ *
+ * @example
+ * ```typescript
+ * import { pipeline } from '@huggingface/transformers';
+ *
+ * // CLIP text + image encoders share a 512-d vector space.
+ * const textEncoder  = await pipeline('feature-extraction',
+ *   'Xenova/clip-vit-base-patch32');
+ * const imageEncoder = await pipeline('image-feature-extraction',
+ *   'Xenova/clip-vit-base-patch32');
+ *
+ * const hnswConfig: HnswConfig = {
+ *   dimension: 512,
+ *   embeddingFn: async (text) => {            // used for search queries
+ *     const out = await textEncoder(text, { pooling: 'mean', normalize: true });
+ *     return new Float32Array(out.data);
+ *   },
+ *   imageEmbeddingFn: async (buf) => {        // used when inserting images
+ *     const blob = new Blob([buf], { type: 'image/jpeg' });
+ *     const out = await imageEncoder(blob);
+ *     return new Float32Array(out.data);
+ *   },
+ * };
+ *
+ * await db.insertDocument('photos', JSON.stringify({
+ *   id: 'cat-01', label: 'My cat',
+ *   'photo.jpeg': fs.readFileSync('cat.jpg').toString('base64'),
+ * }));
+ * await db.commit();
+ *
+ * const hits = await db.semanticSearch('photos', 'a fluffy animal', 5);
+ * ```
+ *
  * **Important:**
  * - `dimension` must exactly match the number of floats your model outputs.
  * - Pass the **same** `HnswConfig` (with the same `embeddingFn`) to both
@@ -216,6 +257,22 @@ export class SimpleDbms {
    */
   async semanticSearch(collection: string, query: string, k: number): Promise<string[]> {
     const documents = await this.dbmsback.semanticSearch(collection, query, k);
+    return documents.map(documentToJSON);
+  }
+
+  /**
+   * Perform an image-to-image semantic search.
+   *
+   * Embeds `queryImage` with the `imageEmbeddingFn` from the {@link HnswConfig}
+   * and returns the `k` most similar documents.
+   *
+   * @param collection - The collection to search in.
+   * @param queryImage - Raw image bytes (JPEG, PNG, or WebP).
+   * @param k          - Maximum number of results to return.
+   * @returns Array of JSON-serialised documents ordered by similarity.
+   */
+  async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<string[]> {
+    const documents = await this.dbmsback.semanticImageSearch(collection, queryImage, k);
     return documents.map(documentToJSON);
   }
 }

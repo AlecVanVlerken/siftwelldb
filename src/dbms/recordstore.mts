@@ -137,9 +137,8 @@ export class RecordStore {
       const doc = this.deserializeDocument(completeData);
 
       return doc;
-    } catch (error) {
-      // Block does not exist, is corrupt, or deserialization failed
-      console.error(`Failed to read record from block ${blockID}:`, error);
+    } catch (err) {
+      console.error(`RecordStore.readRecord(${blockID}) failed:`, err);
       return null;
     }
   }
@@ -189,8 +188,11 @@ export class RecordStore {
     const nonIterableKeys = doc.getNonIterableKeys();
     const fields = doc.getFields();
 
-    const iterableEntries = iterableKeys.map((key) => [key, fields[key]]);
-    const nonIterableEntries = nonIterableKeys.map((key) => [key, fields[key]]);
+    const encodeValue = (v: FieldValue): unknown =>
+      Buffer.isBuffer(v) ? { __bin: v.toString('base64') } : v;
+
+    const iterableEntries = iterableKeys.map((key) => [key, encodeValue(fields[key])]);
+    const nonIterableEntries = nonIterableKeys.map((key) => [key, encodeValue(fields[key])]);
 
     const json = JSON.stringify({
       collection: doc.getCollectionName(),
@@ -227,11 +229,19 @@ export class RecordStore {
       const doc = JSON.parse(jsonString) as {
         collection: string;
         id: RawId;
-        iterableEntries: [string, FieldValue][];
-        nonIterableEntries: [string, FieldValue][];
+        iterableEntries: [string, unknown][];
+        nonIterableEntries: [string, unknown][];
       };
 
-      return new Document(doc.collection, doc.id, doc.iterableEntries, doc.nonIterableEntries);
+      const decodeValue = (v: unknown): FieldValue =>
+        v !== null && typeof v === 'object' && '__bin' in (v as Record<string, unknown>)
+          ? Buffer.from((v as { __bin: string }).__bin, 'base64')
+          : (v as FieldValue);
+
+      const iterableEntries: [string, FieldValue][] = doc.iterableEntries.map(([k, v]) => [k, decodeValue(v)]);
+      const nonIterableEntries: [string, FieldValue][] = doc.nonIterableEntries.map(([k, v]) => [k, decodeValue(v)]);
+
+      return new Document(doc.collection, doc.id, iterableEntries, nonIterableEntries);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       throw new Error(errorMessage);
