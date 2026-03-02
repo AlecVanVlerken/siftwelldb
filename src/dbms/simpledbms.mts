@@ -1,7 +1,62 @@
 // author: Thomas Dumon
 // date: 2025-12-07
 
-import { DbmsBack } from './dbmsback.mjs';
+import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
+
+/**
+ * Optional configuration that enables HNSW-based semantic (approximate
+ * nearest-neighbour) search inside a `SimpleDbms` instance.
+ *
+ * Pass this to `SimpleDbms.create()` or `SimpleDbms.open()` to activate the
+ * feature.  Once enabled, every `insertDocument()` call automatically embeds
+ * all non-underscore-prefixed string fields of the document and indexes them
+ * in the collection's HNSW graph.  You can then call `semanticSearch()` to
+ * retrieve the k most semantically similar documents for a query string.
+ *
+ * @example
+ * ```typescript
+ * import { pipeline } from '@huggingface/transformers';
+ * import { SimpleDbms, type HnswConfig } from './simpledbms.mjs';
+ * import { AtomicFile } from '../atomic/atomicfile.mjs';
+ *
+ * // pipeline() downloads the model on first run and caches it locally.
+ * // 'Xenova/all-MiniLM-L6-v2' produces 384-dimensional float32 vectors.
+ * const extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+ *
+ * const hnswConfig: HnswConfig = {
+ *   dimension: 384, // must match the model output size
+ *   embeddingFn: async (text) => {
+ *     const out = await extractor(text, { pooling: 'mean', normalize: true });
+ *     return new Float32Array(out.data);
+ *   },
+ *   // All of the following are optional:
+ *   M: 16,             // max neighbours per HNSW node   (default 16)
+ *   efConstruction: 200, // ef during index build         (default 200)
+ *   efSearch: 50,      // ef during search queries       (default 50)
+ * };
+ *
+ * const db = await SimpleDbms.create(
+ *   new AtomicFile('mydb.data', 'mydb.data.log'),
+ *   new AtomicFile('mydb.log',  'mydb.log.log'),
+ *   hnswConfig,
+ * );
+ *
+ * await db.insertDocument('articles', JSON.stringify({ id: '1', title: 'Neural networks' }));
+ * await db.commit();
+ *
+ * const results = await db.semanticSearch('articles', 'deep learning', 5);
+ * // → string[] of the 5 closest documents, serialised as JSON
+ * ```
+ *
+ * **Important:**
+ * - `dimension` must exactly match the number of floats your model outputs.
+ * - Pass the **same** `HnswConfig` (with the same `embeddingFn`) to both
+ *   `create()` and every subsequent `open()` call; the config is not persisted
+ *   on disk.
+ * - The HNSW index shares the same WAL-backed file as records and B+ tree
+ *   indexes, so a single `commit()` atomically persists everything.
+ */
+export type { HnswConfig };
 import { type File } from '../core/file.mjs';
 import { documentToJSON, type FieldValue } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
@@ -26,24 +81,30 @@ export class SimpleDbms {
 
   /**
    * Creates a new instance of the SimpleDbms class.
-   * @param dataFile - The data file to use for the database.
-   * @param logFile - The log file to use for the database.
+   * @param dataFile   - The data file to use for the database.
+   * @param logFile    - The log file to use for the database.
+   * @param hnswConfig - Optional. Supply an {@link HnswConfig} to enable
+   *   HNSW semantic search. See the `HnswConfig` documentation for a
+   *   full usage example.
    * @returns A Promise that resolves to a new instance of the SimpleDbms class.
    */
-  static async create(dataFile: File, logFile: File): Promise<SimpleDbms> {
-    const dbmsback = new DbmsBack(dataFile, logFile);
+  static async create(dataFile: File, logFile: File, hnswConfig?: HnswConfig): Promise<SimpleDbms> {
+    const dbmsback = new DbmsBack(dataFile, logFile, hnswConfig);
     await dbmsback.create();
     return new SimpleDbms(dbmsback);
   }
 
   /**
    * Opens an existing instance of the SimpleDbms class.
-   * @param dataFile - The data file to use for the database.
-   * @param logFile - The log file to use for the database.
+   * @param dataFile   - The data file to use for the database.
+   * @param logFile    - The log file to use for the database.
+   * @param hnswConfig - Optional. Must be the same config (same `embeddingFn`
+   *   and `dimension`) that was used when the database was created. Required
+   *   if you want to call `semanticSearch()` on the reopened instance.
    * @returns A Promise that resolves to a new instance of the SimpleDbms class.
    */
-  static async open(dataFile: File, logFile: File): Promise<SimpleDbms> {
-    const dbmsback = await DbmsBack.open(dataFile, logFile);
+  static async open(dataFile: File, logFile: File, hnswConfig?: HnswConfig): Promise<SimpleDbms> {
+    const dbmsback = await DbmsBack.open(dataFile, logFile, hnswConfig);
     return new SimpleDbms(dbmsback);
   }
 
@@ -148,5 +209,21 @@ export class SimpleDbms {
    */
   async commit(): Promise<void> {
     await this.dbmsback.commit();
+  }
+
+  /**
+   * Perform a semantic (approximate nearest-neighbour) search over all
+   * text-indexed documents in a collection.
+   *
+   * Requires an `HnswConfig` to have been passed to `create()` / `open()`.
+   *
+   * @param collection - The collection to search in.
+   * @param query      - A natural-language query string.
+   * @param k          - Maximum number of results to return.
+   * @returns Array of JSON-serialised documents ordered by semantic similarity.
+   */
+  async semanticSearch(collection: string, query: string, k: number): Promise<string[]> {
+    const documents = await this.dbmsback.semanticSearch(collection, query, k);
+    return documents.map(documentToJSON);
   }
 }
