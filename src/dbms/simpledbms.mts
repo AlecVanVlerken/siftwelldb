@@ -4,57 +4,131 @@
 import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
 
 /**
- * Optional configuration that enables HNSW-based semantic (approximate
- * nearest-neighbour) search inside a `SimpleDbms` instance.
+ * Configuration for HNSW semantic search.
  *
- * Pass this to `SimpleDbms.create()` or `SimpleDbms.open()` to activate the
- * feature.  Once enabled, every `insertDocument()` call automatically embeds
- * all non-underscore-prefixed string fields of the document and indexes them
- * in the collection's HNSW graph.  You can then call `semanticSearch()` to
- * retrieve the k most semantically similar documents for a query string.
+ * Pass to {@link SimpleDbms.create} / {@link SimpleDbms.open} to enable
+ * semantic search on a database. The config is **not** persisted — you must
+ * supply the same config (same model, same `dimension`) on every open.
  *
- * @example
- * ```typescript
+ * ## Properties
+ *
+ * | Property            | Required | Description |
+ * |---------------------|----------|-------------|
+ * | `dimension`         | yes      | Number of floats the model outputs (e.g. 384 or 512). |
+ * | `embeddingFn`       | yes      | `(text: string) => Promise<Float32Array>` — text encoder. |
+ * | `imageEmbeddingFn`  | no       | `(imageData: Buffer) => Promise<Float32Array>` — image encoder. Both functions **must** output the same `dimension`. |
+ * | `M`                 | no       | Max neighbours per HNSW node (default 16). |
+ * | `efConstruction`    | no       | ef during index build (default 200). |
+ * | `efSearch`          | no       | ef during search queries (default 50). |
+ *
+ * ---
+ *
+ * ## Text-only example (MiniLM, 384-d)
+ *
+ * ```ts
  * import { pipeline } from '@huggingface/transformers';
- * import { SimpleDbms, type HnswConfig } from './simpledbms.mjs';
- * import { AtomicFile } from '../atomic/atomicfile.mjs';
  *
- * // pipeline() downloads the model on first run and caches it locally.
- * // 'Xenova/all-MiniLM-L6-v2' produces 384-dimensional float32 vectors.
  * const extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
  *
  * const hnswConfig: HnswConfig = {
- *   dimension: 384, // must match the model output size
+ *   dimension: 384,
  *   embeddingFn: async (text) => {
  *     const out = await extractor(text, { pooling: 'mean', normalize: true });
  *     return new Float32Array(out.data);
  *   },
- *   // All of the following are optional:
- *   M: 16,             // max neighbours per HNSW node   (default 16)
- *   efConstruction: 200, // ef during index build         (default 200)
- *   efSearch: 50,      // ef during search queries       (default 50)
  * };
  *
- * const db = await SimpleDbms.create(
- *   new AtomicFile('mydb.data', 'mydb.data.log'),
- *   new AtomicFile('mydb.log',  'mydb.log.log'),
- *   hnswConfig,
- * );
- *
+ * const db = await SimpleDbms.create(dataFile, logFile, hnswConfig);
  * await db.insertDocument('articles', JSON.stringify({ id: '1', title: 'Neural networks' }));
  * await db.commit();
  *
  * const results = await db.semanticSearch('articles', 'deep learning', 5);
- * // → string[] of the 5 closest documents, serialised as JSON
  * ```
+ *
+ * ---
+ *
+ * ## Text + Image example (CLIP, 512-d)
+ *
+ * CLIP has two separate encoders (text + vision) that produce vectors in the
+ * **same** 512-d space, enabling cross-modal search (text query → image results).
+ *
+ * ```ts
+ * import {
+ *   AutoTokenizer, AutoProcessor,
+ *   CLIPTextModelWithProjection, CLIPVisionModelWithProjection, RawImage,
+ * } from '@huggingface/transformers';
+ *
+ * const MODEL = 'Xenova/clip-vit-base-patch32';
+ * const tokenizer   = await AutoTokenizer.from_pretrained(MODEL);
+ * const textModel   = await CLIPTextModelWithProjection.from_pretrained(MODEL, { dtype: 'fp32' });
+ * const processor   = await AutoProcessor.from_pretrained(MODEL);
+ * const visionModel = await CLIPVisionModelWithProjection.from_pretrained(MODEL, { dtype: 'fp32' });
+ *
+ * const hnswConfig: HnswConfig = {
+ *   dimension: 512,
+ *   embeddingFn: async (text) => {
+ *     const inputs = tokenizer(text, { padding: true, truncation: true });
+ *     const { text_embeds } = await textModel(inputs);
+ *     return new Float32Array(text_embeds.data);       // 512 floats
+ *   },
+ *   imageEmbeddingFn: async (buf) => {
+ *     const image = await RawImage.fromBlob(new Blob([buf]));
+ *     const inputs = await processor(image);
+ *     const { image_embeds } = await visionModel(inputs);
+ *     return new Float32Array(image_embeds.data);      // 512 floats
+ *   },
+ * };
+ * ```
+ *
+ * ---
+ *
+ * ## How image documents work
+ *
+ * 1. **Field naming convention** — Any field whose name ends in `.jpeg`,
+ *    `.jpg`, `.png` or `.webp` is treated as an image field.
+ *
+ * 2. **Inserting** — Pass the raw image bytes as a **base64 string** inside
+ *    the JSON document. The DBMS decodes it to a `Buffer` automatically.
+ *    ```ts
+ *    await db.insertDocument('photos', JSON.stringify({
+ *      id: 'cat-01',
+ *      'photo.jpeg': fs.readFileSync('cat.jpg').toString('base64'),
+ *    }));
+ *    ```
+ *
+ * 3. **Storage** — Internally the `Buffer` is persisted to disk as base64
+ *    inside a `{ __bin: "..." }` JSON wrapper in the RecordStore. It is
+ *    stored in the same WAL-backed FreeBlockFile as all other data.
+ *
+ * 4. **B+ tree indexing** — Image fields are **excluded** from the B+ tree
+ *    (indexing raw binary blobs is meaningless for key lookups).
+ *
+ * 5. **HNSW embedding** — On insert, the DBMS checks if the document
+ *    contains an image field. If yes (and `imageEmbeddingFn` is provided),
+ *    the image bytes are embedded with the **vision encoder**. Otherwise
+ *    string fields are embedded with the **text encoder**. Both produce
+ *    vectors in the same space so they share one HNSW index.
+ *
+ * 6. **Searching** — Use {@link SimpleDbms.semanticSearch} with a text query
+ *    to find matching images (text → image). Use
+ *    {@link SimpleDbms.semanticImageSearch} with a `Buffer` to find visually
+ *    similar images (image → image).
+ *
+ * 7. **Reading back** — `getDocumentById` and search results return the
+ *    image as a base64 string in JSON, identical to the insertion format.
+ *
+ * 8. **Image format** — JPEG, PNG and WebP all work. The actual pixel format
+ *    does not affect search quality; CLIP decodes any of them to pixels
+ *    internally before computing the embedding.
+ *
+ * ---
  *
  * **Important:**
  * - `dimension` must exactly match the number of floats your model outputs.
- * - Pass the **same** `HnswConfig` (with the same `embeddingFn`) to both
- *   `create()` and every subsequent `open()` call; the config is not persisted
- *   on disk.
- * - The HNSW index shares the same WAL-backed file as records and B+ tree
- *   indexes, so a single `commit()` atomically persists everything.
+ * - Pass the **same** `HnswConfig` to both `create()` and every subsequent
+ *   `open()` call — the config is not persisted on disk.
+ * - A single `commit()` atomically persists records, B+ tree indexes, and
+ *   HNSW vectors together via the WAL.
  */
 export type { HnswConfig };
 import { type File } from '../core/file.mjs';
@@ -128,9 +202,17 @@ export class SimpleDbms {
 
   /**
    * Inserts a document into the specified collection.
-   * @param collection - The name of the collection to insert the document into.
-   * @param documentJSON - The JSON representation of the document to insert.
-   * @returns A Promise that resolves when the document is inserted.
+   *
+   * The document is a JSON string with at least an `id` field. Regular fields
+   * (string, number, boolean) are indexed in the B+ tree. Fields whose names
+   * end in `.jpeg`, `.jpg`, `.png` or `.webp` are treated as image fields:
+   * pass the raw bytes as a **base64 string** and the DBMS stores them as a
+   * `Buffer` internally. Image fields are excluded from B+ tree indexes but
+   * embedded into HNSW when `imageEmbeddingFn` is configured.
+   *
+   * @param collection   - The collection to insert into.
+   * @param documentJSON - JSON string, e.g.
+   *   `'{"id":"dog","photo.jpeg":"<base64>"}'`
    */
   async insertDocument(collection: string, documentJSON: string): Promise<void> {
     const documentObj = JSONtoDocument(documentJSON, collection);
@@ -204,18 +286,37 @@ export class SimpleDbms {
   }
 
   /**
-   * Perform a semantic (approximate nearest-neighbour) search over all
-   * text-indexed documents in a collection.
+   * Text-based semantic search (text → text **or** text → image).
    *
-   * Requires an `HnswConfig` to have been passed to `create()` / `open()`.
+   * Embeds `query` with the text `embeddingFn` from {@link HnswConfig} and
+   * returns the `k` nearest documents from the collection's HNSW index.
+   * Because text and image vectors share the same space (e.g. CLIP),
+   * this also returns matching image documents.
    *
-   * @param collection - The collection to search in.
-   * @param query      - A natural-language query string.
-   * @param k          - Maximum number of results to return.
-   * @returns Array of JSON-serialised documents ordered by semantic similarity.
+   * @param collection - The collection to search.
+   * @param query      - Natural-language query string.
+   * @param k          - Maximum number of results.
+   * @returns JSON-serialised documents ordered by similarity (closest first).
+   *   Image fields are returned as base64 strings.
    */
   async semanticSearch(collection: string, query: string, k: number): Promise<string[]> {
     const documents = await this.dbmsback.semanticSearch(collection, query, k);
+    return documents.map(documentToJSON);
+  }
+
+  /**
+   * Image-based semantic search (image → image).
+   *
+   * Embeds `queryImage` with the `imageEmbeddingFn` from {@link HnswConfig}
+   * and returns the `k` most visually similar documents.
+   *
+   * @param collection - The collection to search.
+   * @param queryImage - Raw image bytes as a `Buffer` (JPEG, PNG or WebP).
+   * @param k          - Maximum number of results.
+   * @returns JSON-serialised documents ordered by similarity (closest first).
+   */
+  async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<string[]> {
+    const documents = await this.dbmsback.semanticImageSearch(collection, queryImage, k);
     return documents.map(documentToJSON);
   }
 }
