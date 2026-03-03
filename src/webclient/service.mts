@@ -1,16 +1,12 @@
 // author: Alexandre-Gatien Bienfet
-// date: 2026-02-24
+// date: 2026-02-23
 //
 // DatabaseService — abstraction layer over SimpleDbms.
 // This is the single point of contact for all database operations.
-// Future extension points:
-//   - Query language: add a query() method that parses query strings
-//   - Compression: wrap document JSON before insert / after read
-//   - Caching: add an in-memory document cache here
 
 import * as fs from 'node:fs/promises';
 import { SimpleDbms } from '../dbms/simpledbms.mjs';
-import { SafeRealFile as RealFile } from './safe-file.mjs';
+import { RealFile } from '../core/file.mjs';
 
 /**
  * Delete a file if it exists (ignores the error if not found).
@@ -28,8 +24,7 @@ async function deleteIfExists(filePath: string): Promise<void> {
  * high-level operations on collections and documents.
  *
  * All database interaction from the HTTP layer should go through
- * this service so that cross-cutting concerns (compression, query
- * parsing, logging, …) can be added in one place.
+ * this service.
  */
 export class DatabaseService {
   private dbms: SimpleDbms | null = null;
@@ -179,12 +174,7 @@ export class DatabaseService {
   /** Edit a single field in a document by ID. */
   async editDocument(collection: string, id: string, field: string, value: unknown): Promise<void> {
     this.ensureConnected();
-    await this.dbms!.editDocument(
-      collection,
-      id,
-      field,
-      value as Parameters<SimpleDbms['editDocument']>[3],
-    );
+    await this.dbms!.editDocument(collection, id, field, value as Parameters<SimpleDbms['editDocument']>[3]);
     await this.dbms!.commit();
   }
 
