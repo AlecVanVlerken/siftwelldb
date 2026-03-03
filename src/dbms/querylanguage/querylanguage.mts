@@ -1,3 +1,6 @@
+// author: Frederik Caeyman
+// date: 2026-02-17
+
 import { SimpleDbms } from '../simpledbms.mjs';
 import { type FieldValue } from '../document.mjs';
 
