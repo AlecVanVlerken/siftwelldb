@@ -36,7 +36,7 @@ describe('QueryLanguage', () => {
     if (parsed.kind === 'select') {
       expect(parsed.fields).toEqual(['id', 'population']);
       expect(parsed.collection).toBe('cities');
-      expect(parsed.where).toEqual({ field: 'population', value: 101032 });
+      expect(parsed.where).toEqual({ type: 'comparison', field: 'population', operator: '=', value: 101032 });
     }
   });
 
@@ -82,6 +82,6 @@ describe('QueryLanguage', () => {
   it('throws on invalid syntax', () => {
     expect(() => ql.parse('SELECT FROM')).toThrow();
     expect(() => ql.parse('SELECT id cities')).toThrow();
-    expect(() => ql.parse('SELECT id FROM cities WHERE population > 10')).toThrow();
+    expect(() => ql.parse('SELECT id FROM cities WHERE population === 10')).toThrow();
   });
 });

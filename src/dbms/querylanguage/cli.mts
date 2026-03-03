@@ -4,6 +4,7 @@ import { RealFile } from '../../core/file.mjs';
 import { SimpleDbms } from '../simpledbms.mjs';
 import { QueryLanguage } from './querylanguage.mjs';
 
+// Simple CLI for the QueryLanguage that allows executing queries from the command line.
 function parseArgs(argv: string[]) {
   const args = { data: 'querylang.data', log: 'querylang.log', query: '' };
   for (let i = 2; i < argv.length; i++) {
@@ -28,7 +29,6 @@ function parseArgs(argv: string[]) {
 }
 
 function printHelp() {
-  // eslint-disable-next-line no-console
   console.log(`Usage: node cli.mjs [--data path] [--log path] "<QUERY>"
 
 Supported queries:
@@ -66,11 +66,9 @@ async function main() {
 
   const rows = await ql.execute(query);
   if (rows.length === 0) {
-    // eslint-disable-next-line no-console
     console.log('OK');
   } else {
     for (const row of rows) {
-      // eslint-disable-next-line no-console
       console.log(JSON.stringify(row));
     }
   }
@@ -81,7 +79,7 @@ async function main() {
 
 main().catch((err: unknown) => {
   const message = err instanceof Error ? err.message : String(err);
-  // eslint-disable-next-line no-console
+
   console.error(message);
   process.exit(1);
 });
