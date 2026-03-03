@@ -188,8 +188,7 @@ export class RecordStore {
     const nonIterableKeys = doc.getNonIterableKeys();
     const fields = doc.getFields();
 
-    const encodeValue = (v: FieldValue): unknown =>
-      Buffer.isBuffer(v) ? { __bin: v.toString('base64') } : v;
+    const encodeValue = (v: FieldValue): unknown => (Buffer.isBuffer(v) ? { __bin: v.toString('base64') } : v);
 
     const iterableEntries = iterableKeys.map((key) => [key, encodeValue(fields[key])]);
     const nonIterableEntries = nonIterableKeys.map((key) => [key, encodeValue(fields[key])]);
