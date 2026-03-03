@@ -23,7 +23,7 @@ function shuffle<T>(array: T[]): T[] {
 }
 
 describe('INSERT Performance Comparison', () => {
-  const COUNT = 200000;
+  const COUNT = 400000;
   const RUNS = 3;
   const COMMIT_INTERVAL = 1000;
 

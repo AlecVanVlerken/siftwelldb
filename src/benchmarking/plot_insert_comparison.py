@@ -63,7 +63,7 @@ def main():
     ax.legend()
     ax.grid(True, alpha=0.3)
     
-    # === RIGHT: time/log(n) ratio ===
+    # === RIGHT: time/log(n) ratio === 
     ax = axes[1]
     mask = n_smooth > 100
     btree_ratio = btree_smooth[mask] / np.log2(n_smooth[mask])
@@ -83,6 +83,9 @@ def main():
     ax.set_xlabel('Tree Size')
     ax.set_ylabel('time / log2(n)')
     ax.set_title(f'INSERT time/log(n) - B+ Tree CV={cv_btree:.1f}%, DBMS CV={cv_dbms:.1f}%')
+
+    ax.set_ylim(0, 0.004)
+
     ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3)
     

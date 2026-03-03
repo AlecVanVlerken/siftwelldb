@@ -5,7 +5,7 @@ import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
 import { allocateBlock } from '../freeblockfile/freelist.mjs';
-import { Document, type FieldValue } from '../dbms/document.mjs';
+import { Document, type FieldValue, isImageField } from '../dbms/document.mjs';
 import { RecordStore } from './recordstore.mjs';
 import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
@@ -35,6 +35,15 @@ export type HnswConfig = {
    * float32 embedding vector — supply any HuggingFace (or other) model here.
    */
   embeddingFn: (text: string) => Promise<Float32Array>;
+  /**
+   * Optional async function that converts raw image bytes (JPEG/PNG/WebP)
+   * into a float32 embedding vector.  When provided, document fields whose
+   * names end in `.jpeg`, `.jpg`, `.png` or `.webp` are automatically
+   * embedded with this function at insert time.  Must produce vectors of
+   * the **same** `dimension` as `embeddingFn` (e.g. both sides of a CLIP
+   * model) so that text-to-image semantic search works.
+   */
+  imageEmbeddingFn?: (imageData: Buffer) => Promise<Float32Array>;
   /** HNSW M parameter (max neighbours per node). Default: 16. */
   M?: number;
   /** Maximum level stored per node. Default: 4. */
@@ -279,14 +288,22 @@ export class DbmsBack {
     }
     // END FOR LOOP
 
-    // HNSW: embed and index text fields if HNSW is configured and the document has embeddable text.
+    // HNSW: embed and index the document (image or text) if HNSW is configured.
     if (this.hnswConfig) {
-      const text = this.extractText(document);
-      if (text !== null) {
+      const imageData = this.extractImageData(document);
+      if (imageData !== null && this.hnswConfig.imageEmbeddingFn) {
+        // Document contains an image field — embed with the image encoder.
         const hnswIdx = await this.getOrCreateHnswIndex(collectionName);
-        const vector = await this.hnswConfig.embeddingFn(text);
-        // docId = documentLocation (block number) — unique uint32 per record.
+        const vector = await this.hnswConfig.imageEmbeddingFn(imageData);
         await hnswIdx.insert(documentLocation, vector);
+      } else {
+        // Fall back to text embedding for non-image documents.
+        const text = this.extractText(document);
+        if (text !== null) {
+          const hnswIdx = await this.getOrCreateHnswIndex(collectionName);
+          const vector = await this.hnswConfig.embeddingFn(text);
+          await hnswIdx.insert(documentLocation, vector);
+        }
       }
     }
 
@@ -489,6 +506,36 @@ export class DbmsBack {
     return results;
   }
 
+  /**
+   * Perform an image-to-image semantic search: embed a query image with
+   * `imageEmbeddingFn` and return the nearest documents.
+   *
+   * @param collection - Collection to search in.
+   * @param queryImage - Raw image bytes (JPEG/PNG/WebP).
+   * @param k          - Number of results to return.
+   * @returns Up to `k` Documents ordered by similarity (closest first).
+   */
+  async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<Document[]> {
+    if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
+    if (!this.hnswConfig.imageEmbeddingFn) {
+      throw new Error('Image search requires imageEmbeddingFn in HnswConfig.');
+    }
+    if (!(HNSW_META_KEY in this.metaCache) || !(collection in this.metaCache[HNSW_META_KEY])) {
+      return [];
+    }
+
+    const hnswIdx = await this.getOrCreateHnswIndex(collection);
+    const queryVector = await this.hnswConfig.imageEmbeddingFn(queryImage);
+    const documentLocations = await hnswIdx.search(queryVector, k);
+
+    const results: Document[] = [];
+    for (const loc of documentLocations) {
+      const doc = await this.recordStore.readRecord(loc);
+      if (doc) results.push(doc);
+    }
+    return results;
+  }
+
   // Private HNSW helpers
 
   /**
@@ -504,6 +551,19 @@ export class DbmsBack {
       }
     }
     return parts.length > 0 ? parts.join(' ') : null;
+  }
+
+  /**
+   * Extract the raw bytes of the first image field in the document.
+   * Returns `null` when the document contains no image fields.
+   */
+  private extractImageData(document: Document): Buffer | null {
+    for (const [key, value] of Object.entries(document.getFields())) {
+      if (isImageField(key) && Buffer.isBuffer(value)) {
+        return value;
+      }
+    }
+    return null;
   }
 
   /**
