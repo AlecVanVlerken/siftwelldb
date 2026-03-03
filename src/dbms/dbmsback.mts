@@ -5,7 +5,7 @@ import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
 import { allocateBlock } from '../freeblockfile/freelist.mjs';
-import { Document, type FieldValue } from '../dbms/document.mjs';
+import { Document, type FieldValue, type RawId } from '../dbms/document.mjs';
 import { RecordStore } from './recordstore.mjs';
 import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
@@ -45,8 +45,35 @@ export type HnswConfig = {
   efSearch?: number;
 };
 
+export type DocumentPreviewOptions = {
+  inlineThresholdBytes?: number;
+  previewBytes?: number;
+};
+
+export type DocumentPreviewField = {
+  type: 'string' | 'number' | 'boolean';
+  sizeBytes: number;
+  truncated: boolean;
+  download: boolean;
+  value?: FieldValue;
+  preview?: string;
+};
+
+export type DocumentPreview = {
+  collection: string;
+  id: RawId;
+  totalSizeBytes: number;
+  options: {
+    inlineThresholdBytes: number;
+    previewBytes: number;
+  };
+  fields: Record<string, DocumentPreviewField>;
+};
+
 /** Reserved metaCache key used to track which collections have an HNSW index. */
 const HNSW_META_KEY = '__hnsw__';
+const DEFAULT_INLINE_THRESHOLD_BYTES = 1024 * 1024;
+const DEFAULT_PREVIEW_BYTES = 4 * 1024;
 
 type CachedTree = {
   storage: BlockNodeStorage;
@@ -313,8 +340,115 @@ export class DbmsBack {
     if (documentPointer === null) {
       throw new Error('Document not found');
     }
-    const document = (await this.recordStore.readRecord(documentPointer)) as Document;
+    const document = await this.recordStore.readRecord(documentPointer);
+    if (!document) {
+      throw new Error('Document not found in record store');
+    }
     return document;
+  }
+
+  /**
+   * Retrieves a preview-safe representation of a document.
+   *
+   * String fields larger than `inlineThresholdBytes` are returned as previews
+   * (`preview` + `truncated`) so API clients can request full data explicitly.
+   *
+   * @param documentId - The ID of the document to preview.
+   * @param collection - The collection to retrieve the document from.
+   * @param options - Preview tuning parameters.
+   * @returns Structured preview with per-field size/truncation metadata.
+   */
+  async getDocumentPreview(
+    documentId: number | string,
+    collection: string,
+    options: DocumentPreviewOptions = {},
+  ): Promise<DocumentPreview> {
+    const inlineThresholdBytes = options.inlineThresholdBytes ?? DEFAULT_INLINE_THRESHOLD_BYTES;
+    const previewBytes = options.previewBytes ?? DEFAULT_PREVIEW_BYTES;
+
+    if (!Number.isInteger(inlineThresholdBytes) || inlineThresholdBytes < 0) {
+      throw new Error('inlineThresholdBytes must be a non-negative integer');
+    }
+    if (!Number.isInteger(previewBytes) || previewBytes < 0) {
+      throw new Error('previewBytes must be a non-negative integer');
+    }
+
+    const document = await this.getDocument(documentId, collection);
+    const fields = document.getFields();
+    const previewFields: Record<string, DocumentPreviewField> = {};
+
+    for (const [fieldName, fieldValue] of Object.entries(fields)) {
+      if (typeof fieldValue === 'string') {
+        const sizeBytes = Buffer.byteLength(fieldValue, 'utf8');
+        if (sizeBytes > inlineThresholdBytes) {
+          const previewBuffer = Buffer.from(fieldValue, 'utf8').subarray(0, previewBytes);
+          previewFields[fieldName] = {
+            type: 'string',
+            sizeBytes,
+            truncated: true,
+            download: true,
+            preview: previewBuffer.toString('utf8'),
+          };
+        } else {
+          previewFields[fieldName] = {
+            type: 'string',
+            sizeBytes,
+            truncated: false,
+            download: false,
+            value: fieldValue,
+          };
+        }
+        continue;
+      }
+
+      if (typeof fieldValue === 'number') {
+        previewFields[fieldName] = {
+          type: 'number',
+          sizeBytes: Buffer.byteLength(fieldValue.toString(), 'utf8'),
+          truncated: false,
+          download: false,
+          value: fieldValue,
+        };
+        continue;
+      }
+
+      previewFields[fieldName] = {
+        type: 'boolean',
+        sizeBytes: fieldValue ? 4 : 5,
+        truncated: false,
+        download: false,
+        value: fieldValue,
+      };
+    }
+
+    return {
+      collection: document.getCollectionName(),
+      id: document.getId(),
+      totalSizeBytes: Buffer.byteLength(JSON.stringify(document.asDocument()), 'utf8'),
+      options: { inlineThresholdBytes, previewBytes },
+      fields: previewFields,
+    };
+  }
+
+  /**
+   * Retrieves a single field value from a document.
+   *
+   * @param documentId - The ID of the document to inspect.
+   * @param collection - The collection to retrieve the document from.
+   * @param field - Field name (`id` is also supported).
+   * @returns The raw field value.
+   */
+  async getField(documentId: number | string, collection: string, field: string): Promise<FieldValue> {
+    const document = await this.getDocument(documentId, collection);
+    if (field === 'id') {
+      return document.getId();
+    }
+
+    const fields = document.getFields();
+    if (!Object.prototype.hasOwnProperty.call(fields, field)) {
+      throw new Error(`Field ${field} does not exist in document`);
+    }
+    return fields[field];
   }
 
   /**

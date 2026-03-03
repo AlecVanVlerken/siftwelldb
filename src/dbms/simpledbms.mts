@@ -1,7 +1,12 @@
 // author: Thomas Dumon
 // date: 2025-12-07
 
-import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
+import {
+  DbmsBack,
+  type HnswConfig,
+  type DocumentPreview,
+  type DocumentPreviewOptions,
+} from './dbmsback.mjs';
 
 /**
  * Optional configuration that enables HNSW-based semantic (approximate
@@ -56,7 +61,7 @@ import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
  * - The HNSW index shares the same WAL-backed file as records and B+ tree
  *   indexes, so a single `commit()` atomically persists everything.
  */
-export type { HnswConfig };
+export type { HnswConfig, DocumentPreview, DocumentPreviewOptions };
 import { type File } from '../core/file.mjs';
 import { documentToJSON, type FieldValue } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
@@ -146,6 +151,32 @@ export class SimpleDbms {
   async getDocumentById(collection: string, id: string): Promise<string> {
     const document = await this.dbmsback.getDocument(id, collection);
     return documentToJSON(document);
+  }
+
+  /**
+   * Retrieves a preview-safe representation of a document.
+   *
+   * Oversized string fields are returned as previews so clients can request
+   * the full field explicitly through {@link getField}.
+   */
+  async getDocumentPreview(
+    collection: string,
+    id: string,
+    options?: DocumentPreviewOptions,
+  ): Promise<DocumentPreview> {
+    return this.dbmsback.getDocumentPreview(id, collection, options);
+  }
+
+  /**
+   * Retrieves a single field value from a document.
+   *
+   * @param collection - The name of the collection.
+   * @param id - The ID of the document.
+   * @param field - The field name to retrieve.
+   * @returns The raw field value.
+   */
+  async getField(collection: string, id: string, field: string): Promise<FieldValue> {
+    return this.dbmsback.getField(id, collection, field);
   }
 
   /**

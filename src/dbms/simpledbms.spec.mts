@@ -61,6 +61,56 @@ describe('SimpleDbms', () => {
     });
   });
 
+  describe('getDocumentPreview and getField', () => {
+    it('returns inline values for small fields', async () => {
+      const doc = { id: 'preview-small', title: 'short title', _private: true };
+      await simpleDbms.insertDocument('articles', JSON.stringify(doc));
+
+      const preview = await simpleDbms.getDocumentPreview('articles', 'preview-small');
+      expect(preview.collection).toBe('articles');
+      expect(preview.id).toBe('preview-small');
+      expect(preview.fields['title'].truncated).toBe(false);
+      expect(preview.fields['title'].value).toBe('short title');
+      expect(preview.fields['_private'].value).toBe(true);
+    });
+
+    it('truncates large string fields and marks them as downloadable', async () => {
+      const longText = 'x'.repeat(2_000);
+      await simpleDbms.insertDocument('articles', JSON.stringify({ id: 'preview-large', body: longText }));
+
+      const preview = await simpleDbms.getDocumentPreview('articles', 'preview-large', {
+        inlineThresholdBytes: 128,
+        previewBytes: 32,
+      });
+
+      expect(preview.fields['body'].truncated).toBe(true);
+      expect(preview.fields['body'].download).toBe(true);
+      expect(preview.fields['body'].value).toBeUndefined();
+      expect(preview.fields['body'].preview).toHaveLength(32);
+      expect(preview.fields['body'].sizeBytes).toBe(Buffer.byteLength(longText));
+    });
+
+    it('returns the full field value for explicit field requests', async () => {
+      const longText = 'y'.repeat(512);
+      await simpleDbms.insertDocument('articles', JSON.stringify({ id: 'field-read', body: longText, views: 7 }));
+
+      const body = await simpleDbms.getField('articles', 'field-read', 'body');
+      const views = await simpleDbms.getField('articles', 'field-read', 'views');
+      const id = await simpleDbms.getField('articles', 'field-read', 'id');
+
+      expect(body).toBe(longText);
+      expect(views).toBe(7);
+      expect(id).toBe('field-read');
+    });
+
+    it('throws when requesting a missing field', async () => {
+      await simpleDbms.insertDocument('articles', JSON.stringify({ id: 'field-missing', title: 'hello' }));
+      await expect(simpleDbms.getField('articles', 'field-missing', 'unknown')).rejects.toThrow(
+        'Field unknown does not exist in document',
+      );
+    });
+  });
+
   describe('deleteDocumentById', () => {
     it('deletes a document by id', async () => {
       const city = { id: 'Leuven', population: 101032, _isProvinceCapital: true };
