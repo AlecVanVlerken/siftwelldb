@@ -1,3 +1,6 @@
+// author: Frederik Caeyman
+// date: 2026-02-17
+
 import { describe, it, expect, beforeEach } from 'vitest';
 import { MockFile } from '../../core/mockfile.mjs';
 import { SimpleDbms } from '../simpledbms.mjs';
