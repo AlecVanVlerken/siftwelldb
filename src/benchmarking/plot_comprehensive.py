@@ -2,7 +2,7 @@
 """
 Plot comprehensive performance test results.
 Generates graphs for B+ Tree and DBMS tests with various configurations.
-Same format as plot_btree_only.py - X-axis is tree size (log scale).
+Uses batch averaging (non-overlapping bins) for clean visualization.
 """
 import json
 import numpy as np
@@ -11,6 +11,8 @@ from pathlib import Path
 
 RESULTS_DIR = 'results/'
 IMAGES_DIR = 'results/images/'
+
+BATCH_SIZE = 500
 
 def load_data(filename):
     """Load performance data from file. Returns (inserts, deletes) or None if file missing."""
@@ -22,20 +24,33 @@ def load_data(filename):
     except FileNotFoundError:
         return None, None
 
-def smooth(data, window=500):
-    """Apply moving average smoothing."""
-    if len(data) < window:
-        return data
-    return np.convolve(data, np.ones(window)/window, mode='valid')
+def batch_average(data, batch_size=BATCH_SIZE):
+    """Bin data into non-overlapping batches and return (midpoints, averages)."""
+    n = len(data)
+    n_batches = n // batch_size
+    if n_batches == 0:
+        return np.arange(len(data)), data
+    trimmed = data[:n_batches * batch_size].reshape(n_batches, batch_size)
+    avgs = trimmed.mean(axis=1)
+    midpoints = np.arange(batch_size // 2, n_batches * batch_size, batch_size)
+    return midpoints, avgs
+
+def batch_average_with_sizes(sizes, times, batch_size=BATCH_SIZE):
+    """Batch-average both tree sizes and times together."""
+    n = len(times)
+    n_batches = n // batch_size
+    if n_batches == 0:
+        return sizes, times
+    s = sizes[:n_batches * batch_size].reshape(n_batches, batch_size).mean(axis=1)
+    t = times[:n_batches * batch_size].reshape(n_batches, batch_size).mean(axis=1)
+    return s, t
 
 def plot_comparison(title, configs, output_file):
     """
     Plot comparison of multiple configurations.
     configs: list of (filename, label, color) tuples
-    Format matches plot_btree_only.py: X-axis = tree size (log scale)
     """
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    window = 500
     
     for filename, label, color in configs:
         inserts, deletes = load_data(filename)
@@ -45,41 +60,32 @@ def plot_comparison(title, configs, output_file):
         
         N = len(inserts)
         
-        # INSERT: X-axis = tree size (1 to N)
         if len(inserts) > 0:
-            n_ins = np.arange(1, N + 1)
-            n_ins_smooth = n_ins[window//2:N - window//2 + 1]
-            ins_smooth = smooth(inserts, window)
+            ins_x, ins_y = batch_average(inserts)
+            axes[0].semilogx(ins_x, ins_y, color=color, linewidth=1, label=label)
             
-            axes[0].semilogx(n_ins_smooth, ins_smooth, color=color, linewidth=1, label=label)
-            
-            # O(log n) fit
-            k = np.mean(ins_smooth) / np.mean(np.log2(n_ins_smooth))
-            axes[0].semilogx(n_ins_smooth, k * np.log2(n_ins_smooth), color=color, 
+            k = np.mean(ins_y) / np.mean(np.log2(ins_x))
+            axes[0].semilogx(ins_x, k * np.log2(ins_x), color=color, 
                            linestyle='--', alpha=0.5, label=f'{label} O(log n)')
         
-        # DELETE: X-axis = tree size at time of delete (N down to 1)
         if deletes is not None and len(deletes) > 0:
-            # Tree size: N at first delete, 1 at last delete
             tree_sizes_del = N - np.arange(N)
-            tree_del_smooth = tree_sizes_del[window//2:N - window//2 + 1]
-            del_smooth = smooth(deletes, window)
+            del_sx, del_ty = batch_average_with_sizes(tree_sizes_del, deletes)
             
-            axes[1].semilogx(tree_del_smooth, del_smooth, color=color, linewidth=1, label=label)
+            axes[1].semilogx(del_sx, del_ty, color=color, linewidth=1, label=label)
             
-            # O(log n) fit
-            k = np.mean(del_smooth) / np.mean(np.log2(tree_del_smooth))
-            axes[1].semilogx(tree_del_smooth, k * np.log2(tree_del_smooth), color=color,
+            k = np.mean(del_ty) / np.mean(np.log2(del_sx))
+            axes[1].semilogx(del_sx, k * np.log2(del_sx), color=color,
                            linestyle='--', alpha=0.5, label=f'{label} O(log n)')
     
     axes[0].set_xlabel('Tree Size (log scale)')
-    axes[0].set_ylabel('Time (ms)')
+    axes[0].set_ylabel(f'Time (ms, avg of {BATCH_SIZE})')
     axes[0].set_title(f'{title} - INSERT')
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
     
     axes[1].set_xlabel('Tree Size (log scale)')
-    axes[1].set_ylabel('Time (ms)')
+    axes[1].set_ylabel(f'Time (ms, avg of {BATCH_SIZE})')
     axes[1].set_title(f'{title} - DELETE')
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
@@ -95,7 +101,6 @@ def plot_collections_comparison(title, configs, output_file):
     Uses 'Total Documents' as x-axis since each collection has its own tree.
     """
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    window = 500
     
     for filename, label, color in configs:
         inserts, deletes = load_data(filename)
@@ -105,40 +110,32 @@ def plot_collections_comparison(title, configs, output_file):
         
         N = len(inserts)
         
-        # INSERT: X-axis = total documents inserted (operation index)
         if len(inserts) > 0:
-            n_ins = np.arange(1, N + 1)
-            n_ins_smooth = n_ins[window//2:N - window//2 + 1]
-            ins_smooth = smooth(inserts, window)
+            ins_x, ins_y = batch_average(inserts)
+            axes[0].semilogx(ins_x, ins_y, color=color, linewidth=1, label=label)
             
-            axes[0].semilogx(n_ins_smooth, ins_smooth, color=color, linewidth=1, label=label)
-            
-            # O(log n) fit
-            k = np.mean(ins_smooth) / np.mean(np.log2(n_ins_smooth))
-            axes[0].semilogx(n_ins_smooth, k * np.log2(n_ins_smooth), color=color, 
+            k = np.mean(ins_y) / np.mean(np.log2(ins_x))
+            axes[0].semilogx(ins_x, k * np.log2(ins_x), color=color, 
                            linestyle='--', alpha=0.5, label=f'{label} O(log n)')
         
-        # DELETE: X-axis = total documents remaining
         if deletes is not None and len(deletes) > 0:
             docs_remaining = N - np.arange(N)
-            docs_smooth = docs_remaining[window//2:N - window//2 + 1]
-            del_smooth = smooth(deletes, window)
+            del_sx, del_ty = batch_average_with_sizes(docs_remaining, deletes)
             
-            axes[1].semilogx(docs_smooth, del_smooth, color=color, linewidth=1, label=label)
+            axes[1].semilogx(del_sx, del_ty, color=color, linewidth=1, label=label)
             
-            # O(log n) fit
-            k = np.mean(del_smooth) / np.mean(np.log2(docs_smooth))
-            axes[1].semilogx(docs_smooth, k * np.log2(docs_smooth), color=color,
+            k = np.mean(del_ty) / np.mean(np.log2(del_sx))
+            axes[1].semilogx(del_sx, k * np.log2(del_sx), color=color,
                            linestyle='--', alpha=0.5, label=f'{label} O(log n)')
     
     axes[0].set_xlabel('Total Documents (log scale)')
-    axes[0].set_ylabel('Time (ms)')
+    axes[0].set_ylabel(f'Time (ms, avg of {BATCH_SIZE})')
     axes[0].set_title(f'{title} - INSERT')
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
     
     axes[1].set_xlabel('Total Documents Remaining (log scale)')
-    axes[1].set_ylabel('Time (ms)')
+    axes[1].set_ylabel(f'Time (ms, avg of {BATCH_SIZE})')
     axes[1].set_title(f'{title} - DELETE')
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
@@ -149,29 +146,23 @@ def plot_collections_comparison(title, configs, output_file):
     plt.close()
 
 def plot_get_performance(title, filename, output_file):
-    """Plot GET performance as tree grows (same format as insert)."""
+    """Plot GET performance as tree grows."""
     data, _ = load_data(filename)
     if data is None or len(data) == 0:
         print(f"No GET data in {filename}")
         return
     
     fig, ax = plt.subplots(figsize=(10, 5))
-    window = 500
     
-    N = len(data)
-    smoothed = smooth(data, window)
-    n = np.arange(1, N + 1)
-    n_smooth = n[window//2:N - window//2 + 1]
+    get_x, get_y = batch_average(data)
     
-    # Use semilog x-axis like the original graphs
-    ax.semilogx(n_smooth, smoothed, 'b-', linewidth=1, label='GET time')
+    ax.semilogx(get_x, get_y, 'b-', linewidth=1, label='GET time')
     
-    # O(log n) fit
-    k = np.mean(smoothed) / np.mean(np.log2(n_smooth))
-    ax.semilogx(n_smooth, k * np.log2(n_smooth), 'r--', alpha=0.7, label='O(log n)')
+    k = np.mean(get_y) / np.mean(np.log2(get_x))
+    ax.semilogx(get_x, k * np.log2(get_x), 'r--', alpha=0.7, label='O(log n)')
     
     ax.set_xlabel('Tree Size (log scale)')
-    ax.set_ylabel('Time (ms)')
+    ax.set_ylabel(f'Time (ms, avg of {BATCH_SIZE})')
     ax.set_title(f'{title} - GET Performance')
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -186,17 +177,14 @@ def main():
     print("Generating Comprehensive Performance Graphs")
     print("=" * 60)
     
-    # B+ Tree tests
     print("\n--- B+ Tree Tests ---")
     
-    # GET performance
     plot_get_performance(
         "B+ Tree",
         "btree_get_performance.txt",
         "btree_get_performance.png"
     )
     
-    # Key size comparison
     plot_comparison(
         "B+ Tree Key Size",
         [
@@ -207,7 +195,6 @@ def main():
         "btree_keysize_comparison.png"
     )
     
-    # Value size comparison
     plot_comparison(
         "B+ Tree Value Size",
         [
@@ -218,7 +205,6 @@ def main():
         "btree_valuesize_comparison.png"
     )
     
-    # Access pattern comparison
     plot_comparison(
         "B+ Tree Access Pattern",
         [
@@ -228,17 +214,14 @@ def main():
         "btree_access_pattern_comparison.png"
     )
     
-    # DBMS tests
     print("\n--- DBMS Tests ---")
     
-    # GET performance
     plot_get_performance(
         "DBMS",
         "dbms_get_performance.txt",
         "dbms_get_performance.png"
     )
     
-    # Multiple collections comparison (uses Total Documents, not Tree Size)
     plot_collections_comparison(
         "DBMS Multiple Collections",
         [
@@ -249,7 +232,6 @@ def main():
         "dbms_collections_comparison.png"
     )
     
-    # Indexed fields comparison
     plot_comparison(
         "DBMS Indexed Fields",
         [
@@ -260,7 +242,6 @@ def main():
         "dbms_indexed_comparison.png"
     )
     
-    # Document size comparison
     plot_comparison(
         "DBMS Document Size",
         [

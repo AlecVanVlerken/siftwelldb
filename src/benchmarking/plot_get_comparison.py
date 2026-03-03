@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Plot combined B+ Tree vs DBMS GET performance.
-Format matches plot_btree_vs_dbms.py for consistency.
+Uses batch averaging (non-overlapping bins) instead of moving-average smoothing.
 """
 import json
 import numpy as np
@@ -10,14 +10,18 @@ import matplotlib.pyplot as plt
 RESULTS_DIR = 'results/'
 IMAGES_DIR = 'results/images/'
 
-def smooth(data, window=2000):
-    """Apply moving average smoothing."""
-    if len(data) < window:
-        return data
-    return np.convolve(data, np.ones(window)/window, mode='valid')
+BATCH_SIZE = 1000
+
+def batch_average(data, batch_size=BATCH_SIZE):
+    """Bin data into non-overlapping batches and return (midpoints, averages)."""
+    n = len(data)
+    n_batches = n // batch_size
+    trimmed = data[:n_batches * batch_size].reshape(n_batches, batch_size)
+    avgs = trimmed.mean(axis=1)
+    midpoints = np.arange(batch_size // 2, n_batches * batch_size, batch_size)
+    return midpoints, avgs
 
 def main():
-    # Load data
     try:
         with open(RESULTS_DIR + 'btree_get_200k.txt', 'r') as f:
             btree_data = np.array(json.load(f))
@@ -32,45 +36,39 @@ def main():
         print("dbms_get_200k.txt not found - run the test first")
         return
 
-    window = 2000
     N = len(btree_data)
-    
-    # Smooth data
-    btree_smooth = smooth(btree_data, window)
-    dbms_smooth = smooth(dbms_data, window)
-    
-    # X-axis: tree/database size
-    n = np.arange(1, N + 1)
-    n_smooth = n[window//2:N - window//2 + 1]
+
+    btree_x, btree_y = batch_average(btree_data)
+    dbms_x, dbms_y = batch_average(dbms_data)
     
     # Create figure with 2 subplots
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     
     # === LEFT: GET time vs size (log scale) ===
     ax = axes[0]
-    ax.semilogx(n_smooth, btree_smooth, 'b-', linewidth=1, label=f'B+ Tree GET ({N:,})')
-    ax.semilogx(n_smooth, dbms_smooth, 'g-', linewidth=1, label=f'DBMS GET ({N:,})')
+    ax.semilogx(btree_x, btree_y, 'b-', linewidth=1, label=f'B+ Tree GET ({N:,})')
+    ax.semilogx(dbms_x, dbms_y, 'g-', linewidth=1, label=f'DBMS GET ({N:,})')
     
     # O(log n) fits
-    k_btree = np.mean(btree_smooth) / np.mean(np.log2(n_smooth))
-    k_dbms = np.mean(dbms_smooth) / np.mean(np.log2(n_smooth))
-    ax.semilogx(n_smooth, k_btree * np.log2(n_smooth), 'b--', linewidth=2, alpha=0.5, label='B+ Tree O(log n) fit')
-    ax.semilogx(n_smooth, k_dbms * np.log2(n_smooth), 'g--', linewidth=2, alpha=0.5, label='DBMS O(log n) fit')
+    k_btree = np.mean(btree_y) / np.mean(np.log2(btree_x))
+    k_dbms = np.mean(dbms_y) / np.mean(np.log2(dbms_x))
+    ax.semilogx(btree_x, k_btree * np.log2(btree_x), 'b--', linewidth=2, alpha=0.5, label='B+ Tree O(log n) fit')
+    ax.semilogx(dbms_x, k_dbms * np.log2(dbms_x), 'g--', linewidth=2, alpha=0.5, label='DBMS O(log n) fit')
     
     ax.set_xlabel('Tree Size (log scale)')
-    ax.set_ylabel('Time per operation (ms)')
+    ax.set_ylabel(f'Time per operation (ms, avg of {BATCH_SIZE})')
     ax.set_title('GET: B+ Tree vs DBMS')
     ax.legend()
     ax.grid(True, alpha=0.3)
     
     # === RIGHT: time/log(n) ratio ===
     ax = axes[1]
-    mask = n_smooth > 100
-    btree_ratio = btree_smooth[mask] / np.log2(n_smooth[mask])
-    dbms_ratio = dbms_smooth[mask] / np.log2(n_smooth[mask])
+    mask = btree_x > 100
+    btree_ratio = btree_y[mask] / np.log2(btree_x[mask])
+    dbms_ratio = dbms_y[mask] / np.log2(dbms_x[mask])
     
-    ax.plot(n_smooth[mask], btree_ratio, 'b-', linewidth=1, label='B+ Tree')
-    ax.plot(n_smooth[mask], dbms_ratio, 'g-', linewidth=1, label='DBMS')
+    ax.plot(btree_x[mask], btree_ratio, 'b-', linewidth=1, label='B+ Tree')
+    ax.plot(dbms_x[mask], dbms_ratio, 'g-', linewidth=1, label='DBMS')
     
     mean_btree = np.mean(btree_ratio)
     mean_dbms = np.mean(dbms_ratio)

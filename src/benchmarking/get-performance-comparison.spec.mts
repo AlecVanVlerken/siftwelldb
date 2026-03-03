@@ -1,5 +1,12 @@
 // Combined GET Performance Test: B+ Tree vs DBMS
 // Tests GET performance as data grows for both systems
+//
+// Methodology fixes applied:
+// - Pre-allocate all key/value/query buffers before the benchmark loop to
+//   eliminate GC pressure from per-iteration Buffer.alloc calls
+// - Pre-generate random query indices so randomness overhead is outside timing
+// - Only the get() call is inside the timed region
+// - Output batch-averaged statistics for cleaner trend analysis
 
 import { describe, it, expect } from 'vitest';
 import { MockFile } from '../core/mockfile.mjs';
@@ -22,10 +29,27 @@ function shuffle<T>(array: T[]): T[] {
   return result;
 }
 
+function printBatchSummary(label: string, times: number[], batchSize: number) {
+  const batches: { size: number; avgMs: number }[] = [];
+  for (let i = 0; i < times.length; i += batchSize) {
+    const batch = times.slice(i, i + batchSize);
+    batches.push({
+      size: i + batch.length,
+      avgMs: batch.reduce((s, t) => s + t, 0) / batch.length,
+    });
+  }
+  console.log(`\n  ${label} – batch-averaged GET time (per ${batchSize} ops):`);
+  console.log('  ' + '-'.repeat(40));
+  for (const b of batches) {
+    console.log(`    n=${String(b.size).padStart(7)}  avg=${b.avgMs.toFixed(4)} ms`);
+  }
+}
+
 describe('GET Performance Comparison', () => {
   const COUNT = 200000;
   const RUNS = 3;
   const COMMIT_INTERVAL = 1000;
+  const BATCH_REPORT_SIZE = 20000;
 
   it('B+ Tree GET performance (200k)', async () => {
     const allGetResults: number[][] = [];
@@ -42,25 +66,40 @@ describe('GET Performance Comparison', () => {
 
       const getResult: number[] = [];
       const indices = shuffle(Array.from({ length: COUNT }, (_, i) => i));
-      const insertedKeys: number[] = [];
 
+      // Pre-allocate all insert buffers
+      const keyBuffers: Buffer[] = new Array(COUNT);
+      const valueBuffers: Buffer[] = new Array(COUNT);
       for (let idx = 0; idx < COUNT; idx++) {
         const i = indices[idx];
-        const keyBuffer = Buffer.alloc(8);
-        keyBuffer.writeDoubleBE(i, 0);
-        const valueBuffer = Buffer.alloc(4);
-        valueBuffer.writeUInt32BE(i, 0);
+        const kb = Buffer.alloc(8);
+        kb.writeDoubleBE(i, 0);
+        keyBuffers[idx] = kb;
+        const vb = Buffer.alloc(4);
+        vb.writeUInt32BE(i, 0);
+        valueBuffers[idx] = vb;
+      }
 
-        await tree.insert(keyBuffer, valueBuffer);
-        insertedKeys.push(i);
+      // Pre-generate random query indices (each queries a random key among those inserted so far)
+      const queryIndices: number[] = new Array(COUNT);
+      for (let idx = 0; idx < COUNT; idx++) {
+        queryIndices[idx] = Math.floor(Math.random() * (idx + 1));
+      }
 
-        // GET a random key from what we've inserted
-        const randomIdx = Math.floor(Math.random() * insertedKeys.length);
-        const queryKey = Buffer.alloc(8);
-        queryKey.writeDoubleBE(insertedKeys[randomIdx], 0);
+      // Pre-allocate query key buffers
+      const queryBuffers: Buffer[] = new Array(COUNT);
+      for (let idx = 0; idx < COUNT; idx++) {
+        const qi = indices[queryIndices[idx]];
+        const qb = Buffer.alloc(8);
+        qb.writeDoubleBE(qi, 0);
+        queryBuffers[idx] = qb;
+      }
+
+      for (let idx = 0; idx < COUNT; idx++) {
+        await tree.insert(keyBuffers[idx], valueBuffers[idx]);
 
         const start = performance.now();
-        await tree.get(queryKey);
+        await tree.get(queryBuffers[idx]);
         getResult.push(performance.now() - start);
 
         if ((idx + 1) % COMMIT_INTERVAL === 0) {
@@ -84,6 +123,7 @@ describe('GET Performance Comparison', () => {
     const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
     console.log(`B+ Tree GET avg first 1000: ${avg(avgGetResult.slice(0, 1000)).toFixed(4)} ms`);
     console.log(`B+ Tree GET avg last 1000: ${avg(avgGetResult.slice(-1000)).toFixed(4)} ms`);
+    printBatchSummary('B+ Tree', avgGetResult, BATCH_REPORT_SIZE);
     expect(avgGetResult.length).toBe(COUNT);
   }, 3600000);
 
@@ -97,21 +137,26 @@ describe('GET Performance Comparison', () => {
       const getResult: number[] = [];
 
       const indices = shuffle(Array.from({ length: COUNT }, (_, i) => i));
-      const insertedIds: string[] = [];
 
+      // Pre-allocate documents
+      const documents: string[] = new Array(COUNT);
       for (let idx = 0; idx < COUNT; idx++) {
         const i = indices[idx];
-        const docId = `doc${i}`;
-        const doc = JSON.stringify({ id: docId, value: i });
-        await db.insertDocument('test', doc);
-        insertedIds.push(docId);
+        documents[idx] = JSON.stringify({ id: `doc${i}`, value: i });
+      }
 
-        // GET a random doc from what we've inserted
-        const randomIdx = Math.floor(Math.random() * insertedIds.length);
-        const queryId = insertedIds[randomIdx];
+      // Pre-generate random query IDs
+      const queryIds: string[] = new Array(COUNT);
+      for (let idx = 0; idx < COUNT; idx++) {
+        const qi = indices[Math.floor(Math.random() * (idx + 1))];
+        queryIds[idx] = `doc${qi}`;
+      }
+
+      for (let idx = 0; idx < COUNT; idx++) {
+        await db.insertDocument('test', documents[idx]);
 
         const start = performance.now();
-        await db.getDocumentById('test', queryId);
+        await db.getDocumentById('test', queryIds[idx]);
         getResult.push(performance.now() - start);
 
         if ((idx + 1) % COMMIT_INTERVAL === 0) {
@@ -135,6 +180,7 @@ describe('GET Performance Comparison', () => {
     const avg = (a: number[]) => a.reduce((s, x) => s + x, 0) / a.length;
     console.log(`DBMS GET avg first 1000: ${avg(avgGetResult.slice(0, 1000)).toFixed(4)} ms`);
     console.log(`DBMS GET avg last 1000: ${avg(avgGetResult.slice(-1000)).toFixed(4)} ms`);
+    printBatchSummary('DBMS', avgGetResult, BATCH_REPORT_SIZE);
     expect(avgGetResult.length).toBe(COUNT);
   }, 3600000);
 });
