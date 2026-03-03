@@ -1,5 +1,5 @@
-// Client-side logic for SimpleDBMS
 // author: Alexandre-Gatien Bienfet
+// date: 2026-02-23
 
 interface Document {
   [key: string]: unknown;
@@ -203,7 +203,10 @@ async function loadDocuments(collection: string) {
 
 function applyFilter() {
   const query = filterInput.value.trim().toLowerCase();
-  if (!query) { renderTable(allDocuments); return; }
+  if (!query) {
+    renderTable(allDocuments);
+    return;
+  }
   const filtered = allDocuments.filter((doc) =>
     Object.values(doc).some((v) => String(v).toLowerCase().includes(query)),
   );
@@ -269,7 +272,7 @@ function renderTable(documents: Document[]) {
     editItem.onclick = (e) => {
       e.stopPropagation();
       closeAllDropdowns();
-      openDocView(doc, true);  // Open doc view in edit mode
+      openDocView(doc, true); // Open doc view in edit mode
     };
 
     const deleteItem = document.createElement('button');
@@ -345,11 +348,10 @@ function renderDocFields(doc: Document, editMode: boolean) {
     } else {
       contentHTML += `<h2>${escapeHTML(key)}</h2>`;
     }
-    
+
     // Convert value to display string; format objects as JSON strings
-    const displayValue = typeof value === 'object' && value !== null 
-      ? JSON.stringify(value, null, 2) 
-      : toDisplayString(value);
+    const displayValue =
+      typeof value === 'object' && value !== null ? JSON.stringify(value, null, 2) : toDisplayString(value);
 
     if (editMode) {
       contentHTML += `<textarea class="doc-field-value is-object" data-key="${escapeHTML(key)}" data-original="${escapeHTML(displayValue)}">${escapeHTML(displayValue)}</textarea>`;
@@ -368,7 +370,8 @@ function renderDocFields(doc: Document, editMode: boolean) {
   // Meta info
   if (!isNewDocument) {
     const totalFields = Object.keys(doc).length;
-    contentHTML += `<p class="doc-meta">Dit document bevat ${totalFields} veld${totalFields !== 1 ? 'en' : ''}. ` +
+    contentHTML +=
+      `<p class="doc-meta">Dit document bevat ${totalFields} veld${totalFields !== 1 ? 'en' : ''}. ` +
       `Grootte: ${formatSize(new TextEncoder().encode(JSON.stringify(doc)).length)}.</p>`;
   }
 
@@ -383,28 +386,28 @@ function renderDocFields(doc: Document, editMode: boolean) {
 function addNewFieldToView() {
   const section = document.createElement('div');
   section.className = 'doc-field-section';
-  
+
   const h2 = document.createElement('h2');
   const titleInput = document.createElement('input');
   titleInput.type = 'text';
   titleInput.className = 'doc-field-section-title';
   titleInput.placeholder = 'Sectie Naam';
-  
+
   const delBtn = document.createElement('button');
   delBtn.className = 'remove-field-btn';
   delBtn.innerHTML = '✕';
   delBtn.onclick = () => section.remove();
-  
+
   h2.appendChild(titleInput);
   h2.appendChild(delBtn);
-  
+
   const textarea = document.createElement('textarea');
   textarea.className = 'doc-field-value is-object';
   textarea.placeholder = 'Tekst weergave...';
-  
+
   section.appendChild(h2);
   section.appendChild(textarea);
-  
+
   const wrapper = docViewContent.querySelector('.add-field-btn-wrapper');
   if (wrapper) {
     docViewContent.insertBefore(section, wrapper);
@@ -438,19 +441,26 @@ async function saveDocView() {
   if (isNewDocument) {
     const titleInput = document.getElementById('doc-view-title-input') as HTMLInputElement;
     const id = titleInput?.value.trim();
-    if (!id) { alert('Vergeet niet een Document ID (Titel) in te vullen.'); return; }
-    
+    if (!id) {
+      alert('Vergeet niet een Document ID (Titel) in te vullen.');
+      return;
+    }
+
     const newDoc: Record<string, unknown> = { id };
-    
+
     const sections = docViewContent.querySelectorAll('.doc-field-section');
-    sections.forEach(sec => {
+    sections.forEach((sec) => {
       const titleEl = sec.querySelector('.doc-field-section-title') as HTMLInputElement;
       const title = titleEl ? titleEl.value.trim() : sec.querySelector('h2')?.textContent?.replace('✕', '').trim();
-      
+
       const textarea = sec.querySelector('textarea');
       if (title && textarea && textarea.value.trim() !== '') {
         let val: unknown = textarea.value;
-        try { val = JSON.parse(textarea.value); } catch { /* keep as string */ }
+        try {
+          val = JSON.parse(textarea.value);
+        } catch {
+          /* keep as string */
+        }
         newDoc[title] = val;
       }
     });
@@ -474,19 +484,22 @@ async function saveDocView() {
   textareas.forEach((textarea) => {
     const sec = textarea.closest('.doc-field-section');
     const titleEl = sec?.querySelector('.doc-field-section-title') as HTMLInputElement;
-    const key = titleEl ? titleEl.value.trim() : textarea.dataset['key'] ?? '';
+    const key = titleEl ? titleEl.value.trim() : (textarea.dataset['key'] ?? '');
     const original = textarea.dataset['original'] ?? '';
     const newVal = textarea.value;
 
     if (newVal !== original && key) {
       let parsed: unknown = newVal;
-      try { parsed = JSON.parse(newVal); } catch { /* keep as string */ }
+      try {
+        parsed = JSON.parse(newVal);
+      } catch {
+        /* keep as string */
+      }
       saves.push(
-        apiCall(
-          `/api/documents/${encodeURIComponent(currentCollection!)}/${encodeURIComponent(id)}/edit`,
-          'POST',
-          { field: key, value: parsed },
-        ),
+        apiCall(`/api/documents/${encodeURIComponent(currentCollection!)}/${encodeURIComponent(id)}/edit`, 'POST', {
+          field: key,
+          value: parsed,
+        }),
       );
     }
   });
@@ -540,7 +553,10 @@ function openNewCollectionModal() {
 function createCollection(name: string) {
   if (!newCollectionModal || !newCollectionError) return;
   const trimmed = name.trim();
-  if (!trimmed) { newCollectionError.textContent = 'Naam mag niet leeg zijn.'; return; }
+  if (!trimmed) {
+    newCollectionError.textContent = 'Naam mag niet leeg zijn.';
+    return;
+  }
   newCollectionModal.classList.add('hidden');
   currentCollection = trimmed;
   renderCollectionList();
@@ -548,7 +564,8 @@ function createCollection(name: string) {
   filterInput.disabled = false;
   refreshBtn.disabled = false;
   dataTableHead.innerHTML = '';
-  dataTableBody.innerHTML = '<tr><td colspan="3">Voeg het eerste document toe om deze collectie aan te maken.</td></tr>';
+  dataTableBody.innerHTML =
+    '<tr><td colspan="3">Voeg het eerste document toe om deze collectie aan te maken.</td></tr>';
   openDocView({ id: '' }, true, true);
 }
 
@@ -564,22 +581,35 @@ createNewBtn.addEventListener('click', () => {
   if (fp) void createNew(fp);
 });
 
-disconnectBtn.addEventListener('click', () => { void disconnect(); });
-if (resetDbBtn) resetDbBtn.addEventListener('click', () => { void resetDb(); });
+disconnectBtn.addEventListener('click', () => {
+  void disconnect();
+});
+if (resetDbBtn)
+  resetDbBtn.addEventListener('click', () => {
+    void resetDb();
+  });
 
 addDocBtn.addEventListener('click', () => {
   openDocView({ id: '' }, true, true);
 });
 
-refreshBtn.addEventListener('click', () => { if (currentCollection) void loadDocuments(currentCollection); });
-filterInput.addEventListener('input', () => { applyFilter(); });
+refreshBtn.addEventListener('click', () => {
+  if (currentCollection) void loadDocuments(currentCollection);
+});
+filterInput.addEventListener('input', () => {
+  applyFilter();
+});
 
 if (newCollectionBtn) newCollectionBtn.addEventListener('click', openNewCollectionModal);
 if (newCollectionConfirmBtn) {
-  newCollectionConfirmBtn.addEventListener('click', () => { createCollection(newCollectionInput?.value ?? ''); });
+  newCollectionConfirmBtn.addEventListener('click', () => {
+    createCollection(newCollectionInput?.value ?? '');
+  });
 }
 if (newCollectionInput) {
-  newCollectionInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') createCollection(newCollectionInput.value); });
+  newCollectionInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') createCollection(newCollectionInput.value);
+  });
 }
 
 // Doc view event listeners
@@ -591,7 +621,9 @@ docViewEdit.addEventListener('click', () => {
     setEditModeUI(true);
   }
 });
-docViewSave.addEventListener('click', () => { void saveDocView(); });
+docViewSave.addEventListener('click', () => {
+  void saveDocView();
+});
 docViewCancel.addEventListener('click', () => {
   if (currentViewDoc) {
     isEditMode = false;
@@ -608,7 +640,9 @@ docViewDelete.addEventListener('click', () => {
 });
 
 // Close dropdowns when clicking elsewhere
-document.addEventListener('click', () => { closeAllDropdowns(); });
+document.addEventListener('click', () => {
+  closeAllDropdowns();
+});
 
 modalCloseBtns.forEach((btn) => {
   btn.addEventListener('click', () => {

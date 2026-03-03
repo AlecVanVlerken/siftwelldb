@@ -1,5 +1,5 @@
 // author: Alexandre-Gatien Bienfet
-// date: 2026-02-24
+// date: 2026-02-23
 //
 // Daemon entry-point. Wires together:
 //   - DatabaseService  (business logic / DBMS abstraction)
