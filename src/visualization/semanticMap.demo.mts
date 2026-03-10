@@ -43,13 +43,31 @@ const CITIES = [
 // ── Famous figures ─────────────────────────────────────────────────────────
 // Uses `country` (noun form) to align with cities/landmarks/teams.
 const FIGURES = [
-  { id: 'Napoleon Bonaparte', country: 'France', profession: 'military leader', field: 'politics', era: '19th century' },
+  {
+    id: 'Napoleon Bonaparte',
+    country: 'France',
+    profession: 'military leader',
+    field: 'politics',
+    era: '19th century',
+  },
   { id: 'Albert Einstein', country: 'Germany', profession: 'physicist', field: 'science', era: '20th century' },
   { id: 'Wolfgang Amadeus Mozart', country: 'Austria', profession: 'composer', field: 'music', era: '18th century' },
-  { id: 'Leonardo da Vinci', country: 'Italy', profession: 'artist inventor', field: 'art science', era: '15th century' },
+  {
+    id: 'Leonardo da Vinci',
+    country: 'Italy',
+    profession: 'artist inventor',
+    field: 'art science',
+    era: '15th century',
+  },
   { id: 'Cleopatra', country: 'Egypt', profession: 'pharaoh', field: 'politics', era: '1st century BC' },
   { id: 'Mahatma Gandhi', country: 'India', profession: 'independence leader', field: 'politics', era: '20th century' },
-  { id: 'Martin Luther King Jr', country: 'USA', profession: 'civil rights leader', field: 'politics', era: '20th century' },
+  {
+    id: 'Martin Luther King Jr',
+    country: 'USA',
+    profession: 'civil rights leader',
+    field: 'politics',
+    era: '20th century',
+  },
   { id: 'Confucius', country: 'China', profession: 'philosopher', field: 'philosophy', era: '5th century BC' },
   { id: 'Socrates', country: 'Greece', profession: 'philosopher', field: 'philosophy', era: '5th century BC' },
   { id: 'Simon Bolivar', country: 'Venezuela', profession: 'liberator', field: 'politics', era: '19th century' },
@@ -133,21 +151,18 @@ async function main(): Promise<void> {
   await db.commit();
   console.log(
     `Inserted ${CITIES.length} cities, ${FIGURES.length} figures, ${LANDMARKS.length} landmarks, ` +
-    `${SOCCER_TEAMS.length} soccer teams, ${AI_CHATBOTS.length} AI chatbots, ${DOG_BREEDS.length} dog breeds.`
+      `${SOCCER_TEAMS.length} soccer teams, ${AI_CHATBOTS.length} AI chatbots, ${DOG_BREEDS.length} dog breeds.`,
   );
 
   console.log('Collecting documents...');
-  const cityDocs      = await collectDocuments(db, 'cities');
-  const figureDocs    = await collectDocuments(db, 'figures');
-  const landmarkDocs  = await collectDocuments(db, 'landmarks');
-  const teamDocs      = await collectDocuments(db, 'soccer_teams');
-  const botDocs       = await collectDocuments(db, 'ai_chatbots');
-  const breedDocs     = await collectDocuments(db, 'dog_breeds');
+  const cityDocs = await collectDocuments(db, 'cities');
+  const figureDocs = await collectDocuments(db, 'figures');
+  const landmarkDocs = await collectDocuments(db, 'landmarks');
+  const teamDocs = await collectDocuments(db, 'soccer_teams');
+  const botDocs = await collectDocuments(db, 'ai_chatbots');
+  const breedDocs = await collectDocuments(db, 'dog_breeds');
 
-  const allDocs: RawDocument[] = [
-    ...cityDocs, ...figureDocs, ...landmarkDocs,
-    ...teamDocs, ...botDocs, ...breedDocs,
-  ];
+  const allDocs: RawDocument[] = [...cityDocs, ...figureDocs, ...landmarkDocs, ...teamDocs, ...botDocs, ...breedDocs];
 
   console.log('Computing TF-IDF vectors...');
   const vectors = computeTfIdf(allDocs);
