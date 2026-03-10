@@ -6,7 +6,7 @@ import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
 import { allocateBlock } from '../freeblockfile/freelist.mjs';
 import { Document, type FieldValue, isImageField } from '../dbms/document.mjs';
-import { RecordStore } from './recordstore.mjs';
+import { RecordStore, type EncodedDocument, type RecordWriteOptions } from './recordstore.mjs';
 import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
 import type { BlockLeafNode } from '../btree/leafnode.mjs';
@@ -14,6 +14,7 @@ import type { BlockInternalNode } from '../btree/internalnode.mjs';
 import { HNSWIndex } from '../hnsw/hnswIndex.mjs';
 import { HNSWGraphStorage } from '../hnsw/hnswGraphStorage.mjs';
 import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
+import { type CompressionAlgorithm, type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
 
 /**
  * Optional configuration block that enables per-collection HNSW semantic
@@ -56,11 +57,16 @@ export type HnswConfig = {
 
 /** Reserved metaCache key used to track which collections have an HNSW index. */
 const HNSW_META_KEY = '__hnsw__';
+const COMPRESSION_META_KEY = '__compression__';
+const RESERVED_META_KEYS = new Set([HNSW_META_KEY, COMPRESSION_META_KEY]);
+const SUPPORTED_COMPRESSION_ALGORITHMS: Set<CompressionAlgorithm> = new Set(['none', 'gzip', 'deflate']);
 
 type CachedTree = {
   storage: BlockNodeStorage;
   tree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
 };
+
+type MetaCache = Record<string, unknown>;
 
 /**
  * DbmsBack class
@@ -71,7 +77,7 @@ type CachedTree = {
 export class DbmsBack {
   private freeblockFile: FreeBlockFile;
   private recordStore: RecordStore;
-  private metaCache: Record<string, Record<string, [number, string]>> = {};
+  private metaCache: MetaCache = {};
 
   private dataFile: File;
   private logFile: File;
@@ -126,8 +132,8 @@ export class DbmsBack {
     dbmsback.metaCache = await dbmsback.metaReadJSON();
 
     // Re-open HNSW indices for every collection that was indexed before.
-    if (hnswConfig && HNSW_META_KEY in dbmsback.metaCache) {
-      for (const col of Object.keys(dbmsback.metaCache[HNSW_META_KEY])) {
+    if (hnswConfig) {
+      for (const col of Object.keys(dbmsback.getHnswMeta())) {
         const idx = await dbmsback.openHnswIndex(col);
         dbmsback.hnswIndexCache.set(col, idx);
       }
@@ -187,6 +193,57 @@ export class DbmsBack {
     return tree;
   }
 
+  private getCollectionMeta(collection: string): Record<string, [number, string]> {
+    const raw = this.metaCache[collection];
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw as Record<string, [number, string]>;
+    }
+    const created: Record<string, [number, string]> = {};
+    this.metaCache[collection] = created;
+    return created;
+  }
+
+  private hasCollectionMeta(collection: string): boolean {
+    if (RESERVED_META_KEYS.has(collection)) return false;
+    const raw = this.metaCache[collection];
+    return !!raw && typeof raw === 'object' && !Array.isArray(raw);
+  }
+
+  private getHnswMeta(): Record<string, [number, string]> {
+    const raw = this.metaCache[HNSW_META_KEY];
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw as Record<string, [number, string]>;
+    }
+    const created: Record<string, [number, string]> = {};
+    this.metaCache[HNSW_META_KEY] = created;
+    return created;
+  }
+
+  private getCompressionMeta(): Record<string, FieldCompressionDefaults> {
+    const raw = this.metaCache[COMPRESSION_META_KEY];
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw as Record<string, FieldCompressionDefaults>;
+    }
+    const created: Record<string, FieldCompressionDefaults> = {};
+    this.metaCache[COMPRESSION_META_KEY] = created;
+    return created;
+  }
+
+  private getCompressionDefaults(collection: string): FieldCompressionDefaults {
+    const compressionMeta = this.getCompressionMeta();
+    return compressionMeta[collection] ?? {};
+  }
+
+  setFieldCompressionDefaults(collection: string, defaults: FieldCompressionDefaults): void {
+    for (const algorithm of Object.values(defaults)) {
+      if (!SUPPORTED_COMPRESSION_ALGORITHMS.has(algorithm)) {
+        throw new Error(`Unsupported compression algorithm: ${algorithm}`);
+      }
+    }
+    const compressionMeta = this.getCompressionMeta();
+    compressionMeta[collection] = { ...defaults };
+  }
+
   /**
    * Commits all changes to the database.
    * A single commit atomically flushes records, B+ tree indexes, HNSW graph
@@ -203,33 +260,34 @@ export class DbmsBack {
    * @param document - The Document to insert.
    * @returns A Promise that resolves when the document is inserted.
    */
-  async insertDocument(document: Document): Promise<void> {
-    const documentLocation = await this.recordStore.writeRecord(document); //constant time
+  async insertDocument(document: Document, compressionOverrides?: FieldCompressionOverrides): Promise<void> {
     const collectionName = document.getCollectionName(); //constant time
+    const writeOptions: RecordWriteOptions = {
+      compressionDefaults: this.getCompressionDefaults(collectionName),
+      compressionOverrides,
+    };
+    const documentLocation = await this.recordStore.writeRecord(document, writeOptions); //constant time
     const documentId = document.getId(); //constant time
     let vorm = 'S'; //constant time
     if (typeof documentId === 'number') {
       vorm = 'N'; //constant time
     }
     // check if collection exists in meta, anders toevoegen
-    const meta = this.metaCache; //constant time
-    if (!(collectionName in meta)) {
-      meta[collectionName] = {};
-    }
+    const collectionMeta = this.getCollectionMeta(collectionName);
     // voeg document-pointer toe aan id B+ tree
 
     // ga naar root voor id
     let idTree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>; // constant time
-    if (!('id' in meta[collectionName])) {
+    if (!('id' in collectionMeta)) {
       // maak nieuwe B+ tree voor id aan en update meta
       const storage = this.getOrCreateStorage(collectionName, 'id', vorm);
       idTree = await BPlusTree.create(storage);
       const newIdRoot = idTree.getRoot().getBlockNumber();
-      meta[collectionName]['id'] = [newIdRoot, vorm];
+      collectionMeta['id'] = [newIdRoot, vorm];
       // Cache the newly created tree
       this.treeCache.set(`${collectionName}:id`, { storage, tree: idTree });
     } else {
-      const idRoot = meta[collectionName]['id'][0];
+      const idRoot = collectionMeta['id'][0];
       idTree = await this.getOrCreateTree(collectionName, 'id', vorm, idRoot);
     }
 
@@ -259,17 +317,17 @@ export class DbmsBack {
 
       // check if iterable keys exist in meta, anders toevoegen
       let keyTree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
-      if (!(key in meta[collectionName])) {
+      if (!(key in collectionMeta)) {
         // maak nieuwe B+ tree voor deze key aan en update meta
         const storage = this.getOrCreateStorage(collectionName, key, keyVorm);
         keyTree = await BPlusTree.create(storage);
         const newKeyRoot = keyTree.getRoot().getBlockNumber();
-        meta[collectionName][key] = [newKeyRoot, keyVorm];
+        collectionMeta[key] = [newKeyRoot, keyVorm];
         // Cache the newly created tree
         this.treeCache.set(`${collectionName}:${key}`, { storage, tree: keyTree });
       } else {
         // load de B+ tree van de juiste collectie -> pointer naar de root
-        const keyRoot = meta[collectionName][key][0];
+        const keyRoot = collectionMeta[key][0];
         keyTree = await this.getOrCreateTree(collectionName, key, keyVorm, keyRoot);
       }
 
@@ -299,7 +357,6 @@ export class DbmsBack {
       }
     }
 
-    this.metaCache = meta;
     // Note: metaWriteJSON is called in commit() to batch writes
   }
 
@@ -309,14 +366,16 @@ export class DbmsBack {
    * @param collection - The collection to retrieve the document from.
    * @returns A Promise that resolves to the retrieved Document.
    */
-  async getDocument(documentId: number | string, collection: string): Promise<Document> {
+  async getDocument(documentId: number | string, collection: string, encoded = false): Promise<Document | EncodedDocument> {
     // ga naar root voor id
-    if (!(collection in this.metaCache)) {
+    if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
-    } else if (!('id' in this.metaCache[collection])) {
+    }
+    const collectionMeta = this.getCollectionMeta(collection);
+    if (!('id' in collectionMeta)) {
       throw new Error('No document with given id exists');
     }
-    const metaData = this.metaCache[collection]['id'];
+    const metaData = collectionMeta['id'];
     const root = metaData[0];
     const vorm = metaData[1];
     // zoek document-pointer in id B+ tree
@@ -330,7 +389,12 @@ export class DbmsBack {
     if (documentPointer === null) {
       throw new Error('Document not found');
     }
-    const document = (await this.recordStore.readRecord(documentPointer)) as Document;
+    const document = encoded
+      ? await this.recordStore.readRecordEncoded(documentPointer)
+      : await this.recordStore.readRecord(documentPointer);
+    if (!document) {
+      throw new Error('Document not found');
+    }
     return document;
   }
 
@@ -341,15 +405,16 @@ export class DbmsBack {
    */
   async deleteDocument(documentId: number | string, collection: string): Promise<void> {
     // Check if collection exists
-    if (!(collection in this.metaCache)) {
+    if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
     }
-    if (!('id' in this.metaCache[collection])) {
+    const collectionMeta = this.getCollectionMeta(collection);
+    if (!('id' in collectionMeta)) {
       throw new Error('No document with given id exists');
     }
 
     // First, get the document pointer from the id tree before deleting
-    const metaData = this.metaCache[collection]['id'];
+    const metaData = collectionMeta['id'];
     const root = metaData[0];
     const vorm = metaData[1];
     const idBuffer = toBuffer(vorm, documentId);
@@ -373,11 +438,11 @@ export class DbmsBack {
 
     // Delete from all iterable key trees
     for (const key of iterableKeys) {
-      if (!(key in this.metaCache[collection])) {
+      if (!(key in collectionMeta)) {
         throw new Error('Key should exist in meta, but does not');
       }
       // load de B+ tree van de juiste collectie -> pointer naar de root
-      const keyMetaData = this.metaCache[collection][key];
+      const keyMetaData = collectionMeta[key];
       const keyRoot = keyMetaData[0];
       const keyVorm = keyMetaData[1];
       const keyValue = document.getFields()[key];
@@ -412,7 +477,7 @@ export class DbmsBack {
    * @author: Matisse De Gauquier
    */
   async editDocumentByID(collection: string, id: string, field: string, newValue: FieldValue): Promise<void> {
-    const existingDocument = await this.getDocument(id, collection);
+    const existingDocument = (await this.getDocument(id, collection, false)) as Document;
     const newDocumentObj = existingDocument.cloneWithUpdatedField(field, newValue);
 
     if (
@@ -438,14 +503,15 @@ export class DbmsBack {
     iterableKey: string,
     value?: string | number | Buffer,
   ): Promise<AsyncIterable<Document>> {
-    if (!(collection in this.metaCache)) {
+    if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
     }
-    if (!(iterableKey in this.metaCache[collection])) {
+    const collectionMeta = this.getCollectionMeta(collection);
+    if (!(iterableKey in collectionMeta)) {
       throw new Error('Iterable key does not exist in collection');
     }
 
-    const keyMetaData = this.metaCache[collection][iterableKey];
+    const keyMetaData = collectionMeta[iterableKey];
     const keyRoot = keyMetaData[0];
     const keyVorm = keyMetaData[1];
 
@@ -482,7 +548,8 @@ export class DbmsBack {
     if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
 
     // If the collection has never had any text documents indexed, return empty.
-    if (!(HNSW_META_KEY in this.metaCache) || !(collection in this.metaCache[HNSW_META_KEY])) {
+    const hnswMeta = this.getHnswMeta();
+    if (!(collection in hnswMeta)) {
       return [];
     }
 
@@ -512,7 +579,8 @@ export class DbmsBack {
     if (!this.hnswConfig.imageEmbeddingFn) {
       throw new Error('Image search requires imageEmbeddingFn in HnswConfig.');
     }
-    if (!(HNSW_META_KEY in this.metaCache) || !(collection in this.metaCache[HNSW_META_KEY])) {
+    const hnswMeta = this.getHnswMeta();
+    if (!(collection in hnswMeta)) {
       return [];
     }
 
@@ -567,7 +635,7 @@ export class DbmsBack {
     const cached = this.hnswIndexCache.get(collectionName);
     if (cached) return cached;
 
-    const hnswMeta = this.metaCache[HNSW_META_KEY];
+    const hnswMeta = this.getHnswMeta();
     let idx: HNSWIndex;
 
     if (hnswMeta && collectionName in hnswMeta) {
@@ -595,10 +663,7 @@ export class DbmsBack {
     const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
 
     // Persist the metadata block number so we can reopen on next open().
-    if (!(HNSW_META_KEY in this.metaCache)) {
-      this.metaCache[HNSW_META_KEY] = {};
-    }
-    this.metaCache[HNSW_META_KEY][collectionName] = [graphStorage.metaBlockId, 'hnsw'];
+    this.getHnswMeta()[collectionName] = [graphStorage.metaBlockId, 'hnsw'];
 
     return HNSWIndex.create(graphStorage, vectorHeap, { M, efConstruction, efSearch });
   }
@@ -607,7 +672,7 @@ export class DbmsBack {
   private async openHnswIndex(collectionName: string): Promise<HNSWIndex> {
     const cfg = this.hnswConfig!;
     // metaBlockId is stored in [0] of the tuple
-    const metaBlockId = this.metaCache[HNSW_META_KEY][collectionName][0];
+    const metaBlockId = this.getHnswMeta()[collectionName][0];
 
     const efConstruction = cfg.efConstruction ?? 200;
     const efSearch = cfg.efSearch ?? 50;
@@ -623,7 +688,7 @@ export class DbmsBack {
    * Reads the meta information from the database.
    * @returns The meta information as a JSON object.
    */
-  async metaReadJSON(): Promise<Record<string, Record<string, [number, string]>>> {
+  async metaReadJSON(): Promise<MetaCache> {
     const binary = await this.freeblockFile.getClientArea();
     // Find the first null byte to get the actual JSON length
     let jsonLength = binary.length;
@@ -650,14 +715,15 @@ export class DbmsBack {
       }
     }
     const jsonString2 = binary2.subarray(0, jsonLength2).toString();
-    return JSON.parse(jsonString2) as Record<string, Record<string, [number, string]>>;
+    if (!jsonString2) return {};
+    return JSON.parse(jsonString2) as MetaCache;
   }
 
   /**
    * Writes the meta information to the database.
    * @param meta - The meta information to write as a JSON object.
    */
-  async metaWriteJSON(meta: Record<string, Record<string, [number, string]>>): Promise<void> {
+  async metaWriteJSON(meta: MetaCache): Promise<void> {
     // convert meta to binary
     const jsonString = JSON.stringify(meta);
     const binary = Buffer.from(jsonString);
