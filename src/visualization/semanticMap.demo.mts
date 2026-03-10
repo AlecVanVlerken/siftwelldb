@@ -5,10 +5,10 @@ import { computeTfIdf } from './vectorize.mjs';
 import { reduceTo2D } from './pca.mjs';
 import { renderMap } from './renderMap.mjs';
 import type { MapPoint } from './renderMap.mjs';
+import type { RawDocument } from './collectDocuments.mjs';
 import { join } from 'node:path';
 
-// Sample dataset: world cities with continent, population and language.
-// Documents that share continent/language will cluster together on the map.
+// ── Cities ─────────────────────────────────────────────────────────────────
 const CITIES = [
   { id: 'Paris', country: 'France', continent: 'Europe', population: 2161000, language: 'French' },
   { id: 'Lyon', country: 'France', continent: 'Europe', population: 522000, language: 'French' },
@@ -40,40 +40,155 @@ const CITIES = [
   { id: 'Auckland', country: 'New Zealand', continent: 'Oceania', population: 1614000, language: 'English' },
 ];
 
+// ── Famous figures ─────────────────────────────────────────────────────────
+// Fields are intentionally different from cities: profession, nationality, era, field.
+// Shared values (e.g. "French", "German", "India") create gravity toward related cities.
+// imageUrl uses ui-avatars.com which generates reliable, CORS-friendly letter avatars.
+const FIGURES = [
+  {
+    id: 'Napoleon Bonaparte',
+    nationality: 'French',
+    profession: 'military leader',
+    field: 'politics',
+    era: '19th century',
+    born: 'France',
+    imageUrl: 'https://ui-avatars.com/api/?name=Napoleon+Bonaparte&size=64&background=8B0000&color=fff&bold=true',
+  },
+  {
+    id: 'Albert Einstein',
+    nationality: 'German',
+    profession: 'physicist',
+    field: 'science',
+    era: '20th century',
+    born: 'Germany',
+    imageUrl: 'https://ui-avatars.com/api/?name=Albert+Einstein&size=64&background=1a3c6e&color=fff&bold=true',
+  },
+  {
+    id: 'Wolfgang Amadeus Mozart',
+    nationality: 'Austrian',
+    profession: 'composer',
+    field: 'music',
+    era: '18th century',
+    born: 'Austria',
+    imageUrl: 'https://ui-avatars.com/api/?name=Mozart&size=64&background=6a0dad&color=fff&bold=true',
+  },
+  {
+    id: 'Leonardo da Vinci',
+    nationality: 'Italian',
+    profession: 'artist inventor',
+    field: 'art science',
+    era: '15th century',
+    born: 'Italy',
+    imageUrl: 'https://ui-avatars.com/api/?name=Leonardo+Vinci&size=64&background=8B6914&color=fff&bold=true',
+  },
+  {
+    id: 'Cleopatra',
+    nationality: 'Egyptian',
+    profession: 'pharaoh',
+    field: 'politics',
+    era: '1st century BC',
+    born: 'Egypt',
+    imageUrl: 'https://ui-avatars.com/api/?name=Cleopatra&size=64&background=c49a00&color=fff&bold=true',
+  },
+  {
+    id: 'Mahatma Gandhi',
+    nationality: 'Indian',
+    profession: 'independence leader',
+    field: 'politics',
+    era: '20th century',
+    born: 'India',
+    imageUrl: 'https://ui-avatars.com/api/?name=Mahatma+Gandhi&size=64&background=e65c00&color=fff&bold=true',
+  },
+  {
+    id: 'Martin Luther King Jr',
+    nationality: 'American',
+    profession: 'civil rights leader',
+    field: 'politics',
+    era: '20th century',
+    born: 'USA',
+    imageUrl: 'https://ui-avatars.com/api/?name=Martin+Luther+King&size=64&background=2e7d32&color=fff&bold=true',
+  },
+  {
+    id: 'Confucius',
+    nationality: 'Chinese',
+    profession: 'philosopher',
+    field: 'philosophy',
+    era: '5th century BC',
+    born: 'China',
+    imageUrl: 'https://ui-avatars.com/api/?name=Confucius&size=64&background=b71c1c&color=fff&bold=true',
+  },
+  {
+    id: 'Socrates',
+    nationality: 'Greek',
+    profession: 'philosopher',
+    field: 'philosophy',
+    era: '5th century BC',
+    born: 'Greece',
+    imageUrl: 'https://ui-avatars.com/api/?name=Socrates&size=64&background=0277bd&color=fff&bold=true',
+  },
+  {
+    id: 'Simon Bolivar',
+    nationality: 'Venezuelan',
+    profession: 'liberator',
+    field: 'politics',
+    era: '19th century',
+    born: 'Venezuela',
+    imageUrl: 'https://ui-avatars.com/api/?name=Simon+Bolivar&size=64&background=558b2f&color=fff&bold=true',
+  },
+];
+
 async function main(): Promise<void> {
   console.log('Setting up database...');
-  const dataFile = new MockFile(4 * 1024 * 1024);
+  const dataFile = new MockFile(8 * 1024 * 1024);
   const logFile = new MockFile(4096);
   const db = await SimpleDbms.create(dataFile, logFile);
 
+  // Insert cities
   for (const city of CITIES) {
     await db.insertDocument('cities', JSON.stringify(city));
   }
+
+  // Insert figures — strip imageUrl before storing (it's not a document field)
+  for (const figure of FIGURES) {
+    const doc = Object.fromEntries(Object.entries(figure).filter(([k]) => k !== 'imageUrl'));
+    await db.insertDocument('figures', JSON.stringify(doc));
+  }
+
   await db.commit();
-  console.log(`Inserted ${CITIES.length} documents into collection "cities".`);
+  console.log(`Inserted ${CITIES.length} cities and ${FIGURES.length} figures.`);
 
-  // Step 1 — collect all documents from the database
+  // ── Collect from both collections ────────────────────────────────────────
   console.log('Collecting documents...');
-  const docs = await collectDocuments(db, 'cities');
+  const cityDocs = await collectDocuments(db, 'cities');
+  const figureDocs = await collectDocuments(db, 'figures');
 
-  // Step 2 — convert each document to a TF-IDF vector
+  // Build a lookup so we can attach imageUrl after vectorization
+  const imageUrlById = new Map<string, string>(
+    FIGURES.map((f) => [f.id, f.imageUrl]),
+  );
+
+  // Merge all documents — TF-IDF will find shared vocabulary across both types
+  const allDocs: RawDocument[] = [...cityDocs, ...figureDocs];
+
+  // ── Vectorize, reduce, render ─────────────────────────────────────────────
   console.log('Computing TF-IDF vectors...');
-  const vectors = computeTfIdf(docs);
+  const vectors = computeTfIdf(allDocs);
 
-  // Step 3 — reduce to 2D with PCA
   console.log('Reducing to 2D with PCA...');
   const points2d = reduceTo2D(vectors);
 
-  // Step 4 — build the map point list
-  const mapPoints: MapPoint[] = docs.map((doc, i) => ({
-    x: points2d[i].x,
-    y: points2d[i].y,
-    id: String(doc['id']),
-    label: String(doc['id']),
-    fields: Object.fromEntries(Object.entries(doc).filter(([k]) => k !== 'id')),
-  }));
+  const mapPoints: MapPoint[] = allDocs.map((doc, i) => {
+    const id = String(doc['id']);
+    return {
+      x: points2d[i].x,
+      y: points2d[i].y,
+      id,
+      label: id,
+      fields: Object.fromEntries(Object.entries(doc).filter(([k]) => k !== 'id')),
+      imageUrl: imageUrlById.get(id),
+    };
+  });
 
-  // Step 5 — write the interactive HTML file
   const outputPath = join(process.cwd(), 'map.html');
   renderMap(mapPoints, outputPath);
 
