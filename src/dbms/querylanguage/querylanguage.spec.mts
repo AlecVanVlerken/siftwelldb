@@ -1,4 +1,5 @@
-// author: test suite for QueryLanguage
+// author: Matisse De Gauquier
+
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import { RealFile } from '../../core/file.mjs';
@@ -54,7 +55,9 @@ async function setupDb(): Promise<QueryLanguage> {
 
 describe('SELECT', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('SELECT * geeft alle rijen terug', async () => {
     const rows = await ql.execute('SELECT * FROM cities');
@@ -63,7 +66,7 @@ describe('SELECT', () => {
 
   it('SELECT specifieke velden', async () => {
     const rows = await ql.execute('SELECT name, population FROM cities');
-    expect(rows.every(r => 'name' in r && 'population' in r && !('id' in r))).toBe(true);
+    expect(rows.every((r) => 'name' in r && 'population' in r && !('id' in r))).toBe(true);
   });
 
   it('SELECT op lege collectie gooit fout of geeft lege array', async () => {
@@ -80,12 +83,14 @@ describe('SELECT', () => {
 
 describe('WHERE', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('WHERE met = op string', async () => {
     const rows = await ql.execute("SELECT * FROM cities WHERE country = 'BE'");
     expect(rows).toHaveLength(3);
-    expect(rows.every(r => r['country'] === 'BE')).toBe(true);
+    expect(rows.every((r) => r['country'] === 'BE')).toBe(true);
   });
 
   it('WHERE met != op string', async () => {
@@ -117,7 +122,7 @@ describe('WHERE', () => {
   it('WHERE met AND', async () => {
     const rows = await ql.execute("SELECT * FROM cities WHERE country = 'BE' AND population > 500000");
     expect(rows).toHaveLength(2); // Brussel + Antwerpen
-    expect(rows.every(r => r['country'] === 'BE' && (r['population'] as number) > 500000)).toBe(true);
+    expect(rows.every((r) => r['country'] === 'BE' && (r['population'] as number) > 500000)).toBe(true);
   });
 
   it('WHERE met OR', async () => {
@@ -127,7 +132,9 @@ describe('WHERE', () => {
 
   it('WHERE met AND en OR gecombineerd', async () => {
     // AND bindt sterker: BE (3) + (FR AND pop > 1000000) = Parijs (1) = 4
-    const rows = await ql.execute("SELECT * FROM cities WHERE country = 'BE' OR country = 'FR' AND population > 1000000");
+    const rows = await ql.execute(
+      "SELECT * FROM cities WHERE country = 'BE' OR country = 'FR' AND population > 1000000",
+    );
     expect(rows).toHaveLength(4);
   });
 
@@ -147,10 +154,14 @@ describe('WHERE', () => {
 
 describe('WHERE op boolean veld', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('WHERE op boolean veld', async () => {
-    await ql.execute("INSERT INTO cities VALUES {id: 'teststad', name: 'Teststad', country: 'BE', population: 100, capital: true}");
+    await ql.execute(
+      "INSERT INTO cities VALUES {id: 'teststad', name: 'Teststad', country: 'BE', population: 100, capital: true}",
+    );
     const rows = await ql.execute('SELECT * FROM cities WHERE capital = true');
     expect(rows).toHaveLength(1);
   });
@@ -160,29 +171,31 @@ describe('WHERE op boolean veld', () => {
 
 describe('ORDER BY', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('ORDER BY ASC', async () => {
     const rows = await ql.execute('SELECT name, population FROM cities ORDER BY population ASC');
-    const pops = rows.map(r => r['population'] as number);
+    const pops = rows.map((r) => r['population'] as number);
     expect(pops).toEqual([...pops].sort((a, b) => a - b));
   });
 
   it('ORDER BY DESC', async () => {
     const rows = await ql.execute('SELECT name, population FROM cities ORDER BY population DESC');
-    const pops = rows.map(r => r['population'] as number);
+    const pops = rows.map((r) => r['population'] as number);
     expect(pops).toEqual([...pops].sort((a, b) => b - a));
   });
 
   it('ORDER BY meerdere velden', async () => {
     const rows = await ql.execute('SELECT name, country, population FROM cities ORDER BY country ASC, population DESC');
-    const be = rows.filter(r => r['country'] === 'BE').map(r => r['population'] as number);
+    const be = rows.filter((r) => r['country'] === 'BE').map((r) => r['population'] as number);
     expect(be).toEqual([...be].sort((a, b) => b - a));
   });
 
   it('ORDER BY standaard richting is ASC', async () => {
     const rows = await ql.execute('SELECT name, population FROM cities ORDER BY population');
-    const pops = rows.map(r => r['population'] as number);
+    const pops = rows.map((r) => r['population'] as number);
     expect(pops).toEqual([...pops].sort((a, b) => a - b));
   });
 });
@@ -191,7 +204,9 @@ describe('ORDER BY', () => {
 
 describe('LIMIT / OFFSET', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('LIMIT beperkt aantal rijen', async () => {
     const rows = await ql.execute('SELECT * FROM cities LIMIT 3');
@@ -233,42 +248,46 @@ describe('LIMIT / OFFSET', () => {
 
 describe('GROUP BY', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('GROUP BY COUNT(*)', async () => {
     const rows = await ql.execute('SELECT country, COUNT(*) FROM cities GROUP BY country');
     expect(rows).toHaveLength(4);
-    const be = rows.find(r => r['country'] === 'BE');
+    const be = rows.find((r) => r['country'] === 'BE');
     expect(be?.['COUNT(*)']).toBe(3);
   });
 
   it('GROUP BY SUM', async () => {
     const rows = await ql.execute('SELECT country, SUM(population) FROM cities GROUP BY country');
-    const be = rows.find(r => r['country'] === 'BE');
+    const be = rows.find((r) => r['country'] === 'BE');
     expect(be?.['SUM(population)']).toBe(260000 + 1200000 + 530000);
   });
 
   it('GROUP BY AVG', async () => {
     const rows = await ql.execute('SELECT country, AVG(population) FROM cities GROUP BY country');
-    const fr = rows.find(r => r['country'] === 'FR');
+    const fr = rows.find((r) => r['country'] === 'FR');
     expect(fr?.['AVG(population)']).toBe((2100000 + 520000) / 2);
   });
 
   it('GROUP BY MIN', async () => {
     const rows = await ql.execute('SELECT country, MIN(population) FROM cities GROUP BY country');
-    const be = rows.find(r => r['country'] === 'BE');
+    const be = rows.find((r) => r['country'] === 'BE');
     expect(be?.['MIN(population)']).toBe(260000);
   });
 
   it('GROUP BY MAX', async () => {
     const rows = await ql.execute('SELECT country, MAX(population) FROM cities GROUP BY country');
-    const de = rows.find(r => r['country'] === 'DE');
+    const de = rows.find((r) => r['country'] === 'DE');
     expect(de?.['MAX(population)']).toBe(3700000);
   });
 
   it('GROUP BY meerdere aggregaten tegelijk', async () => {
-    const rows = await ql.execute('SELECT country, COUNT(*), SUM(population), AVG(population), MIN(population), MAX(population) FROM cities GROUP BY country');
-    const nl = rows.find(r => r['country'] === 'NL');
+    const rows = await ql.execute(
+      'SELECT country, COUNT(*), SUM(population), AVG(population), MIN(population), MAX(population) FROM cities GROUP BY country',
+    );
+    const nl = rows.find((r) => r['country'] === 'NL');
     expect(nl?.['COUNT(*)']).toBe(3);
     expect(nl?.['SUM(population)']).toBe(900000 + 650000 + 550000);
     expect(nl?.['MIN(population)']).toBe(550000);
@@ -280,7 +299,9 @@ describe('GROUP BY', () => {
 
 describe('Aggregaten zonder GROUP BY', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('COUNT(*) zonder GROUP BY', async () => {
     const rows = await ql.execute('SELECT COUNT(*) FROM cities');
@@ -305,7 +326,9 @@ describe('Aggregaten zonder GROUP BY', () => {
 
 describe('HAVING', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('HAVING met COUNT', async () => {
     // BE, NL, DE hebben elk 3 steden -> 3 landen
@@ -315,19 +338,25 @@ describe('HAVING', () => {
 
   it('HAVING met AVG', async () => {
     // DE: AVG=2333333, FR: AVG=1310000 -> 2 landen boven 1000000
-    const rows = await ql.execute('SELECT country, AVG(population) FROM cities GROUP BY country HAVING AVG(population) > 1000000');
+    const rows = await ql.execute(
+      'SELECT country, AVG(population) FROM cities GROUP BY country HAVING AVG(population) > 1000000',
+    );
     expect(rows).toHaveLength(2);
   });
 
   it('HAVING met AND', async () => {
     // DE: COUNT=3, AVG=2333333 ✓  FR: COUNT=2, AVG=1310000 ✓
-    const rows = await ql.execute('SELECT country, COUNT(*), AVG(population) FROM cities GROUP BY country HAVING COUNT(*) >= 2 AND AVG(population) > 1000000');
+    const rows = await ql.execute(
+      'SELECT country, COUNT(*), AVG(population) FROM cities GROUP BY country HAVING COUNT(*) >= 2 AND AVG(population) > 1000000',
+    );
     expect(rows).toHaveLength(2);
   });
 
   it('HAVING met OR', async () => {
     // BE: MIN=260000 < 300000 ✓, DE: COUNT=3 ✓, NL: COUNT=3 ✓
-    const rows = await ql.execute('SELECT country, COUNT(*), MIN(population) FROM cities GROUP BY country HAVING MIN(population) < 300000 OR COUNT(*) > 2');
+    const rows = await ql.execute(
+      'SELECT country, COUNT(*), MIN(population) FROM cities GROUP BY country HAVING MIN(population) < 300000 OR COUNT(*) > 2',
+    );
     expect(rows).toHaveLength(3);
   });
 
@@ -341,7 +370,9 @@ describe('HAVING', () => {
 
 describe('JOIN', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('JOIN geeft gecombineerde rijen', async () => {
     const rows = await ql.execute('SELECT * FROM cities JOIN countries ON cities.country = countries.id');
@@ -350,19 +381,25 @@ describe('JOIN', () => {
 
   it('JOIN met WHERE', async () => {
     // Berlijn, Parijs, Hamburg, München, Brussel = 5 steden > 1000000
-    const rows = await ql.execute('SELECT * FROM cities JOIN countries ON cities.country = countries.id WHERE population > 1000000');
+    const rows = await ql.execute(
+      'SELECT * FROM cities JOIN countries ON cities.country = countries.id WHERE population > 1000000',
+    );
     expect(rows).toHaveLength(5);
   });
 
   it('JOIN met ORDER BY en LIMIT', async () => {
     // name overlapt -> cities.name gebruiken
-    const rows = await ql.execute('SELECT cities.name, population FROM cities JOIN countries ON cities.country = countries.id ORDER BY population DESC LIMIT 3');
+    const rows = await ql.execute(
+      'SELECT cities.name, population FROM cities JOIN countries ON cities.country = countries.id ORDER BY population DESC LIMIT 3',
+    );
     expect(rows).toHaveLength(3);
     expect(rows[0]?.['cities.name']).toBe('Berlijn');
   });
 
   it('JOIN met GROUP BY', async () => {
-    const rows = await ql.execute('SELECT continent, COUNT(*) FROM cities JOIN countries ON cities.country = countries.id GROUP BY continent');
+    const rows = await ql.execute(
+      'SELECT continent, COUNT(*) FROM cities JOIN countries ON cities.country = countries.id GROUP BY continent',
+    );
     expect(rows).toHaveLength(1); // Alle landen zijn in Europa
     expect(rows[0]?.['COUNT(*)']).toBe(11);
   });
@@ -372,13 +409,15 @@ describe('JOIN', () => {
 
 describe('DELETE', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('DELETE met WHERE verwijdert juiste rijen', async () => {
     await ql.execute("DELETE FROM cities WHERE id = 'gent'");
     const rows = await ql.execute('SELECT * FROM cities');
     expect(rows).toHaveLength(10);
-    expect(rows.every(r => r['id'] !== 'gent')).toBe(true);
+    expect(rows.every((r) => r['id'] !== 'gent')).toBe(true);
   });
 
   it('DELETE zonder WHERE verwijdert alles', async () => {
@@ -392,12 +431,16 @@ describe('DELETE', () => {
 
 describe('Complexe combinaties', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('WHERE + ORDER BY + LIMIT + OFFSET', async () => {
     // > 500000 DESC: Berlijn(3700000), Parijs(2100000), Hamburg(1800000), München(1500000), Amsterdam(900000)...
     // OFFSET 1, LIMIT 3 -> Parijs, Hamburg, München
-    const rows = await ql.execute('SELECT name, population FROM cities WHERE population > 500000 ORDER BY population DESC LIMIT 3 OFFSET 1');
+    const rows = await ql.execute(
+      'SELECT name, population FROM cities WHERE population > 500000 ORDER BY population DESC LIMIT 3 OFFSET 1',
+    );
     expect(rows).toHaveLength(3);
     expect(rows[0]?.['name']).toBe('Parijs');
     expect(rows[2]?.['name']).toBe('München');
@@ -405,13 +448,17 @@ describe('Complexe combinaties', () => {
 
   it('WHERE + GROUP BY + HAVING + ORDER BY', async () => {
     // Gent(260000) valt weg, Lyon(520000) niet. Alle 4 landen hebben >= 2 steden.
-    const rows = await ql.execute('SELECT country, COUNT(*), SUM(population) FROM cities WHERE population > 500000 GROUP BY country HAVING COUNT(*) >= 2 ORDER BY SUM(population) DESC');
+    const rows = await ql.execute(
+      'SELECT country, COUNT(*), SUM(population) FROM cities WHERE population > 500000 GROUP BY country HAVING COUNT(*) >= 2 ORDER BY SUM(population) DESC',
+    );
     expect(rows).toHaveLength(4);
     expect(rows[0]?.['country']).toBe('DE');
   });
 
   it('GROUP BY + HAVING + ORDER BY + LIMIT', async () => {
-    const rows = await ql.execute('SELECT country, COUNT(*), AVG(population) FROM cities GROUP BY country HAVING COUNT(*) >= 2 ORDER BY AVG(population) DESC LIMIT 2');
+    const rows = await ql.execute(
+      'SELECT country, COUNT(*), AVG(population) FROM cities GROUP BY country HAVING COUNT(*) >= 2 ORDER BY AVG(population) DESC LIMIT 2',
+    );
     expect(rows).toHaveLength(2);
     expect(rows[0]?.['country']).toBe('DE');
   });
@@ -419,7 +466,7 @@ describe('Complexe combinaties', () => {
   it('WHERE + GROUP BY + meerdere aggregaten + HAVING met OR + ORDER BY + LIMIT', async () => {
     // Gent valt weg. ORDER BY MAX DESC LIMIT 2: DE(3700000), FR(2100000)
     const rows = await ql.execute(
-      "SELECT country, COUNT(*), MIN(population), MAX(population) FROM cities WHERE population != 260000 GROUP BY country HAVING MIN(population) < 600000 OR MAX(population) > 2000000 ORDER BY MAX(population) DESC LIMIT 2"
+      'SELECT country, COUNT(*), MIN(population), MAX(population) FROM cities WHERE population != 260000 GROUP BY country HAVING MIN(population) < 600000 OR MAX(population) > 2000000 ORDER BY MAX(population) DESC LIMIT 2',
     );
     expect(rows).toHaveLength(2);
     expect(rows[0]?.['country']).toBe('DE');
@@ -431,7 +478,9 @@ describe('Complexe combinaties', () => {
 
 describe('Parseerfouten', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('Ongeldige query gooit fout', async () => {
     await expect(ql.execute('GIBBERISH query')).rejects.toThrow(/Invalid query syntax/i);
@@ -446,7 +495,9 @@ describe('Parseerfouten', () => {
   });
 
   it('ORDER BY met ongeldige richting gooit fout', async () => {
-    await expect(ql.execute('SELECT * FROM cities ORDER BY population UPWARD')).rejects.toThrow(/Invalid sort direction/i);
+    await expect(ql.execute('SELECT * FROM cities ORDER BY population UPWARD')).rejects.toThrow(
+      /Invalid sort direction/i,
+    );
   });
 
   it('Unsupported waarde in WHERE gooit fout', async () => {
@@ -458,7 +509,9 @@ describe('Parseerfouten', () => {
 
 describe('Randgevallen', () => {
   let ql: QueryLanguage;
-  beforeAll(async () => { ql = await setupDb(); });
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
 
   it('Query met puntkomma aan het einde werkt', async () => {
     const rows = await ql.execute('SELECT * FROM cities;');
