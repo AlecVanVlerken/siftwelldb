@@ -5,12 +5,57 @@ import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
 import { allocateBlock } from '../freeblockfile/freelist.mjs';
-import { Document, type FieldValue } from '../dbms/document.mjs';
+import { Document, type FieldValue, isImageField } from '../dbms/document.mjs';
 import { RecordStore } from './recordstore.mjs';
 import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
 import type { BlockLeafNode } from '../btree/leafnode.mjs';
 import type { BlockInternalNode } from '../btree/internalnode.mjs';
+import { HNSWIndex } from '../hnsw/hnswIndex.mjs';
+import { HNSWGraphStorage } from '../hnsw/hnswGraphStorage.mjs';
+import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
+
+/**
+ * Optional configuration block that enables per-collection HNSW semantic
+ * search inside a `DbmsBack` / `SimpleDbms` instance.
+ *
+ * When present, every document that contains at least one non-`_`-prefixed
+ * string field will have those string values concatenated and embedded into
+ * the collection's HNSW index upon insertion.
+ *
+ * HNSW graph and vector data are stored inside the same single FreeBlockFile
+ * as the rest of the database (records + B+ tree indexes), giving one unified
+ * WAL domain and fully atomic commits.
+ */
+export type HnswConfig = {
+  /** Dimensionality of the vectors produced by `embeddingFn`. */
+  dimension: number;
+  /**
+   * Async function that converts a plain-text string into a fixed-size
+   * float32 embedding vector — supply any HuggingFace (or other) model here.
+   */
+  embeddingFn: (text: string) => Promise<Float32Array>;
+  /**
+   * Optional async function that converts raw image bytes (JPEG/PNG/WebP)
+   * into a float32 embedding vector.  When provided, document fields whose
+   * names end in `.jpeg`, `.jpg`, `.png` or `.webp` are automatically
+   * embedded with this function at insert time.  Must produce vectors of
+   * the **same** `dimension` as `embeddingFn` (e.g. both sides of a CLIP
+   * model) so that text-to-image semantic search works.
+   */
+  imageEmbeddingFn?: (imageData: Buffer) => Promise<Float32Array>;
+  /** HNSW M parameter (max neighbours per node). Default: 16. */
+  M?: number;
+  /** Maximum level stored per node. Default: 4. */
+  maxStoredLevel?: number;
+  /** ef during index construction. Default: 200. */
+  efConstruction?: number;
+  /** ef during search. Default: 50. */
+  efSearch?: number;
+};
+
+/** Reserved metaCache key used to track which collections have an HNSW index. */
+const HNSW_META_KEY = '__hnsw__';
 
 type CachedTree = {
   storage: BlockNodeStorage;
@@ -38,12 +83,17 @@ export class DbmsBack {
   // Cache for B+ trees: key = "collection:field"
   private treeCache: Map<string, CachedTree> = new Map();
 
+  // HNSW fields
+  private hnswConfig: HnswConfig | undefined;
+  /** In-memory cache of per-collection HNSW indices. */
+  private hnswIndexCache: Map<string, HNSWIndex> = new Map();
+
   /**
    * Creates an instance of the DbmsBack class.
    * @param dataFile - The file to use for storing data.
    * @param logFile - The file to use for logging.
    */
-  constructor(dataFile: File, logFile: File) {
+  constructor(dataFile: File, logFile: File, hnswConfig?: HnswConfig) {
     this.dataFile = dataFile;
     this.logFile = logFile;
 
@@ -51,6 +101,7 @@ export class DbmsBack {
     this.atomicFile = atomicFile;
     this.freeblockFile = new FreeBlockFile(atomicFile, 4096);
     this.recordStore = new RecordStore(this.freeblockFile);
+    this.hnswConfig = hnswConfig;
   }
 
   /**
@@ -59,7 +110,6 @@ export class DbmsBack {
    */
   async create(): Promise<void> {
     await this.freeblockFile.create(); // must be async
-    await this.freeblockFile.open();
     const initialMeta = Buffer.from(JSON.stringify([]));
     await this.freeblockFile.writeClientArea(initialMeta);
   }
@@ -70,10 +120,18 @@ export class DbmsBack {
    * @param logFile - The file to use for logging.
    * @returns A Promise that resolves to the opened DbmsBack instance.
    */
-  static async open(dataFile: File, logFile: File): Promise<DbmsBack> {
-    const dbmsback = new DbmsBack(dataFile, logFile);
+  static async open(dataFile: File, logFile: File, hnswConfig?: HnswConfig): Promise<DbmsBack> {
+    const dbmsback = new DbmsBack(dataFile, logFile, hnswConfig);
     await dbmsback.freeblockFile.open();
     dbmsback.metaCache = await dbmsback.metaReadJSON();
+
+    // Re-open HNSW indices for every collection that was indexed before.
+    if (hnswConfig && HNSW_META_KEY in dbmsback.metaCache) {
+      for (const col of Object.keys(dbmsback.metaCache[HNSW_META_KEY])) {
+        const idx = await dbmsback.openHnswIndex(col);
+        dbmsback.hnswIndexCache.set(col, idx);
+      }
+    }
 
     return dbmsback;
   }
@@ -131,11 +189,13 @@ export class DbmsBack {
 
   /**
    * Commits all changes to the database.
+   * A single commit atomically flushes records, B+ tree indexes, HNSW graph
+   * nodes, and HNSW vector data — they all share the same FreeBlockFile WAL.
    * @returns A Promise that resolves when the commit is complete.
    */
   async commit(): Promise<void> {
     await this.metaWriteJSON(this.metaCache);
-    return this.freeblockFile.commit();
+    await this.freeblockFile.commit();
   }
 
   /**
@@ -219,6 +279,26 @@ export class DbmsBack {
       await keyTree.insert(keyBuffer, valueBuffer);
     }
     // END FOR LOOP
+
+    // HNSW: embed and index the document (image or text) if HNSW is configured.
+    if (this.hnswConfig) {
+      const imageData = this.extractImageData(document);
+      if (imageData !== null && this.hnswConfig.imageEmbeddingFn) {
+        // Document contains an image field — embed with the image encoder.
+        const hnswIdx = await this.getOrCreateHnswIndex(collectionName);
+        const vector = await this.hnswConfig.imageEmbeddingFn(imageData);
+        await hnswIdx.insert(documentLocation, vector);
+      } else {
+        // Fall back to text embedding for non-image documents.
+        const text = this.extractText(document);
+        if (text !== null) {
+          const hnswIdx = await this.getOrCreateHnswIndex(collectionName);
+          const vector = await this.hnswConfig.embeddingFn(text);
+          await hnswIdx.insert(documentLocation, vector);
+        }
+      }
+    }
+
     this.metaCache = meta;
     // Note: metaWriteJSON is called in commit() to batch writes
   }
@@ -310,6 +390,12 @@ export class DbmsBack {
       keyMetaData[0] = keyTree.getRoot().getBlockNumber();
     }
 
+    // Remove from HNSW (no-op if this collection was never indexed or the
+    // document was inserted without HNSW config active).
+    if (this.hnswConfig && this.hnswIndexCache.has(collection)) {
+      await this.hnswIndexCache.get(collection)!.delete(documentPointer);
+    }
+
     // Free the record blocks from the record store
     await this.recordStore.deleteRecord(documentPointer);
 
@@ -378,6 +464,157 @@ export class DbmsBack {
     }.bind(this);
 
     return documentGenerator();
+  }
+
+  // **Public semantic-search API**
+
+  /**
+   * Perform a semantic (approximate nearest-neighbour) search over the
+   * specified collection using the configured embedding model.
+   *
+   * @param collection - Collection to search in.
+   * @param query      - Natural-language query string.
+   * @param k          - Number of results to return.
+   * @returns Up to `k` Documents ordered by semantic similarity (closest first).
+   * @throws If HNSW is not configured.
+   */
+  async semanticSearch(collection: string, query: string, k: number): Promise<Document[]> {
+    if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
+
+    // If the collection has never had any text documents indexed, return empty.
+    if (!(HNSW_META_KEY in this.metaCache) || !(collection in this.metaCache[HNSW_META_KEY])) {
+      return [];
+    }
+
+    const hnswIdx = await this.getOrCreateHnswIndex(collection);
+    const queryVector = await this.hnswConfig.embeddingFn(query);
+    const documentLocations = await hnswIdx.search(queryVector, k);
+
+    const results: Document[] = [];
+    for (const loc of documentLocations) {
+      const doc = await this.recordStore.readRecord(loc);
+      if (doc) results.push(doc);
+    }
+    return results;
+  }
+
+  /**
+   * Perform an image-to-image semantic search: embed a query image with
+   * `imageEmbeddingFn` and return the nearest documents.
+   *
+   * @param collection - Collection to search in.
+   * @param queryImage - Raw image bytes (JPEG/PNG/WebP).
+   * @param k          - Number of results to return.
+   * @returns Up to `k` Documents ordered by similarity (closest first).
+   */
+  async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<Document[]> {
+    if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
+    if (!this.hnswConfig.imageEmbeddingFn) {
+      throw new Error('Image search requires imageEmbeddingFn in HnswConfig.');
+    }
+    if (!(HNSW_META_KEY in this.metaCache) || !(collection in this.metaCache[HNSW_META_KEY])) {
+      return [];
+    }
+
+    const hnswIdx = await this.getOrCreateHnswIndex(collection);
+    const queryVector = await this.hnswConfig.imageEmbeddingFn(queryImage);
+    const documentLocations = await hnswIdx.search(queryVector, k);
+
+    const results: Document[] = [];
+    for (const loc of documentLocations) {
+      const doc = await this.recordStore.readRecord(loc);
+      if (doc) results.push(doc);
+    }
+    return results;
+  }
+
+  // Private HNSW helpers
+
+  /**
+   * Concatenate all non-`_`-prefixed string field values into a single
+   * embeddable text string.  Returns `null` if the document contains no
+   * embeddable text.
+   */
+  private extractText(document: Document): string | null {
+    const parts: string[] = [];
+    for (const [key, value] of Object.entries(document.getFields())) {
+      if (!key.startsWith('_') && typeof value === 'string') {
+        parts.push(value);
+      }
+    }
+    return parts.length > 0 ? parts.join(' ') : null;
+  }
+
+  /**
+   * Extract the raw bytes of the first image field in the document.
+   * Returns `null` when the document contains no image fields.
+   */
+  private extractImageData(document: Document): Buffer | null {
+    for (const [key, value] of Object.entries(document.getFields())) {
+      if (isImageField(key) && Buffer.isBuffer(value)) {
+        return value;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Return the in-memory HNSW index for `collectionName`, creating it (and
+   * its backing blocks inside the shared FreeBlockFile) if it does not yet
+   * exist.
+   */
+  private async getOrCreateHnswIndex(collectionName: string): Promise<HNSWIndex> {
+    const cached = this.hnswIndexCache.get(collectionName);
+    if (cached) return cached;
+
+    const hnswMeta = this.metaCache[HNSW_META_KEY];
+    let idx: HNSWIndex;
+
+    if (hnswMeta && collectionName in hnswMeta) {
+      // Blocks already exist for this collection — open them.
+      idx = await this.openHnswIndex(collectionName);
+    } else {
+      // First time this collection is seen — allocate blocks and initialise.
+      idx = await this.createHnswIndex(collectionName);
+    }
+
+    this.hnswIndexCache.set(collectionName, idx);
+    return idx;
+  }
+
+  /** Create brand-new HNSW structures for `collectionName` inside the shared FBF. */
+  private async createHnswIndex(collectionName: string): Promise<HNSWIndex> {
+    const cfg = this.hnswConfig!;
+    const M = cfg.M ?? 16;
+    const maxStoredLevel = cfg.maxStoredLevel ?? 4;
+    const efConstruction = cfg.efConstruction ?? 200;
+    const efSearch = cfg.efSearch ?? 50;
+
+    // Both graph storage and vector heap live inside the shared FBF.
+    const graphStorage = await HNSWGraphStorage.create(this.freeblockFile, M, maxStoredLevel);
+    const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
+
+    // Persist the metadata block number so we can reopen on next open().
+    if (!(HNSW_META_KEY in this.metaCache)) {
+      this.metaCache[HNSW_META_KEY] = {};
+    }
+    this.metaCache[HNSW_META_KEY][collectionName] = [graphStorage.metaBlockId, 'hnsw'];
+
+    return HNSWIndex.create(graphStorage, vectorHeap, { M, efConstruction, efSearch });
+  }
+
+  /** Open existing HNSW structures for `collectionName` from the shared FBF. */
+  private async openHnswIndex(collectionName: string): Promise<HNSWIndex> {
+    const cfg = this.hnswConfig!;
+    // metaBlockId is stored in [0] of the tuple
+    const metaBlockId = this.metaCache[HNSW_META_KEY][collectionName][0];
+
+    const efConstruction = cfg.efConstruction ?? 200;
+    const efSearch = cfg.efSearch ?? 50;
+
+    const graphStorage = await HNSWGraphStorage.open(this.freeblockFile, metaBlockId);
+    const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
+    return HNSWIndex.open(graphStorage, vectorHeap, { efSearch, efConstruction });
   }
 
   //hulperfuncties voor de meta

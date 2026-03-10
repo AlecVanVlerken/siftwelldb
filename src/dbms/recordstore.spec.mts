@@ -19,7 +19,6 @@ async function createRecordStore(blockSize = 256): Promise<StoreSetup> {
   const atomicFile = new AtomicFile(dataFile, logFile);
   const freeBlockFile = new FreeBlockFile(atomicFile, blockSize);
   await freeBlockFile.create();
-  await freeBlockFile.open();
   openFiles.push(freeBlockFile);
 
   return { recordStore: new RecordStore(freeBlockFile), freeBlockFile };
@@ -47,13 +46,10 @@ describe('RecordStore', () => {
     const { recordStore } = await createRecordStore();
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    try {
-      const result = await recordStore.readRecord(999);
-      expect(result).toBeNull();
-      expect(consoleSpy).toHaveBeenCalled();
-    } finally {
-      consoleSpy.mockRestore();
-    }
+    const result = await recordStore.readRecord(999);
+    expect(result).toBeNull();
+    expect(consoleSpy).toHaveBeenCalledOnce();
+    consoleSpy.mockRestore();
   });
 
   it('frees a block on delete', async () => {
