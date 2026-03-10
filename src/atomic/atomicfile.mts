@@ -72,6 +72,7 @@ export class AtomicFile implements File {
   private readonly dataFile: File;
   private readonly logFile: File;
   private inFlight = false;
+  private isOpen = false;
 
   constructor(dataFile: File, logFile: File) {
     this.dataFile = dataFile;
@@ -82,24 +83,31 @@ export class AtomicFile implements File {
     await this.dataFile.create();
     await this.dataFile.truncate(0);
     await this.dataFile.sync();
-    await this.dataFile.close();
 
     await this.logFile.create();
     await this.logFile.truncate(0);
     await this.logFile.sync();
-    await this.logFile.close();
+    this.isOpen = true;
   }
 
   async open(): Promise<void> {
+    if (this.isOpen) {
+      return;
+    }
     await this.dataFile.open();
     await this.logFile.open();
+    this.isOpen = true;
     // Redo any in-progress atomic write from a previous crash.
     await this.recover();
   }
 
   async close(): Promise<void> {
+    if (!this.isOpen) {
+      return;
+    }
     await this.dataFile.close();
     await this.logFile.close();
+    this.isOpen = false;
   }
 
   get sectorSize(): number {
