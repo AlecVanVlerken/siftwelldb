@@ -23,7 +23,10 @@ declare module '@huggingface/transformers' {
     options?: PipelineOptions,
   ): Promise<FeatureExtractionPipeline>;
 
-  export type Tokenizer = (text: string, options?: { padding?: boolean; truncation?: boolean }) => Record<string, unknown>;
+  export type Tokenizer = (
+    text: string,
+    options?: { padding?: boolean; truncation?: boolean },
+  ) => Record<string, unknown>;
 
   export type Processor = (image: RawImage) => Promise<Record<string, unknown>>;
 

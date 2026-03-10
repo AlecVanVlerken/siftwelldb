@@ -1808,11 +1808,9 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
 
     it('supports per-document override to disable compression', async () => {
       db.setFieldCompressionDefaults('articles', { content: 'gzip' });
-      await db.insertDocument(
-        'articles',
-        JSON.stringify({ id: 'a2', content: 'Lorem ipsum '.repeat(80) }),
-        { compression: { content: 'off' } },
-      );
+      await db.insertDocument('articles', JSON.stringify({ id: 'a2', content: 'Lorem ipsum '.repeat(80) }), {
+        compression: { content: 'off' },
+      });
 
       const encodedRaw = await db.getDocumentById('articles', 'a2', { encoded: true });
       const encoded = JSON.parse(encodedRaw) as Record<string, unknown>;

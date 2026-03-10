@@ -363,7 +363,12 @@ export class RecordStore {
       return Buffer.from(raw, 'base64');
     }
 
-    if (Buffer.isBuffer(value) || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    if (
+      Buffer.isBuffer(value) ||
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
       return value;
     }
 
