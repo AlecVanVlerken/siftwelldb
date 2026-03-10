@@ -1,5 +1,4 @@
-// author: Frederik Caeyman
-// date: 2026-02-17
+// author: Frederik Caeyman & Matisse De Gauquier
 
 import { SimpleDbms } from '../simpledbms.mjs';
 import { type FieldValue } from '../document.mjs';
@@ -27,13 +26,54 @@ type LogicalExpression = {
 
 type WhereExpression = ComparisonExpression | LogicalExpression;
 
+// ── ORDER BY Types ───────────────────────────────────────────────────────────
+
+type SortDirection = 'ASC' | 'DESC';
+
+type OrderByClause = {
+  field: string;
+  direction: SortDirection;
+};
+
+// ── JOIN Types ─────────────────────────────────────────────────────────────
+
+type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' | 'NATURAL';
+
+type JoinClause = {
+  type: JoinType;
+  collection: string;
+  leftField: string;
+  rightField: string;
+};
+
+// ── GROUP BY / HAVING Types ──────────────────────────────────────────────────
+
+type AggregateFunction = 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX';
+
+type AggregateExpression = {
+  func: AggregateFunction;
+  field: string;       // '*' only valid for COUNT
+  alias: string;       // e.g. "COUNT(*)" or "AVG(population)"
+};
+
+type GroupByClause = {
+  fields: string[];
+  aggregates: AggregateExpression[];
+};
+
+type HavingExpression = WhereExpression;
+
 // ── Query Types ──────────────────────────────────────────────────────────────
 
 type ParsedSelect = {
   kind: 'select';
   fields: '*' | string[];
   collection: string;
+  join?: JoinClause;
   where?: WhereExpression;
+  groupBy?: GroupByClause;
+  having?: HavingExpression;
+  orderBy?: OrderByClause[];
   limit?: number;
   offset?: number;
 };
@@ -44,22 +84,38 @@ type ParsedInsert = {
   body: string;
 };
 
-export type ParsedQuery = ParsedSelect | ParsedInsert;
+type ParsedDelete = {
+  kind: 'delete';
+  collection: string;
+  where?: WhereExpression;
+};
+
+export type ParsedQuery = ParsedSelect | ParsedInsert | ParsedDelete;
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * Extended SQL-like query language that supports:
- *   SELECT <fields|*> FROM <collection> [WHERE <conditions>] [LIMIT n] [OFFSET k]
+ *   SELECT <fields|*> FROM <collection>
+ *     [JOIN <collection> ON <left> = <right>]
+ *     [WHERE <conditions>]
+ *     [GROUP BY <fields>]
+ *     [HAVING <aggregate conditions>]
+ *     [ORDER BY <field> [ASC|DESC], ...]
+ *     [LIMIT n]
+ *     [OFFSET k]
  *   INSERT INTO <collection> VALUES {id: '...', field: ...}
+ *   DELETE FROM <collection> [WHERE <conditions>]
  *
- * WHERE now supports:
+ * WHERE/HAVING support:
  *   - Comparison: =, !=, >, >=, <, <=
  *   - Logical: AND, OR
- *   - Examples:
- *     WHERE age > 25
- *     WHERE age >= 18 AND active = true
- *     WHERE country = 'Belgium' OR country = 'Netherlands'
+ *
+ * GROUP BY supports aggregates: COUNT(*), SUM(field), AVG(field), MIN(field), MAX(field)
+ *
+ * ORDER BY supports:
+ *   - Single or multiple fields: ORDER BY population DESC, id ASC
+ *   - Default direction is ASC
  */
 export class QueryLanguage {
   private dbms: SimpleDbms;
@@ -86,24 +142,49 @@ export class QueryLanguage {
       return { kind: 'insert', collection, body };
     }
 
-    // ── SELECT ─────────────────────────────────────────────────────────────────
-    // Pattern: SELECT <fields> FROM <collection> [WHERE <expr>] [LIMIT n] [OFFSET k]
+    // ── DELETE ───────────────────────────────────────────────
+    const deleteMatch = normalized.match(/^delete\s+from\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:where\s+(.+?))?$/i);
+    if (deleteMatch) {
+      const [, collection, wherePartRaw] = deleteMatch;
+      const where = wherePartRaw ? this.parseWhere(wherePartRaw.trim()) : undefined;
+      return { kind: 'delete', collection, where };
+    }
+
+    // ── SELECT ──────────────────────────────────────────
+    // Pattern: SELECT <fields> FROM <collection> [JOIN ...] [WHERE <expr>] [GROUP BY <fields>] [HAVING <expr>] [ORDER BY <fields>] [LIMIT n] [OFFSET k]
     const selectMatch = normalized.match(
-      /^select\s+(.+?)\s+from\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:where\s+(.+?))?(?:\s+limit\s+(\d+))?(?:\s+offset\s+(\d+))?$/i,
+      /^select\s+(.+?)\s+from\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+join\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+on\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*))?)?\s*(?:where\s+(.+?))?\s*(?:group\s+by\s+(.+?))?\s*(?:having\s+(.+?))?\s*(?:order\s+by\s+(.+?))?\s*(?:limit\s+(\d+))?\s*(?:offset\s+(\d+))?$/i,
     );
 
     if (!selectMatch) {
-      throw new Error('Invalid query. Use SELECT <fields> FROM <collection> [WHERE conditions] [LIMIT n] [OFFSET k]');
+      throw new Error('Invalid query syntax.');
     }
 
-    const [, selectPartRaw, collection, wherePartRaw, limitStr, offsetStr] = selectMatch;
+    const [
+      , selectPartRaw, collection, joinCollection, joinLeft, joinRight,
+      wherePartRaw, groupByRaw, havingRaw, orderByRaw, limitStr, offsetStr,
+    ] = selectMatch;
 
     const fields = this.parseFields(selectPartRaw.trim());
+    const aggregatesInSelect = this.extractAggregates(selectPartRaw.trim());
     const where = wherePartRaw ? this.parseWhere(wherePartRaw.trim()) : undefined;
+    const groupBy = groupByRaw ? this.parseGroupBy(groupByRaw.trim(), selectPartRaw.trim()) : aggregatesInSelect.length > 0 ? { fields: [], aggregates: aggregatesInSelect } : undefined;
+    const having = havingRaw ? this.parseHaving(havingRaw.trim()) : undefined;
+    const orderBy = orderByRaw ? this.parseOrderBy(orderByRaw.trim()) : undefined;
     const limit = limitStr ? parseInt(limitStr, 10) : undefined;
     const offset = offsetStr ? parseInt(offsetStr, 10) : undefined;
+    let join: JoinClause | undefined = undefined;
 
-    return { kind: 'select', fields, collection, where, limit, offset };
+    if (joinCollection) {
+      join = {
+        type: 'INNER',
+        collection: joinCollection,
+        leftField: joinLeft || '',
+        rightField: joinRight || '',
+      };
+    }
+
+    return { kind: 'select', fields, collection, join, where, groupBy, having, orderBy, limit, offset };
   }
 
   // ── Parse SELECT fields ────────────────────────────────────────────────────
@@ -126,19 +207,16 @@ export class QueryLanguage {
   // ── Parse WHERE clause ─────────────────────────────────────────────────────
 
   private parseWhere(wherePart: string): WhereExpression {
-    // Strategy: Parse OR first (lowest precedence), then AND, then comparisons
     return this.parseOrExpression(wherePart);
   }
 
   private parseOrExpression(expr: string): WhereExpression {
-    // Split on OR (case-insensitive), but not inside quotes
     const parts = this.splitOnKeyword(expr, 'OR');
 
     if (parts.length === 1) {
       return this.parseAndExpression(parts[0]);
     }
 
-    // Build left-associative tree: a OR b OR c → ((a OR b) OR c)
     let result = this.parseAndExpression(parts[0]);
     for (let i = 1; i < parts.length; i++) {
       result = {
@@ -173,12 +251,13 @@ export class QueryLanguage {
   private parseComparison(expr: string): ComparisonExpression {
     expr = expr.trim();
 
-    // Match: field <operator> value
-    // Operators: >=, <=, !=, =, >, <
-    const match = expr.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*(>=|<=|!=|=|>|<)\s*(.+)$/);
+    // Uitgebreide regex: staat aggregate functies toe als veldnaam, bv. COUNT(*) of AVG(population)
+    const match = expr.match(
+      /^([A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?|[A-Za-z_][A-Za-z0-9_.]*)\s*(>=|<=|!=|=|>|<)\s*(.+)$/
+    );
 
     if (!match) {
-      throw new Error(`Invalid WHERE comparison: "${expr}". Expected format: field <operator> value`);
+      throw new Error(`Invalid WHERE/HAVING comparison: "${expr}". Expected format: field <operator> value`);
     }
 
     const [, field, operator, rawValue] = match;
@@ -192,9 +271,78 @@ export class QueryLanguage {
     };
   }
 
+  // ── Parse ORDER BY clause ──────────────────────────────────────────────────
+
+  private parseOrderBy(orderByPart: string): OrderByClause[] {
+    const parts = orderByPart.split(',').map((p) => p.trim()).filter(Boolean);
+
+    return parts.map((part) => {
+      const tokens = part.split(/\s+/);
+      if (tokens.length === 0 || !tokens[0]) {
+        throw new Error(`Invalid ORDER BY clause: "${part}"`);
+      }
+
+      const field = tokens[0];
+      if (!/^[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?$/.test(field)) {
+        throw new Error(`Invalid field name in ORDER BY: "${field}"`);
+    }
+
+      const directionRaw = tokens[1]?.toUpperCase();
+      if (directionRaw && directionRaw !== 'ASC' && directionRaw !== 'DESC') {
+        throw new Error(`Invalid sort direction "${directionRaw}". Use ASC or DESC.`);
+      }
+
+      const direction: SortDirection = (directionRaw as SortDirection) ?? 'ASC';
+      return { field, direction };
+    });
+  }
+
+  // ── Parse GROUP BY clause ──────────────────────────────────────────────────
+
+  private parseGroupBy(groupByPart: string, selectPart: string): GroupByClause {
+    const fields = groupByPart
+      .split(',')
+      .map((f) => f.trim())
+      .filter(Boolean);
+
+    if (fields.length === 0) {
+      throw new Error('GROUP BY clause must list at least one field');
+    }
+
+    const aggregates = this.extractAggregates(selectPart);
+    return { fields, aggregates };
+  }
+
+  private extractAggregates(selectPart: string): AggregateExpression[] {
+    const aggregates: AggregateExpression[] = [];
+    const aggRegex = /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(\*|[A-Za-z_][A-Za-z0-9_]*)\s*\)/gi;
+
+    let match: RegExpExecArray | null;
+    while ((match = aggRegex.exec(selectPart)) !== null) {
+      const func = match[1].toUpperCase() as AggregateFunction;
+      const field = match[2];
+      const alias = `${func}(${field})`;
+      aggregates.push({ func, field, alias });
+    }
+
+    return aggregates;
+  }
+
+  // ── Parse HAVING clause ────────────────────────────────────────────────────
+
+  private parseHaving(havingPart: string): HavingExpression {
+    // Normaliseer aggregate calls naar hun alias vorm vóór het parsen
+    // zodat "COUNT(*) > 5" behandeld wordt als een gewone comparison met field "COUNT(*)"
+    const normalized = havingPart.replace(
+      /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(\*|[A-Za-z_][A-Za-z0-9_]*)\s*\)/gi,
+      (_match: string, func: string, field: string) => `${func.toUpperCase()}(${field})`
+    );
+
+    return this.parseWhere(normalized);
+  }
+
   /**
    * Split a string on a keyword (AND/OR), but ignore keywords inside quotes.
-   * Example: "age > 18 AND name = 'Alice AND Bob'" → ["age > 18", "name = 'Alice AND Bob'"]
    */
   private splitOnKeyword(expr: string, keyword: 'AND' | 'OR'): string[] {
     const parts: string[] = [];
@@ -208,7 +356,6 @@ export class QueryLanguage {
     while (i < expr.length) {
       const char = expr[i];
 
-      // Track quote state
       if ((char === '"' || char === "'") && (i === 0 || expr[i - 1] !== '\\')) {
         if (!inQuotes) {
           inQuotes = true;
@@ -222,16 +369,14 @@ export class QueryLanguage {
         continue;
       }
 
-      // Check for keyword if not in quotes
       if (!inQuotes) {
         const remaining = expr.slice(i);
         const match = remaining.match(regex);
 
         if (match && match.index === 0) {
-          // Found keyword at current position
           parts.push(current.trim());
           current = '';
-          i += match[0].length; // Skip past keyword
+          i += match[0].length;
           continue;
         }
       }
@@ -240,7 +385,6 @@ export class QueryLanguage {
       i++;
     }
 
-    // Add final part
     if (current.trim()) {
       parts.push(current.trim());
     }
@@ -249,7 +393,6 @@ export class QueryLanguage {
   }
 
   private parseValue(raw: string): FieldValue {
-    // String wrapped in single or double quotes
     const quoted = raw.match(/^'(.*)'$/) ?? raw.match(/^"(.*)"$/);
     if (quoted) return quoted[1];
 
@@ -265,7 +408,6 @@ export class QueryLanguage {
   // ═════════════════════════════════════════════════════════════════════════════
 
   async execute(query: string): Promise<QueryResultRow[]> {
-    //const startTime = Date.now();
     const parsed = this.parse(query);
 
     if (parsed.kind === 'insert') {
@@ -273,59 +415,292 @@ export class QueryLanguage {
       return [];
     }
 
-    // Determine which field to use for cursor
-    // Strategy: Use the first field in a comparison (if available)
-    const indexField = this.extractIndexField(parsed.where);
-    const iterableKey = indexField ?? 'id';
-
-    // For exact matches, we can pass the value to cursor for index optimization
-    const cursorValue = this.extractCursorValue(parsed.where, iterableKey);
-
-    const results: QueryResultRow[] = [];
-    const cursor = this.dbms.cursor(
-      parsed.collection,
-      iterableKey,
-      cursorValue !== undefined ? this.valueToCursor(cursorValue) : undefined,
-    );
-
-    let count = 0;
-    const limit = parsed.limit ?? Infinity;
-    const offset = parsed.offset ?? 0;
-
-    for await (const jsonDoc of cursor) {
-      const doc = JSON.parse(jsonDoc) as Record<string, FieldValue>;
-
-      // Evaluate WHERE condition
-      if (parsed.where && !this.evaluateWhere(doc, parsed.where)) {
-        continue;
+    if (parsed.kind === 'delete') {
+      const cursor = this.dbms.cursor(parsed.collection, 'id', undefined);
+      const idsToDelete: string[] = [];
+      for await (const jsonDoc of cursor) {
+        const doc = JSON.parse(jsonDoc) as Record<string, FieldValue>;
+        if (!parsed.where || this.evaluateWhere(doc, parsed.where)) {
+          if (typeof doc['id'] === 'string') idsToDelete.push(doc['id']);
+        }
       }
-
-      // Handle OFFSET
-      if (count < offset) {
-        count++;
-        continue;
+      for (const id of idsToDelete) {
+        await this.dbms.deleteDocumentById(parsed.collection, id);
       }
-
-      // Handle LIMIT (early termination)
-      if (count >= offset + limit) {
-        break;
-      }
-
-      results.push(this.project(doc, parsed.fields));
-      count++;
+      return [];
     }
 
-    // add execution time to the results for testing purposes
-    // the start time is captured at the beginning of the execute method, and the execution time is calculated at the end
-    //const executionTime = Date.now() - startTime;
-    //return results.map(result => ({ ...result, executionTime }));
+    // ── SELECT ─────────────────────────────────────────────────────────────────
+    let results: QueryResultRow[] = [];
+
+    if (parsed.join) {
+      // Delegate entirely to executeJoin when a JOIN clause is present
+      results = await this.executeJoin(parsed);
+    } else {
+      const indexField = this.extractIndexField(parsed.where);
+      const iterableKey = indexField ?? 'id';
+      const cursorValue = this.extractCursorValue(parsed.where, iterableKey);
+
+      const cursor = this.dbms.cursor(
+        parsed.collection,
+        iterableKey,
+        cursorValue !== undefined ? this.valueToCursor(cursorValue) : undefined,
+      );
+
+      for await (const jsonDoc of cursor) {
+        const doc = JSON.parse(jsonDoc) as Record<string, FieldValue>;
+
+        if (parsed.where && !this.evaluateWhere(doc, parsed.where)) {
+          continue;
+        }
+
+        results.push(parsed.groupBy ? doc : this.project(doc, parsed.fields));
+      }
+    }
+
+    // ── GROUP BY ───────────────────────────────────────────────────────────────
+    if (parsed.groupBy) {
+      results = this.executeGroupBy(results, parsed.groupBy, parsed.having);
+      results = results.map((row) => this.project(row as Record<string, FieldValue>, parsed.fields));
+    }
+
+    // ── ORDER BY ───────────────────────────────────────────────────────────────
+    if (parsed.orderBy && parsed.orderBy.length > 0) {
+      results = this.sortResults(results, parsed.orderBy);
+    }
+
+    // ── OFFSET / LIMIT ─────────────────────────────────────────────────────────
+    const offset = parsed.offset ?? 0;
+    const limit = parsed.limit ?? Infinity;
+    results = results.slice(offset, offset === 0 && limit === Infinity ? undefined : offset + limit);
+
     return results;
   }
 
-  /**
-   * Extract the first field used in a comparison for cursor optimization.
-   * Example: "age > 25 AND active = true" → "age"
-   */
+  // ── Sorting ────────────────────────────────────────────────────────────────
+
+  private sortResults(rows: QueryResultRow[], orderBy: OrderByClause[]): QueryResultRow[] {
+    return [...rows].sort((a, b) => {
+      for (const { field, direction } of orderBy) {
+        const cmp = this.compareValues(a[field], b[field]);
+        if (cmp !== 0) {
+          return direction === 'DESC' ? -cmp : cmp;
+        }
+      }
+      return 0;
+    });
+  }
+
+  // ── Grouping ───────────────────────────────────────────────────────────────
+
+  private executeGroupBy(
+    rows: QueryResultRow[],
+    groupBy: GroupByClause,
+    having?: HavingExpression,
+  ): QueryResultRow[] {
+    // Stap 1: Groepeer rijen op de GROUP BY velden
+    const groups = new Map<string, QueryResultRow[]>();
+
+    for (const row of rows) {
+      const key = groupBy.fields.map((f) => String(row[f] ?? '')).join('|');
+      const bucket = groups.get(key) ?? [];
+      bucket.push(row);
+      groups.set(key, bucket);
+    }
+
+    // Stap 2: Bereken aggregaten per groep
+    const results: QueryResultRow[] = [];
+
+    for (const groupRows of groups.values()) {
+      const resultRow: QueryResultRow = {};
+
+      // Kopieer de GROUP BY velden van de eerste rij
+      for (const field of groupBy.fields) {
+        resultRow[field] = groupRows[0][field];
+      }
+
+      // Bereken elke aggregatiefunctie
+      for (const agg of groupBy.aggregates) {
+        resultRow[agg.alias] = this.computeAggregate(groupRows, agg);
+      }
+
+      // Stap 3: HAVING filter toepassen
+      if (having && !this.evaluateWhere(resultRow as Record<string, FieldValue>, having)) {
+        continue;
+      }
+
+      results.push(resultRow);
+    }
+
+    return results;
+  }
+
+  private computeAggregate(rows: QueryResultRow[], agg: AggregateExpression): number {
+    switch (agg.func) {
+      case 'COUNT':
+        return rows.length;
+
+      case 'SUM': {
+        return rows.reduce((sum, row) => {
+          const val = row[agg.field];
+          return sum + (typeof val === 'number' ? val : 0);
+        }, 0);
+      }
+
+      case 'AVG': {
+        const sum = rows.reduce((s, row) => {
+          const val = row[agg.field];
+          return s + (typeof val === 'number' ? val : 0);
+        }, 0);
+        return rows.length > 0 ? sum / rows.length : 0;
+      }
+
+      case 'MIN': {
+        const vals = rows.map((r) => r[agg.field]).filter((v) => typeof v === 'number');
+        return vals.length > 0 ? Math.min(...vals) : 0;
+      }
+
+      case 'MAX': {
+        const vals = rows.map((r) => r[agg.field]).filter((v) => typeof v === 'number');
+        return vals.length > 0 ? Math.max(...vals) : 0;
+      }
+    }
+  }
+
+  // ── Joining ────────────────────────────────────────────────────────────────
+
+  private async executeJoin(parsed: ParsedSelect): Promise<QueryResultRow[]> {
+    const join = parsed.join!;
+    const leftDocs = await this.loadCollection(parsed.collection);
+    const rightDocs = await this.loadCollection(join.collection);
+
+    const leftKeys = leftDocs.length > 0 ? Object.keys(leftDocs[0]) : [];
+    const rightKeys = rightDocs.length > 0 ? Object.keys(rightDocs[0]) : [];
+    const overlapping = leftKeys.filter(k => rightKeys.includes(k));
+
+    let effectiveJoinType: 'INNER' | 'NATURAL' | 'FULL' = 'INNER';
+    let leftKey: string | undefined;
+    let rightKey: string | undefined;
+    let mergeFields: string[] = [];
+
+    if (join.leftField && join.rightField) {
+      // Scenario 1: ON conditie aanwezig -> INNER JOIN
+      effectiveJoinType = 'INNER';
+      leftKey = join.leftField.split('.').pop()!;
+      rightKey = join.rightField.split('.').pop()!;
+      mergeFields = [leftKey, rightKey];
+    } else if (overlapping.length > 0) {
+      // Scenario 2: Geen ON, wel overlap -> NATURAL JOIN
+      effectiveJoinType = 'NATURAL';
+      mergeFields = overlapping;
+      leftKey = overlapping[0];
+      rightKey = overlapping[0];
+    } else {
+      // Scenario 3: Geen ON, geen overlap -> FULL JOIN (Cartesian)
+      effectiveJoinType = 'FULL';
+    }
+
+    // --- Uitvoering ---
+    const results: QueryResultRow[] = [];
+
+    if (effectiveJoinType === 'FULL' && !leftKey) {
+      // Cartesian Product logica
+      for (const leftDoc of leftDocs) {
+        for (const rightDoc of rightDocs) {
+          results.push(this.mergeDocuments(leftDoc, rightDoc, parsed.collection, join.collection, 'FULL', []));
+        }
+      }
+    } else {
+      // Index-based Join (voor INNER en NATURAL)
+      const rightMap = new Map<FieldValue, Record<string, FieldValue>[]>();
+      for (const doc of rightDocs) {
+        const val = doc[rightKey!];
+        const bucket = rightMap.get(val) ?? [];
+        bucket.push(doc);
+        rightMap.set(val, bucket);
+      }
+
+      for (const leftDoc of leftDocs) {
+        const matches = rightMap.get(leftDoc[leftKey!]) ?? [];
+        for (const rightDoc of matches) {
+          const merged = this.mergeDocuments(leftDoc, rightDoc, parsed.collection, join.collection, effectiveJoinType, mergeFields);
+          
+          if (parsed.where && !this.evaluateWhere(merged, parsed.where)) {
+            continue;
+          }
+          
+          results.push(this.project(merged, parsed.fields));
+        }
+      }
+    }
+    return results;
+  }
+
+  private async loadCollection(collection: string): Promise<Record<string, FieldValue>[]> {
+    const docs: Record<string, FieldValue>[] = [];
+    for await (const jsonDoc of this.dbms.cursor(collection, 'id', undefined)) {
+      docs.push(JSON.parse(jsonDoc) as Record<string, FieldValue>);
+    }
+    return docs;
+  }
+
+  private mergeDocuments(
+    leftDoc: Record<string, FieldValue> | null,
+    rightDoc: Record<string, FieldValue> | null,
+    leftColl: string,
+    rightColl: string,
+    type: string,
+    mergeFields: string[]
+  ): Record<string, FieldValue> {
+    const merged: Record<string, FieldValue> = {};
+    const overlap = (leftDoc && rightDoc) ? this.getOverlappingFields(leftDoc, rightDoc) : new Set<string>();
+    const isNatural = type === 'NATURAL';
+
+    const leftJoinKey = mergeFields.length > 0 ? mergeFields[0] : null;
+    const rightJoinKey = mergeFields.length > 0 ? mergeFields[mergeFields.length - 1] : null;
+
+    // STAP 1: Zet de join-velden als allereerste in het object
+    if (leftDoc && leftJoinKey && leftDoc[leftJoinKey] !== undefined) {
+      merged[leftJoinKey] = leftDoc[leftJoinKey];
+    } else if (rightDoc && rightJoinKey && rightDoc[rightJoinKey] !== undefined) {
+      merged[rightJoinKey] = rightDoc[rightJoinKey];
+    }
+
+    // STAP 2: Voeg de rest van de velden van links toe
+    if (leftDoc) {
+      for (const [k, v] of Object.entries(leftDoc)) {
+        if (k === leftJoinKey) continue;
+
+        if (k === 'id' && !isNatural) {
+          merged[`${leftColl}.id`] = v;
+        } else if (overlap.has(k) && !isNatural) {
+          merged[`${leftColl}.${k}`] = v;
+        } else {
+          merged[k] = v;
+        }
+      }
+    }
+
+    // STAP 3: Voeg de rest van de velden van rechts toe
+    if (rightDoc) {
+      for (const [k, v] of Object.entries(rightDoc)) {
+        if (k === rightJoinKey) continue;
+
+        if (k === 'id' && !isNatural) {
+          merged[`${rightColl}.id`] = v;
+        } else if (overlap.has(k) && !isNatural) {
+          merged[`${rightColl}.${k}`] = v;
+        } else if (merged[k] === undefined) {
+          merged[k] = v;
+        }
+      }
+    }
+
+    return merged;
+  }
+
+  // ── Index helpers ──────────────────────────────────────────────────────────
+
   private extractIndexField(where?: WhereExpression): string | null {
     if (!where) return null;
 
@@ -334,21 +709,15 @@ export class QueryLanguage {
     }
 
     if (where.type === 'logical') {
-      // Prefer left side (arbitrary choice)
       return this.extractIndexField(where.left) ?? this.extractIndexField(where.right);
     }
 
     return null;
   }
 
-  /**
-   * Extract cursor value for exact match optimization.
-   * Only returns value if WHERE is a simple "field = value" (no OR/AND).
-   */
   private extractCursorValue(where: WhereExpression | undefined, field: string): FieldValue | undefined {
     if (!where) return undefined;
 
-    // Only optimize for simple exact matches
     if (where.type === 'comparison' && where.field === field && where.operator === '=') {
       return this.valueToCursor(where.value);
     }
@@ -356,7 +725,7 @@ export class QueryLanguage {
     return undefined;
   }
 
-  // ── WHERE Evaluation ───────────────────────────────────────────────────────
+  // ── WHERE / HAVING Evaluation ──────────────────────────────────────────────
 
   private evaluateWhere(doc: Record<string, unknown>, expr: WhereExpression): boolean {
     if (expr.type === 'comparison') {
@@ -384,22 +753,16 @@ export class QueryLanguage {
     switch (expr.operator) {
       case '=':
         return actual === expected;
-
       case '!=':
         return actual !== expected;
-
       case '>':
         return this.compareValues(actual, expected) > 0;
-
       case '>=':
         return this.compareValues(actual, expected) >= 0;
-
       case '<':
         return this.compareValues(actual, expected) < 0;
-
       case '<=':
         return this.compareValues(actual, expected) <= 0;
-
       default: {
         const exhaustiveCheck: never = expr.operator;
         throw new Error(`Unknown operator: ${String(exhaustiveCheck)}`);
@@ -407,38 +770,20 @@ export class QueryLanguage {
     }
   }
 
-  /**
-   * Compare two values for ordering.
-   * Returns: < 0 if a < b, 0 if equal, > 0 if a > b
-   */
   private compareValues(a: unknown, b: unknown): number {
-    // Handle null/undefined
     if (a === null && b === null) return 0;
     if (a === undefined && b === undefined) return 0;
     if (a === null || a === undefined) return -1;
     if (b === null || b === undefined) return 1;
 
-    // Number comparison
-    if (typeof a === 'number' && typeof b === 'number') {
-      return a - b;
-    }
+    if (typeof a === 'number' && typeof b === 'number') return a - b;
+    if (typeof a === 'string' && typeof b === 'string') return a.localeCompare(b);
+    if (typeof a === 'boolean' && typeof b === 'boolean') return (a ? 1 : 0) - (b ? 1 : 0);
 
-    // String comparison
-    if (typeof a === 'string' && typeof b === 'string') {
-      return a.localeCompare(b);
-    }
-
-    // Boolean comparison (false < true)
-    if (typeof a === 'boolean' && typeof b === 'boolean') {
-      return (a ? 1 : 0) - (b ? 1 : 0);
-    }
-
-    // Reject comparisons involving complex objects (null already handled above)
     if ((typeof a === 'object' && a !== null) || (typeof b === 'object' && b !== null)) {
       throw new Error('Cannot compare complex objects in WHERE clause');
     }
 
-    // Mixed primitive types: convert to string (use JSON.stringify for non-primitive structures to avoid "[object Object]")
     const toComparableString = (v: unknown): string => {
       if (typeof v === 'string') return v;
       if (typeof v === 'number' || typeof v === 'boolean') return String(v);
@@ -460,7 +805,7 @@ export class QueryLanguage {
     if (typeof value === 'boolean') return value ? 1 : 0;
     if (typeof value === 'string') return value;
     if (typeof value === 'number') return value;
-    return String(value); // Fallback voor safety
+    return String(value);
   }
 
   private project(doc: Record<string, FieldValue>, fields: '*' | string[]): QueryResultRow {
@@ -471,5 +816,19 @@ export class QueryLanguage {
       projected[field] = doc[field];
     }
     return projected;
+  }
+
+  private getOverlappingFields(leftDoc: Record<string, FieldValue>, rightDoc: Record<string, FieldValue>): Set<string> {
+    const leftKeys = Object.keys(leftDoc);
+    const rightKeys = Object.keys(rightDoc);
+    const overlap = new Set<string>();
+
+    const rightKeySet = new Set(rightKeys);
+    for (const key of leftKeys) {
+      if (rightKeySet.has(key)) {
+        overlap.add(key);
+      }
+    }
+    return overlap;
   }
 }
