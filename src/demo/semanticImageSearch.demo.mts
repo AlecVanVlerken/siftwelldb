@@ -275,7 +275,7 @@ async function main() {
   // ── Embedding functions ───────────────────────────────────────────────────
 
   const embeddingFn = async (text: string): Promise<Float32Array> => {
-    const inputs = tokenizer(text, { padding: true, truncation: true }) as Record<string, unknown>;
+    const inputs = tokenizer(text, { padding: true, truncation: true });
     const { text_embeds } = (await textModel(inputs)) as { text_embeds: { data: ArrayLike<number> } };
     return l2Normalize(new Float32Array(text_embeds.data));
   };
@@ -283,7 +283,7 @@ async function main() {
   const imageEmbeddingFn = async (imageData: Buffer): Promise<Float32Array> => {
     const blob = new Blob([imageData]);
     const image = await RawImage.fromBlob(blob);
-    const inputs = (await processor(image)) as Record<string, unknown>;
+    const inputs = await processor(image);
     const { image_embeds } = (await visionModel(inputs)) as { image_embeds: { data: ArrayLike<number> } };
     return l2Normalize(new Float32Array(image_embeds.data));
   };
