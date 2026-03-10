@@ -6,7 +6,6 @@ export type MapPoint = {
   id: string;
   label: string;
   fields: Record<string, unknown>;
-  imageUrl?: string;
 };
 
 export function renderMap(points: MapPoint[], outputPath: string): void {
@@ -35,23 +34,16 @@ export function renderMap(points: MapPoint[], outputPath: string): void {
       padding: 3px 6px; font-size: 0.78rem; cursor: pointer; outline: none;
     }
     select:hover { border-color: #7ec8e3; }
-    .legend { margin-left: auto; display: flex; gap: 14px; align-items: center; font-size: 0.75rem; color: #666; flex-shrink: 0; }
-    .legend-item { display: flex; align-items: center; gap: 5px; }
-    .legend-dot { width: 10px; height: 10px; border-radius: 50%; background: #7ec8e3; }
-    .legend-img { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #7ec8e3; background: #333; }
     #map { width: 100vw; height: calc(100vh - 52px); display: block; }
     circle { cursor: pointer; }
-    circle:hover { stroke-width: 2.5px; opacity: 1 !important; }
-    .img-node { cursor: pointer; }
+    circle:hover { stroke-width: 2.5px; }
     #tooltip {
       position: fixed; background: #16213e; border: 1px solid #7ec8e3;
       border-radius: 8px; padding: 12px 16px; font-size: 12px;
       pointer-events: none; max-width: 300px; display: none;
       box-shadow: 0 8px 24px rgba(0,0,0,0.6); z-index: 100;
     }
-    .tip-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-    .tip-img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid #7ec8e3; flex-shrink: 0; }
-    .doc-id { color: #7ec8e3; font-size: 14px; font-weight: 600; }
+    .doc-id { color: #7ec8e3; font-size: 14px; font-weight: 600; margin-bottom: 8px; }
     .field { margin: 3px 0; }
     .field .key { color: #888; margin-right: 6px; }
   </style>
@@ -68,10 +60,6 @@ export function renderMap(points: MapPoint[], outputPath: string): void {
       <label>Y axis</label>
       <select id="y-select"></select>
     </div>
-    <div class="legend">
-      <div class="legend-item"><div class="legend-dot"></div> document</div>
-      <div class="legend-item"><div class="legend-img"></div> with image</div>
-    </div>
   </header>
   <svg id="map"></svg>
   <div id="tooltip"></div>
@@ -85,10 +73,6 @@ export function renderMap(points: MapPoint[], outputPath: string): void {
     const pad = 80;
 
     const svg = d3.select('#map').attr('width', W).attr('height', H);
-
-    svg.append('defs')
-      .append('clipPath').attr('id', 'img-clip')
-      .append('circle').attr('cx', 0).attr('cy', 0).attr('r', 16);
 
     const xScalePCA = d3.scaleLinear().domain(d3.extent(data, d => d.x)).range([pad, W - pad]);
     const yScalePCA = d3.scaleLinear().domain(d3.extent(data, d => d.y)).range([H - pad, pad]);
@@ -104,7 +88,7 @@ export function renderMap(points: MapPoint[], outputPath: string): void {
     }
     if (allFields.length > 1) ySel.value = allFields[1];
 
-    // ── Deterministic per-document jitter (stable across re-renders) ────────
+    // ── Deterministic per-document jitter ───────────────────────────────────
     function stableJitter(id, seed, range) {
       const s = id + seed;
       let h = 0x811c9dc5;
@@ -113,122 +97,78 @@ export function renderMap(points: MapPoint[], outputPath: string): void {
     }
 
     /**
-     * THE KEY FIX: one single function that computes both data positions and
-     * tick positions from the same arithmetic. Axis labels and data points
-     * can never drift apart because they share the same source of truth.
+     * Computes pixel positions for one axis AND marks which documents are visible.
+     * A document is visible only if it has a value for the chosen field.
+     * In semantic mode every document is visible.
      *
      * Returns:
-     *   dataPositions  — one pixel value per document (with jitter for categoricals)
-     *   ticks          — [{label, pos}] for axis decorations (no jitter, exact base positions)
-     *   naPos          — position for missing-value documents, or null if none
+     *   dataPositions — pixel value per document (jitter applied for categoricals)
+     *   ticks         — [{label, pos}] for axis tick marks (no jitter, exact base)
+     *   visible       — boolean[] — false means this document is missing the field
      */
     function computeLayout(field, axis) {
       const isX = axis === 'x';
-      const lo  = isX ? pad     : H - pad;   // start of usable range
-      const hi  = isX ? W - pad : pad;        // end   of usable range
+      const lo  = isX ? pad     : H - pad;
+      const hi  = isX ? W - pad : pad;
 
-      // ── Semantic (PCA) mode ──────────────────────────────────────────────
       if (field === 'semantic') {
         return {
           dataPositions: data.map(d => isX ? xScalePCA(d.x) : yScalePCA(d.y)),
           ticks: [],
-          naPos: null,
+          visible: data.map(() => true),
         };
       }
 
-      const rawValues  = data.map(d => d.fields[field]);
-      const defined    = rawValues.filter(v => v != null);
-      const isNumeric  = defined.length > 0 && defined.every(v => typeof v === 'number');
-      const hasMissing = rawValues.some(v => v == null);
-      const naPos      = isX ? pad / 2 : H - pad / 2;
+      const rawValues = data.map(d => d.fields[field]);
+      const visible   = rawValues.map(v => v != null);
+      const defined   = rawValues.filter(v => v != null);
+      const isNumeric = defined.length > 0 && defined.every(v => typeof v === 'number');
 
-      // ── Numeric field ────────────────────────────────────────────────────
       if (isNumeric) {
         const scale = d3.scaleLinear().domain(d3.extent(defined)).range([lo, hi]);
         return {
           dataPositions: rawValues.map((v, i) =>
-            v != null
-              ? scale(v) + stableJitter(data[i].id, axis, 18)
-              : naPos    + stableJitter(data[i].id, axis + 'na', 30)
+            v != null ? scale(v) + stableJitter(data[i].id, axis, 18) : 0
           ),
           ticks: scale.ticks(5).map(t => ({ label: String(t), pos: scale(t) })),
-          naPos: hasMissing ? naPos : null,
+          visible,
         };
       }
 
-      // ── Categorical field ────────────────────────────────────────────────
+      // Categorical
       const categories = [...new Set(defined.map(String))].sort();
-      const step = categories.length > 1 ? (hi - lo) / (categories.length - 1) : 0;
-
-      // Build a map: category string → exact base pixel position (no jitter)
+      const step    = categories.length > 1 ? (hi - lo) / (categories.length - 1) : 0;
       const basePos = new Map(categories.map((cat, idx) => [cat, lo + idx * step]));
 
       return {
-        dataPositions: rawValues.map((v, i) => {
-          if (v == null) return naPos + stableJitter(data[i].id, axis + 'na', 30);
-          return basePos.get(String(v)) + stableJitter(data[i].id, axis, 22);
-        }),
-        // Ticks reuse the exact same basePos map — guaranteed to match data positions
+        dataPositions: rawValues.map((v, i) =>
+          v != null ? basePos.get(String(v)) + stableJitter(data[i].id, axis, 22) : 0
+        ),
         ticks: categories.map(cat => ({ label: cat, pos: basePos.get(cat) })),
-        naPos: hasMissing ? naPos : null,
+        visible,
       };
     }
 
-    // ── Axis decoration ─────────────────────────────────────────────────────
-    const axisLayer = svg.append('g').attr('class', 'axis-layer');
+    // ── Axis decorations ────────────────────────────────────────────────────
+    const axisLayer = svg.append('g');
 
-    function drawAxis(field, axis, ticks, naPos) {
+    function drawAxis(field, axis, ticks) {
       const isX = axis === 'x';
       axisLayer.selectAll('.' + axis + '-deco').remove();
-      if (field === 'semantic') return;
+      if (field === 'semantic' || ticks.length === 0) return;
 
       const g2 = axisLayer.append('g').attr('class', axis + '-deco');
 
-      // Field name label
-      if (isX) {
-        g2.append('text').attr('x', W / 2).attr('y', H - 6)
-          .attr('text-anchor', 'middle').attr('fill', '#555').attr('font-size', 11).text(field);
-      } else {
-        g2.append('text')
-          .attr('transform', 'rotate(-90)').attr('x', -H / 2).attr('y', 14)
-          .attr('text-anchor', 'middle').attr('fill', '#555').attr('font-size', 11).text(field);
-      }
-
-      // Tick marks and labels — positions come directly from computeLayout ticks
-      for (const { label, pos } of ticks) {
+      // Ticks — positions come directly from computeLayout, same arithmetic as data
+      for (const { pos } of ticks) {
         if (isX) {
           g2.append('line')
             .attr('x1', pos).attr('y1', pad - 8).attr('x2', pos).attr('y2', H - pad + 8)
             .attr('stroke', '#2a2a5a').attr('stroke-width', 1);
-          g2.append('text')
-            .attr('x', pos).attr('y', H - pad + 20)
-            .attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 10).text(label);
         } else {
           g2.append('line')
             .attr('x1', pad - 8).attr('y1', pos).attr('x2', W - pad + 8).attr('y2', pos)
             .attr('stroke', '#2a2a5a').attr('stroke-width', 1);
-          g2.append('text')
-            .attr('x', pad - 12).attr('y', pos + 3)
-            .attr('text-anchor', 'end').attr('fill', '#666').attr('font-size', 10).text(label);
-        }
-      }
-
-      // N/A marker
-      if (naPos != null) {
-        if (isX) {
-          g2.append('line')
-            .attr('x1', naPos).attr('y1', pad).attr('x2', naPos).attr('y2', H - pad)
-            .attr('stroke', '#2a2a5a').attr('stroke-width', 1).attr('stroke-dasharray', '4 4');
-          g2.append('text')
-            .attr('x', naPos).attr('y', H - pad + 20)
-            .attr('text-anchor', 'middle').attr('fill', '#444').attr('font-size', 10).text('N/A');
-        } else {
-          g2.append('line')
-            .attr('x1', pad).attr('y1', naPos).attr('x2', W - pad).attr('y2', naPos)
-            .attr('stroke', '#2a2a5a').attr('stroke-width', 1).attr('stroke-dasharray', '4 4');
-          g2.append('text')
-            .attr('x', pad - 12).attr('y', naPos + 3)
-            .attr('text-anchor', 'end').attr('fill', '#444').attr('font-size', 10).text('N/A');
         }
       }
     }
@@ -243,8 +183,7 @@ export function renderMap(points: MapPoint[], outputPath: string): void {
     function showTooltip(event, d) {
       const rows = Object.entries(d.fields)
         .map(([k, v]) => '<div class="field"><span class="key">' + k + '</span>' + v + '</div>').join('');
-      const imgHtml = d.imageUrl ? '<img class="tip-img" src="' + d.imageUrl + '" crossorigin="anonymous"/>' : '';
-      tooltip.innerHTML = '<div class="tip-header">' + imgHtml + '<div class="doc-id">' + d.id + '</div></div>' + rows;
+      tooltip.innerHTML = '<div class="doc-id">' + d.id + '</div>' + rows;
       tooltip.style.display = 'block';
       const tx = event.clientX + 16;
       tooltip.style.left = (tx + tooltip.offsetWidth > W ? tx - tooltip.offsetWidth - 32 : tx) + 'px';
@@ -253,51 +192,43 @@ export function renderMap(points: MapPoint[], outputPath: string): void {
     function hideTooltip() { tooltip.style.display = 'none'; }
 
     g.selectAll('circle.dot')
-      .data(data.filter(d => !d.imageUrl)).join('circle').attr('class', 'dot')
-      .attr('r', 8).attr('fill', d => color(data.indexOf(d)))
-      .attr('opacity', 0.82).attr('stroke', '#fff').attr('stroke-width', 0.8)
+      .data(data).join('circle').attr('class', 'dot')
+      .attr('r', 8).attr('fill', (_, i) => color(i))
+      .attr('stroke', '#fff').attr('stroke-width', 0.8)
       .on('mousemove', showTooltip).on('mouseleave', hideTooltip);
-
-    const imgNodes = g.selectAll('g.img-node')
-      .data(data.filter(d => d.imageUrl)).join('g').attr('class', 'img-node')
-      .on('mousemove', showTooltip).on('mouseleave', hideTooltip);
-    imgNodes.append('image')
-      .attr('x', -16).attr('y', -16).attr('width', 32).attr('height', 32)
-      .attr('href', d => d.imageUrl ?? '').attr('clip-path', 'url(#img-clip)').attr('crossorigin', 'anonymous');
-    imgNodes.append('circle')
-      .attr('r', 16).attr('fill', 'none')
-      .attr('stroke', d => color(data.indexOf(d))).attr('stroke-width', 2.5);
 
     g.selectAll('text.lbl').data(data).join('text').attr('class', 'lbl')
       .attr('font-size', 11).attr('fill', '#ccc')
       .attr('pointer-events', 'none').attr('user-select', 'none')
       .text(d => d.label);
 
-    // ── Update: uses computeLayout so data positions and tick positions are
-    //    always computed from identical arithmetic ───────────────────────────
+    // ── Update ──────────────────────────────────────────────────────────────
     function update(animate) {
       const xLayout = computeLayout(xSel.value, 'x');
       const yLayout = computeLayout(ySel.value, 'y');
 
-      const posMap = new Map(
-        data.map((d, i) => [d.id, { x: xLayout.dataPositions[i], y: yLayout.dataPositions[i] }])
-      );
+      // A document is shown only when it has a value on BOTH selected axes
+      const posMap = new Map(data.map((d, i) => [d.id, {
+        x:       xLayout.dataPositions[i],
+        y:       yLayout.dataPositions[i],
+        visible: xLayout.visible[i] && yLayout.visible[i],
+      }]));
 
       const t = d3.transition().duration(animate ? 700 : 0).ease(d3.easeCubicInOut);
 
       g.selectAll('circle.dot').transition(t)
-        .attr('cx', d => posMap.get(d.id).x).attr('cy', d => posMap.get(d.id).y);
-
-      g.selectAll('g.img-node').transition(t)
-        .attr('transform', d => { const p = posMap.get(d.id); return 'translate(' + p.x + ',' + p.y + ')'; });
+        .attr('cx',            d => posMap.get(d.id).x)
+        .attr('cy',            d => posMap.get(d.id).y)
+        .attr('opacity',       d => posMap.get(d.id).visible ? 0.82 : 0)
+        .attr('pointer-events',d => posMap.get(d.id).visible ? 'auto' : 'none');
 
       g.selectAll('text.lbl').transition(t)
-        .attr('x', d => posMap.get(d.id).x + (d.imageUrl ? 20 : 12))
-        .attr('y', d => posMap.get(d.id).y + 4);
+        .attr('x',       d => posMap.get(d.id).x + 12)
+        .attr('y',       d => posMap.get(d.id).y + 4)
+        .attr('opacity', d => posMap.get(d.id).visible ? 1 : 0);
 
-      // Pass tick positions that came from the SAME computeLayout call
-      drawAxis(xSel.value, 'x', xLayout.ticks, xLayout.naPos);
-      drawAxis(ySel.value, 'y', yLayout.ticks, yLayout.naPos);
+      drawAxis(xSel.value, 'x', xLayout.ticks);
+      drawAxis(ySel.value, 'y', yLayout.ticks);
     }
 
     update(false);
