@@ -1,8 +1,10 @@
 node_modules/
 build/
 coverage/
+
 *.data
 *.log
+src/benchmarking/large-dataset/db/
 
 .DS_Store
 Thumbs.db
@@ -11,6 +13,8 @@ Thumbs.db
 *.swp
 
 testdb
+demo-db/
+src/benchmarking/results/
 
 *.tsbuildinfo
 
