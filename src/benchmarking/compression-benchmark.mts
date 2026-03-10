@@ -56,7 +56,9 @@ function makeMixedText(index: number, size: number): string {
 }
 
 function makeLowCompressibleText(size: number): string {
-  return randomBytes(Math.ceil(size / 2)).toString('hex').slice(0, size);
+  return randomBytes(Math.ceil(size / 2))
+    .toString('hex')
+    .slice(0, size);
 }
 
 function buildDocuments(scenario: ScenarioName, docs: number, size: number): Array<Record<string, unknown>> {
@@ -165,7 +167,9 @@ function printPair(noneResult: BenchResult, gzipResult: BenchResult): void {
   console.log(
     `            content bytes: ${gzipResult.contentPayloadBytes.toLocaleString()} bytes (${pctChange(noneResult.contentPayloadBytes, gzipResult.contentPayloadBytes)})`,
   );
-  console.log(`  saved  -> total ${totalSaved.toLocaleString()} bytes | content ${contentSaved.toLocaleString()} bytes`);
+  console.log(
+    `  saved  -> total ${totalSaved.toLocaleString()} bytes | content ${contentSaved.toLocaleString()} bytes`,
+  );
 }
 
 async function main(): Promise<void> {

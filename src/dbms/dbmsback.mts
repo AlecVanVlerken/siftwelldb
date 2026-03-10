@@ -14,7 +14,11 @@ import type { BlockInternalNode } from '../btree/internalnode.mjs';
 import { HNSWIndex } from '../hnsw/hnswIndex.mjs';
 import { HNSWGraphStorage } from '../hnsw/hnswGraphStorage.mjs';
 import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
-import { type CompressionAlgorithm, type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
+import {
+  type CompressionAlgorithm,
+  type FieldCompressionDefaults,
+  type FieldCompressionOverrides,
+} from './compression.mjs';
 
 /**
  * Optional configuration block that enables per-collection HNSW semantic
@@ -366,7 +370,11 @@ export class DbmsBack {
    * @param collection - The collection to retrieve the document from.
    * @returns A Promise that resolves to the retrieved Document.
    */
-  async getDocument(documentId: number | string, collection: string, encoded = false): Promise<Document | EncodedDocument> {
+  async getDocument(
+    documentId: number | string,
+    collection: string,
+    encoded = false,
+  ): Promise<Document | EncodedDocument> {
     // ga naar root voor id
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
