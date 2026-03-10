@@ -137,9 +137,26 @@ const FIGURES = [
   },
 ];
 
+// ── World landmarks ────────────────────────────────────────────────────────
+// Completely different fields from cities (no language/population) and figures
+// (no profession/era), but shares country/continent so they cluster on the PCA map
+// near their related cities and figures.
+const LANDMARKS = [
+  { id: 'Eiffel Tower', country: 'France', continent: 'Europe', built: 1889, type: 'manmade', imageUrl: 'https://ui-avatars.com/api/?name=Eiffel+Tower&size=64&background=4a4a8a&color=fff&bold=true' },
+  { id: 'Colosseum', country: 'Italy', continent: 'Europe', built: 80, type: 'ancient', imageUrl: 'https://ui-avatars.com/api/?name=Colosseum&size=64&background=8a6a2a&color=fff&bold=true' },
+  { id: 'Sagrada Familia', country: 'Spain', continent: 'Europe', built: 1882, type: 'manmade', imageUrl: 'https://ui-avatars.com/api/?name=Sagrada+Familia&size=64&background=6a2a8a&color=fff&bold=true' },
+  { id: 'Great Wall', country: 'China', continent: 'Asia', built: 700, type: 'ancient', imageUrl: 'https://ui-avatars.com/api/?name=Great+Wall&size=64&background=8a2a2a&color=fff&bold=true' },
+  { id: 'Taj Mahal', country: 'India', continent: 'Asia', built: 1643, type: 'ancient', imageUrl: 'https://ui-avatars.com/api/?name=Taj+Mahal&size=64&background=2a6a8a&color=fff&bold=true' },
+  { id: 'Angkor Wat', country: 'Cambodia', continent: 'Asia', built: 1150, type: 'ancient', imageUrl: 'https://ui-avatars.com/api/?name=Angkor+Wat&size=64&background=4a8a2a&color=fff&bold=true' },
+  { id: 'Pyramids of Giza', country: 'Egypt', continent: 'Africa', built: -2560, type: 'ancient', imageUrl: 'https://ui-avatars.com/api/?name=Pyramids+Giza&size=64&background=8a7a2a&color=fff&bold=true' },
+  { id: 'Statue of Liberty', country: 'USA', continent: 'America', built: 1886, type: 'manmade', imageUrl: 'https://ui-avatars.com/api/?name=Statue+Liberty&size=64&background=2a8a7a&color=fff&bold=true' },
+  { id: 'Machu Picchu', country: 'Peru', continent: 'America', built: 1450, type: 'ancient', imageUrl: 'https://ui-avatars.com/api/?name=Machu+Picchu&size=64&background=6a8a2a&color=fff&bold=true' },
+  { id: 'Sydney Opera House', country: 'Australia', continent: 'Oceania', built: 1973, type: 'manmade', imageUrl: 'https://ui-avatars.com/api/?name=Sydney+Opera&size=64&background=2a4a8a&color=fff&bold=true' },
+];
+
 async function main(): Promise<void> {
   console.log('Setting up database...');
-  const dataFile = new MockFile(8 * 1024 * 1024);
+  const dataFile = new MockFile(12 * 1024 * 1024);
   const logFile = new MockFile(4096);
   const db = await SimpleDbms.create(dataFile, logFile);
 
@@ -154,21 +171,29 @@ async function main(): Promise<void> {
     await db.insertDocument('figures', JSON.stringify(doc));
   }
 
-  await db.commit();
-  console.log(`Inserted ${CITIES.length} cities and ${FIGURES.length} figures.`);
+  // Insert landmarks — strip imageUrl before storing
+  for (const landmark of LANDMARKS) {
+    const doc = Object.fromEntries(Object.entries(landmark).filter(([k]) => k !== 'imageUrl'));
+    await db.insertDocument('landmarks', JSON.stringify(doc));
+  }
 
-  // ── Collect from both collections ────────────────────────────────────────
+  await db.commit();
+  console.log(`Inserted ${CITIES.length} cities, ${FIGURES.length} figures, ${LANDMARKS.length} landmarks.`);
+
+  // ── Collect from all three collections ───────────────────────────────────
   console.log('Collecting documents...');
   const cityDocs = await collectDocuments(db, 'cities');
   const figureDocs = await collectDocuments(db, 'figures');
+  const landmarkDocs = await collectDocuments(db, 'landmarks');
 
   // Build a lookup so we can attach imageUrl after vectorization
-  const imageUrlById = new Map<string, string>(
-    FIGURES.map((f) => [f.id, f.imageUrl]),
-  );
+  const imageUrlById = new Map<string, string>([
+    ...FIGURES.map((f): [string, string] => [f.id, f.imageUrl]),
+    ...LANDMARKS.map((l): [string, string] => [l.id, l.imageUrl]),
+  ]);
 
-  // Merge all documents — TF-IDF will find shared vocabulary across both types
-  const allDocs: RawDocument[] = [...cityDocs, ...figureDocs];
+  // Merge all documents — TF-IDF finds shared vocabulary across all three types
+  const allDocs: RawDocument[] = [...cityDocs, ...figureDocs, ...landmarkDocs];
 
   // ── Vectorize, reduce, render ─────────────────────────────────────────────
   console.log('Computing TF-IDF vectors...');
@@ -192,6 +217,7 @@ async function main(): Promise<void> {
   const outputPath = join(process.cwd(), 'map.html');
   renderMap(mapPoints, outputPath);
 
+  console.log(`\nTotal: ${allDocs.length} documents across 3 collections.`);
   console.log(`\nDone! Open this file in your browser:`);
   console.log(`  ${outputPath}`);
 
