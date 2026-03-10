@@ -52,8 +52,8 @@ type AggregateFunction = 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX';
 
 type AggregateExpression = {
   func: AggregateFunction;
-  field: string;       // '*' only valid for COUNT
-  alias: string;       // e.g. "COUNT(*)" or "AVG(population)"
+  field: string; // '*' only valid for COUNT
+  alias: string; // e.g. "COUNT(*)" or "AVG(population)"
 };
 
 type GroupByClause = {
@@ -161,14 +161,28 @@ export class QueryLanguage {
     }
 
     const [
-      , selectPartRaw, collection, joinCollection, joinLeft, joinRight,
-      wherePartRaw, groupByRaw, havingRaw, orderByRaw, limitStr, offsetStr,
+      ,
+      selectPartRaw,
+      collection,
+      joinCollection,
+      joinLeft,
+      joinRight,
+      wherePartRaw,
+      groupByRaw,
+      havingRaw,
+      orderByRaw,
+      limitStr,
+      offsetStr,
     ] = selectMatch;
 
     const fields = this.parseFields(selectPartRaw.trim());
     const aggregatesInSelect = this.extractAggregates(selectPartRaw.trim());
     const where = wherePartRaw ? this.parseWhere(wherePartRaw.trim()) : undefined;
-    const groupBy = groupByRaw ? this.parseGroupBy(groupByRaw.trim(), selectPartRaw.trim()) : aggregatesInSelect.length > 0 ? { fields: [], aggregates: aggregatesInSelect } : undefined;
+    const groupBy = groupByRaw
+      ? this.parseGroupBy(groupByRaw.trim(), selectPartRaw.trim())
+      : aggregatesInSelect.length > 0
+        ? { fields: [], aggregates: aggregatesInSelect }
+        : undefined;
     const having = havingRaw ? this.parseHaving(havingRaw.trim()) : undefined;
     const orderBy = orderByRaw ? this.parseOrderBy(orderByRaw.trim()) : undefined;
     const limit = limitStr ? parseInt(limitStr, 10) : undefined;
@@ -253,7 +267,7 @@ export class QueryLanguage {
 
     // Uitgebreide regex: staat aggregate functies toe als veldnaam, bv. COUNT(*) of AVG(population)
     const match = expr.match(
-      /^([A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?|[A-Za-z_][A-Za-z0-9_.]*)\s*(>=|<=|!=|=|>|<)\s*(.+)$/
+      /^([A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?|[A-Za-z_][A-Za-z0-9_.]*)\s*(>=|<=|!=|=|>|<)\s*(.+)$/,
     );
 
     if (!match) {
@@ -274,7 +288,10 @@ export class QueryLanguage {
   // ── Parse ORDER BY clause ──────────────────────────────────────────────────
 
   private parseOrderBy(orderByPart: string): OrderByClause[] {
-    const parts = orderByPart.split(',').map((p) => p.trim()).filter(Boolean);
+    const parts = orderByPart
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
 
     return parts.map((part) => {
       const tokens = part.split(/\s+/);
@@ -285,7 +302,7 @@ export class QueryLanguage {
       const field = tokens[0];
       if (!/^[A-Za-z_][A-Za-z0-9_]*(?:\([^)]*\))?$/.test(field)) {
         throw new Error(`Invalid field name in ORDER BY: "${field}"`);
-    }
+      }
 
       const directionRaw = tokens[1]?.toUpperCase();
       if (directionRaw && directionRaw !== 'ASC' && directionRaw !== 'DESC') {
@@ -335,7 +352,7 @@ export class QueryLanguage {
     // zodat "COUNT(*) > 5" behandeld wordt als een gewone comparison met field "COUNT(*)"
     const normalized = havingPart.replace(
       /\b(COUNT|SUM|AVG|MIN|MAX)\s*\(\s*(\*|[A-Za-z_][A-Za-z0-9_]*)\s*\)/gi,
-      (_match: string, func: string, field: string) => `${func.toUpperCase()}(${field})`
+      (_match: string, func: string, field: string) => `${func.toUpperCase()}(${field})`,
     );
 
     return this.parseWhere(normalized);
@@ -493,11 +510,7 @@ export class QueryLanguage {
 
   // ── Grouping ───────────────────────────────────────────────────────────────
 
-  private executeGroupBy(
-    rows: QueryResultRow[],
-    groupBy: GroupByClause,
-    having?: HavingExpression,
-  ): QueryResultRow[] {
+  private executeGroupBy(rows: QueryResultRow[], groupBy: GroupByClause, having?: HavingExpression): QueryResultRow[] {
     // Stap 1: Groepeer rijen op de GROUP BY velden
     const groups = new Map<string, QueryResultRow[]>();
 
@@ -576,7 +589,7 @@ export class QueryLanguage {
 
     const leftKeys = leftDocs.length > 0 ? Object.keys(leftDocs[0]) : [];
     const rightKeys = rightDocs.length > 0 ? Object.keys(rightDocs[0]) : [];
-    const overlapping = leftKeys.filter(k => rightKeys.includes(k));
+    const overlapping = leftKeys.filter((k) => rightKeys.includes(k));
 
     let effectiveJoinType: 'INNER' | 'NATURAL' | 'FULL' = 'INNER';
     let leftKey: string | undefined;
@@ -623,12 +636,19 @@ export class QueryLanguage {
       for (const leftDoc of leftDocs) {
         const matches = rightMap.get(leftDoc[leftKey!]) ?? [];
         for (const rightDoc of matches) {
-          const merged = this.mergeDocuments(leftDoc, rightDoc, parsed.collection, join.collection, effectiveJoinType, mergeFields);
-          
+          const merged = this.mergeDocuments(
+            leftDoc,
+            rightDoc,
+            parsed.collection,
+            join.collection,
+            effectiveJoinType,
+            mergeFields,
+          );
+
           if (parsed.where && !this.evaluateWhere(merged, parsed.where)) {
             continue;
           }
-          
+
           results.push(this.project(merged, parsed.fields));
         }
       }
@@ -650,10 +670,10 @@ export class QueryLanguage {
     leftColl: string,
     rightColl: string,
     type: string,
-    mergeFields: string[]
+    mergeFields: string[],
   ): Record<string, FieldValue> {
     const merged: Record<string, FieldValue> = {};
-    const overlap = (leftDoc && rightDoc) ? this.getOverlappingFields(leftDoc, rightDoc) : new Set<string>();
+    const overlap = leftDoc && rightDoc ? this.getOverlappingFields(leftDoc, rightDoc) : new Set<string>();
     const isNatural = type === 'NATURAL';
 
     const leftJoinKey = mergeFields.length > 0 ? mergeFields[0] : null;
