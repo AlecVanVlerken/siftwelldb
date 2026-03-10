@@ -21,23 +21,16 @@
       padding: 3px 6px; font-size: 0.78rem; cursor: pointer; outline: none;
     }
     select:hover { border-color: #7ec8e3; }
-    .legend { margin-left: auto; display: flex; gap: 14px; align-items: center; font-size: 0.75rem; color: #666; flex-shrink: 0; }
-    .legend-item { display: flex; align-items: center; gap: 5px; }
-    .legend-dot { width: 10px; height: 10px; border-radius: 50%; background: #7ec8e3; }
-    .legend-img { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #7ec8e3; background: #333; }
     #map { width: 100vw; height: calc(100vh - 52px); display: block; }
     circle { cursor: pointer; }
-    circle:hover { stroke-width: 2.5px; opacity: 1 !important; }
-    .img-node { cursor: pointer; }
+    circle:hover { stroke-width: 2.5px; }
     #tooltip {
       position: fixed; background: #16213e; border: 1px solid #7ec8e3;
       border-radius: 8px; padding: 12px 16px; font-size: 12px;
       pointer-events: none; max-width: 300px; display: none;
       box-shadow: 0 8px 24px rgba(0,0,0,0.6); z-index: 100;
     }
-    .tip-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-    .tip-img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid #7ec8e3; flex-shrink: 0; }
-    .doc-id { color: #7ec8e3; font-size: 14px; font-weight: 600; }
+    .doc-id { color: #7ec8e3; font-size: 14px; font-weight: 600; margin-bottom: 8px; }
     .field { margin: 3px 0; }
     .field .key { color: #888; margin-right: 6px; }
   </style>
@@ -54,27 +47,19 @@
       <label>Y axis</label>
       <select id="y-select"></select>
     </div>
-    <div class="legend">
-      <div class="legend-item"><div class="legend-dot"></div> document</div>
-      <div class="legend-item"><div class="legend-img"></div> with image</div>
-    </div>
   </header>
   <svg id="map"></svg>
   <div id="tooltip"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
   <script>
-    const data = [{"x":0.1279395003838189,"y":0.19493842735061534,"id":"Auckland","label":"Auckland","fields":{"country":"New Zealand","continent":"Oceania","population":1614000,"language":"English"}},{"x":0.1391220240395046,"y":0.1449669145570099,"id":"Bangkok","label":"Bangkok","fields":{"country":"Thailand","continent":"Asia","population":10539000,"language":"Thai"}},{"x":0.1387428178074815,"y":0.11903409704664782,"id":"Beijing","label":"Beijing","fields":{"country":"China","continent":"Asia","population":21540000,"language":"Mandarin"}},{"x":0.09078608899670729,"y":0.17588344658506358,"id":"Berlin","label":"Berlin","fields":{"country":"Germany","continent":"Europe","population":3645000,"language":"German"}},{"x":0.15730856267001905,"y":0.2227703953099059,"id":"Buenos Aires","label":"Buenos Aires","fields":{"country":"Argentina","continent":"America","population":2891000,"language":"Spanish"}},{"x":0.10365550207783661,"y":0.11455080897169732,"id":"Cairo","label":"Cairo","fields":{"country":"Egypt","continent":"Africa","population":10107000,"language":"Arabic"}},{"x":0.17240501760558768,"y":0.24715031976827279,"id":"Chicago","label":"Chicago","fields":{"country":"USA","continent":"America","population":2696000,"language":"English"}},{"x":0.13814787061966963,"y":0.11920214832922892,"id":"Delhi","label":"Delhi","fields":{"country":"India","continent":"Asia","population":32941000,"language":"Hindi"}},{"x":0.14969612345332298,"y":0.21907892346766422,"id":"Lagos","label":"Lagos","fields":{"country":"Nigeria","continent":"Africa","population":14800000,"language":"English"}},{"x":0.16245177883602546,"y":0.21382793718953158,"id":"London","label":"London","fields":{"country":"UK","continent":"Europe","population":8982000,"language":"English"}},{"x":0.17240501760558768,"y":0.24715031976827279,"id":"Los Angeles","label":"Los Angeles","fields":{"country":"USA","continent":"America","population":3979000,"language":"English"}},{"x":0.10571949683579451,"y":0.1324548668001727,"id":"Lyon","label":"Lyon","fields":{"country":"France","continent":"Europe","population":522000,"language":"French"}},{"x":0.1589020470582909,"y":0.14164773478309708,"id":"Madrid","label":"Madrid","fields":{"country":"Spain","continent":"Europe","population":3223000,"language":"Spanish"}},{"x":0.15730856267001905,"y":0.222770395309906,"id":"Mexico City","label":"Mexico City","fields":{"country":"Mexico","continent":"America","population":9209000,"language":"Spanish"}},{"x":0.11657732129296854,"y":0.1295856114111738,"id":"Milan","label":"Milan","fields":{"country":"Italy","continent":"Europe","population":1352000,"language":"Italian"}},{"x":0.13814787061966963,"y":0.11920214832922892,"id":"Mumbai","label":"Mumbai","fields":{"country":"India","continent":"Asia","population":12442000,"language":"Hindi"}},{"x":0.09078608899670729,"y":0.17588344658506355,"id":"Munich","label":"Munich","fields":{"country":"Germany","continent":"Europe","population":1488000,"language":"German"}},{"x":0.12010392825165671,"y":0.16270222438166546,"id":"Nairobi","label":"Nairobi","fields":{"country":"Kenya","continent":"Africa","population":4397000,"language":"Swahili"}},{"x":0.17240501760558768,"y":0.24715031976827279,"id":"New York","label":"New York","fields":{"country":"USA","continent":"America","population":8336000,"language":"English"}},{"x":0.1561097562131159,"y":0.17153351828728614,"id":"Osaka","label":"Osaka","fields":{"country":"Japan","continent":"Asia","population":2691000,"language":"Japanese"}},{"x":0.10571949683579451,"y":0.1324548668001727,"id":"Paris","label":"Paris","fields":{"country":"France","continent":"Europe","population":2161000,"language":"French"}},{"x":0.15983647284114091,"y":0.23656498389264424,"id":"Rio de Janeiro","label":"Rio de Janeiro","fields":{"country":"Brazil","continent":"America","population":6748000,"language":"Portuguese"}},{"x":0.11657732129296854,"y":0.1295856114111738,"id":"Rome","label":"Rome","fields":{"country":"Italy","continent":"Europe","population":2873000,"language":"Italian"}},{"x":0.15983647284114091,"y":0.23656498389264424,"id":"Sao Paulo","label":"Sao Paulo","fields":{"country":"Brazil","continent":"America","population":12325000,"language":"Portuguese"}},{"x":0.11670541822114587,"y":0.1317976392761862,"id":"Seoul","label":"Seoul","fields":{"country":"South Korea","continent":"Asia","population":9776000,"language":"Korean"}},{"x":0.13874281780748154,"y":0.11903409704664782,"id":"Shanghai","label":"Shanghai","fields":{"country":"China","continent":"Asia","population":24280000,"language":"Mandarin"}},{"x":0.15712839067003756,"y":0.16675293391952783,"id":"Sydney","label":"Sydney","fields":{"country":"Australia","continent":"Oceania","population":5312000,"language":"English"}},{"x":0.1561097562131159,"y":0.1715335182872861,"id":"Tokyo","label":"Tokyo","fields":{"country":"Japan","continent":"Asia","population":13960000,"language":"Japanese"}},{"x":-0.5654428815911998,"y":0.016883701265082325,"id":"Albert Einstein","label":"Albert Einstein","fields":{"nationality":"German","profession":"physicist","field":"science","era":"20th century","born":"Germany"},"imageUrl":"https://ui-avatars.com/api/?name=Albert+Einstein&size=64&background=1a3c6e&color=fff&bold=true"},{"x":-0.5679564373487881,"y":-0.04227251032835276,"id":"Cleopatra","label":"Cleopatra","fields":{"nationality":"Egyptian","profession":"pharaoh","field":"politics","era":"1st century BC","born":"Egypt"},"imageUrl":"https://ui-avatars.com/api/?name=Cleopatra&size=64&background=c49a00&color=fff&bold=true"},{"x":-0.5651203320989994,"y":-0.03523217028531177,"id":"Confucius","label":"Confucius","fields":{"nationality":"Chinese","profession":"philosopher","field":"philosophy","era":"5th century BC","born":"China"},"imageUrl":"https://ui-avatars.com/api/?name=Confucius&size=64&background=b71c1c&color=fff&bold=true"},{"x":-0.4714133883588188,"y":-0.013224903312439215,"id":"Leonardo da Vinci","label":"Leonardo da Vinci","fields":{"nationality":"Italian","profession":"artist inventor","field":"art science","era":"15th century","born":"Italy"},"imageUrl":"https://ui-avatars.com/api/?name=Leonardo+Vinci&size=64&background=8B6914&color=fff&bold=true"},{"x":-0.5800580621026405,"y":-0.03242813595640244,"id":"Mahatma Gandhi","label":"Mahatma Gandhi","fields":{"nationality":"Indian","profession":"independence leader","field":"politics","era":"20th century","born":"India"},"imageUrl":"https://ui-avatars.com/api/?name=Mahatma+Gandhi&size=64&background=e65c00&color=fff&bold=true"},{"x":-0.5430676991827853,"y":-0.00795488199337197,"id":"Martin Luther King Jr","label":"Martin Luther King Jr","fields":{"nationality":"American","profession":"civil rights leader","field":"politics","era":"20th century","born":"USA"},"imageUrl":"https://ui-avatars.com/api/?name=Martin+Luther+King&size=64&background=2e7d32&color=fff&bold=true"},{"x":-0.5636527154563358,"y":-0.01750352888961756,"id":"Napoleon Bonaparte","label":"Napoleon Bonaparte","fields":{"nationality":"French","profession":"military leader","field":"politics","era":"19th century","born":"France"},"imageUrl":"https://ui-avatars.com/api/?name=Napoleon+Bonaparte&size=64&background=8B0000&color=fff&bold=true"},{"x":-0.6133620903581638,"y":-0.024607346248213133,"id":"Simon Bolivar","label":"Simon Bolivar","fields":{"nationality":"Venezuelan","profession":"liberator","field":"politics","era":"19th century","born":"Venezuela"},"imageUrl":"https://ui-avatars.com/api/?name=Simon+Bolivar&size=64&background=558b2f&color=fff&bold=true"},{"x":-0.5856707271321677,"y":-0.02585730385479669,"id":"Socrates","label":"Socrates","fields":{"nationality":"Greek","profession":"philosopher","field":"philosophy","era":"5th century BC","born":"Greece"},"imageUrl":"https://ui-avatars.com/api/?name=Socrates&size=64&background=0277bd&color=fff&bold=true"},{"x":-0.5632048712801155,"y":-0.021682213001096805,"id":"Wolfgang Amadeus Mozart","label":"Wolfgang Amadeus Mozart","fields":{"nationality":"Austrian","profession":"composer","field":"music","era":"18th century","born":"Austria"},"imageUrl":"https://ui-avatars.com/api/?name=Mozart&size=64&background=6a0dad&color=fff&bold=true"},{"x":0.18572030876440868,"y":-0.5245545053199745,"id":"Angkor Wat","label":"Angkor Wat","fields":{"country":"Cambodia","continent":"Asia","built":1150,"type":"ancient"},"imageUrl":"https://ui-avatars.com/api/?name=Angkor+Wat&size=64&background=4a8a2a&color=fff&bold=true"},{"x":0.17288165270894296,"y":-0.4770308272711253,"id":"Colosseum","label":"Colosseum","fields":{"country":"Italy","continent":"Europe","built":80,"type":"ancient"},"imageUrl":"https://ui-avatars.com/api/?name=Colosseum&size=64&background=8a6a2a&color=fff&bold=true"},{"x":0.16072937639183718,"y":-0.4340295092653549,"id":"Eiffel Tower","label":"Eiffel Tower","fields":{"country":"France","continent":"Europe","built":1889,"type":"manmade"},"imageUrl":"https://ui-avatars.com/api/?name=Eiffel+Tower&size=64&background=4a4a8a&color=fff&bold=true"},{"x":0.17550766963637898,"y":-0.4894825725064328,"id":"Great Wall","label":"Great Wall","fields":{"country":"China","continent":"Asia","built":700,"type":"ancient"},"imageUrl":"https://ui-avatars.com/api/?name=Great+Wall&size=64&background=8a2a2a&color=fff&bold=true"},{"x":0.1887783577151633,"y":-0.4755910825358099,"id":"Machu Picchu","label":"Machu Picchu","fields":{"country":"Peru","continent":"America","built":1450,"type":"ancient"},"imageUrl":"https://ui-avatars.com/api/?name=Machu+Picchu&size=64&background=6a8a2a&color=fff&bold=true"},{"x":0.1494366776251836,"y":-0.48612050661488027,"id":"Pyramids of Giza","label":"Pyramids of Giza","fields":{"country":"Egypt","continent":"Africa","built":-2560,"type":"ancient"},"imageUrl":"https://ui-avatars.com/api/?name=Pyramids+Giza&size=64&background=8a7a2a&color=fff&bold=true"},{"x":0.1812723419119918,"y":-0.447735181474586,"id":"Sagrada Familia","label":"Sagrada Familia","fields":{"country":"Spain","continent":"Europe","built":1882,"type":"manmade"},"imageUrl":"https://ui-avatars.com/api/?name=Sagrada+Familia&size=64&background=6a2a8a&color=fff&bold=true"},{"x":0.1827694460437744,"y":-0.3688051348473004,"id":"Statue of Liberty","label":"Statue of Liberty","fields":{"country":"USA","continent":"America","built":1886,"type":"manmade"},"imageUrl":"https://ui-avatars.com/api/?name=Statue+Liberty&size=64&background=2a8a7a&color=fff&bold=true"},{"x":0.16749281910822425,"y":-0.4492025206960456,"id":"Sydney Opera House","label":"Sydney Opera House","fields":{"country":"Australia","continent":"Oceania","built":1973,"type":"manmade"},"imageUrl":"https://ui-avatars.com/api/?name=Sydney+Opera&size=64&background=2a4a8a&color=fff&bold=true"},{"x":0.1749840146419122,"y":-0.48934150539002985,"id":"Taj Mahal","label":"Taj Mahal","fields":{"country":"India","continent":"Asia","built":1643,"type":"ancient"},"imageUrl":"https://ui-avatars.com/api/?name=Taj+Mahal&size=64&background=2a6a8a&color=fff&bold=true"}];
+    const data = [{"x":-0.12793944941659896,"y":-0.19493839276316854,"id":"Auckland","label":"Auckland","fields":{"country":"New Zealand","continent":"Oceania","population":1614000,"language":"English"}},{"x":-0.13912198613709006,"y":-0.14496679907267984,"id":"Bangkok","label":"Bangkok","fields":{"country":"Thailand","continent":"Asia","population":10539000,"language":"Thai"}},{"x":-0.1387427866851823,"y":-0.11903389497688556,"id":"Beijing","label":"Beijing","fields":{"country":"China","continent":"Asia","population":21540000,"language":"Mandarin"}},{"x":-0.09078604301137957,"y":-0.17588392973922476,"id":"Berlin","label":"Berlin","fields":{"country":"Germany","continent":"Europe","population":3645000,"language":"German"}},{"x":-0.15730850442605204,"y":-0.22277033936223622,"id":"Buenos Aires","label":"Buenos Aires","fields":{"country":"Argentina","continent":"America","population":2891000,"language":"Spanish"}},{"x":-0.1036554721280825,"y":-0.11455077876697321,"id":"Cairo","label":"Cairo","fields":{"country":"Egypt","continent":"Africa","population":10107000,"language":"Arabic"}},{"x":-0.17240495298753142,"y":-0.24715014069364494,"id":"Chicago","label":"Chicago","fields":{"country":"USA","continent":"America","population":2696000,"language":"English"}},{"x":-0.13814783945343517,"y":-0.11920194968343567,"id":"Delhi","label":"Delhi","fields":{"country":"India","continent":"Asia","population":32941000,"language":"Hindi"}},{"x":-0.149696066174428,"y":-0.2190788738600537,"id":"Lagos","label":"Lagos","fields":{"country":"Nigeria","continent":"Africa","population":14800000,"language":"English"}},{"x":-0.16245172293006924,"y":-0.2138282008842467,"id":"London","label":"London","fields":{"country":"UK","continent":"Europe","population":8982000,"language":"English"}},{"x":-0.17240495298753142,"y":-0.2471501406936449,"id":"Los Angeles","label":"Los Angeles","fields":{"country":"USA","continent":"America","population":3979000,"language":"English"}},{"x":-0.10571946220505736,"y":-0.13245539387038127,"id":"Lyon","label":"Lyon","fields":{"country":"France","continent":"Europe","population":522000,"language":"French"}},{"x":-0.1589020100240764,"y":-0.14164811946935857,"id":"Madrid","label":"Madrid","fields":{"country":"Spain","continent":"Europe","population":3223000,"language":"Spanish"}},{"x":-0.15730850442605201,"y":-0.22277033936223628,"id":"Mexico City","label":"Mexico City","fields":{"country":"Mexico","continent":"America","population":9209000,"language":"Spanish"}},{"x":-0.11657728741238045,"y":-0.12958612321377258,"id":"Milan","label":"Milan","fields":{"country":"Italy","continent":"Europe","population":1352000,"language":"Italian"}},{"x":-0.1381478394534352,"y":-0.11920194968343566,"id":"Mumbai","label":"Mumbai","fields":{"country":"India","continent":"Asia","population":12442000,"language":"Hindi"}},{"x":-0.09078604301137957,"y":-0.17588392973922476,"id":"Munich","label":"Munich","fields":{"country":"Germany","continent":"Europe","population":1488000,"language":"German"}},{"x":-0.12010388571253829,"y":-0.16270222241926924,"id":"Nairobi","label":"Nairobi","fields":{"country":"Kenya","continent":"Africa","population":4397000,"language":"Swahili"}},{"x":-0.17240495298753142,"y":-0.2471501406936449,"id":"New York","label":"New York","fields":{"country":"USA","continent":"America","population":8336000,"language":"English"}},{"x":-0.15610971136466276,"y":-0.17153335472398973,"id":"Osaka","label":"Osaka","fields":{"country":"Japan","continent":"Asia","population":2691000,"language":"Japanese"}},{"x":-0.10571946220505736,"y":-0.13245539387038124,"id":"Paris","label":"Paris","fields":{"country":"France","continent":"Europe","population":2161000,"language":"French"}},{"x":-0.15983641099055193,"y":-0.2365648220671026,"id":"Rio de Janeiro","label":"Rio de Janeiro","fields":{"country":"Brazil","continent":"America","population":6748000,"language":"Portuguese"}},{"x":-0.11657728741238045,"y":-0.12958612321377258,"id":"Rome","label":"Rome","fields":{"country":"Italy","continent":"Europe","population":2873000,"language":"Italian"}},{"x":-0.15983641099055193,"y":-0.23656482206710258,"id":"Sao Paulo","label":"Sao Paulo","fields":{"country":"Brazil","continent":"America","population":12325000,"language":"Portuguese"}},{"x":-0.11670538376190905,"y":-0.13179752859849603,"id":"Seoul","label":"Seoul","fields":{"country":"South Korea","continent":"Asia","population":9776000,"language":"Korean"}},{"x":-0.13874278668518222,"y":-0.11903389497688556,"id":"Shanghai","label":"Shanghai","fields":{"country":"China","continent":"Asia","population":24280000,"language":"Mandarin"}},{"x":-0.15712834707205106,"y":-0.16675291160829092,"id":"Sydney","label":"Sydney","fields":{"country":"Australia","continent":"Oceania","population":5312000,"language":"English"}},{"x":-0.15610971136466278,"y":-0.1715333547239897,"id":"Tokyo","label":"Tokyo","fields":{"country":"Japan","continent":"Asia","population":13960000,"language":"Japanese"}},{"x":0.5654428860054627,"y":-0.016883682291649372,"id":"Albert Einstein","label":"Albert Einstein","fields":{"nationality":"German","profession":"physicist","field":"science","era":"20th century","born":"Germany"}},{"x":0.5679564262964626,"y":0.04227273491827718,"id":"Cleopatra","label":"Cleopatra","fields":{"nationality":"Egyptian","profession":"pharaoh","field":"politics","era":"1st century BC","born":"Egypt"}},{"x":0.5651203228874728,"y":0.035232438980667885,"id":"Confucius","label":"Confucius","fields":{"nationality":"Chinese","profession":"philosopher","field":"philosophy","era":"5th century BC","born":"China"}},{"x":0.4714133849010815,"y":0.013224884270972665,"id":"Leonardo da Vinci","label":"Leonardo da Vinci","fields":{"nationality":"Italian","profession":"artist inventor","field":"art science","era":"15th century","born":"Italy"}},{"x":0.5800580536242175,"y":0.03242838009737639,"id":"Mahatma Gandhi","label":"Mahatma Gandhi","fields":{"nationality":"Indian","profession":"independence leader","field":"politics","era":"20th century","born":"India"}},{"x":0.5430676971028536,"y":0.007955118059512541,"id":"Martin Luther King Jr","label":"Martin Luther King Jr","fields":{"nationality":"American","profession":"civil rights leader","field":"politics","era":"20th century","born":"USA"}},{"x":0.5636527108799102,"y":0.01750355344378392,"id":"Napoleon Bonaparte","label":"Napoleon Bonaparte","fields":{"nationality":"French","profession":"military leader","field":"politics","era":"19th century","born":"France"}},{"x":0.6133620839244461,"y":0.024607551159948414,"id":"Simon Bolivar","label":"Simon Bolivar","fields":{"nationality":"Venezuelan","profession":"liberator","field":"politics","era":"19th century","born":"Venezuela"}},{"x":0.5856707203716708,"y":0.025857537763565103,"id":"Socrates","label":"Socrates","fields":{"nationality":"Greek","profession":"philosopher","field":"philosophy","era":"5th century BC","born":"Greece"}},{"x":0.5632048656111927,"y":0.02168241048342869,"id":"Wolfgang Amadeus Mozart","label":"Wolfgang Amadeus Mozart","fields":{"nationality":"Austrian","profession":"composer","field":"music","era":"18th century","born":"Austria"}},{"x":-0.1857204459108567,"y":0.5245546715482531,"id":"Angkor Wat","label":"Angkor Wat","fields":{"country":"Cambodia","continent":"Asia","built":1150,"type":"ancient"}},{"x":-0.17288177743042102,"y":0.4770304899182321,"id":"Colosseum","label":"Colosseum","fields":{"country":"Italy","continent":"Europe","built":80,"type":"ancient"}},{"x":-0.16072948987061916,"y":0.43402903908833756,"id":"Eiffel Tower","label":"Eiffel Tower","fields":{"country":"France","continent":"Europe","built":1889,"type":"manmade"}},{"x":-0.1755077976130734,"y":0.4894827826188885,"id":"Great Wall","label":"Great Wall","fields":{"country":"China","continent":"Asia","built":700,"type":"ancient"}},{"x":-0.18877848206029535,"y":0.4755912355330501,"id":"Machu Picchu","label":"Machu Picchu","fields":{"country":"Peru","continent":"America","built":1450,"type":"ancient"}},{"x":-0.1494368047231344,"y":0.48612059053343776,"id":"Pyramids of Giza","label":"Pyramids of Giza","fields":{"country":"Egypt","continent":"Africa","built":-2560,"type":"ancient"}},{"x":-0.18127245897417535,"y":0.4477347589185826,"id":"Sagrada Familia","label":"Sagrada Familia","fields":{"country":"Spain","continent":"Europe","built":1882,"type":"manmade"}},{"x":-0.18276954246955263,"y":0.36880521385733805,"id":"Statue of Liberty","label":"Statue of Liberty","fields":{"country":"USA","continent":"America","built":1886,"type":"manmade"}},{"x":-0.1674929365540723,"y":0.4492024429426921,"id":"Sydney Opera House","label":"Sydney Opera House","fields":{"country":"Australia","continent":"Oceania","built":1973,"type":"manmade"}},{"x":-0.17498414258172598,"y":0.48934171295283274,"id":"Taj Mahal","label":"Taj Mahal","fields":{"country":"India","continent":"Asia","built":1643,"type":"ancient"}}];
 
     const W = window.innerWidth;
     const H = window.innerHeight - 52;
     const pad = 80;
 
     const svg = d3.select('#map').attr('width', W).attr('height', H);
-
-    svg.append('defs')
-      .append('clipPath').attr('id', 'img-clip')
-      .append('circle').attr('cx', 0).attr('cy', 0).attr('r', 16);
 
     const xScalePCA = d3.scaleLinear().domain(d3.extent(data, d => d.x)).range([pad, W - pad]);
     const yScalePCA = d3.scaleLinear().domain(d3.extent(data, d => d.y)).range([H - pad, pad]);
@@ -90,7 +75,7 @@
     }
     if (allFields.length > 1) ySel.value = allFields[1];
 
-    // ── Deterministic per-document jitter (stable across re-renders) ────────
+    // ── Deterministic per-document jitter ───────────────────────────────────
     function stableJitter(id, seed, range) {
       const s = id + seed;
       let h = 0x811c9dc5;
@@ -99,122 +84,78 @@
     }
 
     /**
-     * THE KEY FIX: one single function that computes both data positions and
-     * tick positions from the same arithmetic. Axis labels and data points
-     * can never drift apart because they share the same source of truth.
+     * Computes pixel positions for one axis AND marks which documents are visible.
+     * A document is visible only if it has a value for the chosen field.
+     * In semantic mode every document is visible.
      *
      * Returns:
-     *   dataPositions  — one pixel value per document (with jitter for categoricals)
-     *   ticks          — [{label, pos}] for axis decorations (no jitter, exact base positions)
-     *   naPos          — position for missing-value documents, or null if none
+     *   dataPositions — pixel value per document (jitter applied for categoricals)
+     *   ticks         — [{label, pos}] for axis tick marks (no jitter, exact base)
+     *   visible       — boolean[] — false means this document is missing the field
      */
     function computeLayout(field, axis) {
       const isX = axis === 'x';
-      const lo  = isX ? pad     : H - pad;   // start of usable range
-      const hi  = isX ? W - pad : pad;        // end   of usable range
+      const lo  = isX ? pad     : H - pad;
+      const hi  = isX ? W - pad : pad;
 
-      // ── Semantic (PCA) mode ──────────────────────────────────────────────
       if (field === 'semantic') {
         return {
           dataPositions: data.map(d => isX ? xScalePCA(d.x) : yScalePCA(d.y)),
           ticks: [],
-          naPos: null,
+          visible: data.map(() => true),
         };
       }
 
-      const rawValues  = data.map(d => d.fields[field]);
-      const defined    = rawValues.filter(v => v != null);
-      const isNumeric  = defined.length > 0 && defined.every(v => typeof v === 'number');
-      const hasMissing = rawValues.some(v => v == null);
-      const naPos      = isX ? pad / 2 : H - pad / 2;
+      const rawValues = data.map(d => d.fields[field]);
+      const visible   = rawValues.map(v => v != null);
+      const defined   = rawValues.filter(v => v != null);
+      const isNumeric = defined.length > 0 && defined.every(v => typeof v === 'number');
 
-      // ── Numeric field ────────────────────────────────────────────────────
       if (isNumeric) {
         const scale = d3.scaleLinear().domain(d3.extent(defined)).range([lo, hi]);
         return {
           dataPositions: rawValues.map((v, i) =>
-            v != null
-              ? scale(v) + stableJitter(data[i].id, axis, 18)
-              : naPos    + stableJitter(data[i].id, axis + 'na', 30)
+            v != null ? scale(v) + stableJitter(data[i].id, axis, 18) : 0
           ),
           ticks: scale.ticks(5).map(t => ({ label: String(t), pos: scale(t) })),
-          naPos: hasMissing ? naPos : null,
+          visible,
         };
       }
 
-      // ── Categorical field ────────────────────────────────────────────────
+      // Categorical
       const categories = [...new Set(defined.map(String))].sort();
-      const step = categories.length > 1 ? (hi - lo) / (categories.length - 1) : 0;
-
-      // Build a map: category string → exact base pixel position (no jitter)
+      const step    = categories.length > 1 ? (hi - lo) / (categories.length - 1) : 0;
       const basePos = new Map(categories.map((cat, idx) => [cat, lo + idx * step]));
 
       return {
-        dataPositions: rawValues.map((v, i) => {
-          if (v == null) return naPos + stableJitter(data[i].id, axis + 'na', 30);
-          return basePos.get(String(v)) + stableJitter(data[i].id, axis, 22);
-        }),
-        // Ticks reuse the exact same basePos map — guaranteed to match data positions
+        dataPositions: rawValues.map((v, i) =>
+          v != null ? basePos.get(String(v)) + stableJitter(data[i].id, axis, 22) : 0
+        ),
         ticks: categories.map(cat => ({ label: cat, pos: basePos.get(cat) })),
-        naPos: hasMissing ? naPos : null,
+        visible,
       };
     }
 
-    // ── Axis decoration ─────────────────────────────────────────────────────
-    const axisLayer = svg.append('g').attr('class', 'axis-layer');
+    // ── Axis decorations ────────────────────────────────────────────────────
+    const axisLayer = svg.append('g');
 
-    function drawAxis(field, axis, ticks, naPos) {
+    function drawAxis(field, axis, ticks) {
       const isX = axis === 'x';
       axisLayer.selectAll('.' + axis + '-deco').remove();
-      if (field === 'semantic') return;
+      if (field === 'semantic' || ticks.length === 0) return;
 
       const g2 = axisLayer.append('g').attr('class', axis + '-deco');
 
-      // Field name label
-      if (isX) {
-        g2.append('text').attr('x', W / 2).attr('y', H - 6)
-          .attr('text-anchor', 'middle').attr('fill', '#555').attr('font-size', 11).text(field);
-      } else {
-        g2.append('text')
-          .attr('transform', 'rotate(-90)').attr('x', -H / 2).attr('y', 14)
-          .attr('text-anchor', 'middle').attr('fill', '#555').attr('font-size', 11).text(field);
-      }
-
-      // Tick marks and labels — positions come directly from computeLayout ticks
-      for (const { label, pos } of ticks) {
+      // Ticks — positions come directly from computeLayout, same arithmetic as data
+      for (const { pos } of ticks) {
         if (isX) {
           g2.append('line')
             .attr('x1', pos).attr('y1', pad - 8).attr('x2', pos).attr('y2', H - pad + 8)
             .attr('stroke', '#2a2a5a').attr('stroke-width', 1);
-          g2.append('text')
-            .attr('x', pos).attr('y', H - pad + 20)
-            .attr('text-anchor', 'middle').attr('fill', '#666').attr('font-size', 10).text(label);
         } else {
           g2.append('line')
             .attr('x1', pad - 8).attr('y1', pos).attr('x2', W - pad + 8).attr('y2', pos)
             .attr('stroke', '#2a2a5a').attr('stroke-width', 1);
-          g2.append('text')
-            .attr('x', pad - 12).attr('y', pos + 3)
-            .attr('text-anchor', 'end').attr('fill', '#666').attr('font-size', 10).text(label);
-        }
-      }
-
-      // N/A marker
-      if (naPos != null) {
-        if (isX) {
-          g2.append('line')
-            .attr('x1', naPos).attr('y1', pad).attr('x2', naPos).attr('y2', H - pad)
-            .attr('stroke', '#2a2a5a').attr('stroke-width', 1).attr('stroke-dasharray', '4 4');
-          g2.append('text')
-            .attr('x', naPos).attr('y', H - pad + 20)
-            .attr('text-anchor', 'middle').attr('fill', '#444').attr('font-size', 10).text('N/A');
-        } else {
-          g2.append('line')
-            .attr('x1', pad).attr('y1', naPos).attr('x2', W - pad).attr('y2', naPos)
-            .attr('stroke', '#2a2a5a').attr('stroke-width', 1).attr('stroke-dasharray', '4 4');
-          g2.append('text')
-            .attr('x', pad - 12).attr('y', naPos + 3)
-            .attr('text-anchor', 'end').attr('fill', '#444').attr('font-size', 10).text('N/A');
         }
       }
     }
@@ -229,8 +170,7 @@
     function showTooltip(event, d) {
       const rows = Object.entries(d.fields)
         .map(([k, v]) => '<div class="field"><span class="key">' + k + '</span>' + v + '</div>').join('');
-      const imgHtml = d.imageUrl ? '<img class="tip-img" src="' + d.imageUrl + '" crossorigin="anonymous"/>' : '';
-      tooltip.innerHTML = '<div class="tip-header">' + imgHtml + '<div class="doc-id">' + d.id + '</div></div>' + rows;
+      tooltip.innerHTML = '<div class="doc-id">' + d.id + '</div>' + rows;
       tooltip.style.display = 'block';
       const tx = event.clientX + 16;
       tooltip.style.left = (tx + tooltip.offsetWidth > W ? tx - tooltip.offsetWidth - 32 : tx) + 'px';
@@ -239,51 +179,43 @@
     function hideTooltip() { tooltip.style.display = 'none'; }
 
     g.selectAll('circle.dot')
-      .data(data.filter(d => !d.imageUrl)).join('circle').attr('class', 'dot')
-      .attr('r', 8).attr('fill', d => color(data.indexOf(d)))
-      .attr('opacity', 0.82).attr('stroke', '#fff').attr('stroke-width', 0.8)
+      .data(data).join('circle').attr('class', 'dot')
+      .attr('r', 8).attr('fill', (_, i) => color(i))
+      .attr('stroke', '#fff').attr('stroke-width', 0.8)
       .on('mousemove', showTooltip).on('mouseleave', hideTooltip);
-
-    const imgNodes = g.selectAll('g.img-node')
-      .data(data.filter(d => d.imageUrl)).join('g').attr('class', 'img-node')
-      .on('mousemove', showTooltip).on('mouseleave', hideTooltip);
-    imgNodes.append('image')
-      .attr('x', -16).attr('y', -16).attr('width', 32).attr('height', 32)
-      .attr('href', d => d.imageUrl ?? '').attr('clip-path', 'url(#img-clip)').attr('crossorigin', 'anonymous');
-    imgNodes.append('circle')
-      .attr('r', 16).attr('fill', 'none')
-      .attr('stroke', d => color(data.indexOf(d))).attr('stroke-width', 2.5);
 
     g.selectAll('text.lbl').data(data).join('text').attr('class', 'lbl')
       .attr('font-size', 11).attr('fill', '#ccc')
       .attr('pointer-events', 'none').attr('user-select', 'none')
       .text(d => d.label);
 
-    // ── Update: uses computeLayout so data positions and tick positions are
-    //    always computed from identical arithmetic ───────────────────────────
+    // ── Update ──────────────────────────────────────────────────────────────
     function update(animate) {
       const xLayout = computeLayout(xSel.value, 'x');
       const yLayout = computeLayout(ySel.value, 'y');
 
-      const posMap = new Map(
-        data.map((d, i) => [d.id, { x: xLayout.dataPositions[i], y: yLayout.dataPositions[i] }])
-      );
+      // A document is shown only when it has a value on BOTH selected axes
+      const posMap = new Map(data.map((d, i) => [d.id, {
+        x:       xLayout.dataPositions[i],
+        y:       yLayout.dataPositions[i],
+        visible: xLayout.visible[i] && yLayout.visible[i],
+      }]));
 
       const t = d3.transition().duration(animate ? 700 : 0).ease(d3.easeCubicInOut);
 
       g.selectAll('circle.dot').transition(t)
-        .attr('cx', d => posMap.get(d.id).x).attr('cy', d => posMap.get(d.id).y);
-
-      g.selectAll('g.img-node').transition(t)
-        .attr('transform', d => { const p = posMap.get(d.id); return 'translate(' + p.x + ',' + p.y + ')'; });
+        .attr('cx',            d => posMap.get(d.id).x)
+        .attr('cy',            d => posMap.get(d.id).y)
+        .attr('opacity',       d => posMap.get(d.id).visible ? 0.82 : 0)
+        .attr('pointer-events',d => posMap.get(d.id).visible ? 'auto' : 'none');
 
       g.selectAll('text.lbl').transition(t)
-        .attr('x', d => posMap.get(d.id).x + (d.imageUrl ? 20 : 12))
-        .attr('y', d => posMap.get(d.id).y + 4);
+        .attr('x',       d => posMap.get(d.id).x + 12)
+        .attr('y',       d => posMap.get(d.id).y + 4)
+        .attr('opacity', d => posMap.get(d.id).visible ? 1 : 0);
 
-      // Pass tick positions that came from the SAME computeLayout call
-      drawAxis(xSel.value, 'x', xLayout.ticks, xLayout.naPos);
-      drawAxis(ySel.value, 'y', yLayout.ticks, yLayout.naPos);
+      drawAxis(xSel.value, 'x', xLayout.ticks);
+      drawAxis(ySel.value, 'y', yLayout.ticks);
     }
 
     update(false);
