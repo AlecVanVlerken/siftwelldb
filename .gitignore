@@ -5,12 +5,15 @@ coverage/
 *.data
 *.log
 src/benchmarking/large-dataset/db/
+uitleg/
 
 .DS_Store
 Thumbs.db
 
 # vim swap files
 *.swp
+*.data
+*.log
 
 testdb
 demo-db/
@@ -19,3 +22,4 @@ src/benchmarking/results/
 *.tsbuildinfo
 
 .vscode/
+
