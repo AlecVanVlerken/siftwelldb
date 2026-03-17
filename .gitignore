@@ -2,8 +2,6 @@ node_modules/
 build/
 coverage/
 
-*.data
-*.log
 src/benchmarking/large-dataset/db/
 uitleg/
 
