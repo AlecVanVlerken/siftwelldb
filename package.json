@@ -17,7 +17,8 @@
     "prettier-fix": "prettier --write src/",
     "trivialdbms.test": "tsx src/trivialdbms.test.mts",
     "demo": "tsx src/demo/semanticSearch.demo.mts",
-    "demo:images": "tsx src/demo/semanticImageSearch.demo.mts"
+    "demo:images": "tsx src/demo/semanticImageSearch.demo.mts",
+    "benchmark:compression": "tsx src/benchmarking/compression-benchmark.mts"
   },
   "devDependencies": {
     "@eslint/js": "9.39.0",

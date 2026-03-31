@@ -1785,4 +1785,38 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
       await db2.close();
     });
   });
+
+  describe('compression', () => {
+    it('applies default compression and returns encoded payload on request', async () => {
+      db.setFieldCompressionDefaults('articles', { content: 'gzip' });
+      await db.insertDocument(
+        'articles',
+        JSON.stringify({ id: 'a1', content: 'Lorem ipsum '.repeat(80), title: 'Test' }),
+      );
+
+      const encodedRaw = await db.getDocumentById('articles', 'a1', { encoded: true });
+      const encoded = JSON.parse(encodedRaw) as Record<string, unknown>;
+      const content = encoded['content'] as Record<string, unknown>;
+
+      expect(content['compression']).toBe('gzip');
+      expect(typeof content['payloadBase64']).toBe('string');
+
+      const decodedRaw = await db.getDocumentById('articles', 'a1');
+      const decoded = JSON.parse(decodedRaw) as Record<string, unknown>;
+      expect(decoded['content']).toBe('Lorem ipsum '.repeat(80));
+    });
+
+    it('supports per-document override to disable compression', async () => {
+      db.setFieldCompressionDefaults('articles', { content: 'gzip' });
+      await db.insertDocument('articles', JSON.stringify({ id: 'a2', content: 'Lorem ipsum '.repeat(80) }), {
+        compression: { content: 'off' },
+      });
+
+      const encodedRaw = await db.getDocumentById('articles', 'a2', { encoded: true });
+      const encoded = JSON.parse(encodedRaw) as Record<string, unknown>;
+      const content = encoded['content'] as Record<string, unknown>;
+
+      expect(content['compression']).toBe('none');
+    });
+  });
 });

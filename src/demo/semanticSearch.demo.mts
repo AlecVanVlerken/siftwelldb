@@ -210,7 +210,7 @@ async function main() {
   const extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { dtype: 'fp32' });
   const embeddingFn = async (text: string): Promise<Float32Array> => {
     const out = await extractor(text, { pooling: 'mean', normalize: true });
-    return new Float32Array(out.data as ArrayLike<number>);
+    return new Float32Array(out.data);
   };
 
   const hnswConfig: HnswConfig = { dimension: 384, embeddingFn, M: 16, efConstruction: 100, efSearch: 50 };
