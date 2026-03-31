@@ -94,4 +94,43 @@ describe('RecordStore', () => {
     const nextBlockId = block.readUInt32LE(1);
     expect(nextBlockId).toBeGreaterThan(0);
   });
+
+  it('returns encoded fields with compression metadata', async () => {
+    const { recordStore } = await createRecordStore();
+    const doc = parseRawDocument('docs', { id: 'enc1', title: 'A'.repeat(300), count: 7 });
+
+    const blockId = await recordStore.writeRecord(doc, { compressionDefaults: { title: 'gzip' } });
+    const encoded = await recordStore.readRecordEncoded(blockId);
+
+    expect(encoded).not.toBeNull();
+    const title = encoded!.iterableEntries.find((entry) => entry.key === 'title');
+    expect(title?.compression).toBe('gzip');
+    expect(title?.payloadBase64).toBeTypeOf('string');
+  });
+
+  it('stores a smaller payload with gzip than without compression for repetitive text', async () => {
+    const { recordStore } = await createRecordStore();
+    const repetitive = 'ABCD '.repeat(500);
+    const doc = parseRawDocument('docs', { id: 'cmp1', content: repetitive });
+
+    const compressedBlock = await recordStore.writeRecord(doc, { compressionDefaults: { content: 'gzip' } });
+    const uncompressedBlock = await recordStore.writeRecord(doc, { compressionDefaults: { content: 'none' } });
+
+    const compressed = await recordStore.readRecordEncoded(compressedBlock);
+    const uncompressed = await recordStore.readRecordEncoded(uncompressedBlock);
+
+    expect(compressed).not.toBeNull();
+    expect(uncompressed).not.toBeNull();
+
+    const compressedEntry = compressed!.iterableEntries.find((entry) => entry.key === 'content');
+    const uncompressedEntry = uncompressed!.iterableEntries.find((entry) => entry.key === 'content');
+
+    expect(compressedEntry?.compression).toBe('gzip');
+    expect(uncompressedEntry?.compression).toBe('none');
+
+    const compressedBytes = Buffer.from(compressedEntry!.payloadBase64, 'base64').length;
+    const uncompressedBytes = Buffer.from(uncompressedEntry!.payloadBase64, 'base64').length;
+
+    expect(compressedBytes).toBeLessThan(uncompressedBytes);
+  });
 });

@@ -132,8 +132,10 @@ import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
  */
 export type { HnswConfig };
 import { type File } from '../core/file.mjs';
-import { documentToJSON, parseRawDocument, type FieldValue } from './document.mjs';
+import { documentToJSON, parseRawDocument, type Document, type FieldValue } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
+import { type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
+import { type EncodedDocument } from './recordstore.mjs';
 
 /**
  * SimpleDbms class
@@ -231,9 +233,13 @@ export class SimpleDbms {
    * @param documentJSON - JSON string, e.g.
    *   `'{"id":"dog","photo.jpeg":"<base64>"}'`
    */
-  async insertDocument(collection: string, documentJSON: string): Promise<void> {
+  async insertDocument(
+    collection: string,
+    documentJSON: string,
+    options?: { compression?: FieldCompressionOverrides },
+  ): Promise<void> {
     const documentObj = JSONtoDocument(documentJSON, collection);
-    return this.dbmsback.insertDocument(documentObj);
+    return this.dbmsback.insertDocument(documentObj, options?.compression);
   }
 
   /**
@@ -251,9 +257,16 @@ export class SimpleDbms {
    * @param id - The ID of the document to retrieve.
    * @returns A Promise that resolves to the JSON representation of the document.
    */
-  async getDocumentById(collection: string, id: string): Promise<string> {
-    const document = await this.dbmsback.getDocument(id, collection);
-    return documentToJSON(document);
+  async getDocumentById(collection: string, id: string, options?: { encoded?: boolean }): Promise<string> {
+    const document = await this.dbmsback.getDocument(id, collection, options?.encoded ?? false);
+    if (options?.encoded) {
+      return JSON.stringify(this.encodedDocumentToObject(document as EncodedDocument));
+    }
+    return documentToJSON(document as Document);
+  }
+
+  setFieldCompressionDefaults(collection: string, defaults: FieldCompressionDefaults): void {
+    this.dbmsback.setFieldCompressionDefaults(collection, defaults);
   }
 
   /**
@@ -344,5 +357,26 @@ export class SimpleDbms {
   async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<string[]> {
     const documents = await this.dbmsback.semanticImageSearch(collection, queryImage, k);
     return documents.map(documentToJSON);
+  }
+
+  private encodedDocumentToObject(document: EncodedDocument): Record<string, unknown> {
+    const toFieldValue = (entry: EncodedDocument['iterableEntries'][number]) => ({
+      valueType: entry.valueType,
+      compression: entry.compression,
+      payloadBase64: entry.payloadBase64,
+    });
+
+    const fields: Record<string, unknown> = {};
+    for (const entry of document.iterableEntries) {
+      fields[entry.key] = toFieldValue(entry);
+    }
+    for (const entry of document.nonIterableEntries) {
+      fields[entry.key] = toFieldValue(entry);
+    }
+
+    return {
+      id: document.id,
+      ...fields,
+    };
   }
 }
