@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>Range Query — B+ Tree vs R*-Tree</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: #0a0a0f;
+  color: #aaaacc;
+  font-family: 'Courier New', monospace;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  gap: 20px;
+}
+
+h1 {
+  font-size: 0.8rem;
+  letter-spacing: 0.2em;
+  color: #444466;
+  text-transform: uppercase;
+}
+
+canvas {
+  border: 1px solid #1a1a2e;
+  border-radius: 4px;
+}
+
+#stats {
+  display: flex;
+  gap: 40px;
+  font-size: 0.75rem;
+}
+
+.stat-label { color: #444466; }
+.stat-value { font-size: 1rem; }
+
+#btree-ms  { color: #5577ff; }
+#rstar-ms  { color: #33cc88; }
+#total-pts { color: #888899; }
+
+#legend {
+  display: flex;
+  gap: 24px;
+  font-size: 0.65rem;
+  color: #444466;
+}
+
+.dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+</style>
+</head>
+<body>
+
+<h1>Range Query — B+ Tree vs R*-Tree</h1>
+
+<canvas id="canvas" width="560" height="560"></canvas>
+
+<div id="stats">
+  <div>
+    <div class="stat-label">B+ Tree</div>
+    <div class="stat-value" id="btree-ms">— ms</div>
+  </div>
+  <div>
+    <div class="stat-label">R*-Tree</div>
+    <div class="stat-value" id="rstar-ms">— ms</div>
+  </div>
+  <div>
+    <div class="stat-label">Points</div>
+    <div class="stat-value" id="total-pts">—</div>
+  </div>
+</div>
+
+<div id="legend">
+  <span><span class="dot" style="background:#33cc88"></span>Inside query</span>
+  <span><span class="dot" style="background:#cc7722"></span>B+ scan band (wasted work)</span>
+  <span><span class="dot" style="background:#2a2a44"></span>Pruned by both</span>
+</div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const CANV = 560;
+const C = CANV / 2;
+
+let world = 400, queryR = 150;
+
+function toScreen(wx, wy) {
+  const s = C / world;
+  return [C + wx * s, C - wy * s];
+}
+
+function draw(state) {
+  world  = state.world;
+  queryR = state.queryR;
+  const s = C / world;
+  const qPx = queryR * s;
+
+  ctx.clearRect(0, 0, CANV, CANV);
+
+  // B+ tree scan band (faint)
+  ctx.fillStyle = 'rgba(80, 100, 180, 0.04)';
+  ctx.fillRect(C - qPx, 0, qPx * 2, CANV);
+
+  // Band edges
+  ctx.strokeStyle = 'rgba(80, 100, 180, 0.12)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 6]);
+  ctx.beginPath(); ctx.moveTo(C - qPx, 0); ctx.lineTo(C - qPx, CANV); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(C + qPx, 0); ctx.lineTo(C + qPx, CANV); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Query circle
+  ctx.beginPath();
+  ctx.arc(C, C, qPx, 0, 2 * Math.PI);
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Points
+  for (const p of state.points) {
+    const [px, py] = toScreen(p.x, p.y);
+    const dx = p.x, dy = p.y;
+    const inCircle = dx * dx + dy * dy <= queryR * queryR;
+    const inBand   = Math.abs(p.x) <= queryR;
+
+    if (inCircle) {
+      ctx.fillStyle = '#33cc88';
+    } else if (inBand) {
+      ctx.fillStyle = '#cc7722';
+    } else {
+      ctx.fillStyle = '#2a2a44';
+    }
+
+    ctx.beginPath();
+    ctx.arc(px, py, 2, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+
+  // Center cross
+  ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(C - 8, C); ctx.lineTo(C + 8, C); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(C, C - 8); ctx.lineTo(C, C + 8); ctx.stroke();
+}
+
+function updateStats(state) {
+  document.getElementById('btree-ms').textContent  = state.btreeMs.toFixed(3) + ' ms';
+  document.getElementById('rstar-ms').textContent  = state.rstarMs.toFixed(3) + ' ms';
+  document.getElementById('total-pts').textContent = state.total;
+}
+
+const es = new EventSource('/events');
+es.onmessage = (e) => {
+  const state = JSON.parse(e.data);
+  draw(state);
+  updateStats(state);
+};
+</script>
+</body>
+</html>
