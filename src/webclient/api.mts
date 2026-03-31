@@ -1,8 +1,5 @@
-// author: Alexandre-Gatien Bienfet
-// date: 2026-02-23
-//
-// ApiRouter — handles HTTP routing for /api/* endpoints.
-// Delegates all database logic to DatabaseService
+// @author Alexandre-Gatien Bienfet
+// @date 2026-03-31
 
 import * as http from 'node:http';
 import { DatabaseService } from './service.mjs';
@@ -11,6 +8,11 @@ type JsonBody = Record<string, unknown>;
 
 /**
  * Parse JSON body from an incoming HTTP request.
+ *
+ * @param {http.IncomingMessage} req The HTTP request.
+ * @returns {Promise<JsonBody>} A promise resolving to the parsed JSON body.
+ *
+ * @author Alexandre-Gatien Bienfet
  */
 async function parseBody(req: http.IncomingMessage): Promise<JsonBody> {
   return new Promise((resolve, reject) => {
@@ -31,6 +33,12 @@ async function parseBody(req: http.IncomingMessage): Promise<JsonBody> {
 
 /**
  * Send a JSON response.
+ *
+ * @param {http.ServerResponse} res The HTTP response object.
+ * @param {number} statusCode The HTTP status code.
+ * @param {JsonBody} data The JSON data to send.
+ *
+ * @author Alexandre-Gatien Bienfet
  */
 function sendJSON(res: http.ServerResponse, statusCode: number, data: JsonBody): void {
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
@@ -39,6 +47,12 @@ function sendJSON(res: http.ServerResponse, statusCode: number, data: JsonBody):
 
 /**
  * Send an error response.
+ *
+ * @param {http.ServerResponse} res The HTTP response object.
+ * @param {number} statusCode The HTTP status code.
+ * @param {string} message The error message to send.
+ *
+ * @author Alexandre-Gatien Bienfet
  */
 function sendError(res: http.ServerResponse, statusCode: number, message: string): void {
   sendJSON(res, statusCode, { error: message });
@@ -46,13 +60,21 @@ function sendError(res: http.ServerResponse, statusCode: number, message: string
 
 /**
  * Routes API requests to the appropriate DatabaseService method.
+ *
+ * @author Alexandre-Gatien Bienfet
  */
 export class ApiRouter {
   constructor(private readonly db: DatabaseService) {}
 
   /**
    * Handle an incoming API request.
-   * Returns true if a route matched, false otherwise.
+   *
+   * @param {http.IncomingMessage} req The HTTP request.
+   * @param {http.ServerResponse} res The HTTP response object.
+   * @param {URL} url The request URL.
+   * @returns {Promise<void>}
+   *
+   * @author Alexandre-Gatien Bienfet
    */
   async handle(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
     const method = req.method ?? 'GET';

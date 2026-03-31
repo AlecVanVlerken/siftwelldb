@@ -14,7 +14,7 @@
  *   • reading/writing block type bytes.
  */
 
-import { FreeBlockFile } from './freeblockfile.mjs';
+import type { FreeBlockFile } from './freeblockfile.mjs';
 import { BlockType } from './layout.mjs';
 
 /**

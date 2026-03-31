@@ -1,15 +1,12 @@
-// author: Alexandre-Gatien Bienfet
-// date: 2026-02-23
-//
-// Entry-point for the SimpleDBMS webclient.
-// Wires together all modules, handles connection, collections, search & events.
+// @author Alexandre-Gatien Bienfet
+// @date 2026-03-31
 
 import { state } from './state.js';
 import type { Document } from './state.js';
 import { apiCall } from './api.js';
 import { isImageField } from './utils.js';
 import { initTable, applyFilter, renderTable, closeAllDropdowns } from './table.js';
-import { initDocView, openDocView, closeDocView, enterEditMode, cancelEditMode, saveDocView } from './docView.js';
+import { initDocView, openDocView, closeDocView, enterEditMode, cancelEditMode, saveDocView } from './doc-view.js';
 
 // ── DOM Elements ─────────────────────────────────────────────
 
@@ -167,7 +164,12 @@ async function loadCollections(): Promise<void> {
 }
 
 async function deleteCollection(collection: string) {
-  if (!confirm(`Weet je zeker dat je de collectie "${collection}" wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`)) return;
+  if (
+    !confirm(
+      `Weet je zeker dat je de collectie "${collection}" wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`,
+    )
+  )
+    return;
   try {
     await apiCall(`/api/collections/${encodeURIComponent(collection)}`, 'DELETE');
     if (state.currentCollection === collection) clearWorkspace();
@@ -313,9 +315,7 @@ async function performSemanticSearch() {
     let searchResults = rawDocs.map((d) => JSON.parse(d) as Document);
 
     if (state.currentSearchMode === 'image') {
-      searchResults = searchResults.filter((doc) =>
-        Object.keys(doc).some((key) => isImageField(key)),
-      );
+      searchResults = searchResults.filter((doc) => Object.keys(doc).some((key) => isImageField(key)));
     }
 
     renderTable(searchResults);
@@ -351,7 +351,11 @@ if (headerMenuBtn && headerDropdown) {
     headerDropdown.classList.toggle('hidden');
   });
   document.addEventListener('click', (e) => {
-    if (!headerDropdown.classList.contains('hidden') && !headerDropdown.contains(e.target as Node) && e.target !== headerMenuBtn) {
+    if (
+      !headerDropdown.classList.contains('hidden') &&
+      !headerDropdown.contains(e.target as Node) &&
+      e.target !== headerMenuBtn
+    ) {
       headerDropdown.classList.add('hidden');
     }
   });

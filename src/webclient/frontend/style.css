@@ -97,7 +97,10 @@ header h1 {
   border-radius: 4px;
   font-size: 0.85rem;
   width: 250px;
-  transition: width 0.2s ease, border-color 0.2s, box-shadow 0.2s;
+  transition:
+    width 0.2s ease,
+    border-color 0.2s,
+    box-shadow 0.2s;
 }
 
 #semantic-search-input:focus {
@@ -179,7 +182,9 @@ header h1 {
   cursor: pointer;
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  transition: background 0.15s, color 0.15s;
+  transition:
+    background 0.15s,
+    color 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -325,7 +330,9 @@ header h1 {
   cursor: pointer;
   font-size: 0.8rem;
   opacity: 0;
-  transition: opacity 0.15s, color 0.15s;
+  transition:
+    opacity 0.15s,
+    color 0.15s;
 }
 
 .collection-item:hover .collection-delete-btn {
@@ -899,7 +906,9 @@ button:disabled {
   margin-right: 0.25rem;
   border-radius: 3px;
   user-select: none;
-  transition: color 0.15s, background 0.15s;
+  transition:
+    color 0.15s,
+    background 0.15s;
 }
 
 .drag-handle:hover {
@@ -962,7 +971,7 @@ button:disabled {
 
 /* Clearfix to ensure floated images don't break layout or drag-and-drop */
 .doc-field-section::after {
-  content: "";
+  content: '';
   display: table;
   clear: both;
 }
@@ -1041,7 +1050,9 @@ input.doc-field-section-title:focus {
   gap: 0.5rem;
 }
 
-.remove-field-btn, .move-field-up-btn, .move-field-down-btn {
+.remove-field-btn,
+.move-field-up-btn,
+.move-field-down-btn {
   background: transparent;
   border: none;
   font-size: 1.25rem;
@@ -1055,11 +1066,14 @@ input.doc-field-section-title:focus {
   color: #ef4444;
 }
 
-.move-field-up-btn, .move-field-down-btn {
+.move-field-up-btn,
+.move-field-down-btn {
   color: var(--text-muted);
 }
 
-.remove-field-btn:hover, .move-field-up-btn:hover, .move-field-down-btn:hover {
+.remove-field-btn:hover,
+.move-field-up-btn:hover,
+.move-field-down-btn:hover {
   opacity: 1;
 }
 
@@ -1106,7 +1120,7 @@ textarea.doc-field-value.is-object:focus {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
   display: inline-block;
 }
 
@@ -1153,7 +1167,9 @@ textarea.doc-field-value.is-object:focus {
   background: #fdfdfd;
   cursor: pointer;
   border-radius: 4px;
-  transition: border-color 0.2s, background 0.2s;
+  transition:
+    border-color 0.2s,
+    background 0.2s;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1165,7 +1181,7 @@ textarea.doc-field-value.is-object:focus {
   background: #f0f7ff;
 }
 
-.image-upload-area input[type="file"] {
+.image-upload-area input[type='file'] {
   display: none;
 }
 
@@ -1173,7 +1189,7 @@ textarea.doc-field-value.is-object:focus {
   max-width: 100%;
   max-height: 300px;
   border-radius: 4px;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
 }
 
 .image-position-controls {

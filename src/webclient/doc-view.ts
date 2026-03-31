@@ -1,8 +1,11 @@
-// author: Alexandre-Gatien Bienfet
-// date: 2026-02-23
-//
-// Wikipedia-style document detail view for the SimpleDBMS webclient
-// Handles viewing, editing, creating documents, TOC and infobox.
+// @author Alexandre-Gatien Bienfet
+// @date 2026-03-31
+
+/**
+ * Configuration interface for DocView.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 
 import { state } from './state.js';
 import type { Document } from './state.js';
@@ -25,20 +28,35 @@ interface DocViewConfig {
 
 let cfg: DocViewConfig;
 
+/**
+ * Initializes the document view component.
+ *
+ * @param {DocViewConfig} config The configuration object containing DOM elements and callbacks.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export function initDocView(config: DocViewConfig): void {
   cfg = config;
 }
 
 // ── Public API ───────────────────────────────────────────────
 
+/**
+ * Opens the document view for a specific document.
+ *
+ * @param {Document} doc The document to view.
+ * @param {boolean} editMode Whether to open in edit mode initially.
+ * @param {boolean} [isNew=false] Whether this is a new document.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export function openDocView(doc: Document, editMode: boolean, isNew = false): void {
   state.currentViewDoc = doc;
   state.isEditMode = editMode;
   state.isNewDocument = isNew;
 
   if (isNew) {
-    cfg.docViewTitle.innerHTML =
-      `<input type="text" id="doc-view-title-input" placeholder="Titel / Document ID" value="" autocomplete="off">`;
+    cfg.docViewTitle.innerHTML = `<input type="text" id="doc-view-title-input" placeholder="Titel / Document ID" value="" autocomplete="off">`;
   } else {
     cfg.docViewTitle.textContent = toDisplayString(doc['id']) || 'Document';
   }
@@ -50,12 +68,22 @@ export function openDocView(doc: Document, editMode: boolean, isNew = false): vo
   cfg.docView.classList.remove('hidden');
 }
 
+/**
+ * Closes the document view and returns to the table.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export function closeDocView(): void {
   cfg.docView.classList.add('hidden');
   state.currentViewDoc = null;
   state.isEditMode = false;
 }
 
+/**
+ * Transitions the doc view into edit mode.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export function enterEditMode(): void {
   if (!state.currentViewDoc) return;
   state.isEditMode = true;
@@ -63,6 +91,11 @@ export function enterEditMode(): void {
   setEditModeUI(true);
 }
 
+/**
+ * Cancels edit mode and reverts unsaved changes in the DOM.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export function cancelEditMode(): void {
   if (!state.currentViewDoc) return;
   state.isEditMode = false;
@@ -70,6 +103,13 @@ export function cancelEditMode(): void {
   setEditModeUI(false);
 }
 
+/**
+ * Saves the document view content to the backend.
+ *
+ * @returns {Promise<void>} Resolves when the document is saved.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export async function saveDocView(): Promise<void> {
   if (!state.currentCollection) return;
 
@@ -85,17 +125,21 @@ export async function saveDocView(): Promise<void> {
   const order: string[] = [];
 
   cfg.docViewContent.querySelectorAll('.doc-field-section').forEach((sec) => {
-    const titleEl = sec.querySelector('.doc-field-section-title') as HTMLInputElement;
+    const titleEl = sec.querySelector<HTMLInputElement>('.doc-field-section-title');
     const title = titleEl ? titleEl.value.trim() : sec.querySelector('h2')?.textContent?.trim();
-    const textarea = sec.querySelector('textarea');
-    const fileInput = sec.querySelector('input[type="file"]') as HTMLInputElement | null;
-    const posInput = sec.querySelector('.image-position-value') as HTMLInputElement | null;
+    const textarea = sec.querySelector<HTMLTextAreaElement>('textarea');
+    const fileInput = sec.querySelector<HTMLInputElement>('input[type="file"]');
+    const posInput = sec.querySelector<HTMLInputElement>('.image-position-value');
 
     if (!title) return;
 
     if (textarea && textarea.value.trim() !== '') {
       let val: unknown = textarea.value;
-      try { val = JSON.parse(textarea.value); } catch { /* keep as string */ }
+      try {
+        val = JSON.parse(textarea.value);
+      } catch {
+        /* keep as string */
+      }
       newDoc[title] = val;
       if (!order.includes(title)) order.push(title);
     } else if (fileInput) {
@@ -143,7 +187,7 @@ function renderDocFields(doc: Document, editMode: boolean): void {
   // Determine field order
   let keys: string[] = [];
   if (typeof doc['_order_'] === 'string' && doc['_order_'].trim() !== '') {
-    keys = (doc['_order_'] as string).split(',');
+    keys = (doc['_order_']).split(',');
     const otherKeys = Object.keys(doc).filter(
       (k) => k !== 'id' && !k.startsWith('_layout_') && k !== '_order_' && !keys.includes(k),
     );
@@ -182,7 +226,8 @@ function renderDocFields(doc: Document, editMode: boolean): void {
     }
 
     if (isImageField(key)) {
-      const position = String(doc[`_layout_${key}`] || 'below');
+      const layoutVal = doc[`_layout_${key}`];
+      const position = typeof layoutVal === 'string' ? layoutVal : 'below';
       const base64 = typeof value === 'string' ? value : '';
       if (editMode) {
         contentHTML += renderImageEditHTML(key, base64, position);
@@ -297,7 +342,7 @@ function attachPositionEvents(container: HTMLElement): void {
         btns.forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         if (hiddenInput) {
-          hiddenInput.value = (btn as HTMLButtonElement).dataset['pos'] || 'below';
+          hiddenInput.value = hiddenInput.dataset['pos'] || 'below';
           hiddenInput.setAttribute('value', hiddenInput.value);
         }
       };
@@ -388,7 +433,7 @@ function addNewFieldToView(type: 'text' | 'image' = 'text'): void {
     cfg.docViewContent.appendChild(section);
   }
 
-  const inputToFocus = section.querySelector('input.doc-field-section-title') as HTMLInputElement | null;
+  const inputToFocus = section.querySelector<HTMLInputElement>('input.doc-field-section-title');
   if (inputToFocus && inputToFocus.type !== 'hidden') inputToFocus.focus();
 }
 
@@ -473,7 +518,7 @@ function renderInfobox(doc: Document): void {
   if (imageKey && typeof doc[imageKey] === 'string' && doc[imageKey]) {
     html += `
       <div class="doc-infobox-image">
-        <img src="data:image/jpeg;base64,${escapeHTML(doc[imageKey] as string)}" alt="Afbeelding">
+        <img src="data:image/jpeg;base64,${escapeHTML(doc[imageKey])}" alt="Afbeelding">
       </div>`;
   }
 

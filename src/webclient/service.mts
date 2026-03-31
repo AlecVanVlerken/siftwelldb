@@ -1,8 +1,5 @@
-// author: Alexandre-Gatien Bienfet
-// date: 2026-02-23
-//
-// DatabaseService — abstraction layer over SimpleDbms.
-// This is the single point of contact for all database operations.
+// @author Alexandre-Gatien Bienfet
+// @date 2026-03-31
 
 import * as fs from 'node:fs/promises';
 import { SimpleDbms, type HnswConfig } from '../dbms/simpledbms.mjs';
@@ -10,6 +7,11 @@ import { RealFile } from '../core/file.mjs';
 
 /**
  * Delete a file if it exists (ignores the error if not found).
+ *
+ * @param {string} filePath The path to the file to delete.
+ * @returns {Promise<void>}
+ *
+ * @author Alexandre-Gatien Bienfet
  */
 async function deleteIfExists(filePath: string): Promise<void> {
   try {
@@ -22,9 +24,10 @@ async function deleteIfExists(filePath: string): Promise<void> {
 /**
  * Manages the lifecycle of a SimpleDbms instance and exposes
  * high-level operations on collections and documents.
- *
  * All database interaction from the HTTP layer should go through
  * this service.
+ *
+ * @author Alexandre-Gatien Bienfet
  */
 export class DatabaseService {
   private dbms: SimpleDbms | null = null;
@@ -40,13 +43,8 @@ export class DatabaseService {
         const CLIP_DIM = 512;
 
         console.log('Lazy loading huggingface transformers for semantic search...');
-        const {
-          AutoTokenizer,
-          AutoProcessor,
-          CLIPTextModelWithProjection,
-          CLIPVisionModelWithProjection,
-          RawImage,
-        } = await import('@huggingface/transformers');
+        const { AutoTokenizer, AutoProcessor, CLIPTextModelWithProjection, CLIPVisionModelWithProjection, RawImage } =
+          await import('@huggingface/transformers');
 
         console.log('Loading CLIP tokenizer & text model...');
         const tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
@@ -66,7 +64,7 @@ export class DatabaseService {
         }
 
         const embeddingFn = async (text: string): Promise<Float32Array> => {
-          const inputs = tokenizer(text, { padding: true, truncation: true }) as Record<string, unknown>;
+          const inputs = tokenizer(text, { padding: true, truncation: true });
           const { text_embeds } = (await textModel(inputs)) as { text_embeds: { data: ArrayLike<number> } };
           return l2Normalize(new Float32Array(text_embeds.data));
         };
@@ -74,7 +72,7 @@ export class DatabaseService {
         const imageEmbeddingFn = async (imageData: Buffer): Promise<Float32Array> => {
           const blob = new Blob([new Uint8Array(imageData)]);
           const image = await RawImage.fromBlob(blob);
-          const inputs = (await processor(image)) as Record<string, unknown>;
+          const inputs = (await processor(image));
           const { image_embeds } = (await visionModel(inputs)) as { image_embeds: { data: ArrayLike<number> } };
           return l2Normalize(new Float32Array(image_embeds.data));
         };
@@ -179,7 +177,7 @@ export class DatabaseService {
     const dataFile = new RealFile(filepath);
     const logFile = new RealFile(`${filepath}.log`);
     const hnswConfig = await this.getHnswConfig();
-    
+
     this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
     await this.dbms.commit();
     this.currentFilepath = filepath;
