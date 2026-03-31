@@ -72,7 +72,7 @@ export class DatabaseService {
         const imageEmbeddingFn = async (imageData: Buffer): Promise<Float32Array> => {
           const blob = new Blob([new Uint8Array(imageData)]);
           const image = await RawImage.fromBlob(blob);
-          const inputs = (await processor(image));
+          const inputs = await processor(image);
           const { image_embeds } = (await visionModel(inputs)) as { image_embeds: { data: ArrayLike<number> } };
           return l2Normalize(new Float32Array(image_embeds.data));
         };

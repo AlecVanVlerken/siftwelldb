@@ -187,7 +187,7 @@ function renderDocFields(doc: Document, editMode: boolean): void {
   // Determine field order
   let keys: string[] = [];
   if (typeof doc['_order_'] === 'string' && doc['_order_'].trim() !== '') {
-    keys = (doc['_order_']).split(',');
+    keys = doc['_order_'].split(',');
     const otherKeys = Object.keys(doc).filter(
       (k) => k !== 'id' && !k.startsWith('_layout_') && k !== '_order_' && !keys.includes(k),
     );
