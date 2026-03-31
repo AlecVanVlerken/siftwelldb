@@ -141,7 +141,48 @@ export class DbmsBack {
    * @returns A Promise that resolves to an array of collection names.
    */
   getCollections(): Promise<string[]> {
-    return Promise.resolve(Object.keys(this.metaCache));
+    const keys = Object.keys(this.metaCache).filter((k) => !k.startsWith('__'));
+    return Promise.resolve(keys);
+  }
+
+  /**
+   * Deletes an entire collection from the database.
+   * Removes from metaCache and cleans up HNSW if present.
+   * @param collection - The name of the collection to delete.
+   */
+  async deleteCollection(collection: string): Promise<void> {
+    if (!(collection in this.metaCache)) {
+      throw new Error(`Collection "${collection}" does not exist`);
+    }
+
+    // Remove from metaCache
+    delete this.metaCache[collection];
+
+    // Remove from HNSW metadata
+    if (HNSW_META_KEY in this.metaCache && collection in this.metaCache[HNSW_META_KEY]) {
+      delete this.metaCache[HNSW_META_KEY][collection];
+      // If no more HNSW indexes, remove the key entirely
+      if (Object.keys(this.metaCache[HNSW_META_KEY]).length === 0) {
+        delete this.metaCache[HNSW_META_KEY];
+      }
+    }
+
+    // Clear caches related to this collection
+    for (const key of this.storageCache.keys()) {
+      if (key.startsWith(`${collection}:`)) {
+        this.storageCache.delete(key);
+      }
+    }
+    for (const key of this.treeCache.keys()) {
+      if (key.startsWith(`${collection}:`)) {
+        this.treeCache.delete(key);
+      }
+    }
+    this.hnswIndexCache.delete(collection);
+
+    // Note: blocks (B+ tree, HNSW nodes, records) are NOT explicitly freed here
+    // in this simplified implementation, but their roots are removed from meta,
+    // so they are effectively lost/collectible if a compactor is ever added.
   }
 
   /**

@@ -14,6 +14,7 @@ import { ApiRouter } from './api.mjs';
 
 const PORT = 8000;
 const FRONTEND_DIR = path.join(import.meta.dirname, 'frontend');
+const SRC_FRONTEND_DIR = path.join(import.meta.dirname, '../../src/webclient/frontend');
 
 // MIME types mapping
 const MIME_TYPES: Record<string, string> = {
@@ -41,29 +42,47 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
       filePath = filePath.substring(0, queryIndex);
     }
 
-    // Serve client.js from the compiled build directory
-    if (filePath === '/client.js') {
-      const buildPath = path.join(import.meta.dirname, '../../build/webclient/client.js');
+    // Serve .js files from the compiled build directory
+    if (filePath.endsWith('.js')) {
+      const BUILD_DIR = path.join(import.meta.dirname, '../../build/webclient');
+      const buildPath = path.join(BUILD_DIR, filePath);
+      if (!buildPath.startsWith(BUILD_DIR)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
       try {
         const content = await fs.readFile(buildPath);
         res.writeHead(200, { 'Content-Type': 'text/javascript' });
         res.end(content);
         return;
       } catch {
-        console.log('Build file not found for client.js');
+        console.log(`Build file not found: ${filePath}`);
       }
     }
 
-    const fullPath = path.join(FRONTEND_DIR, filePath);
-
-    // Security: prevent directory traversal
+    // Try local frontend/ first (dev), then src/ fallback (build)
+    let fullPath = path.join(FRONTEND_DIR, filePath);
     if (!fullPath.startsWith(FRONTEND_DIR)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Forbidden' }));
       return;
     }
 
-    const content = await fs.readFile(fullPath);
+    let content: Buffer;
+    try {
+      content = await fs.readFile(fullPath);
+    } catch {
+      // Fallback to source frontend directory
+      fullPath = path.join(SRC_FRONTEND_DIR, filePath);
+      if (!fullPath.startsWith(SRC_FRONTEND_DIR)) {
+        res.writeHead(403, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden' }));
+        return;
+      }
+      content = await fs.readFile(fullPath);
+    }
+
     const ext = path.extname(fullPath);
     const mimeType = MIME_TYPES[ext] ?? 'application/octet-stream';
 

@@ -281,7 +281,7 @@ async function main() {
   };
 
   const imageEmbeddingFn = async (imageData: Buffer): Promise<Float32Array> => {
-    const blob = new Blob([imageData]);
+    const blob = new Blob([new Uint8Array(imageData)]);
     const image = await RawImage.fromBlob(blob);
     const inputs = (await processor(image)) as Record<string, unknown>;
     const { image_embeds } = (await visionModel(inputs)) as { image_embeds: { data: ArrayLike<number> } };
