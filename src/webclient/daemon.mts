@@ -1,10 +1,5 @@
-// author: Alexandre-Gatien Bienfet
-// date: 2026-02-23
-//
-// Daemon entry-point. Wires together:
-//   - DatabaseService  (business logic / DBMS abstraction)
-//   - ApiRouter         (HTTP route handling)
-//   - Static file server
+// @author Alexandre-Gatien Bienfet
+// @date 2026-03-31
 
 import * as http from 'node:http';
 import * as fs from 'node:fs/promises';
@@ -12,12 +7,12 @@ import * as path from 'node:path';
 import { DatabaseService } from './service.mjs';
 import { ApiRouter } from './api.mjs';
 
-const PORT = 8000;
-const FRONTEND_DIR = path.join(import.meta.dirname, 'frontend');
-const SRC_FRONTEND_DIR = path.join(import.meta.dirname, '../../src/webclient/frontend');
+const port = 8000;
+const frontendDir = path.join(import.meta.dirname, 'frontend');
+const srcFrontendDir = path.join(import.meta.dirname, '../../src/webclient/frontend');
 
 // MIME types mapping
-const MIME_TYPES: Record<string, string> = {
+const mimeTypes: Record<string, string> = {
   '.html': 'text/html',
   '.css': 'text/css',
   '.js': 'text/javascript',
@@ -32,6 +27,15 @@ const MIME_TYPES: Record<string, string> = {
 
 // ── Static file serving ──────────────────────────────────────
 
+/**
+ * Serves a static file from the frontend directory.
+ *
+ * @param {http.IncomingMessage} req The HTTP request.
+ * @param {http.ServerResponse} res The HTTP response object.
+ * @returns {Promise<void>}
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 async function serveStaticFile(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     let filePath = req.url === '/' ? '/index.html' : (req.url ?? '/index.html');
@@ -62,8 +66,8 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
     }
 
     // Try local frontend/ first (dev), then src/ fallback (build)
-    let fullPath = path.join(FRONTEND_DIR, filePath);
-    if (!fullPath.startsWith(FRONTEND_DIR)) {
+    let fullPath = path.join(frontendDir, filePath);
+    if (!fullPath.startsWith(frontendDir)) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Forbidden' }));
       return;
@@ -74,8 +78,8 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
       content = await fs.readFile(fullPath);
     } catch {
       // Fallback to source frontend directory
-      fullPath = path.join(SRC_FRONTEND_DIR, filePath);
-      if (!fullPath.startsWith(SRC_FRONTEND_DIR)) {
+      fullPath = path.join(srcFrontendDir, filePath);
+      if (!fullPath.startsWith(srcFrontendDir)) {
         res.writeHead(403, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Forbidden' }));
         return;
@@ -84,7 +88,7 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
     }
 
     const ext = path.extname(fullPath);
-    const mimeType = MIME_TYPES[ext] ?? 'application/octet-stream';
+    const mimeType = mimeTypes[ext] ?? 'application/octet-stream';
 
     res.writeHead(200, { 'Content-Type': mimeType });
     res.end(content);
@@ -99,6 +103,14 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
 const db = new DatabaseService();
 const api = new ApiRouter(db);
 
+/**
+ * Global HTTP request handler.
+ *
+ * @param {http.IncomingMessage} req The HTTP request.
+ * @param {http.ServerResponse} res The HTTP response object.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): void {
   const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
   console.log(`${req.method} ${url.pathname}`);
@@ -112,9 +124,9 @@ function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): vo
 
 const server = http.createServer(requestHandler);
 
-server.listen(PORT, () => {
-  console.log(`SimpleDBMS Daemon running on http://localhost:${PORT}`);
-  console.log(`API available at http://localhost:${PORT}/api/`);
+server.listen(port, () => {
+  console.log(`SimpleDBMS Daemon running on http://localhost:${port}`);
+  console.log(`API available at http://localhost:${port}/api/`);
 });
 
 // Graceful shutdown

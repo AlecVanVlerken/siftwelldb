@@ -1,7 +1,5 @@
-// author: Alexandre-Gatien Bienfet
-// date: 2026-02-23
-//
-// Document table rendering for the SimpleDBMS webclient
+// @author Alexandre-Gatien Bienfet
+// @date 2026-03-31
 
 import { state } from './state.js';
 import type { Document } from './state.js';
@@ -18,12 +16,26 @@ interface TableConfig {
 
 let cfg: TableConfig;
 
+/**
+ * Initializes the document table component.
+ *
+ * @param {TableConfig} config Configuration containing DOM elements and callbacks.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export function initTable(config: TableConfig): void {
   cfg = config;
 }
 
 // ── Public API ───────────────────────────────────────────────
 
+/**
+ * Applies the current text filter to the documents table.
+ *
+ * @param {HTMLInputElement} filterInput The input element containing the filter query.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export function applyFilter(filterInput: HTMLInputElement): void {
   const query = filterInput.value.trim().toLowerCase();
   if (!query) {
@@ -36,6 +48,13 @@ export function applyFilter(filterInput: HTMLInputElement): void {
   renderTable(filtered);
 }
 
+/**
+ * Renders the documents table with the given data.
+ *
+ * @param {Document[]} documents Array of document objects to display.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export function renderTable(documents: Document[]): void {
   cfg.dataTableHead.innerHTML = '';
   cfg.dataTableBody.innerHTML = '';
@@ -126,6 +145,11 @@ export function renderTable(documents: Document[]): void {
   });
 }
 
+/**
+ * Closes all active action dropdown menus in the table.
+ *
+ * @author Alexandre-Gatien Bienfet
+ */
 export function closeAllDropdowns(): void {
   document.querySelectorAll('.dropdown').forEach((d) => d.classList.add('hidden'));
 }

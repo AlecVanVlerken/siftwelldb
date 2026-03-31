@@ -160,6 +160,7 @@ export class DbmsBack {
    * Removes from metaCache and cleans up HNSW if present.
    * @param collection - The name of the collection to delete.
    */
+  // eslint-disable-next-line @typescript-eslint/require-await
   async deleteCollection(collection: string): Promise<void> {
     if (!(collection in this.metaCache)) {
       throw new Error(`Collection "${collection}" does not exist`);
@@ -169,11 +170,15 @@ export class DbmsBack {
     delete this.metaCache[collection];
 
     // Remove from HNSW metadata
-    if (HNSW_META_KEY in this.metaCache && collection in this.metaCache[HNSW_META_KEY]) {
-      delete this.metaCache[HNSW_META_KEY][collection];
-      // If no more HNSW indexes, remove the key entirely
-      if (Object.keys(this.metaCache[HNSW_META_KEY]).length === 0) {
-        delete this.metaCache[HNSW_META_KEY];
+    const hnswMetaRaw = this.metaCache[HNSW_META_KEY];
+    if (hnswMetaRaw && typeof hnswMetaRaw === 'object' && !Array.isArray(hnswMetaRaw)) {
+      const hnswMeta = hnswMetaRaw as Record<string, unknown>;
+      if (collection in hnswMeta) {
+        delete hnswMeta[collection];
+        // If no more HNSW indexes, remove the key entirely
+        if (Object.keys(hnswMeta).length === 0) {
+          delete this.metaCache[HNSW_META_KEY];
+        }
       }
     }
 
