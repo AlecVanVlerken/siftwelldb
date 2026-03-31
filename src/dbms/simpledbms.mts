@@ -132,7 +132,7 @@ import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
  */
 export type { HnswConfig };
 import { type File } from '../core/file.mjs';
-import { documentToJSON, type FieldValue } from './document.mjs';
+import { documentToJSON, parseRawDocument, type FieldValue } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
 
 /**
@@ -201,6 +201,15 @@ export class SimpleDbms {
   }
 
   /**
+   * Deletes a collection from the database and commits the change.
+   * @param collection - The name of the collection to delete.
+   */
+  async deleteCollection(collection: string): Promise<void> {
+    await this.dbmsback.deleteCollection(collection);
+    await this.dbmsback.commit();
+  }
+
+  /**
    * Closes the database management system.
    * @returns A Promise that resolves when the database is closed.
    */
@@ -224,6 +233,15 @@ export class SimpleDbms {
    */
   async insertDocument(collection: string, documentJSON: string): Promise<void> {
     const documentObj = JSONtoDocument(documentJSON, collection);
+    return this.dbmsback.insertDocument(documentObj);
+  }
+
+  /**
+   * Insert a document from a pre-parsed object (avoids JSONtoDocument regex issues).
+   * Use this when the document is already a JS object (e.g. from the web API).
+   */
+  async insertDocumentObject(collection: string, document: unknown): Promise<void> {
+    const documentObj = parseRawDocument(collection, document);
     return this.dbmsback.insertDocument(documentObj);
   }
 

@@ -116,11 +116,56 @@ export class ApiRouter {
         return;
       }
 
+      // DELETE /api/collections/:collection
+      const collectionDeleteMatch = pathname.match(/^\/api\/collections\/([^/]+)$/);
+      if (method === 'DELETE' && collectionDeleteMatch) {
+        const collection = decodeURIComponent(collectionDeleteMatch[1]);
+        await this.db.deleteCollection(collection);
+        sendJSON(res, 200, { message: `Collection "${collection}" deleted` });
+        return;
+      }
+
       // ── Collection / document routes ───────────────────────
 
       const collectionMatch = pathname.match(/^\/api\/documents\/([^/]+)$/);
       const documentMatch = pathname.match(/^\/api\/documents\/([^/]+)\/([^/]+)$/);
       const editMatch = pathname.match(/^\/api\/documents\/([^/]+)\/([^/]+)\/edit$/);
+
+      // GET /api/documents/:collection/search
+      const searchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search$/);
+      if (method === 'GET' && searchMatch) {
+        const collection = decodeURIComponent(searchMatch[1]);
+        const query = url.searchParams.get('q');
+        const limit = parseInt(url.searchParams.get('limit') ?? '10', 10);
+
+        if (!query) {
+          sendError(res, 400, 'Missing search query "q" parameter');
+          return;
+        }
+
+        const documents = await this.db.semanticSearch(collection, query, limit);
+        sendJSON(res, 200, { documents });
+        return;
+      }
+
+      // POST /api/documents/:collection/search/image
+      const searchImageMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search\/image$/);
+      if (method === 'POST' && searchImageMatch) {
+        const collection = decodeURIComponent(searchImageMatch[1]);
+        const limit = parseInt(url.searchParams.get('limit') ?? '10', 10);
+        const body = await parseBody(req);
+        const base64Image = body['image'];
+
+        if (typeof base64Image !== 'string' || !base64Image) {
+          sendError(res, 400, 'Missing base64 "image" in request body');
+          return;
+        }
+
+        const imageBuffer = Buffer.from(base64Image, 'base64');
+        const documents = await this.db.semanticImageSearch(collection, imageBuffer, limit);
+        sendJSON(res, 200, { documents });
+        return;
+      }
 
       // GET /api/documents/:collection
       if (method === 'GET' && collectionMatch) {

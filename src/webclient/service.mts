@@ -5,7 +5,7 @@
 // This is the single point of contact for all database operations.
 
 import * as fs from 'node:fs/promises';
-import { SimpleDbms } from '../dbms/simpledbms.mjs';
+import { SimpleDbms, type HnswConfig } from '../dbms/simpledbms.mjs';
 import { RealFile } from '../core/file.mjs';
 
 /**
@@ -28,8 +28,70 @@ async function deleteIfExists(filePath: string): Promise<void> {
  */
 export class DatabaseService {
   private dbms: SimpleDbms | null = null;
-  private dataFile: RealFile | null = null;
   private currentFilepath: string | null = null;
+
+  // HNSW semantic search config
+  private hnswConfigPromise: Promise<HnswConfig> | null = null;
+
+  private getHnswConfig(): Promise<HnswConfig> {
+    if (!this.hnswConfigPromise) {
+      this.hnswConfigPromise = (async () => {
+        const MODEL_ID = 'Xenova/clip-vit-base-patch32';
+        const CLIP_DIM = 512;
+
+        console.log('Lazy loading huggingface transformers for semantic search...');
+        const {
+          AutoTokenizer,
+          AutoProcessor,
+          CLIPTextModelWithProjection,
+          CLIPVisionModelWithProjection,
+          RawImage,
+        } = await import('@huggingface/transformers');
+
+        console.log('Loading CLIP tokenizer & text model...');
+        const tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
+        const textModel = await CLIPTextModelWithProjection.from_pretrained(MODEL_ID, { dtype: 'fp32' });
+
+        console.log('Loading CLIP processor & vision model...');
+        const processor = await AutoProcessor.from_pretrained(MODEL_ID);
+        const visionModel = await CLIPVisionModelWithProjection.from_pretrained(MODEL_ID, { dtype: 'fp32' });
+
+        function l2Normalize(v: Float32Array): Float32Array {
+          let norm = 0;
+          for (const val of v) norm += val * val;
+          norm = Math.sqrt(norm);
+          if (norm === 0) return v;
+          for (let i = 0; i < v.length; i++) v[i] /= norm;
+          return v;
+        }
+
+        const embeddingFn = async (text: string): Promise<Float32Array> => {
+          const inputs = tokenizer(text, { padding: true, truncation: true }) as Record<string, unknown>;
+          const { text_embeds } = (await textModel(inputs)) as { text_embeds: { data: ArrayLike<number> } };
+          return l2Normalize(new Float32Array(text_embeds.data));
+        };
+
+        const imageEmbeddingFn = async (imageData: Buffer): Promise<Float32Array> => {
+          const blob = new Blob([new Uint8Array(imageData)]);
+          const image = await RawImage.fromBlob(blob);
+          const inputs = (await processor(image)) as Record<string, unknown>;
+          const { image_embeds } = (await visionModel(inputs)) as { image_embeds: { data: ArrayLike<number> } };
+          return l2Normalize(new Float32Array(image_embeds.data));
+        };
+
+        console.log('CLIP models loaded successfully.');
+        return {
+          dimension: CLIP_DIM,
+          embeddingFn,
+          imageEmbeddingFn,
+          M: 16,
+          efConstruction: 100,
+          efSearch: 50,
+        };
+      })();
+    }
+    return this.hnswConfigPromise;
+  }
 
   // ── Lifecycle ────────────────────────────────────────────────
 
@@ -50,6 +112,11 @@ export class DatabaseService {
   async connect(filepath: string): Promise<string> {
     await this.closeInternal();
 
+    // Load HNSW config first (this can take a long time loading CLIP models).
+    const hnswConfig = await this.getHnswConfig();
+
+    // Check file existence right before opening to avoid race conditions
+    // (e.g. file state changing during the slow HNSW model loading above).
     let fileExists = false;
     try {
       await fs.access(filepath);
@@ -62,14 +129,12 @@ export class DatabaseService {
     const logFile = new RealFile(`${filepath}.log`);
 
     if (fileExists) {
-      this.dbms = await SimpleDbms.open(dataFile, logFile);
-      this.dataFile = dataFile;
+      this.dbms = await SimpleDbms.open(dataFile, logFile, hnswConfig);
       this.currentFilepath = filepath;
       return 'Connected to existing database';
     } else {
-      this.dbms = await SimpleDbms.create(dataFile, logFile);
+      this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
       await this.dbms.commit();
-      this.dataFile = dataFile;
       this.currentFilepath = filepath;
       return 'Created new database';
     }
@@ -86,10 +151,10 @@ export class DatabaseService {
 
     const dataFile = new RealFile(filepath);
     const logFile = new RealFile(`${filepath}.log`);
+    const hnswConfig = await this.getHnswConfig();
 
-    this.dbms = await SimpleDbms.create(dataFile, logFile);
+    this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
     await this.dbms.commit();
-    this.dataFile = dataFile;
     this.currentFilepath = filepath;
     return 'Created new database';
   }
@@ -113,9 +178,10 @@ export class DatabaseService {
 
     const dataFile = new RealFile(filepath);
     const logFile = new RealFile(`${filepath}.log`);
-    this.dbms = await SimpleDbms.create(dataFile, logFile);
+    const hnswConfig = await this.getHnswConfig();
+    
+    this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
     await this.dbms.commit();
-    this.dataFile = dataFile;
     this.currentFilepath = filepath;
   }
 
@@ -125,6 +191,12 @@ export class DatabaseService {
   async getCollections(): Promise<string[]> {
     this.ensureConnected();
     return this.dbms!.getCollections();
+  }
+
+  /** Delete an entire collection. */
+  async deleteCollection(collection: string): Promise<void> {
+    this.ensureConnected();
+    await this.dbms!.deleteCollection(collection);
   }
 
   // ── Documents ────────────────────────────────────────────────
@@ -159,8 +231,7 @@ export class DatabaseService {
   /** Insert a document into a collection. */
   async insertDocument(collection: string, document: unknown): Promise<void> {
     this.ensureConnected();
-    const documentJSON = typeof document === 'string' ? document : JSON.stringify(document);
-    await this.dbms!.insertDocument(collection, documentJSON);
+    await this.dbms!.insertDocumentObject(collection, document);
     await this.dbms!.commit();
   }
 
@@ -178,6 +249,18 @@ export class DatabaseService {
     await this.dbms!.commit();
   }
 
+  /** Semantic text-to-text or text-to-image search */
+  async semanticSearch(collection: string, query: string, limit: number): Promise<string[]> {
+    this.ensureConnected();
+    return this.dbms!.semanticSearch(collection, query, limit);
+  }
+
+  /** Semantic image-to-image search */
+  async semanticImageSearch(collection: string, queryImage: Buffer, limit: number): Promise<string[]> {
+    this.ensureConnected();
+    return this.dbms!.semanticImageSearch(collection, queryImage, limit);
+  }
+
   // ── Internal helpers ─────────────────────────────────────────
 
   private ensureConnected(): void {
@@ -188,7 +271,6 @@ export class DatabaseService {
     if (this.dbms) {
       await this.dbms.close();
       this.dbms = null;
-      this.dataFile = null;
       this.currentFilepath = null;
     }
   }
