@@ -3,6 +3,8 @@
 
 import { Document, type RawId, type FieldValue } from './document.mjs';
 import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
+import type { DocumentPreview, DocumentPreviewOptions } from '../preview/documentPreview.mjs';
+import { readLegacyDocumentPreview } from './recordpreview.mjs';
 
 /**
  * RecordStore class
@@ -139,6 +141,21 @@ export class RecordStore {
       return doc;
     } catch (err) {
       console.error(`RecordStore.readRecord(${blockID}) failed:`, err);
+      return null;
+    }
+  }
+
+  /**
+   * Reads a preview-friendly representation of a record.
+   *
+   * The preview reader streams over the existing JSON-based record payload
+   * without reconstructing the full document in memory.
+   */
+  async readRecordPreview(blockID: number, options: DocumentPreviewOptions = {}): Promise<DocumentPreview | null> {
+    try {
+      return await readLegacyDocumentPreview(this.freeBlockFile, blockID, RecordStore.DATA_OFFSET, options);
+    } catch (err) {
+      console.error(`RecordStore.readRecordPreview(${blockID}) failed:`, err);
       return null;
     }
   }

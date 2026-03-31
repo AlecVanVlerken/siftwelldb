@@ -14,6 +14,7 @@ import type { BlockInternalNode } from '../btree/internalnode.mjs';
 import { HNSWIndex } from '../hnsw/hnswIndex.mjs';
 import { HNSWGraphStorage } from '../hnsw/hnswGraphStorage.mjs';
 import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
+import { buildDocumentPreview, type DocumentPreview, type DocumentPreviewOptions } from '../preview/documentPreview.mjs';
 
 /**
  * Optional configuration block that enables per-collection HNSW semantic
@@ -332,6 +333,47 @@ export class DbmsBack {
     }
     const document = (await this.recordStore.readRecord(documentPointer)) as Document;
     return document;
+  }
+
+  /**
+   * Retrieves a preview of a document from the database.
+   * @param documentId - The ID of the document to retrieve.
+   * @param collection - The collection to retrieve the document from.
+   * @param options - Preview rendering options.
+   * @returns A Promise that resolves to the preview representation.
+   */
+  async getDocumentPreview(
+    documentId: number | string,
+    collection: string,
+    options?: DocumentPreviewOptions,
+  ): Promise<DocumentPreview> {
+    if (!(collection in this.metaCache)) {
+      throw new Error('Collection does not exist');
+    } else if (!('id' in this.metaCache[collection])) {
+      throw new Error('No document with given id exists');
+    }
+
+    const metaData = this.metaCache[collection]['id'];
+    const root = metaData[0];
+    const vorm = metaData[1];
+    const idBuffer = toBuffer(vorm, documentId);
+    const idTree = await this.getOrCreateTree(collection, 'id', vorm, root);
+    const documentPointerBuffer = await idTree.get(idBuffer);
+    const documentPointer = documentPointerBuffer ? documentPointerBuffer.readUInt32BE(0) : null;
+    if (documentPointer === null) {
+      throw new Error('Document not found');
+    }
+
+    const preview = await this.recordStore.readRecordPreview(documentPointer, options);
+    if (preview) {
+      return preview;
+    }
+
+    const document = await this.recordStore.readRecord(documentPointer);
+    if (!document) {
+      throw new Error('Document preview could not be read');
+    }
+    return buildDocumentPreview(document, options);
   }
 
   /**

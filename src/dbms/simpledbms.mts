@@ -134,6 +134,7 @@ export type { HnswConfig };
 import { type File } from '../core/file.mjs';
 import { documentToJSON, type FieldValue } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
+import { type DocumentPreviewOptions } from '../preview/documentPreview.mjs';
 
 /**
  * SimpleDbms class
@@ -228,6 +229,10 @@ export class SimpleDbms {
   async getDocumentById(collection: string, id: string): Promise<string> {
     const document = await this.dbmsback.getDocument(id, collection);
     return documentToJSON(document);
+  }
+
+  async getDocumentPreviewById(collection: string, id: string, options?: DocumentPreviewOptions): Promise<string> {
+    return JSON.stringify(await this.dbmsback.getDocumentPreview(id, collection, options));
   }
 
   /**
