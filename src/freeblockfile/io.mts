@@ -37,7 +37,7 @@ export async function readBlock(fbf: FreeBlockFile, blockNumber: number): Promis
   validateBlockNumber(fbf, blockNumber);
 
   const offset = offsetOf(fbf, blockNumber);
-  const buffer = Buffer.alloc(fbf._getBlockSize());
+  const buffer = Buffer.allocUnsafe(fbf._getBlockSize());
   await fbf._getFile().read(buffer, { position: offset });
   return buffer;
 }

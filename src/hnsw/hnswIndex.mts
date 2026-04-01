@@ -133,7 +133,7 @@ export class HNSWIndex {
     const newLevel = Math.min(this.rustIdx.getLevel(docId), this.graphStorage.maxStoredLevel);
     const newNeighbors = this.buildNeighborList(docId, newLevel);
     const newNode = new HNSWNode({
-      nodeId: 0n, // set by insertNode below
+      nodeId: 0, // set by insertNode below
       docId,
       level: newLevel,
       vectorPtr,
@@ -150,10 +150,10 @@ export class HNSWIndex {
       if (dirtyDocId === docId) continue; // already handled above
       const nodeId = this.docIdIndex.get(dirtyDocId);
       if (nodeId === undefined) continue;
-      const existingNode = await this.graphStorage.getNode(nodeId);
-      const dirtyLevel = Math.min(this.rustIdx.getLevel(dirtyDocId), this.graphStorage.maxStoredLevel);
-      existingNode.neighbors = this.buildNeighborList(dirtyDocId, dirtyLevel);
-      await this.graphStorage.saveNode(existingNode);
+      // Zero-allocation: write neighbors directly into the page buffer.
+      // Returns void (synchronous) when page is already dirty in-place — no await needed.
+      const p = this.graphStorage.updateNodeNeighbors(nodeId, dirtyDocId, this.rustIdx, this.docIdIndex);
+      if (p !== undefined) await p;
     }
 
     // 6. Persist updated graph-level metadata.
@@ -212,10 +212,8 @@ export class HNSWIndex {
     for (const dirtyDocId of dirtyDocIds) {
       const nbNodeId = this.docIdIndex.get(dirtyDocId);
       if (nbNodeId === undefined) continue;
-      const nbNode = await this.graphStorage.getNode(nbNodeId);
-      const nbLevel = Math.min(this.rustIdx.getLevel(dirtyDocId), this.graphStorage.maxStoredLevel);
-      nbNode.neighbors = this.buildNeighborList(dirtyDocId, nbLevel);
-      await this.graphStorage.saveNode(nbNode);
+      const p = this.graphStorage.updateNodeNeighbors(nbNodeId, dirtyDocId, this.rustIdx, this.docIdIndex);
+      if (p !== undefined) await p;
     }
 
     // 7. Update graph-level metadata.
@@ -256,12 +254,20 @@ export class HNSWIndex {
    * them to FBF NodeIds via `docIdIndex`.
    */
   private buildNeighborList(docId: number, level: number): NodeId[][] {
+    // ONE FFI call: [nodeLevel, count0, nb0..., count1, nb1..., ...]
+    const allNb = this.rustIdx.getAllNeighbors(docId);
     const neighbors: NodeId[][] = [];
+    let pos = 1; // skip nodeLevel header
     for (let layer = 0; layer <= level; layer++) {
-      const nbDocIds = this.rustIdx.getNeighbors(docId, layer);
-      const nbNodeIds: NodeId[] = nbDocIds
-        .map((id) => this.docIdIndex.get(id))
-        .filter((id): id is NodeId => id !== undefined);
+      const nbNodeIds: NodeId[] = [];
+      if (pos < allNb.length) {
+        const count = allNb[pos++];
+        for (let i = 0; i < count; i++) {
+          const nodeId = this.docIdIndex.get(allNb[pos + i]);
+          if (nodeId !== undefined) nbNodeIds.push(nodeId);
+        }
+        pos += count;
+      }
       neighbors.push(nbNodeIds);
     }
     return neighbors;
