@@ -124,6 +124,21 @@ pub extern "C" fn hnsw_get_neighbors(
     unsafe { (*handle).0.get_neighbors(doc_id, layer as usize, out) }
 }
 
+/// Write ALL layers' neighbors for `doc_id` into `out_buf` in compact format:
+///   [nodeLevel, count0, nb0_0..nb0_k, count1, nb1_0..nb1_k, ...]
+/// Returns total u32 values written, or -1 if not found.
+/// Single FFI call replaces (maxLevel+1) calls to `hnsw_get_neighbors`.
+#[no_mangle]
+pub extern "C" fn hnsw_get_all_neighbors(
+    handle:  *const HnswHandle,
+    doc_id:  u32,
+    out_buf: *mut u32,
+    buf_len: u32,
+) -> i32 {
+    let out = unsafe { std::slice::from_raw_parts_mut(out_buf, buf_len as usize) };
+    unsafe { (*handle).0.get_all_neighbors(doc_id, out) }
+}
+
 /// Entry-point doc_id.  Returns 0xFFFF_FFFF if the index is empty.
 #[no_mangle]
 pub extern "C" fn hnsw_get_entry_doc_id(handle: *const HnswHandle) -> u32 {

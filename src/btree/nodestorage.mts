@@ -102,6 +102,9 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   ) {
     this.compareKeys = options.compareKeys ?? ((a, b) => Buffer.compare(a, b));
     this.blockSize = file._getBlockSize();
+    // Register pre-commit hook so flushDirtyNodes() runs whenever file.commit() is called,
+    // including in tests that invoke file.commit() directly (not via DbmsBack.commit()).
+    file.addPreCommitHook(() => this.flushDirtyNodes());
   }
 
   getMaxKeySize(): number {
@@ -180,10 +183,10 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     let node: BlockLeafNode | BlockInternalNode;
     if (nodeType === BLOCK_NODE_TYPE_LEAF) {
       node = this.createLeafNode(blockNumber);
-      await node.load();
+      await node.load(rawBuffer); // reuse already-read buffer, avoids a second readBlock
     } else if (nodeType === BLOCK_NODE_TYPE_INTERNAL) {
       node = this.createInternalNode(blockNumber);
-      await node.load();
+      await node.load(rawBuffer);
     } else {
       throw new Error(`Unknown node type: ${nodeType}`);
     }
@@ -225,5 +228,16 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    */
   private invalidateNode(blockNumber: number): void {
     this.nodeCache.delete(blockNumber);
+  }
+
+  /**
+   * Flush all dirty B+tree nodes into the FBF dirty-block cache.
+   * Must be called before FreeBlockFile.commit() so every in-memory mutation
+   * is serialised to the dirty-block map before the WAL write begins.
+   */
+  async flushDirtyNodes(): Promise<void> {
+    for (const node of this.nodeCache.values()) {
+      await node.flush();
+    }
   }
 }

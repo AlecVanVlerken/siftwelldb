@@ -298,6 +298,34 @@ impl HnswCore {
         n as i32
     }
 
+    /// Write ALL layers' neighbors for `doc_id` into `out` in a compact format:
+    ///   out[0]                 = node level (number of layers - 1)
+    ///   out[1]                 = count0  (layer-0 neighbor count)
+    ///   out[2 .. 2+count0]     = layer-0 doc_ids
+    ///   out[2+count0]          = count1
+    ///   out[2+count0+1 .. ]    = layer-1 doc_ids
+    ///   … and so on for all stored layers.
+    ///
+    /// Returns total u32 values written, or -1 if node not found.
+    /// Single FFI call replaces (maxLevel+1) calls to `get_neighbors`.
+    pub fn get_all_neighbors(&self, doc_id: u32, out: &mut [u32]) -> i32 {
+        let Some(&idx) = self.doc_to_node.get(&doc_id) else { return -1; };
+        let node = &self.nodes[idx as usize];
+        if out.is_empty() { return 0; }
+        out[0] = node.level as u32;
+        let mut pos = 1usize;
+        for layer_neighbors in &node.neighbors {
+            if pos + 1 + layer_neighbors.len() > out.len() { break; }
+            out[pos] = layer_neighbors.len() as u32;
+            pos += 1;
+            for (i, &nb_idx) in layer_neighbors.iter().enumerate() {
+                out[pos + i] = self.nodes[nb_idx as usize].doc_id;
+            }
+            pos += layer_neighbors.len();
+        }
+        pos as i32
+    }
+
     // ── Import API (used when bulk-loading from FBF on open()) ───────────────
 
     /// Add a node to the index WITHOUT running the HNSW algorithm.

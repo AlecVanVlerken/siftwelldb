@@ -71,6 +71,9 @@ function getLib() {
     getNeighbors: _lib.func(
       'int32_t hnsw_get_neighbors(HnswT *handle, uint32_t doc_id, uint32_t layer, _Out_ uint32_t *out_buf, uint32_t buf_len)',
     ),
+    getAllNeighbors: _lib.func(
+      'int32_t hnsw_get_all_neighbors(HnswT *handle, uint32_t doc_id, _Out_ uint32_t *out_buf, uint32_t buf_len)',
+    ),
     getEntryDocId: _lib.func('uint32_t hnsw_get_entry_doc_id(HnswT *handle)'),
     getMaxLevel: _lib.func('uint32_t hnsw_get_max_level(HnswT *handle)'),
     // ── Bulk-import (loading from FBF on open()) ──────────────────────────────
@@ -103,7 +106,10 @@ export class HnswIndexNative {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly handle: any;
   private readonly _dim: number;
-  private readonly _k_buf: Uint32Array; // reusable result buffer
+  private readonly _k_buf: Uint32Array; // reusable result buffer for search
+  private readonly _nb_buf: Uint32Array; // reusable result buffer for getNeighbors
+  private readonly _all_nb_buf: Uint32Array; // reusable result buffer for getAllNeighbors
+  private readonly _dirty_buf: Uint32Array; // reusable result buffer for takeDirtyNodes
 
   /**
    * @param dim             Vector dimension (fixed for the lifetime of the index).
@@ -117,6 +123,10 @@ export class HnswIndexNative {
     this._dim = dim;
     // Pre-allocate result buffer for up to 1024 neighbours.
     this._k_buf = new Uint32Array(1024);
+    // Pre-allocate reusable FFI output buffers to avoid per-call allocations.
+    this._nb_buf = new Uint32Array(64); // max M*2 neighbours per layer
+    this._all_nb_buf = new Uint32Array(100); // header + all layers: 1+17+9+9+9 ≤ 64 for M=8
+    this._dirty_buf = new Uint32Array(512); // max dirty nodes per insert
   }
 
   /** Insert a vector identified by `docId`. */
@@ -164,11 +174,13 @@ export class HnswIndexNative {
    * most recent `insert()` or `delete()` call, then clear the dirty set.
    * Must be called once after each mutating operation before the next one.
    */
-  takeDirtyNodes(): number[] {
-    // Max dirty nodes per insert ≈ M * maxLevel * 2 ≈ 192; 512 is ample.
-    const buf = new Uint32Array(512);
-    const n = _fns.takeDirtyNodes(this.handle, buf, 512) as number;
-    return Array.from(buf.subarray(0, n));
+  /**
+   * Return dirty doc_ids as a Uint32Array view into the shared `_dirty_buf`.
+   * Valid only until the next mutating call on this instance.
+   */
+  takeDirtyNodes(): Uint32Array {
+    const n = _fns.takeDirtyNodes(this.handle, this._dirty_buf, 512) as number;
+    return this._dirty_buf.subarray(0, n);
   }
 
   // ── Per-node query API (read Rust state for writing back to FBF) ─────────────
@@ -184,15 +196,28 @@ export class HnswIndexNative {
   }
 
   /**
-   * Return the neighbor doc_ids of `docId` at `layer`.
-   * Returns an empty array if the node is not found or the layer is out of range.
+   * Return the neighbor doc_ids of `docId` at `layer` as a read-only view into
+   * the pre-allocated `_nb_buf`.  The view is only valid until the next call to
+   * this method — callers must not retain the reference across calls.
+   * Returns an empty view if the node is not found or the layer is out of range.
    */
-  getNeighbors(docId: number, layer: number): number[] {
-    const maxNeighbors = 64; // M * 2 at most
-    const buf = new Uint32Array(maxNeighbors);
-    const n = _fns.getNeighbors(this.handle, docId, layer, buf, maxNeighbors) as number;
-    if (n < 0) return [];
-    return Array.from(buf.subarray(0, n));
+  getNeighbors(docId: number, layer: number): Uint32Array {
+    const n = _fns.getNeighbors(this.handle, docId, layer, this._nb_buf, 64) as number;
+    if (n < 0) return this._nb_buf.subarray(0, 0);
+    return this._nb_buf.subarray(0, n);
+  }
+
+  /**
+   * Return ALL layers' neighbor doc_ids for `docId` in compact format, as a
+   * read-only view into the pre-allocated `_all_nb_buf`.
+   *   [nodeLevel, count0, nb0_0..nb0_k, count1, nb1_0..nb1_k, ...]
+   * Single FFI call replaces (maxLevel+1) calls to `getNeighbors`.
+   * Valid only until the next call to this method.
+   */
+  getAllNeighbors(docId: number): Uint32Array {
+    const n = _fns.getAllNeighbors(this.handle, docId, this._all_nb_buf, 100) as number;
+    if (n <= 0) return this._all_nb_buf.subarray(0, 0);
+    return this._all_nb_buf.subarray(0, n);
   }
 
   /**

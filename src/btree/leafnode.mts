@@ -199,6 +199,19 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
   private entries: BlockEntry[] = [];
   private nextLeafBlock: number = 0;
   private dirty = false;
+  /** Incrementally maintained serialized size. Avoids O(n) scans in needsSplit / canMergeWithNext. */
+  private currentSize: number = LEAF_HEADER_SIZE;
+  /** Pre-created access object — avoids allocating a new object + 7 closures on every B+tree
+   * traversal (getCursorBeforeKey / getCursorBeforeFirst). No flush callback: all node
+   * serialisation is deferred to BlockNodeStorage.flushDirtyNodes() at commit time.
+   */
+  private _leafAccess: LeafAccess<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
+  /**
+   * Persistent raw block buffer (blockSize bytes, byte 0 = BlockType.Data). Allocated on first
+   * flush and reused across commits.  Re-registered in the FBF dirty map each flush so the
+   * WAL picks up the latest serialized content without allocating a new buffer per commit cycle.
+   */
+  private _rawBuffer: Buffer | undefined = undefined;
 
   constructor(
     private readonly file: FreeBlockFile,
@@ -208,7 +221,18 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     private readonly allocateNode: () => Promise<BlockLeafNode>,
     private readonly loadNode?: (blockNumber: number) => Promise<BlockLeafNode | BlockInternalNode>,
     private readonly onNodeFreed?: (blockNumber: number) => void,
-  ) {}
+  ) {
+    this._leafAccess = {
+      leaf: this,
+      getEntryCount: () => this.entries.length,
+      getKeyValuePairAt: (index: number) => this.getKeyValuePairAt(index),
+      insertAt: (index: number, key: Buffer, value: Buffer) => this.insertAt(index, key, value),
+      removeAt: (index: number) => this.removeAt(index),
+      updateAt: (index: number, value: Buffer) => this.updateAt(index, value),
+      splitIfNeeded: () => this.splitIfNeeded(),
+      // No flush callback: flushing is deferred to flushDirtyNodes() at commit time.
+    };
+  }
 
   getBlockNumber(): number {
     return this.blockNumber;
@@ -217,10 +241,10 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
   /**
    * Load node data from disk.
    */
-  async load(): Promise<void> {
-    const rawBuffer = await this.file.readBlock(this.blockNumber);
+  async load(rawBuffer?: Buffer): Promise<void> {
+    const buf = rawBuffer ?? (await this.file.readBlock(this.blockNumber));
     // FreeBlockFile stores block type at byte 0, our data starts at byte 1
-    const buffer = rawBuffer.subarray(1);
+    const buffer = buf.subarray(1);
     this.entries = [];
 
     // Our layout: [0]: type, [1-4]: count, [5-8]: next
@@ -241,17 +265,36 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
 
       this.entries.push({ key, value });
     }
+    this.currentSize = LEAF_HEADER_SIZE;
+    for (const entry of this.entries) {
+      this.currentSize += 2 + entry.key.length + 2 + entry.value.length;
+    }
     this.dirty = false;
   }
 
   /**
-   * Write node data to disk.
+   * Serialise entries directly into the FBF dirty block (zero-copy: no data.copy via writeBlock).
+   * Deferred: only called at commit time via BlockNodeStorage.flushDirtyNodes().
    */
   async flush(): Promise<void> {
     if (!this.dirty) return;
 
-    // FreeBlockFile expects blockSize - 1 bytes (it reserves 1 byte for block type)
-    const buffer = Buffer.alloc(this.blockSize - 1);
+    // Obtain raw block buffer: prefer existing dirty entry (avoids allocation),
+    // fall back to cached own buffer, then allocate once from disk.
+    let rawBlock = this.file._getDirtyBlock(this.blockNumber);
+    if (rawBlock !== undefined) {
+      this._rawBuffer = rawBlock; // keep reference for future commit cycles
+    } else if (this._rawBuffer !== undefined) {
+      // Re-register our cached buffer as dirty (dirty map was cleared by last commit).
+      this.file._setDirtyBlock(this.blockNumber, this._rawBuffer);
+      rawBlock = this._rawBuffer;
+    } else {
+      // First ever flush for a node that was loaded from disk (not freshly allocated).
+      rawBlock = await this.file.readBlock(this.blockNumber);
+      this._rawBuffer = rawBlock;
+      this.file._setDirtyBlock(this.blockNumber, rawBlock);
+    }
+    const buffer = rawBlock.subarray(1);
     buffer.writeUInt8(LEAF_TYPE_BYTE, 0);
     buffer.writeUInt32LE(this.entries.length, 1);
     buffer.writeUInt32LE(this.nextLeafBlock, 5);
@@ -268,30 +311,28 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
       entry.value.copy(buffer, offset);
       offset += entry.value.length;
     }
-
-    await this.file.writeBlock(this.blockNumber, buffer);
     this.dirty = false;
   }
 
   /**
-   * Initialize as empty leaf and write to disk.
+   * Initialize as empty leaf. Flush is deferred to flushDirtyNodes() at commit time.
    */
   async initEmpty(): Promise<void> {
     this.entries = [];
     this.nextLeafBlock = 0;
+    this.currentSize = LEAF_HEADER_SIZE;
     this.dirty = true;
-    await this.flush();
   }
 
   getCursorBeforeFirst(): LeafCursor<Buffer, Buffer, BlockLeafNode, BlockInternalNode> {
-    return new LeafCursorImpl<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(this.createLeafAccess(), -1);
+    return new LeafCursorImpl<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(this._leafAccess, -1);
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async getCursorBeforeKey(
-    key: Buffer,
-  ): Promise<{ cursor: LeafCursor<Buffer, Buffer, BlockLeafNode, BlockInternalNode>; isAtKey: boolean }> {
-    const access = this.createLeafAccess();
+  getCursorBeforeKey(key: Buffer): {
+    cursor: LeafCursor<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
+    isAtKey: boolean;
+  } {
+    const access = this._leafAccess;
     const index = this.findFirstGreaterOrEqualIndex(key);
     const cursor = new LeafCursorImpl(access, index - 1);
     const isAtKey = index < this.entries.length && this.compareKeys(this.entries[index].key, key) === 0;
@@ -336,19 +377,18 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     if (!(nextNode instanceof BlockLeafNode)) {
       return false;
     }
-    const combinedSize = this.calculateSize(this.entries) + this.calculateSize(nextNode.entries) - LEAF_HEADER_SIZE;
     // FreeBlockFile reserves 1 byte for block type
-    return combinedSize <= this.blockSize - 1;
+    return this.currentSize + nextNode.currentSize - LEAF_HEADER_SIZE <= this.blockSize - 1;
   }
 
   async mergeWithNext(_key: Buffer, nextNode: BlockLeafNode | BlockInternalNode): Promise<void> {
     if (!(nextNode instanceof BlockLeafNode)) {
       throw new Error('Cannot merge leaf with non-leaf node');
     }
+    this.currentSize += nextNode.currentSize - LEAF_HEADER_SIZE;
     this.entries.push(...nextNode.entries);
     this.nextLeafBlock = nextNode.nextLeafBlock;
     this.dirty = true;
-    await this.flush();
     // Invalidate the merged node from cache before freeing its block
     this.onNodeFreed?.(nextNode.blockNumber);
     await this.file.freeBlock(nextNode.blockNumber);
@@ -367,11 +407,14 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
   }
 
   insertAt(index: number, key: Buffer, value: Buffer): void {
+    this.currentSize += 2 + key.length + 2 + value.length;
     this.entries.splice(index, 0, { key, value });
     this.dirty = true;
   }
 
   removeAt(index: number): void {
+    const entry = this.entries[index]!;
+    this.currentSize -= 2 + entry.key.length + 2 + entry.value.length;
     this.entries.splice(index, 1);
     this.dirty = true;
   }
@@ -381,13 +424,13 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     if (!entry) {
       throw new Error('Entry not found.');
     }
+    this.currentSize += value.length - entry.value.length;
     entry.value = value;
     this.dirty = true;
   }
 
   async splitIfNeeded(): Promise<BlockLeafDescriptor> {
     if (!this.needsSplit()) {
-      await this.flush();
       return this.describe();
     }
 
@@ -395,19 +438,21 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     const midpoint = Math.ceil(this.entries.length / 2);
     const rightEntries = this.entries.splice(midpoint);
 
+    // Maintain incremental sizes for both halves
+    let rightSize = LEAF_HEADER_SIZE;
+    for (const e of rightEntries) rightSize += 2 + e.key.length + 2 + e.value.length;
+    this.currentSize -= rightSize - LEAF_HEADER_SIZE;
+
     // Allocate new node for right half
     const rightNode = await this.allocateNode();
     rightNode.entries = rightEntries;
+    rightNode.currentSize = rightSize;
     rightNode.nextLeafBlock = this.nextLeafBlock;
     rightNode.dirty = true;
 
     // Update this node to point to right node
     this.nextLeafBlock = rightNode.blockNumber;
     this.dirty = true;
-
-    // Write both nodes
-    await this.flush();
-    await rightNode.flush();
 
     return {
       nodes: [this, rightNode],
@@ -417,7 +462,7 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
 
   private needsSplit(): boolean {
     // FreeBlockFile reserves 1 byte for block type
-    return this.calculateSize(this.entries) > this.blockSize - 1;
+    return this.currentSize > this.blockSize - 1;
   }
 
   private calculateSize(entries: BlockEntry[]): number {
@@ -440,18 +485,5 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
       }
     }
     return low;
-  }
-
-  private createLeafAccess(): LeafAccess<Buffer, Buffer, BlockLeafNode, BlockInternalNode> {
-    return {
-      leaf: this,
-      getEntryCount: () => this.entries.length,
-      getKeyValuePairAt: (index: number) => this.getKeyValuePairAt(index),
-      insertAt: (index: number, key: Buffer, value: Buffer) => this.insertAt(index, key, value),
-      removeAt: (index: number) => this.removeAt(index),
-      updateAt: (index: number, value: Buffer) => this.updateAt(index, value),
-      splitIfNeeded: () => this.splitIfNeeded(),
-      flush: () => this.flush(),
-    };
   }
 }

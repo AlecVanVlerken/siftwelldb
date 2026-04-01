@@ -4,6 +4,9 @@
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { type NodeId, HNSWNode } from './hnswNode.mjs';
 import type { VectorPointer } from './vectorHeapFile.mjs';
+import { HnswIndexNative } from './hnswNative.mjs';
+// BlockType.Data = 0x02 (from layout.mts const enum, inlined here to avoid import)
+const BLOCK_TYPE_DATA = 0x02;
 
 /**
  * Magic byte written at usable[0] (= raw byte 1) of every HNSW graph node page.
@@ -13,17 +16,18 @@ import type { VectorPointer } from './vectorHeapFile.mjs';
 const HNSW_GRAPH_PAGE_MAGIC = 0xa3;
 
 // ** NodeId encoding **
-// NodeId = BigInt(pageId) << 32n | BigInt(slotId)
-// This is a unique, serialisable identifier for every node slot.
+// NodeId = pageId * 2^32 + slotId  (fits safely in a JS number for any
+// realistic block count — Number.MAX_SAFE_INTEGER / 2^32 ≈ 2 billion pages)
 
 export function encodeNodeId(pageId: number, slotId: number): NodeId {
-  return (BigInt(pageId) << 32n) | BigInt(slotId);
+  return pageId * 4294967296 + slotId;
 }
 
 export function decodeNodeId(nodeId: NodeId): { pageId: number; slotId: number } {
+  const pageId = Math.floor(nodeId / 4294967296);
   return {
-    pageId: Number((nodeId >> 32n) & 0xffffffffn),
-    slotId: Number(nodeId & 0xffffffffn),
+    pageId,
+    slotId: nodeId - pageId * 4294967296,
   };
 }
 
@@ -66,18 +70,18 @@ const META_CURRENT_MAX_LEVEL = 21;
 //   [9-10] vectorPtr.slotId   (uint16 LE)
 //   [11]   deleted            (uint8, 0 or 1)
 //
-// Layer 0 neighbors: 1 + 2*M*8 bytes
+// Layer 0 neighbors: 1 + 2*M*6 bytes
 //   [12]        count0   (uint8)
-//   [13 … 12+2*M*8] NodeId[]  (each 8 bytes, uint64 LE)
+//   [13 … 12+2*M*6] NodeId[]  (each 6 bytes: uint32 LE pageId then uint16 LE slotId)
 //
-// Layer l (1 ≤ l ≤ maxStoredLevel): 1 + M*8 bytes
+// Layer l (1 ≤ l ≤ maxStoredLevel): 1 + M*6 bytes
 //   neighborsOffset(l) + [0]   count_l (uint8)
-//   neighborsOffset(l) + [1 … M*8] NodeId[]
+//   neighborsOffset(l) + [1 … M*6] NodeId[]
 //
-// nodeSize = 12 + (1 + 2*M*8) + maxStoredLevel*(1 + M*8)
+// nodeSize = 12 + (1 + 2*M*6) + maxStoredLevel*(1 + M*6)
 
 function computeNodeSize(M: number, maxStoredLevel: number): number {
-  return 12 + (1 + 2 * M * 8) + maxStoredLevel * (1 + M * 8);
+  return 12 + (1 + 2 * M * 6) + maxStoredLevel * (1 + M * 6);
 }
 
 function layer0NeighborOffset(): number {
@@ -86,13 +90,13 @@ function layer0NeighborOffset(): number {
 
 function layerNNeighborOffset(M: number, layer: number): number {
   // layer must be ≥ 1
-  const base = 12 + (1 + 2 * M * 8); // skip fixed header + layer-0 block
-  return base + (layer - 1) * (1 + M * 8) + 1; // +1 for count byte
+  const base = 12 + (1 + 2 * M * 6); // skip fixed header + layer-0 block
+  return base + (layer - 1) * (1 + M * 6) + 1; // +1 for count byte
 }
 
 function layerNCountOffset(M: number, layer: number): number {
-  const base = 12 + (1 + 2 * M * 8);
-  return base + (layer - 1) * (1 + M * 8);
+  const base = 12 + (1 + 2 * M * 6);
+  return base + (layer - 1) * (1 + M * 6);
 }
 
 const LAYER0_COUNT_OFFSET = 12; // byte index of count0 in the slot
@@ -136,6 +140,16 @@ export class HNSWGraphStorage {
   private _levelHistogram: number[];
 
   private insertHint: number = 0;
+
+  /**
+   * Page-level read/write cache.
+   *
+   * Keyed by pageId, stores the **full raw block** (blockSize bytes) so that
+   * stale entries from a previous commit cycle can be re-registered as dirty
+   * via `_setDirtyBlock` with ZERO buffer allocation.  The usable area
+   * (bytes [1..blockSize-1]) is obtained as `cached.subarray(1)` on demand.
+   */
+  private readonly _pageCache = new Map<number, {raw: Buffer, usable: Buffer}>();
 
   /**
    * Block number of the dedicated metadata block in the FreeBlockFile.
@@ -218,9 +232,9 @@ export class HNSWGraphStorage {
     // Restore entry point and current max level
     const hasEp = clientArea.readUInt8(META_HAS_EP);
     if (hasEp) {
-      const high = BigInt(clientArea.readUInt32LE(META_EP_HIGH));
-      const low = BigInt(clientArea.readUInt32LE(META_EP_LOW));
-      gs._entryPoint = (high << 32n) | low;
+      const high = clientArea.readUInt32LE(META_EP_HIGH);
+      const low = clientArea.readUInt32LE(META_EP_LOW);
+      gs._entryPoint = high * 4294967296 + low;
     }
     gs._currentMaxLevel = clientArea.readUInt8(META_CURRENT_MAX_LEVEL);
     return gs;
@@ -297,8 +311,10 @@ export class HNSWGraphStorage {
     metaBuf.writeUInt32LE(this.maxStoredLevel, META_MAX_LEVEL);
     metaBuf.writeUInt32LE(this.nodeSize, META_NODE_SIZE);
     if (this._entryPoint !== null) {
-      metaBuf.writeUInt32LE(Number((this._entryPoint >> 32n) & 0xffffffffn), META_EP_HIGH);
-      metaBuf.writeUInt32LE(Number(this._entryPoint & 0xffffffffn), META_EP_LOW);
+      const epHigh = Math.floor(this._entryPoint / 4294967296);
+      const epLow = this._entryPoint - epHigh * 4294967296;
+      metaBuf.writeUInt32LE(epHigh, META_EP_HIGH);
+      metaBuf.writeUInt32LE(epLow, META_EP_LOW);
       metaBuf.writeUInt8(1, META_HAS_EP);
     } else {
       metaBuf.writeUInt8(0, META_HAS_EP);
@@ -312,8 +328,20 @@ export class HNSWGraphStorage {
   // ** Low-level page helpers **
 
   private async readPage(pageId: number): Promise<Buffer> {
+    // Fast path: return pre-cached usable slice (no subarray() call).
+    const cached = this._pageCache.get(pageId);
+    if (cached !== undefined) return cached.usable;
+    // Not cached: check if already dirty (saves a readBlock allocation).
+    const dirty = this.file._getDirtyBlock(pageId);
+    if (dirty !== undefined) {
+      const usable = dirty.subarray(1);
+      this._pageCache.set(pageId, {raw: dirty, usable});
+      return usable;
+    }
     const raw = await this.file.readBlock(pageId);
-    return raw.subarray(1);
+    const usable = raw.subarray(1);
+    this._pageCache.set(pageId, {raw, usable});
+    return usable;
   }
 
   private async readPageIfData(pageId: number): Promise<Buffer | null> {
@@ -326,7 +354,26 @@ export class HNSWGraphStorage {
   }
 
   private async writePage(pageId: number, usable: Buffer): Promise<void> {
+    // Fast path: usable is a subarray of the current dirty block (zero-copy).
+    const dirty = this.file._getDirtyBlock(pageId);
+    if (dirty !== undefined && dirty.buffer === usable.buffer && dirty.byteOffset === usable.byteOffset - 1) {
+      const cached = this._pageCache.get(pageId);
+      if (cached === undefined || cached.raw !== dirty) this._pageCache.set(pageId, {raw: dirty, usable});
+      return;
+    }
+    // Stale path: usable is subarray(1) of a cached raw block — promote to dirty
+    // with ZERO allocation by re-registering the existing raw buffer.
+    const cached = this._pageCache.get(pageId);
+    if (cached !== undefined && cached.raw.buffer === usable.buffer && usable.byteOffset === 1) {
+      this.file._setDirtyBlock(pageId, cached.raw);
+      return;
+    }
+    // Fallback: new page or external buffer — let writeBlock allocate + copy.
     await this.file.writeBlock(pageId, usable);
+    const newDirty = this.file._getDirtyBlock(pageId);
+    if (newDirty !== undefined) {
+      this._pageCache.set(pageId, {raw: newDirty, usable: newDirty.subarray(1)});
+    }
   }
 
   private newPageBuffer(): Buffer {
@@ -392,7 +439,10 @@ export class HNSWGraphStorage {
     usable.writeUInt8(count0, slotOffset + LAYER0_COUNT_OFFSET);
     const off0 = slotOffset + layer0NeighborOffset();
     for (let i = 0; i < count0; i++) {
-      usable.writeBigUInt64LE(neighbors0[i], off0 + i * 8);
+      const id = neighbors0[i];
+      // NodeId = pageId * 2^32 + slotId; store as uint32(pageId) + uint16(slotId) = 6 bytes.
+      usable.writeUInt32LE(Math.floor(id / 4294967296), off0 + i * 6); // pageId
+      usable.writeUInt16LE(id >>> 0, off0 + i * 6 + 4);                // slotId
     }
 
     // Layers 1 … maxLayer
@@ -403,7 +453,9 @@ export class HNSWGraphStorage {
       const countL = Math.min(neighborsL.length, this.M);
       usable.writeUInt8(countL, countOff);
       for (let i = 0; i < countL; i++) {
-        usable.writeBigUInt64LE(neighborsL[i], neighborsOff + i * 8);
+        const id = neighborsL[i];
+        usable.writeUInt32LE(Math.floor(id / 4294967296), neighborsOff + i * 6);
+        usable.writeUInt16LE(id >>> 0, neighborsOff + i * 6 + 4);
       }
     }
   }
@@ -421,9 +473,11 @@ export class HNSWGraphStorage {
     // Layer 0
     const count0 = usable.readUInt8(slotOffset + LAYER0_COUNT_OFFSET);
     const off0 = slotOffset + layer0NeighborOffset();
-    const neighbors0: NodeId[] = [];
+    const neighbors0: NodeId[] = new Array<NodeId>(count0);
     for (let i = 0; i < count0; i++) {
-      neighbors0.push(usable.readBigUInt64LE(off0 + i * 8));
+      const pageId = usable.readUInt32LE(off0 + i * 6);
+      const slotId = usable.readUInt16LE(off0 + i * 6 + 4);
+      neighbors0[i] = pageId * 4294967296 + slotId;
     }
     neighbors.push(neighbors0);
 
@@ -437,9 +491,11 @@ export class HNSWGraphStorage {
       const countOff = slotOffset + layerNCountOffset(this.M, l);
       const neighborsOff = slotOffset + layerNNeighborOffset(this.M, l);
       const countL = usable.readUInt8(countOff);
-      const neighborsL: NodeId[] = [];
+      const neighborsL: NodeId[] = new Array<NodeId>(countL);
       for (let i = 0; i < countL; i++) {
-        neighborsL.push(usable.readBigUInt64LE(neighborsOff + i * 8));
+        const pageId = usable.readUInt32LE(neighborsOff + i * 6);
+        const slotId = usable.readUInt16LE(neighborsOff + i * 6 + 4);
+        neighborsL[i] = pageId * 4294967296 + slotId;
       }
       neighbors.push(neighborsL);
     }
@@ -513,6 +569,172 @@ export class HNSWGraphStorage {
   }
 
   /**
+   * Update only the neighbor arrays of a stored node in-place.
+   *
+   * **Hot path** — called for every dirty node after each HNSW insert/delete.
+   * Returns `void` (synchronous, no microtask) when the page is already in the
+   * FBF dirty cache, `Promise<void>` only on the rare first-ever disk access.
+   *
+   * Zero-allocation fast path: avoids constructing a temporary `HNSWNode`,
+   * `VectorPointer`, or any intermediate `NodeId[][]` / `NodeId[]` arrays.
+   *
+   * @param nodeId     NodeId of the node to update.
+   * @param docId      docId — used to query Rust for the current neighbor lists.
+   * @param rustIdx    Rust HNSW index (for `getNeighbors()` calls).
+   * @param docIdIndex Mapping from docId → NodeId for neighbor id resolution.
+   */
+  updateNodeNeighbors(
+    nodeId: NodeId,
+    docId: number,
+    rustIdx: HnswIndexNative,
+    docIdIndex: Map<number, NodeId>,
+  ): void | Promise<void> {
+    const pageId = Math.floor(nodeId / 4294967296);
+    const slotId = nodeId - pageId * 4294967296;
+
+    // 1. Read path — get pre-cached {raw, usable} pair.
+    const cached = this._pageCache.get(pageId);
+    if (cached === undefined) {
+      // Rare: not in cache at all — must read from disk.
+      return this._updateNodeNeighborsFromDisk(pageId, slotId, docId, rustIdx, docIdIndex);
+    }
+
+    // 2. Ensure raw is the active dirty block; promote stale raw (zero-allocation).
+    if (this.file._getDirtyBlock(pageId) !== cached.raw) {
+      this.file._setDirtyBlock(pageId, cached.raw);
+    }
+
+    // 3. Write neighbors directly into cached.usable (zero subarray() allocation).
+    const usable = cached.usable;
+    const slotOff = this.slotOffset(slotId);
+    const maxM0 = this.M * 2;
+
+    // ONE FFI call returns all layers: [nodeLevel, count0, nb0..., count1, nb1..., ...]
+    const allNb = rustIdx.getAllNeighbors(docId);
+    const nodeLevel = allNb.length > 0 ? allNb[0] : 0;
+    const maxLayer = Math.min(nodeLevel, this.maxStoredLevel);
+    let nbPos = 1;
+
+    // Layer 0
+    const count0 = allNb[nbPos++];
+    const maxCount0 = Math.min(count0, maxM0);
+    const off0 = slotOff + layer0NeighborOffset();
+    let actualCount0 = 0;
+    for (let i = 0; i < maxCount0; i++) {
+      const nid = docIdIndex.get(allNb[nbPos + i]);
+      if (nid !== undefined) {
+        const o = off0 + actualCount0 * 6;
+        const pg = Math.floor(nid / 4294967296);
+        const sl = nid >>> 0;
+        usable[o] = pg; usable[o + 1] = pg >> 8; usable[o + 2] = pg >> 16; usable[o + 3] = pg >> 24;
+        usable[o + 4] = sl; usable[o + 5] = sl >> 8;
+        actualCount0++;
+      }
+    }
+    nbPos += count0;
+    usable[slotOff + LAYER0_COUNT_OFFSET] = actualCount0;
+
+    for (let l = 1; l <= this.maxStoredLevel; l++) {
+      const countOff = slotOff + layerNCountOffset(this.M, l);
+      const neighborsOff = slotOff + layerNNeighborOffset(this.M, l);
+      if (l > maxLayer) {
+        usable[countOff] = 0;
+        continue;
+      }
+      const countL = allNb[nbPos++];
+      const maxCountL = Math.min(countL, this.M);
+      let actualCountL = 0;
+      for (let i = 0; i < maxCountL; i++) {
+        const nid = docIdIndex.get(allNb[nbPos + i]);
+        if (nid !== undefined) {
+          const o = neighborsOff + actualCountL * 6;
+          const pg = Math.floor(nid / 4294967296);
+          const sl = nid >>> 0;
+          usable[o] = pg; usable[o + 1] = pg >> 8; usable[o + 2] = pg >> 16; usable[o + 3] = pg >> 24;
+          usable[o + 4] = sl; usable[o + 5] = sl >> 8;
+          actualCountL++;
+        }
+      }
+      nbPos += countL;
+      usable[countOff] = actualCountL;
+    }
+
+    return; // void — fully synchronous, no microtask, no allocation
+  }
+
+  /**
+   * Slow path for `updateNodeNeighbors`: page is not in cache.
+   * Reads the block from disk once, registers it as dirty, writes neighbors in-place,
+   * and caches the raw block for future synchronous access.
+   */
+  private async _updateNodeNeighborsFromDisk(
+    pageId: number,
+    slotId: number,
+    docId: number,
+    rustIdx: HnswIndexNative,
+    docIdIndex: Map<number, NodeId>,
+  ): Promise<void> {
+    const raw = await this.file.readBlock(pageId);
+    // Register as dirty and cache both raw + usable for future zero-allocation access.
+    this.file._setDirtyBlock(pageId, raw);
+    const usable = raw.subarray(1);
+    this._pageCache.set(pageId, {raw, usable});
+    const slotOff = this.slotOffset(slotId);
+    const maxM0 = this.M * 2;
+
+    // ONE FFI call returns all layers: [nodeLevel, count0, nb0..., count1, nb1..., ...]
+    const allNb = rustIdx.getAllNeighbors(docId);
+    const nodeLevel = allNb.length > 0 ? allNb[0] : 0;
+    const maxLayer = Math.min(nodeLevel, this.maxStoredLevel);
+    let nbPos = 1;
+
+    // Layer 0
+    const count0 = allNb[nbPos++];
+    const maxCount0 = Math.min(count0, maxM0);
+    const off0 = slotOff + layer0NeighborOffset();
+    let actualCount0 = 0;
+    for (let i = 0; i < maxCount0; i++) {
+      const nid = docIdIndex.get(allNb[nbPos + i]);
+      if (nid !== undefined) {
+        const o = off0 + actualCount0 * 6;
+        const pg = Math.floor(nid / 4294967296);
+        const sl = nid >>> 0;
+        usable[o] = pg; usable[o + 1] = pg >> 8; usable[o + 2] = pg >> 16; usable[o + 3] = pg >> 24;
+        usable[o + 4] = sl; usable[o + 5] = sl >> 8;
+        actualCount0++;
+      }
+    }
+    nbPos += count0;
+    usable[slotOff + LAYER0_COUNT_OFFSET] = actualCount0;
+
+    for (let l = 1; l <= this.maxStoredLevel; l++) {
+      const countOff = slotOff + layerNCountOffset(this.M, l);
+      const neighborsOff = slotOff + layerNNeighborOffset(this.M, l);
+      if (l > maxLayer) {
+        usable[countOff] = 0;
+        continue;
+      }
+      const countL = allNb[nbPos++];
+      const maxCountL = Math.min(countL, this.M);
+      let actualCountL = 0;
+      for (let i = 0; i < maxCountL; i++) {
+        const nid = docIdIndex.get(allNb[nbPos + i]);
+        if (nid !== undefined) {
+          const o = neighborsOff + actualCountL * 6;
+          const pg = Math.floor(nid / 4294967296);
+          const sl = nid >>> 0;
+          usable[o] = pg; usable[o + 1] = pg >> 8; usable[o + 2] = pg >> 16; usable[o + 3] = pg >> 24;
+          usable[o + 4] = sl; usable[o + 5] = sl >> 8;
+          actualCountL++;
+        }
+      }
+      nbPos += countL;
+      usable[countOff] = actualCountL;
+    }
+    // Data already reflected in dirty cache via raw — no writePage needed.
+  }
+
+  /**
    * Mark a node as deleted (soft-delete).
    * The slot is NOT freed; the node remains in the graph but will be ignored
    * during search. Use `hardDeleteNode` to reclaim the slot.
@@ -534,6 +756,7 @@ export class HNSWGraphStorage {
     const newCount = this.getUsedCount(usable) - 1;
     this.setUsedCount(usable, newCount);
     if (newCount === 0) {
+      this._pageCache.delete(pageId); // drop cached pair, not just raw
       await this.file.freeBlock(pageId);
       if (this.insertHint === pageId) this.insertHint = 0;
     } else {
