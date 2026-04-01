@@ -39,6 +39,7 @@ const BLU = '\x1b[34m'; // blue
 type Doc = { id: string; category: string; title: string; body: string };
 
 const DOCUMENTS: Doc[] = [
+  // ── Machine Learning (8) ───────────────────────────────────────────────────
   {
     id: 'ml-01',
     category: 'Machine Learning',
@@ -76,6 +77,19 @@ const DOCUMENTS: Doc[] = [
     body: 'RL agents learn optimal behaviour by maximising cumulative reward through trial and error in an environment.',
   },
   {
+    id: 'ml-07',
+    category: 'Machine Learning',
+    title: 'Random Forests',
+    body: 'Random forests combine many decision trees trained on random data subsets, reducing overfitting through ensemble averaging.',
+  },
+  {
+    id: 'ml-08',
+    category: 'Machine Learning',
+    title: 'Attention Mechanism',
+    body: 'Attention allows models to dynamically weight different parts of the input sequence when producing each output token.',
+  },
+  // ── French History (6) ────────────────────────────────────────────────────
+  {
     id: 'fr-01',
     category: 'French History',
     title: 'French Revolution',
@@ -100,6 +114,19 @@ const DOCUMENTS: Doc[] = [
     body: "The Louvre in Paris is the world's largest art museum, home to the Mona Lisa and Venus de Milo.",
   },
   {
+    id: 'fr-05',
+    category: 'French History',
+    title: 'Napoleon Bonaparte',
+    body: 'Napoleon rose from military general to Emperor of France, conquering much of Europe before his final exile after Waterloo.',
+  },
+  {
+    id: 'fr-06',
+    category: 'French History',
+    title: 'Palace of Versailles',
+    body: 'The Palace of Versailles was the royal residence of French kings from Louis XIV, symbolising absolute monarchy and Baroque architecture.',
+  },
+  // ── Biology (5) ───────────────────────────────────────────────────────────
+  {
     id: 'bio-01',
     category: 'Biology',
     title: 'DNA Double Helix',
@@ -118,6 +145,19 @@ const DOCUMENTS: Doc[] = [
     body: 'Plants convert sunlight, water and CO2 into glucose and oxygen through light-dependent reactions and the Calvin cycle.',
   },
   {
+    id: 'bio-04',
+    category: 'Biology',
+    title: 'Natural Selection',
+    body: 'Natural selection favours organisms with traits that improve survival and reproduction, driving evolutionary change across generations.',
+  },
+  {
+    id: 'bio-05',
+    category: 'Biology',
+    title: 'Mitosis',
+    body: 'Mitosis is the cell division process where one cell splits into two genetically identical daughter cells, enabling growth and tissue repair.',
+  },
+  // ── Databases (4) ─────────────────────────────────────────────────────────
+  {
     id: 'db-01',
     category: 'Databases',
     title: 'B+ Tree Indexes',
@@ -128,6 +168,68 @@ const DOCUMENTS: Doc[] = [
     category: 'Databases',
     title: 'Write-Ahead Logging',
     body: 'WAL writes every change to a log before touching data pages, guaranteeing atomicity and crash recovery.',
+  },
+  {
+    id: 'db-03',
+    category: 'Databases',
+    title: 'HNSW Vector Index',
+    body: 'HNSW builds a hierarchical navigable small world graph of embeddings, enabling approximate nearest-neighbour search in sub-linear time.',
+  },
+  {
+    id: 'db-04',
+    category: 'Databases',
+    title: 'ACID Transactions',
+    body: 'ACID guarantees atomicity, consistency, isolation and durability, ensuring database transactions are reliably processed even after failures.',
+  },
+  // ── Space & Astronomy (4) ─────────────────────────────────────────────────
+  {
+    id: 'space-01',
+    category: 'Space & Astronomy',
+    title: 'Black Holes',
+    body: 'Black holes are regions where gravity is so extreme that not even light can escape, forming when massive stars collapse at the end of their life.',
+  },
+  {
+    id: 'space-02',
+    category: 'Space & Astronomy',
+    title: 'The Big Bang',
+    body: 'The Big Bang describes the rapid expansion of the universe from an ultra-dense singularity approximately 13.8 billion years ago.',
+  },
+  {
+    id: 'space-03',
+    category: 'Space & Astronomy',
+    title: 'Mars Exploration',
+    body: 'NASA rovers Curiosity and Perseverance study Martian geology and atmosphere, searching for signs of ancient microbial life.',
+  },
+  {
+    id: 'space-04',
+    category: 'Space & Astronomy',
+    title: 'Exoplanets',
+    body: 'Exoplanets orbit stars outside our solar system; the James Webb Space Telescope analyses their atmospheres for potential biosignatures.',
+  },
+  // ── Sports (4) ────────────────────────────────────────────────────────────
+  {
+    id: 'sport-01',
+    category: 'Sports',
+    title: 'Formula 1',
+    body: 'Formula 1 cars reach over 350 km/h using hybrid power units, advanced aerodynamic downforce and ultra-grippy slick tyres.',
+  },
+  {
+    id: 'sport-02',
+    category: 'Sports',
+    title: 'Football',
+    body: 'Football is the most popular sport in the world, played by two teams of eleven players each aiming to kick the ball into the opposing goal.',
+  },
+  {
+    id: 'sport-03',
+    category: 'Sports',
+    title: 'Olympic Games',
+    body: 'The Olympic Games unite athletes from over 200 nations every four years to compete across dozens of summer and winter sport disciplines.',
+  },
+  {
+    id: 'sport-04',
+    category: 'Sports',
+    title: 'Tennis',
+    body: 'Tennis players score points by hitting a ball over a net so the opponent cannot return it, competing in Grand Slam tournaments worldwide.',
   },
 ];
 
@@ -140,6 +242,8 @@ const SUGGESTIONS = [
   'crash recovery and database indexing',
   'optimisation algorithms for training models',
   'art museums and landmarks in Paris',
+  'space exploration and the universe',
+  'competitive team sports and athletics',
 ];
 
 // ── Display helpers ───────────────────────────────────────────────────────────
@@ -149,6 +253,8 @@ const CAT_COLOUR: Record<string, string> = {
   'French History': Y,
   Biology: G,
   Databases: C,
+  'Space & Astronomy': BLU,
+  Sports: '\x1b[91m',
 };
 
 function sep(len = 70) {
@@ -162,7 +268,8 @@ function printHeader(title: string) {
 }
 
 function printDocTable() {
-  printHeader(`Database — ${DOCUMENTS.length} documents across 4 categories`);
+  const numCategories = new Set(DOCUMENTS.map((d) => d.category)).size;
+  printHeader(`Database — ${DOCUMENTS.length} documents across ${numCategories} categories`);
   let lastCat = '';
   for (const d of DOCUMENTS) {
     if (d.category !== lastCat) {

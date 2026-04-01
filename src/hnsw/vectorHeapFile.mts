@@ -179,7 +179,7 @@ export class VectorHeapFile {
       throw new Error(`Vector dimension mismatch: expected ${this.dimension}, got ${vector.length}`);
     }
 
-    // Try the cached hint page first.
+    // Try the cached hint page first — O(1) fast path.
     if (this.insertHint > 0) {
       const usable = await this.readPage(this.insertHint);
       const slotId = this.findFreeSlot(usable);
@@ -188,20 +188,10 @@ export class VectorHeapFile {
       }
     }
 
-    // Scan all existing data pages (blocks 1 … cachedBlockCount−1) for a free slot.
-    const blockCount = Math.max(this.file._getCachedBlockCount(), this.file._getHighestDirtyBlock() + 1);
-    for (let pageId = 1; pageId < blockCount; pageId++) {
-      if (pageId === this.insertHint) continue; // already tried above
-      const usable = await this.readPageIfData(pageId);
-      if (usable === null) continue; // freed or non-Data block
-      const slotId = this.findFreeSlot(usable);
-      if (slotId >= 0) {
-        this.insertHint = pageId;
-        return this.writeToSlot(pageId, usable, slotId, vector);
-      }
-    }
-
-    // All pages are full (or no pages yet): allocate a new page.
+    // Hint page is full — allocate a new page directly (O(1)).
+    // Skipping the previous O(N) scan of all existing data pages.
+    // Freed slots from deletes are reclaimed lazily when the hint page
+    // itself has space (after a delete frees a slot on the hint page).
     const { pageId, usable } = await this.allocatePage();
     this.insertHint = pageId;
     return this.writeToSlot(pageId, usable, 0, vector);
