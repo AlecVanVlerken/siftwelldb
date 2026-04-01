@@ -1,0 +1,13 @@
+{
+  "name": "hnsw-native",
+  "version": "0.1.0",
+  "license": "ISC",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "binaryName": "hnsw-native",
+    "targets": [
+      "x86_64-pc-windows-msvc"
+    ]
+  }
+}

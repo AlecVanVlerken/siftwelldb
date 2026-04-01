@@ -47,7 +47,7 @@ export async function getHeader(fbf: FreeBlockFile): Promise<Buffer> {
 
   const firstFree = header.readUInt32LE(layout.HEADER_FIRST_FREE_OFFSET);
   const root = header.readUInt32LE(layout.HEADER_ROOT_OFFSET);
-  const blockCount = await getBlockCount(fbf);
+  const blockCount = getBlockCount(fbf);
 
   if (firstFree >= blockCount) {
     throw new Error(`Corrupt header: firstFree=${firstFree} >= blockCount=${blockCount}`);
@@ -98,7 +98,7 @@ export async function getRootBlock(fbf: FreeBlockFile): Promise<number> {
  */
 export async function setRootBlock(fbf: FreeBlockFile, blockNum: number): Promise<void> {
   fbf._ensureOpen();
-  await validateBlockNumber(fbf, blockNum);
+  validateBlockNumber(fbf, blockNum);
 
   const header = await getHeader(fbf);
   header.writeUInt32LE(blockNum, layout.HEADER_ROOT_OFFSET);

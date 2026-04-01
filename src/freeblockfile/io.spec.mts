@@ -266,7 +266,7 @@ describe('io.mjs', () => {
   });
 
   it('rejects out-of-range block numbers', async () => {
-    await assert.rejects(() => validateBlockNumber(fbf, 99));
+    assert.throws(() => validateBlockNumber(fbf, 99));
   });
 
   it('newly written dirty blocks extend logical size', async () => {
@@ -283,16 +283,16 @@ describe('io.mjs', () => {
 
   it('validateBlockNumber accepts highest valid block number', async () => {
     const b = await fbf.allocateBlock();
-    const count = await getBlockCount(fbf);
+    const count = getBlockCount(fbf);
     assert.strictEqual(b, count - 1);
-    await assert.doesNotReject(() => validateBlockNumber(fbf, b));
+    validateBlockNumber(fbf, b); // should not throw
   });
 
   it('validateBlockNumber rejects blockNum == blockCount', async () => {
     const b = await fbf.allocateBlock();
-    const count = await getBlockCount(fbf);
+    const count = getBlockCount(fbf);
     assert.strictEqual(b, count - 1);
-    await assert.rejects(() => validateBlockNumber(fbf, count));
+    assert.throws(() => validateBlockNumber(fbf, count));
   });
 
   // ---------------------------------------------------------

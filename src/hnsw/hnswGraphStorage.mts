@@ -456,7 +456,7 @@ export class HNSWGraphStorage {
    * `node.nodeId` will be set to the assigned NodeId.
    */
   async insertNode(node: HNSWNode): Promise<NodeId> {
-    // Try insert hint first
+    // Try insert hint first — O(1) fast path.
     if (this.insertHint > 0) {
       const usable = await this.readPage(this.insertHint);
       const slotId = this.findFreeSlot(usable);
@@ -465,20 +465,10 @@ export class HNSWGraphStorage {
       }
     }
 
-    // Scan existing data pages
-    const blockCount = Math.max(this.file._getCachedBlockCount(), this.file._getHighestDirtyBlock() + 1);
-    for (let pageId = 1; pageId < blockCount; pageId++) {
-      if (pageId === this.insertHint) continue;
-      const usable = await this.readPageIfData(pageId);
-      if (usable === null) continue; // freed or non-Data block
-      const slotId = this.findFreeSlot(usable);
-      if (slotId >= 0) {
-        this.insertHint = pageId;
-        return this.writeNewNode(pageId, usable, slotId, node);
-      }
-    }
-
-    // Allocate a new page
+    // Hint page is full — allocate a new page directly (O(1)).
+    // Skipping the previous O(N) scan of all existing data pages.
+    // Freed slots from deletes are reclaimed lazily when the hint page
+    // itself has space (after a hardDeleteNode frees a slot on the hint page).
     const pageId = await this.file.allocateBlock();
     const usable = this.newPageBuffer();
     await this.writePage(pageId, usable); // initial write so block exists
