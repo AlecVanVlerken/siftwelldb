@@ -153,17 +153,20 @@ async function runWorkload(): Promise<void> {
   console.log('[5/7] Cursor iteration…');
   // Iterate by string field with a start value
   let cursorCount = 0;
-  for await (const _ of db.cursor(COL_TEXT, 'category', 'science')) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  for await (const _doc of db.cursor(COL_TEXT, 'category', 'science')) {
     if (++cursorCount >= 500) break;
   }
   // Iterate by numeric field
   cursorCount = 0;
-  for await (const _ of db.cursor(COL_NUM, 'sensor', 5)) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  for await (const _doc of db.cursor(COL_NUM, 'sensor', 5)) {
     if (++cursorCount >= 500) break;
   }
   // Full iteration from beginning
   cursorCount = 0;
-  for await (const _ of db.cursor(COL_TEXT, 'id')) {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  for await (const _doc of db.cursor(COL_TEXT, 'id')) {
     if (++cursorCount >= 1000) break;
   }
 

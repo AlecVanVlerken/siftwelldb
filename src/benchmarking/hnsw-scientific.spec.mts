@@ -53,8 +53,10 @@ const RECALL_QUERIES = 100; // test queries for recall measurement
 // with --max-old-space-size=8192.  BF time: ~1–2 min for 100 queries (JS
 // typed-array L2 over 1 M × 384 floats).  This is a one-time cost per config
 // before the efSearch sweep loop, so it does not inflate the sweep timings.
+/*
 const RECALL_SWEEP_N = 200_000; // full corpus size (HNSW index + BF ground truth)
 const EF_SEARCH_VALS = [10, 16, 20, 32, 40, 64, 100, 128, 200, 256]; // values to test
+*/
 
 // Experiment parameter grids
 const M_VALUES = [8, 16, 24, 32];
@@ -62,6 +64,7 @@ const EFC_VALUES = [50, 100, 200];
 const DIM_VALUES = [64, 128, 256, 384, 512];
 
 // Multi-config recall sweep (varied M + efC)
+/*
 const _RECALL_CONFIGS = [
   { M: 8, efC: 100, label: 'M8_efC100' },
   { M: 16, efC: 100, label: 'M16_efC100' },
@@ -69,6 +72,7 @@ const _RECALL_CONFIGS = [
   { M: 24, efC: 200, label: 'M24_efC200' },
   { M: 32, efC: 300, label: 'M32_efC300' },
 ];
+*/
 
 // Insert counts — all experiments use 200 K vectors (laptop-friendly).
 const FULL_N = 200_000; // for M and efC sweeps
@@ -119,6 +123,7 @@ type ExperimentResult = {
   totalWallMs: number;
 };
 
+/*
 type EfSearchPoint = {
   efSearch: number;
   recallAtK: number;
@@ -136,6 +141,7 @@ type RecallSweepResult = {
   K: number;
   efSearchPoints: EfSearchPoint[];
 };
+*/
 
 // ── Utility helpers ───────────────────────────────────────────────────────────
 
@@ -359,7 +365,7 @@ function runPerfExperiment(
 // and reports recall@K + search latency for each value.  Uses the same
 // randomly-generated query set (passed in) across all configs and sweep points,
 // so the speed-recall tradeoff curves are directly comparable.
-
+/*
 function _runRecallSweep(
   label: string,
   M: number,
@@ -456,6 +462,7 @@ function _runRecallSweep(
   saveJSON(`recall_sweep_${label}.json`, result);
   return result;
 }
+*/
 
 // ── Describe block ────────────────────────────────────────────────────────────
 

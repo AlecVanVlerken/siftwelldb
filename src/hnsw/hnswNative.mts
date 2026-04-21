@@ -129,7 +129,7 @@ export class HnswIndexNative {
 
   /** Insert a vector identified by `docId`. */
   insert(docId: number, vector: Float32Array): void {
-    _fns.insert(this.handle, docId, vector);
+    _fns['insert'](this.handle, docId, vector);
   }
 
   /**
@@ -138,7 +138,7 @@ export class HnswIndexNative {
    */
   search(query: Float32Array, k: number): number[] {
     const buf = k <= 1024 ? this._k_buf : new Uint32Array(k);
-    const n = _fns.search(this.handle, query, k, buf) as number;
+    const n = _fns['search'](this.handle, query, k, buf) as number;
     return Array.from(buf.subarray(0, n));
   }
 
@@ -147,17 +147,17 @@ export class HnswIndexNative {
    * @returns `true` if the entry was found and deleted.
    */
   delete(docId: number): boolean {
-    return (_fns.delete(this.handle, docId) as number) === 1;
+    return (_fns['delete'](this.handle, docId) as number) === 1;
   }
 
   /** Number of live (non-deleted) entries in the index. */
   get size(): number {
-    return _fns.size(this.handle) as number;
+    return _fns['size'](this.handle) as number;
   }
 
   /** Change the search beam width at runtime (higher = better recall, slower). */
   setEfSearch(ef: number): void {
-    _fns.setEfSearch(this.handle, ef);
+    _fns['setEfSearch'](this.handle, ef);
   }
 
   /** Dimension of vectors stored in this index. */
@@ -177,7 +177,7 @@ export class HnswIndexNative {
    * Valid only until the next mutating call on this instance.
    */
   takeDirtyNodes(): Uint32Array {
-    const n = _fns.takeDirtyNodes(this.handle, this._dirty_buf, 512) as number;
+    const n = _fns['takeDirtyNodes'](this.handle, this._dirty_buf, 512) as number;
     return this._dirty_buf.subarray(0, n);
   }
 
@@ -185,12 +185,12 @@ export class HnswIndexNative {
 
   /** Get the level of `docId`. Returns -1 if not found. */
   getLevel(docId: number): number {
-    return _fns.getLevel(this.handle, docId) as number;
+    return _fns['getLevel'](this.handle, docId) as number;
   }
 
   /** Number of neighbors of `docId` at `layer`. Returns -1 if not found. */
   getNeighborCount(docId: number, layer: number): number {
-    return _fns.getNeighborCount(this.handle, docId, layer) as number;
+    return _fns['getNeighborCount'](this.handle, docId, layer) as number;
   }
 
   /**
@@ -200,7 +200,7 @@ export class HnswIndexNative {
    * Returns an empty view if the node is not found or the layer is out of range.
    */
   getNeighbors(docId: number, layer: number): Uint32Array {
-    const n = _fns.getNeighbors(this.handle, docId, layer, this._nb_buf, 64) as number;
+    const n = _fns['getNeighbors'](this.handle, docId, layer, this._nb_buf, 64) as number;
     if (n < 0) return this._nb_buf.subarray(0, 0);
     return this._nb_buf.subarray(0, n);
   }
@@ -213,7 +213,7 @@ export class HnswIndexNative {
    * Valid only until the next call to this method.
    */
   getAllNeighbors(docId: number): Uint32Array {
-    const n = _fns.getAllNeighbors(this.handle, docId, this._all_nb_buf, 100) as number;
+    const n = _fns['getAllNeighbors'](this.handle, docId, this._all_nb_buf, 100) as number;
     if (n <= 0) return this._all_nb_buf.subarray(0, 0);
     return this._all_nb_buf.subarray(0, n);
   }
@@ -223,13 +223,13 @@ export class HnswIndexNative {
    * Returns `null` if the index is empty.
    */
   getEntryDocId(): number | null {
-    const id = _fns.getEntryDocId(this.handle) as number;
+    const id = _fns['getEntryDocId'](this.handle) as number;
     return id === 0xffffffff ? null : id;
   }
 
   /** Current maximum level in the graph. */
   getMaxLevel(): number {
-    return _fns.getMaxLevel(this.handle) as number;
+    return _fns['getMaxLevel'](this.handle) as number;
   }
 
   // ── Bulk-import API (loading from FBF on open()) ─────────────────────────────
@@ -240,7 +240,7 @@ export class HnswIndexNative {
    * after all nodes have been imported.
    */
   importNode(docId: number, level: number, vector: Float32Array, deleted: boolean): void {
-    _fns.importNode(this.handle, docId, level, vector, deleted ? 1 : 0);
+    _fns['importNode'](this.handle, docId, level, vector, deleted ? 1 : 0);
   }
 
   /**
@@ -249,7 +249,7 @@ export class HnswIndexNative {
    */
   importSetNeighbors(docId: number, layer: number, neighborDocIds: number[]): void {
     const buf = new Uint32Array(neighborDocIds);
-    _fns.importSetNeighbors(this.handle, docId, layer, buf, neighborDocIds.length);
+    _fns['importSetNeighbors'](this.handle, docId, layer, buf, neighborDocIds.length);
   }
 
   /**
@@ -258,7 +258,7 @@ export class HnswIndexNative {
    */
   importFinish(entryDocId: number | null, maxLevel: number): void {
     const ep = entryDocId !== null ? entryDocId : 0xffffffff;
-    _fns.importFinish(this.handle, ep, maxLevel);
+    _fns['importFinish'](this.handle, ep, maxLevel);
   }
 
   /**
@@ -266,6 +266,6 @@ export class HnswIndexNative {
    * After calling `close()` this instance must not be used.
    */
   close(): void {
-    _fns.destroy(this.handle);
+    _fns['destroy'](this.handle);
   }
 }
