@@ -3,6 +3,46 @@
 
 import { Document, type RawId, type FieldValue } from './document.mjs';
 import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
+import {
+  CompressionRegistry,
+  type CompressionAlgorithm,
+  type FieldCompressionDefaults,
+  type FieldCompressionOverrides,
+} from './compression.mjs';
+
+export type RecordWriteOptions = {
+  compressionDefaults?: FieldCompressionDefaults;
+  compressionOverrides?: FieldCompressionOverrides;
+};
+
+export type EncodedFieldEntry = {
+  key: string;
+  valueType: 'string' | 'number' | 'boolean' | 'buffer';
+  compression: CompressionAlgorithm;
+  payloadBase64: string;
+};
+
+export type EncodedDocument = {
+  collection: string;
+  id: RawId;
+  iterableEntries: EncodedFieldEntry[];
+  nonIterableEntries: EncodedFieldEntry[];
+};
+
+type LegacyStoredDocument = {
+  collection: string;
+  id: RawId;
+  iterableEntries: [string, unknown][];
+  nonIterableEntries: [string, unknown][];
+};
+
+type StoredDocumentV2 = {
+  version: 2;
+  collection: string;
+  id: RawId;
+  iterableEntries: EncodedFieldEntry[];
+  nonIterableEntries: EncodedFieldEntry[];
+};
 
 /**
  * RecordStore class
@@ -23,6 +63,7 @@ import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 export class RecordStore {
   private freeBlockFile: FreeBlockFile;
   private blockSize: number;
+  private compressionRegistry: CompressionRegistry;
   private static readonly BLOCK_TYPE_BYTES = 1; // reserved by FreeBlockFile
   private static readonly NEXT_BLOCK_BYTES = 4; // size of the nextBlockID pointer
   private static readonly DATA_OFFSET = RecordStore.BLOCK_TYPE_BYTES + RecordStore.NEXT_BLOCK_BYTES;
@@ -31,9 +72,10 @@ export class RecordStore {
    * Creates a new RecordStore instance.
    * @param blockFile - The FreeBlockFile instance to use for storage.
    */
-  constructor(blockFile: FreeBlockFile) {
+  constructor(blockFile: FreeBlockFile, compressionRegistry: CompressionRegistry = new CompressionRegistry()) {
     this.freeBlockFile = blockFile;
     this.blockSize = blockFile._getBlockSize();
+    this.compressionRegistry = compressionRegistry;
   }
 
   /**
@@ -47,8 +89,8 @@ export class RecordStore {
    * @returns {Promise<number>} - The block ID of the first block
    * @throws {Error} - If serialization fails
    */
-  async writeRecord(doc: Document): Promise<number> {
-    const data = this.serializeDocument(doc);
+  async writeRecord(doc: Document, options?: RecordWriteOptions): Promise<number> {
+    const data = this.serializeDocument(doc, options);
 
     // Block size minus block type byte and next block pointer
     const maxDataPerBlock = this.blockSize - RecordStore.DATA_OFFSET;
@@ -64,8 +106,8 @@ export class RecordStore {
 
     // allocate blocks for all chunks (in reversed order for linking)
     const blockIDs: number[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     for (const chunk of chunks) {
+      void chunk;
       blockIDs.push(await this.freeBlockFile.allocateBlock());
     }
 
@@ -83,8 +125,6 @@ export class RecordStore {
       await this.freeBlockFile.writeBlock(blockID, blockBuffer);
     }
 
-    // Note: commit is handled by the caller (DbmsBack.commit())
-
     // return the first block ID (head of the chain)
     return blockIDs[0];
   }
@@ -100,46 +140,27 @@ export class RecordStore {
    */
   async readRecord(blockID: number): Promise<Document | null> {
     try {
-      const chunks: Buffer[] = [];
-      let currentBlockID = blockID;
+      const stored = await this.readStoredDocument(blockID);
+      if (!stored) return null;
+      return this.deserializeDocument(stored);
+    } catch (err) {
+      console.error(`RecordStore.readRecord(${blockID}) failed:`, err);
+      return null;
+    }
+  }
 
-      // Follow the chain of blocks
-      while (currentBlockID !== 0) {
-        // Read the block
-        const blockData = await this.freeBlockFile.readBlock(currentBlockID);
-
-        // Read the pointer to the next block
-        const nextBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
-
-        // Extract the data (skip the pointer)
-        const dataInBlock = blockData.subarray(RecordStore.DATA_OFFSET);
-
-        // Add to chunks (without trailing zeros if this is the last block)
-        if (nextBlockID === 0) {
-          // Last block: trim trailing zeros
-          let actualLength = dataInBlock.length;
-          while (actualLength > 0 && dataInBlock[actualLength - 1] === 0) {
-            actualLength--;
-          }
-          chunks.push(dataInBlock.subarray(0, actualLength));
-        } else {
-          // Not the last block: use all
-          chunks.push(dataInBlock);
-        }
-
-        currentBlockID = nextBlockID;
-      }
-
-      // Combine all chunks
-      const completeData = Buffer.concat(chunks);
-
-      // Deserialize the data back into a Document
-      const doc = this.deserializeDocument(completeData);
-
-      return doc;
+  async readRecordEncoded(blockID: number): Promise<EncodedDocument | null> {
+    try {
+      const stored = await this.readStoredDocument(blockID);
+      if (!stored) return null;
+      return {
+        collection: stored.collection,
+        id: stored.id,
+        iterableEntries: stored.iterableEntries,
+        nonIterableEntries: stored.nonIterableEntries,
+      };
     } catch (error) {
-      // Block does not exist, is corrupt, or deserialization failed
-      console.error(`Failed to read record from block ${blockID}:`, error);
+      console.error(`Failed to read encoded record from block ${blockID}:`, error);
       return null;
     }
   }
@@ -172,69 +193,233 @@ export class RecordStore {
     for (const blockToFree of blocksToFree) {
       await this.freeBlockFile.freeBlock(blockToFree);
     }
-
-    // Note: commit is handled by the caller (DbmsBack.commit())
   }
 
-  /**
-   * Serializes a Document to a Buffer for storage
-   * Format: [4-byte length][JSON data]
-   *
-   * @param {Document} doc - The Document to serialize
-   * @returns {Buffer} - The serialized Buffer
-   */
-  private serializeDocument(doc: Document): Buffer {
-    // convert Document to JSON string
-    const iterableKeys = doc.getIterableKeys();
-    const nonIterableKeys = doc.getNonIterableKeys();
-    const fields = doc.getFields();
+  private serializeDocument(doc: Document, options?: RecordWriteOptions): Buffer {
+    const iterableEntries = this.serializeEntries(doc.getIterableKeys(), doc.getFields(), options);
+    const nonIterableEntries = this.serializeEntries(doc.getNonIterableKeys(), doc.getFields(), options);
 
-    const iterableEntries = iterableKeys.map((key) => [key, fields[key]]);
-    const nonIterableEntries = nonIterableKeys.map((key) => [key, fields[key]]);
-
-    const json = JSON.stringify({
+    const payload: StoredDocumentV2 = {
+      version: 2,
       collection: doc.getCollectionName(),
       id: doc.getId(),
       iterableEntries,
       nonIterableEntries,
-    });
+    };
 
-    const jsonBuffer = Buffer.from(json, 'utf-8');
+    const jsonBuffer = Buffer.from(JSON.stringify(payload), 'utf-8');
     const lengthBuffer = Buffer.alloc(4);
     lengthBuffer.writeUInt32BE(jsonBuffer.length, 0);
 
-    const resultBuffer = Buffer.concat([lengthBuffer, jsonBuffer]);
-
-    return resultBuffer;
+    return Buffer.concat([lengthBuffer, jsonBuffer]);
   }
 
-  /**
-   * Deserializes a Buffer back to a Document
-   *
-   * @param {Buffer} buffer - The Buffer to deserialize
-   * @returns {Document} - The deserialized Document
-   * @throws {Error} - If deserialization fails
-   */
-  private deserializeDocument(data: Buffer): Document {
-    try {
-      // read length in first 4 bytes
-      const length = data.readUInt32BE(0);
+  private serializeEntries(
+    keys: string[],
+    fields: Record<string, FieldValue>,
+    options?: RecordWriteOptions,
+  ): EncodedFieldEntry[] {
+    const entries: EncodedFieldEntry[] = [];
 
-      const jsonBuffer = data.subarray(4, 4 + length);
-      const jsonString = jsonBuffer.toString('utf-8');
+    for (const key of keys) {
+      const value = fields[key];
+      const valueType = this.resolveValueType(value);
 
-      // parse JSON to object
-      const doc = JSON.parse(jsonString) as {
-        collection: string;
-        id: RawId;
-        iterableEntries: [string, FieldValue][];
-        nonIterableEntries: [string, FieldValue][];
-      };
+      if (valueType === 'string' || valueType === 'buffer') {
+        const raw = valueType === 'string' ? Buffer.from(value as string, 'utf-8') : (value as Buffer);
+        const requested = this.resolveCompressionAlgorithm(key, options);
 
-      return new Document(doc.collection, doc.id, doc.iterableEntries, doc.nonIterableEntries);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      throw new Error(errorMessage);
+        let compression: CompressionAlgorithm = requested;
+        let payload: Buffer<ArrayBufferLike> = raw;
+
+        if (requested !== 'none') {
+          const compressed = this.compressionRegistry.get(requested).compress(raw);
+          // Keep only size-effective compression.
+          if (compressed.length < raw.length) {
+            payload = compressed;
+          } else {
+            compression = 'none';
+          }
+        }
+
+        entries.push({
+          key,
+          valueType,
+          compression,
+          payloadBase64: payload.toString('base64'),
+        });
+      } else {
+        const payload = Buffer.from(JSON.stringify(value), 'utf-8');
+        entries.push({
+          key,
+          valueType,
+          compression: 'none',
+          payloadBase64: payload.toString('base64'),
+        });
+      }
     }
+
+    return entries;
+  }
+
+  private resolveValueType(value: FieldValue): EncodedFieldEntry['valueType'] {
+    if (Buffer.isBuffer(value)) return 'buffer';
+    if (typeof value === 'string') return 'string';
+    if (typeof value === 'number') return 'number';
+    if (typeof value === 'boolean') return 'boolean';
+    throw new Error('Unsupported value type');
+  }
+
+  private resolveCompressionAlgorithm(key: string, options?: RecordWriteOptions): CompressionAlgorithm {
+    const override = options?.compressionOverrides?.[key];
+    if (override === 'off') return 'none';
+    if (override) return override;
+
+    return options?.compressionDefaults?.[key] ?? 'none';
+  }
+
+  private async readStoredDocument(blockID: number): Promise<StoredDocumentV2 | null> {
+    const chunks: Buffer[] = [];
+    let currentBlockID = blockID;
+
+    // Follow the chain of blocks
+    while (currentBlockID !== 0) {
+      // Read the block
+      const blockData = await this.freeBlockFile.readBlock(currentBlockID);
+
+      // Read the pointer to the next block
+      const nextBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
+
+      // Extract the data (skip the pointer)
+      const dataInBlock = blockData.subarray(RecordStore.DATA_OFFSET);
+
+      // Add to chunks (without trailing zeros if this is the last block)
+      if (nextBlockID === 0) {
+        // Last block: trim trailing zeros
+        let actualLength = dataInBlock.length;
+        while (actualLength > 0 && dataInBlock[actualLength - 1] === 0) {
+          actualLength--;
+        }
+        chunks.push(dataInBlock.subarray(0, actualLength));
+      } else {
+        // Not the last block: use all
+        chunks.push(dataInBlock);
+      }
+
+      currentBlockID = nextBlockID;
+    }
+
+    const completeData = Buffer.concat(chunks);
+    return this.deserializeStoredDocument(completeData);
+  }
+
+  private deserializeStoredDocument(data: Buffer): StoredDocumentV2 {
+    const length = data.readUInt32BE(0);
+    const jsonBuffer = data.subarray(4, 4 + length);
+    const jsonString = jsonBuffer.toString('utf-8');
+
+    const rawParsed = JSON.parse(jsonString) as LegacyStoredDocument | StoredDocumentV2;
+    if ('version' in rawParsed && rawParsed.version === 2) {
+      return rawParsed;
+    }
+
+    return this.fromLegacy(rawParsed as LegacyStoredDocument);
+  }
+
+  private fromLegacy(doc: LegacyStoredDocument): StoredDocumentV2 {
+    const toEntries = (entries: [string, unknown][]): EncodedFieldEntry[] => {
+      return entries.map(([key, value]) => {
+        const legacyValue = this.decodeLegacyValue(value);
+        const valueType = this.resolveValueType(legacyValue);
+
+        const payload =
+          valueType === 'string'
+            ? Buffer.from(legacyValue as string, 'utf-8')
+            : valueType === 'buffer'
+              ? (legacyValue as Buffer)
+              : Buffer.from(JSON.stringify(legacyValue), 'utf-8');
+
+        return {
+          key,
+          valueType,
+          compression: 'none',
+          payloadBase64: payload.toString('base64'),
+        };
+      });
+    };
+
+    return {
+      version: 2,
+      collection: doc.collection,
+      id: doc.id,
+      iterableEntries: toEntries(doc.iterableEntries),
+      nonIterableEntries: toEntries(doc.nonIterableEntries),
+    };
+  }
+
+  private decodeLegacyValue(value: unknown): FieldValue {
+    if (value !== null && typeof value === 'object' && '__bin' in (value as Record<string, unknown>)) {
+      const raw = (value as { __bin: string }).__bin;
+      return Buffer.from(raw, 'base64');
+    }
+
+    if (
+      Buffer.isBuffer(value) ||
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      return value;
+    }
+
+    throw new Error('Unsupported legacy field value');
+  }
+
+  private deserializeDocument(stored: StoredDocumentV2): Document {
+    const iterableEntries = this.decodeEntries(stored.iterableEntries);
+    const nonIterableEntries = this.decodeEntries(stored.nonIterableEntries);
+
+    return new Document(stored.collection, stored.id, iterableEntries, nonIterableEntries);
+  }
+
+  private decodeEntries(entries: EncodedFieldEntry[]): [string, FieldValue][] {
+    return entries.map((entry) => {
+      const payload = Buffer.from(entry.payloadBase64, 'base64');
+      const decoded = this.decodeFieldPayload(entry, payload);
+      return [entry.key, decoded];
+    });
+  }
+
+  private decodeFieldPayload(entry: EncodedFieldEntry, payload: Buffer): FieldValue {
+    let raw = payload;
+
+    if (entry.compression !== 'none') {
+      const codec = this.compressionRegistry.get(entry.compression);
+
+      // Validate encoded bytes agree with expected algorithm magic when available.
+      const detected = this.compressionRegistry.detect(payload);
+      if (detected && detected.id !== entry.compression) {
+        throw new Error(`Compression metadata mismatch for field ${entry.key}`);
+      }
+
+      raw = codec.decompress(payload);
+    }
+
+    if (entry.valueType === 'buffer') {
+      return raw;
+    }
+
+    const asText = raw.toString('utf-8');
+    if (entry.valueType === 'string') {
+      return asText;
+    }
+    if (entry.valueType === 'number') {
+      return JSON.parse(asText) as number;
+    }
+    if (entry.valueType === 'boolean') {
+      return JSON.parse(asText) as boolean;
+    }
+
+    throw new Error(`Unknown value type: ${entry.valueType as string}`);
   }
 }

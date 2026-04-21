@@ -88,7 +88,6 @@ describe('Block-based BPlusTree', () => {
     const atomicFile = new AtomicFile(mockDataFile, mockLogFile);
     file = new FreeBlockFile(atomicFile, blockSize);
     await file.create();
-    await file.open();
     storage = new BlockNodeStorage(file);
   });
 
@@ -960,7 +959,6 @@ describe('Block-based BPlusTree', () => {
       const freshAtomicFile = new AtomicFile(freshDataFile, freshLogFile);
       const freshFile = new FreeBlockFile(freshAtomicFile, 256);
       await freshFile.create();
-      await freshFile.open();
 
       // Note: In a real scenario with actual file, uncommitted data would be lost.
       // With MockFile, we can't truly test persistence across restarts,

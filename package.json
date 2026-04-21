@@ -16,7 +16,10 @@
     "prettier-check": "prettier --check src/",
     "prettier-fix": "prettier --write src/",
     "trivialdbms.test": "tsx src/trivialdbms.test.mts",
-    "demo:map": "tsx src/visualization/semanticMap.demo.mts"
+    "demo:map": "tsx src/visualization/semanticMap.demo.mts",
+    "demo": "tsx src/demo/semanticSearch.demo.mts",
+    "demo:images": "tsx src/demo/semanticImageSearch.demo.mts",
+    "benchmark:compression": "tsx src/benchmarking/compression-benchmark.mts"
   },
   "devDependencies": {
     "@eslint/js": "9.39.0",
@@ -29,5 +32,8 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.46.2",
     "vitest": "4.0.6"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.8.1"
   }
 }
