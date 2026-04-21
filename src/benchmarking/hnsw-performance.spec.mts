@@ -18,7 +18,7 @@ import { writeFileSync, mkdirSync } from 'fs';
 // ── Benchmark configuration ───────────────────────────────────────────────────
 
 const DIM = 384; // embedding dimension
-const INSERT_COUNT = 100000; // total vectors to insert per run
+const INSERT_COUNT = 1_000_000; // total vectors to insert per run
 const M = 16; // HNSW connectivity parameter
 const EF_CONSTRUCTION = 200; // beam width during construction
 const EF_SEARCH = 128; // beam width during search

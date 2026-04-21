@@ -5,6 +5,7 @@ coverage/
 *.data
 *.log
 src/benchmarking/large-dataset/db/
+src/benchmarking/datasets/
 uitleg/
 
 .DS_Store

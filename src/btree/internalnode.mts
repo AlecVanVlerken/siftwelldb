@@ -77,34 +77,31 @@ export class InternalNodeImpl<K, V>
     return this.children.length < this.minChildren && this.children.length > 0;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async deallocateUnderfull(): Promise<LeafNodeImpl<K, V> | InternalNodeImpl<K, V>> {
+  deallocateUnderfull(): Promise<LeafNodeImpl<K, V> | InternalNodeImpl<K, V>> {
     if (this.children.length !== 1) {
       throw new Error('Internal node can only be deallocated when it has exactly one child.');
     }
-    return this.children[0];
+    return Promise.resolve(this.children[0]);
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async moveLastChildTo(_separatorKey: K, nextNode: InternalNodeImpl<K, V>): Promise<K> {
+  moveLastChildTo(_separatorKey: K, nextNode: InternalNodeImpl<K, V>): Promise<K> {
     const child = this.children.pop();
     const key = this.keys.pop();
     if (!child || key === undefined) {
       throw new Error('Internal node has no child to move.');
     }
     nextNode.prependChild(child, key);
-    return this.getKeyAt(this.keys.length - 1);
+    return Promise.resolve(this.getKeyAt(this.keys.length - 1));
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async moveFirstChildTo(previousNode: InternalNodeImpl<K, V>, _separatorKey: K): Promise<K> {
+  moveFirstChildTo(previousNode: InternalNodeImpl<K, V>, _separatorKey: K): Promise<K> {
     if (this.children.length === 0) {
       throw new Error('Internal node has no child to move.');
     }
     const child = this.children.shift()!;
     const key = this.keys.shift();
     previousNode.appendChild(child, key ?? previousNode.keys[previousNode.keys.length - 1]);
-    return this.keys[this.keys.length - 1] ?? previousNode.keys[previousNode.keys.length - 1];
+    return Promise.resolve(this.keys[this.keys.length - 1] ?? previousNode.keys[previousNode.keys.length - 1]);
   }
 
   replaceChildren(
@@ -142,13 +139,13 @@ export class InternalNodeImpl<K, V>
     return this.children.length;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  protected async absorbNextNode(nextNode: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>): Promise<void> {
+  protected absorbNextNode(nextNode: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>): Promise<void> {
     if (!(nextNode instanceof InternalNodeImpl)) {
       throw new Error('Internal nodes can only absorb other internal nodes.');
     }
     this.children.push(...nextNode.children);
     this.keys.push(...nextNode.keys);
+    return Promise.resolve();
   }
 
   protected greatestKeyInternal(): K {
@@ -344,7 +341,7 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
   /**
    * Initialize with children. Flush is deferred to flushDirtyNodes() at commit time.
    */
-  async initWith(children: (BlockLeafNode | BlockInternalNode)[], keys: Buffer[]): Promise<void> {
+  initWith(children: (BlockLeafNode | BlockInternalNode)[], keys: Buffer[]): Promise<void> {
     this.children = [];
     for (let i = 0; i < children.length; i++) {
       const child = children[i];
@@ -355,6 +352,7 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     this.currentSize = INTERNAL_HEADER_SIZE;
     for (const c of this.children) this.currentSize += 4 + 2 + c.key.length;
     this.dirty = true;
+    return Promise.resolve();
   }
 
   getChildCursorAtFirstChild(): ChildCursor<Buffer, Buffer, BlockLeafNode, BlockInternalNode> {
@@ -418,7 +416,7 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     return child;
   }
 
-  async moveLastChildTo(_separatorKey: Buffer, nextNode: BlockInternalNode): Promise<Buffer> {
+  moveLastChildTo(_separatorKey: Buffer, nextNode: BlockInternalNode): Promise<Buffer> {
     const child = this.children.pop();
     if (!child) {
       throw new Error('Internal node has no child to move.');
@@ -426,10 +424,10 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     this.currentSize -= 4 + 2 + child.key.length;
     nextNode.prependChild(child.blockNumber, child.key);
     this.dirty = true;
-    return this.children[this.children.length - 1].key;
+    return Promise.resolve(this.children[this.children.length - 1].key);
   }
 
-  async moveFirstChildTo(previousNode: BlockInternalNode, _separatorKey: Buffer): Promise<Buffer> {
+  moveFirstChildTo(previousNode: BlockInternalNode, _separatorKey: Buffer): Promise<Buffer> {
     if (this.children.length === 0) {
       throw new Error('Internal node has no child to move.');
     }
@@ -437,7 +435,9 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     this.currentSize -= 4 + 2 + child.key.length;
     previousNode.appendChild(child.blockNumber, child.key);
     this.dirty = true;
-    return this.children[this.children.length - 1]?.key ?? previousNode.children[previousNode.children.length - 1].key;
+    return Promise.resolve(
+      this.children[this.children.length - 1]?.key ?? previousNode.children[previousNode.children.length - 1].key,
+    );
   }
 
   canMergeWithNext(_key: Buffer, nextNode: BlockLeafNode | BlockInternalNode): boolean {

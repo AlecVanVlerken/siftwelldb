@@ -220,11 +220,11 @@ describe('io.mjs', () => {
   // getBlockCount()
   // ---------------------------------------------------------
   it('computes block count correctly', async () => {
-    const initial = await getBlockCount(fbf);
+    const initial = getBlockCount(fbf);
     assert.strictEqual(initial, 1);
 
     await fbf.allocateBlock();
-    const after = await getBlockCount(fbf);
+    const after = getBlockCount(fbf);
     assert.strictEqual(after, 2);
   });
 
@@ -246,14 +246,14 @@ describe('io.mjs', () => {
     const update = Buffer.from('hi');
     await writeBlock(fbf, b, update);
 
-    const count1 = await getBlockCount(fbf);
+    const count1 = getBlockCount(fbf);
     assert.strictEqual(count1, 2);
 
     await fbf.commit();
     await fbf.close();
     await fbf.open();
 
-    const count2 = await getBlockCount(fbf);
+    const count2 = getBlockCount(fbf);
     assert.strictEqual(count2, 2, 'block count must persist after commit');
   });
 
@@ -262,10 +262,10 @@ describe('io.mjs', () => {
   // ---------------------------------------------------------
   it('accepts valid block numbers', async () => {
     await fbf.allocateBlock();
-    await validateBlockNumber(fbf, 1);
+    validateBlockNumber(fbf, 1);
   });
 
-  it('rejects out-of-range block numbers', async () => {
+  it('rejects out-of-range block numbers', () => {
     assert.throws(() => validateBlockNumber(fbf, 99));
   });
 
@@ -277,7 +277,7 @@ describe('io.mjs', () => {
     setBlockType(buf, layout.BlockType.Data);
     fbf._setDirtyBlock(5, buf);
 
-    const count = await getBlockCount(fbf);
+    const count = getBlockCount(fbf);
     assert.strictEqual(count, 6);
   });
 
@@ -310,7 +310,7 @@ describe('io.mjs', () => {
     fbf = new FreeBlockFile(atomic, fbf._getBlockSize());
     await fbf.open();
 
-    const count = await getBlockCount(fbf);
+    const count = getBlockCount(fbf);
     assert.strictEqual(count, 1);
   });
 });

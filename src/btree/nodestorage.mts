@@ -41,30 +41,27 @@ export class NodeStorageImpl<K, V> implements NodeStorage<K, V, LeafNodeImpl<K, 
     return this.maxKeySize;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async createTree(): Promise<LeafNodeImpl<K, V>> {
-    return new LeafNodeImpl(this.compareKeys, this.maxLeafEntries);
+  createTree(): Promise<LeafNodeImpl<K, V>> {
+    return Promise.resolve(new LeafNodeImpl(this.compareKeys, this.maxLeafEntries));
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async allocateInternalNode(
+  allocateInternalNode(
     nodes: (LeafNodeImpl<K, V> | InternalNodeImpl<K, V>)[],
     keys: K[],
   ): Promise<InternalNodeImpl<K, V>> {
     const node = new InternalNodeImpl(this.compareKeys, this.maxChildren);
     node.setChildren(nodes, keys);
-    return node;
+    return Promise.resolve(node);
   }
 
   /**
    * For in-memory storage, finalizeRoot is a no-op.
    * Returns the root unchanged.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async finalizeRoot(
+  finalizeRoot(
     root: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>,
   ): Promise<LeafNodeImpl<K, V> | InternalNodeImpl<K, V>> {
-    return root;
+    return Promise.resolve(root);
   }
 }
 
@@ -148,10 +145,9 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    * For block storage with dynamic root, finalizeRoot is a no-op.
    * The root can be at any block - the caller tracks the root block number.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async finalizeRoot(root: BlockLeafNode | BlockInternalNode): Promise<BlockLeafNode | BlockInternalNode> {
+  finalizeRoot(root: BlockLeafNode | BlockInternalNode): Promise<BlockLeafNode | BlockInternalNode> {
     this.currentRoot = root;
-    return root;
+    return Promise.resolve(root);
   }
 
   /**

@@ -28,6 +28,7 @@
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import type { KoffiFunction } from 'koffi';
 
 // ── Locate the DLL relative to this source file ──────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -36,15 +37,13 @@ const DLL_PATH = path.join(__dirname, 'hnsw_native.dll');
 // ── Lazy-load koffi so the module can be imported even if koffi is absent ────
 let _lib: ReturnType<(typeof import('koffi'))['load']> | null = null;
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _fns: Record<string, any> = {};
+let _fns: Record<string, KoffiFunction> = {};
 
 function getLib() {
   if (_lib) return _lib;
 
   // Dynamic import via createRequire so this works from ESM.
   const require = createRequire(import.meta.url);
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const koffi = require('koffi') as typeof import('koffi');
 
   _lib = koffi.load(DLL_PATH);
@@ -103,8 +102,7 @@ function getLib() {
  * All methods are **synchronous** — no `await` needed.
  */
 export class HnswIndexNative {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private readonly handle: any;
+  private readonly handle: object;
   private readonly _dim: number;
   private readonly _k_buf: Uint32Array; // reusable result buffer for search
   private readonly _nb_buf: Uint32Array; // reusable result buffer for getNeighbors
@@ -119,7 +117,7 @@ export class HnswIndexNative {
    */
   constructor(dim: number, m: number = 16, efConstruction: number = 200, efSearch: number = 128) {
     getLib(); // initialise on first call
-    this.handle = _fns.create(dim, m, efConstruction, efSearch);
+    this.handle = _fns['create'](dim, m, efConstruction, efSearch) as object;
     this._dim = dim;
     // Pre-allocate result buffer for up to 1024 neighbours.
     this._k_buf = new Uint32Array(1024);

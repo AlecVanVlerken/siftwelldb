@@ -241,7 +241,7 @@ async function downloadAnimalImage(animal: string, dest: string): Promise<void> 
       lastErr = err as Error;
     }
   }
-  throw lastErr;
+  throw lastErr ?? new Error(`Failed to download image for "${animal}" after 3 attempts`);
 }
 
 // ── Display helpers ───────────────────────────────────────────────────────────
@@ -350,8 +350,7 @@ async function main() {
     );
     let ok = 0;
     let fail = 0;
-    for (let i = 0; i < missing.length; i++) {
-      const animal = missing[i];
+    for (const animal of missing) {
       // Use a safe filename: lowercase, spaces → underscores
       const filename = `${animal.toLowerCase().replace(/\s+/g, '_')}.jpg`;
       const dest = path.join(IMAGE_DIR, filename);

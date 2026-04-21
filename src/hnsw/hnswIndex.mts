@@ -171,9 +171,9 @@ export class HNSWIndex {
    * Returns an empty array if the index is empty.
    * Pure Rust — no FBF I/O.
    */
-  async search(queryVector: Float32Array, k: number): Promise<number[]> {
-    if (this.rustIdx.size === 0) return [];
-    return this.rustIdx.search(queryVector, k);
+  search(queryVector: Float32Array, k: number): Promise<number[]> {
+    if (this.rustIdx.size === 0) return Promise.resolve([]);
+    return Promise.resolve(this.rustIdx.search(queryVector, k));
   }
 
   /**
