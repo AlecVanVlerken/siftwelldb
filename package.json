@@ -19,7 +19,8 @@
     "demo:map": "tsx src/visualization/semanticMap.demo.mts",
     "demo": "tsx src/demo/semanticSearch.demo.mts",
     "demo:images": "tsx src/demo/semanticImageSearch.demo.mts",
-    "benchmark:compression": "tsx src/benchmarking/compression-benchmark.mts"
+    "benchmark:compression": "tsx src/benchmarking/compression-benchmark.mts",
+    "cli": "tsx src/dbms/querylanguage/cli.mts"
   },
   "devDependencies": {
     "@eslint/js": "9.39.0",
