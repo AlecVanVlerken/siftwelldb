@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document Semantic Map</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f0f1a; font-family: 'Segoe UI', Arial, sans-serif; color: #e0e0e0; overflow: hidden; }
+    header {
+      height: 52px; display: flex; align-items: center;
+      padding: 0 16px; gap: 12px;
+      background: #16213e; border-bottom: 1px solid #2a2a5a;
+    }
+    header h1 { font-size: 0.95rem; color: #7ec8e3; font-weight: 500; white-space: nowrap; }
+    .divider { width: 1px; height: 24px; background: #2a2a5a; flex-shrink: 0; }
+    .axis-control { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: #888; }
+    select {
+      background: #0f0f1a; color: #e0e0e0;
+      border: 1px solid #3a3a6a; border-radius: 4px;
+      padding: 3px 6px; font-size: 0.78rem; cursor: pointer; outline: none;
+    }
+    select:hover { border-color: #7ec8e3; }
+    #map { width: 100vw; height: calc(100vh - 52px); display: block; }
+    circle { cursor: pointer; }
+    circle:hover { stroke-width: 2.5px; }
+    #tooltip {
+      position: fixed; background: #16213e; border: 1px solid #7ec8e3;
+      border-radius: 8px; padding: 12px 16px; font-size: 12px;
+      pointer-events: none; max-width: 300px; display: none;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6); z-index: 100;
+    }
+    .doc-id { color: #7ec8e3; font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+    .field { margin: 3px 0; }
+    .field .key { color: #888; margin-right: 6px; }
+
+    /* Lasso */
+    .lasso-path {
+      fill: rgba(126, 200, 227, 0.08);
+      stroke: #7ec8e3; stroke-width: 1.5;
+      stroke-dasharray: 6 3;
+    }
+    .lasso-ready {
+      animation: lasso-pulse 1s ease-in-out infinite;
+    }
+    @keyframes lasso-pulse {
+      0%, 100% { stroke-opacity: 1; fill: rgba(126, 200, 227, 0.08); }
+      50%      { stroke-opacity: 0.4; fill: rgba(126, 200, 227, 0.15); }
+    }
+    .lasso-hint {
+      font-size: 0.72rem; color: #556; white-space: nowrap;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .lasso-hint kbd {
+      background: #1e2a4a; border: 1px solid #3a3a6a; border-radius: 3px;
+      padding: 1px 5px; font-size: 0.7rem; color: #7ec8e3; font-family: inherit;
+    }
+
+    /* Stats panel */
+    #stats-panel {
+      position: fixed; right: 20px; top: 72px;
+      background: #16213eee; border: 1px solid #2a2a5a;
+      border-radius: 10px; padding: 0; width: 280px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.5); z-index: 90;
+      display: none; overflow: hidden;
+      backdrop-filter: blur(8px);
+    }
+    #stats-panel .panel-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 14px; background: #1a2848; border-bottom: 1px solid #2a2a5a;
+    }
+    #stats-panel .panel-title {
+      font-size: 13px; font-weight: 600; color: #7ec8e3;
+    }
+    #stats-panel .panel-close {
+      background: none; border: none; color: #666; cursor: pointer;
+      font-size: 16px; padding: 0 2px; line-height: 1;
+    }
+    #stats-panel .panel-close:hover { color: #e0e0e0; }
+    #stats-panel .panel-body {
+      padding: 12px 14px; max-height: 60vh; overflow-y: auto;
+      font-size: 12px;
+    }
+    #stats-panel .panel-body::-webkit-scrollbar { width: 4px; }
+    #stats-panel .panel-body::-webkit-scrollbar-thumb { background: #3a3a6a; border-radius: 2px; }
+    .stat-section { margin-bottom: 10px; }
+    .stat-section:last-child { margin-bottom: 0; }
+    .stat-field-name {
+      font-size: 11px; color: #7ec8e3; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600;
+    }
+    .stat-row {
+      display: flex; justify-content: space-between; padding: 2px 0; color: #bbb;
+    }
+    .stat-row .stat-val { color: #e0e0e0; font-weight: 500; }
+    .stat-bar-wrap {
+      display: flex; align-items: center; gap: 6px; padding: 2px 0;
+    }
+    .stat-bar-label { color: #bbb; min-width: 70px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stat-bar { height: 6px; border-radius: 3px; background: #7ec8e3; transition: width 0.3s; }
+    .stat-bar-count { color: #888; font-size: 10px; min-width: 16px; text-align: right; }
+    .selected-list {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;
+    }
+    .selected-chip {
+      background: #1e2a4a; border: 1px solid #3a3a6a; border-radius: 4px;
+      padding: 2px 7px; font-size: 10px; color: #ccc;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Document Semantic Map</h1>
+    <div class="divider"></div>
+    <div class="axis-control">
+      <label>X axis</label>
+      <select id="x-select"></select>
+    </div>
+    <div class="axis-control">
+      <label>Y axis</label>
+      <select id="y-select"></select>
+    </div>
+    <div class="divider"></div>
+    <div class="lasso-hint"><kbd>Shift</kbd>+ drag to lasso select</div>
+  </header>
+  <svg id="map"></svg>
+  <div id="tooltip"></div>
+  <div id="stats-panel">
+    <div class="panel-header">
+      <span class="panel-title"></span>
+      <button class="panel-close">&times;</button>
+    </div>
+    <div class="panel-body"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script>
+    const data = [{"x":-0.14032988737974875,"y":0.18545012225969182,"id":"Auckland","label":"Auckland","fields":{"country":"New Zealand","continent":"Oceania","population":1614000,"language":"English"}},{"x":-0.14683259701411108,"y":0.20105886600765102,"id":"Bangkok","label":"Bangkok","fields":{"country":"Thailand","continent":"Asia","population":10539000,"language":"Thai"}},{"x":-0.13362300448292377,"y":0.16850133808670534,"id":"Beijing","label":"Beijing","fields":{"country":"China","continent":"Asia","population":21540000,"language":"Mandarin"}},{"x":-0.0945470652796483,"y":0.2600714773356001,"id":"Berlin","label":"Berlin","fields":{"country":"Germany","continent":"Europe","population":3645000,"language":"German"}},{"x":-0.16074639392913845,"y":0.21226238972737688,"id":"Buenos Aires","label":"Buenos Aires","fields":{"country":"Argentina","continent":"America","population":2891000,"language":"Spanish"}},{"x":-0.14084273000969422,"y":0.18078587254275805,"id":"Cairo","label":"Cairo","fields":{"country":"Egypt","continent":"Africa","population":10107000,"language":"Arabic"}},{"x":-0.19448138888474165,"y":0.10848171938087477,"id":"Chicago","label":"Chicago","fields":{"country":"USA","continent":"America","population":2696000,"language":"English"}},{"x":-0.16109713902651046,"y":0.20984837930985623,"id":"Delhi","label":"Delhi","fields":{"country":"India","continent":"Asia","population":32941000,"language":"Hindi"}},{"x":-0.15628449006863798,"y":0.21271833916178973,"id":"Lagos","label":"Lagos","fields":{"country":"Nigeria","continent":"Africa","population":14800000,"language":"English"}},{"x":-0.10200984444163286,"y":0.2655626003993021,"id":"London","label":"London","fields":{"country":"UK","continent":"Europe","population":8982000,"language":"English"}},{"x":-0.1944813888847417,"y":0.10848171938087477,"id":"Los Angeles","label":"Los Angeles","fields":{"country":"USA","continent":"America","population":3979000,"language":"English"}},{"x":-0.10440136308623024,"y":0.23093141912775123,"id":"Lyon","label":"Lyon","fields":{"country":"France","continent":"Europe","population":522000,"language":"French"}},{"x":-0.1632524638942418,"y":0.26248521987236756,"id":"Madrid","label":"Madrid","fields":{"country":"Spain","continent":"Europe","population":3223000,"language":"Spanish"}},{"x":-0.16074639392913848,"y":0.21226238972737688,"id":"Mexico City","label":"Mexico City","fields":{"country":"Mexico","continent":"America","population":9209000,"language":"Spanish"}},{"x":-0.16161146083949943,"y":0.26188998624720294,"id":"Milan","label":"Milan","fields":{"country":"Italy","continent":"Europe","population":1352000,"language":"Italian"}},{"x":-0.16109713902651046,"y":0.20984837930985623,"id":"Mumbai","label":"Mumbai","fields":{"country":"India","continent":"Asia","population":12442000,"language":"Hindi"}},{"x":-0.09454706527964832,"y":0.2600714773356001,"id":"Munich","label":"Munich","fields":{"country":"Germany","continent":"Europe","population":1488000,"language":"German"}},{"x":-0.13616852358013654,"y":0.1894644539875234,"id":"Nairobi","label":"Nairobi","fields":{"country":"Kenya","continent":"Africa","population":4397000,"language":"Swahili"}},{"x":-0.1944813888847417,"y":0.10848171938087477,"id":"New York","label":"New York","fields":{"country":"USA","continent":"America","population":8336000,"language":"English"}},{"x":-0.11573447285707408,"y":0.21662628884214327,"id":"Osaka","label":"Osaka","fields":{"country":"Japan","continent":"Asia","population":2691000,"language":"Japanese"}},{"x":-0.10440136308623024,"y":0.2309314191277512,"id":"Paris","label":"Paris","fields":{"country":"France","continent":"Europe","population":2161000,"language":"French"}},{"x":-0.16203364631643935,"y":0.2120883567631492,"id":"Rio de Janeiro","label":"Rio de Janeiro","fields":{"country":"Brazil","continent":"America","population":6748000,"language":"Portuguese"}},{"x":-0.16161146083949943,"y":0.261889986247203,"id":"Rome","label":"Rome","fields":{"country":"Italy","continent":"Europe","population":2873000,"language":"Italian"}},{"x":-0.16203364631643935,"y":0.2120883567631492,"id":"Sao Paulo","label":"Sao Paulo","fields":{"country":"Brazil","continent":"America","population":12325000,"language":"Portuguese"}},{"x":-0.13355822502719603,"y":0.17904904217602322,"id":"Seoul","label":"Seoul","fields":{"country":"South Korea","continent":"Asia","population":9776000,"language":"Korean"}},{"x":-0.13362300448292377,"y":0.16850133808670534,"id":"Shanghai","label":"Shanghai","fields":{"country":"China","continent":"Asia","population":24280000,"language":"Mandarin"}},{"x":-0.15745906684843197,"y":0.20018053477883535,"id":"Sydney","label":"Sydney","fields":{"country":"Australia","continent":"Oceania","population":5312000,"language":"English"}},{"x":-0.11573447285707408,"y":0.21662628884214333,"id":"Tokyo","label":"Tokyo","fields":{"country":"Japan","continent":"Asia","population":13960000,"language":"Japanese"}},{"x":0.011880561042052764,"y":-0.04179584820010131,"id":"Albert Einstein","label":"Albert Einstein","fields":{"country":"Germany","profession":"physicist","field":"science","era":"20th century"}},{"x":-0.03702156092131016,"y":-0.06691447609569211,"id":"Cleopatra","label":"Cleopatra","fields":{"country":"Egypt","profession":"pharaoh","field":"politics","era":"1st century BC"}},{"x":-0.01992239708799876,"y":-0.08928757391749027,"id":"Confucius","label":"Confucius","fields":{"country":"China","profession":"philosopher","field":"philosophy","era":"5th century BC"}},{"x":-0.03868442905280676,"y":-0.031924804342318314,"id":"Leonardo da Vinci","label":"Leonardo da Vinci","fields":{"country":"Italy","profession":"artist inventor","field":"art science","era":"15th century"}},{"x":-0.04133119361525927,"y":-0.06427358275026017,"id":"Mahatma Gandhi","label":"Mahatma Gandhi","fields":{"country":"India","profession":"independence leader","field":"politics","era":"20th century"}},{"x":-0.05166121532543011,"y":-0.13974113772461755,"id":"Martin Luther King Jr","label":"Martin Luther King Jr","fields":{"country":"USA","profession":"civil rights leader","field":"politics","era":"20th century"}},{"x":-0.0013829530292322704,"y":-0.07064977579766478,"id":"Napoleon Bonaparte","label":"Napoleon Bonaparte","fields":{"country":"France","profession":"military leader","field":"politics","era":"19th century"}},{"x":-0.028999399882220132,"y":-0.07502609470965498,"id":"Simon Bolivar","label":"Simon Bolivar","fields":{"country":"Venezuela","profession":"liberator","field":"politics","era":"19th century"}},{"x":-0.0283478734388539,"y":-0.07227060688417304,"id":"Socrates","label":"Socrates","fields":{"country":"Greece","profession":"philosopher","field":"philosophy","era":"5th century BC"}},{"x":-0.026958725929077824,"y":-0.06575304373054801,"id":"Wolfgang Amadeus Mozart","label":"Wolfgang Amadeus Mozart","fields":{"country":"Austria","profession":"composer","field":"music","era":"18th century"}},{"x":-0.15801548743985927,"y":-0.06194057754259823,"id":"Angkor Wat","label":"Angkor Wat","fields":{"country":"Cambodia","continent":"Asia","built":1150,"type":"ancient"}},{"x":-0.1666741162929241,"y":0.0004229849639641568,"id":"Colosseum","label":"Colosseum","fields":{"country":"Italy","continent":"Europe","built":80,"type":"ancient"}},{"x":-0.10814040685859364,"y":-0.02715701239847806,"id":"Eiffel Tower","label":"Eiffel Tower","fields":{"country":"France","continent":"Europe","built":1889,"type":"manmade"}},{"x":-0.140818933754396,"y":-0.08417892261112857,"id":"Great Wall","label":"Great Wall","fields":{"country":"China","continent":"Asia","built":700,"type":"ancient"}},{"x":-0.16212119748004067,"y":-0.06851197652713999,"id":"Machu Picchu","label":"Machu Picchu","fields":{"country":"Peru","continent":"America","built":1450,"type":"ancient"}},{"x":-0.1517883414632655,"y":-0.06623686057374596,"id":"Pyramids of Giza","label":"Pyramids of Giza","fields":{"country":"Egypt","continent":"Africa","built":-2560,"type":"ancient"}},{"x":-0.15888027867815052,"y":-0.001987583389217231,"id":"Sagrada Familia","label":"Sagrada Familia","fields":{"country":"Spain","continent":"Europe","built":1882,"type":"manmade"}},{"x":-0.18075952512710486,"y":-0.16050709856920503,"id":"Statue of Liberty","label":"Statue of Liberty","fields":{"country":"USA","continent":"America","built":1886,"type":"manmade"}},{"x":-0.14373720309079505,"y":-0.06880828317124453,"id":"Sydney Opera House","label":"Sydney Opera House","fields":{"country":"Australia","continent":"Oceania","built":1973,"type":"manmade"}},{"x":-0.16619899258850687,"y":-0.046722134695085085,"id":"Taj Mahal","label":"Taj Mahal","fields":{"country":"India","continent":"Asia","built":1643,"type":"ancient"}},{"x":-0.10507329362193271,"y":0.23245468933987257,"id":"Ajax","label":"Ajax","fields":{"country":"Netherlands","continent":"Europe","city":"Amsterdam","founded":1900}},{"x":-0.05678279099075996,"y":0.24734866453496157,"id":"Bayern Munich","label":"Bayern Munich","fields":{"country":"Germany","continent":"Europe","city":"Munich","founded":1900}},{"x":-0.05303773950244699,"y":0.2382121005238985,"id":"Borussia Dortmund","label":"Borussia Dortmund","fields":{"country":"Germany","continent":"Europe","city":"Dortmund","founded":1909}},{"x":-0.11574592963383742,"y":0.23690974351565852,"id":"FC Barcelona","label":"FC Barcelona","fields":{"country":"Spain","continent":"Europe","city":"Barcelona","founded":1899}},{"x":-0.11795660923054342,"y":0.23995797987673473,"id":"Inter Milan","label":"Inter Milan","fields":{"country":"Italy","continent":"Europe","city":"Milan","founded":1908}},{"x":-0.11795660923054342,"y":0.23995797987673473,"id":"Juventus","label":"Juventus","fields":{"country":"Italy","continent":"Europe","city":"Turin","founded":1897}},{"x":-0.041773872271386424,"y":0.2353851233509062,"id":"Liverpool","label":"Liverpool","fields":{"country":"UK","continent":"Europe","city":"Liverpool","founded":1892}},{"x":-0.041773872271386424,"y":0.2353851233509062,"id":"Manchester City","label":"Manchester City","fields":{"country":"UK","continent":"Europe","city":"Manchester","founded":1880}},{"x":-0.06257677748872616,"y":0.21023589750121793,"id":"Paris Saint-Germain","label":"Paris Saint-Germain","fields":{"country":"France","continent":"Europe","city":"Paris","founded":1970}},{"x":-0.11574592963383742,"y":0.23690974351565852,"id":"Real Madrid","label":"Real Madrid","fields":{"country":"Spain","continent":"Europe","city":"Madrid","founded":1902}},{"x":-0.16213675736863042,"y":-0.6740766925230608,"id":"ChatGPT","label":"ChatGPT","fields":{"country":"USA","company":"OpenAI","launched":2022,"type":"proprietary"}},{"x":-0.17371169934601582,"y":-0.7433246829001025,"id":"Claude","label":"Claude","fields":{"country":"USA","company":"Anthropic","launched":2023,"type":"proprietary"}},{"x":-0.17371169934601582,"y":-0.7433246829001025,"id":"Copilot","label":"Copilot","fields":{"country":"USA","company":"Microsoft","launched":2023,"type":"proprietary"}},{"x":-0.10125749293735747,"y":-0.52344649894185,"id":"DeepSeek","label":"DeepSeek","fields":{"country":"China","company":"DeepSeek","launched":2024,"type":"open-source"}},{"x":-0.17371169934601582,"y":-0.7433246829001025,"id":"Gemini","label":"Gemini","fields":{"country":"USA","company":"Google","launched":2023,"type":"proprietary"}},{"x":-0.17371169934601582,"y":-0.7433246829001025,"id":"Grok","label":"Grok","fields":{"country":"USA","company":"xAI","launched":2023,"type":"proprietary"}},{"x":-0.15450905860895192,"y":-0.6744442506805306,"id":"Llama","label":"Llama","fields":{"country":"USA","company":"Meta","launched":2023,"type":"open-source"}},{"x":-0.09395703724025377,"y":-0.5638214258881314,"id":"Mistral","label":"Mistral","fields":{"country":"France","company":"Mistral AI","launched":2023,"type":"open-source"}},{"x":-0.15156143611811723,"y":-0.6354675350330493,"id":"Perplexity","label":"Perplexity","fields":{"country":"USA","company":"Perplexity AI","launched":2022,"type":"proprietary"}},{"x":-0.1177886155605421,"y":-0.6124288655124231,"id":"Qwen","label":"Qwen","fields":{"country":"China","company":"Alibaba","launched":2023,"type":"open-source"}},{"x":0.8085819974348791,"y":0.01193338046555658,"id":"Beagle","label":"Beagle","fields":{"country":"UK","size":"small","group":"hunting"}},{"x":0.7948971599395971,"y":-0.07008526957322497,"id":"Chow Chow","label":"Chow Chow","fields":{"country":"China","size":"medium","group":"working"}},{"x":0.7824046011849849,"y":-0.02364298767947038,"id":"French Bulldog","label":"French Bulldog","fields":{"country":"France","size":"small","group":"companion"}},{"x":0.7891136573246109,"y":0.0173365099580113,"id":"German Shepherd","label":"German Shepherd","fields":{"country":"Germany","size":"large","group":"herding"}},{"x":0.8516740887770317,"y":0.011432054003239782,"id":"Golden Retriever","label":"Golden Retriever","fields":{"country":"UK","size":"large","group":"sporting"}},{"x":0.8484179048057925,"y":-0.02270162079029737,"id":"Labrador Retriever","label":"Labrador Retriever","fields":{"country":"Canada","size":"large","group":"sporting"}},{"x":0.7860565839396799,"y":-0.03296671926407072,"id":"Poodle","label":"Poodle","fields":{"country":"France","size":"medium","group":"companion"}},{"x":0.8694042916831752,"y":0.008595432990021357,"id":"Rottweiler","label":"Rottweiler","fields":{"country":"Germany","size":"large","group":"working"}},{"x":0.7732151855526751,"y":0.0025028016517754785,"id":"Shiba Inu","label":"Shiba Inu","fields":{"country":"Japan","size":"small","group":"hunting"}},{"x":0.8480499050176478,"y":-0.041551698510367975,"id":"Siberian Husky","label":"Siberian Husky","fields":{"country":"Russia","size":"medium","group":"working"}}];
+
+    const W = window.innerWidth;
+    const H = window.innerHeight - 52;
+    const pad = 100;
+
+    const svg = d3.select('#map').attr('width', W).attr('height', H);
+
+    const xScalePCA = d3.scaleLinear().domain(d3.extent(data, d => d.x)).range([pad, W - pad]);
+    const yScalePCA = d3.scaleLinear().domain(d3.extent(data, d => d.y)).range([H - pad, pad]);
+
+    // ── Populate dropdowns ──────────────────────────────────────────────────
+    const allFields = ['semantic', ...new Set(data.flatMap(d => Object.keys(d.fields)))];
+    const xSel = document.getElementById('x-select');
+    const ySel = document.getElementById('y-select');
+    for (const f of allFields) {
+      const label = f === 'semantic' ? 'Semantic (PCA)' : f;
+      xSel.appendChild(new Option(label, f));
+      ySel.appendChild(new Option(label, f));
+    }
+    if (allFields.length > 1) ySel.value = allFields[1];
+
+    // ── Deterministic per-document jitter ───────────────────────────────────
+    function stableJitter(id, seed, range) {
+      const s = id + seed;
+      let h = 0x811c9dc5;
+      for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (Math.imul(h, 0x01000193)) >>> 0; }
+      return (h / 4294967296 - 0.5) * range;
+    }
+
+    /**
+     * Computes pixel positions for one axis AND marks which documents are visible.
+     * A document is visible only if it has a value for the chosen field.
+     * In semantic mode every document is visible.
+     *
+     * Returns:
+     *   dataPositions — pixel value per document (jitter applied for categoricals)
+     *   ticks         — [{label, pos}] for axis tick marks (no jitter, exact base)
+     *   visible       — boolean[] — false means this document is missing the field
+     */
+    function computeLayout(field, axis) {
+      const isX = axis === 'x';
+      const lo  = isX ? pad     : H - pad;
+      const hi  = isX ? W - pad : pad;
+
+      if (field === 'semantic') {
+        return {
+          dataPositions: data.map(d => isX ? xScalePCA(d.x) : yScalePCA(d.y)),
+          ticks: [],
+          visible: data.map(() => true),
+        };
+      }
+
+      const rawValues = data.map(d => d.fields[field]);
+      const visible   = rawValues.map(v => v != null);
+      const defined   = rawValues.filter(v => v != null);
+      const isNumeric = defined.length > 0 && defined.every(v => typeof v === 'number');
+
+      if (isNumeric) {
+        const scale = d3.scaleLinear().domain(d3.extent(defined)).range([lo, hi]);
+        return {
+          dataPositions: rawValues.map((v, i) =>
+            v != null ? scale(v) + stableJitter(data[i].id, axis, 18) : 0
+          ),
+          ticks: scale.ticks(5).map(t => ({ label: String(t), pos: scale(t) })),
+          visible,
+        };
+      }
+
+      // Categorical
+      const categories = [...new Set(defined.map(String))].sort();
+      const step    = categories.length > 1 ? (hi - lo) / (categories.length - 1) : 0;
+      const basePos = new Map(categories.map((cat, idx) => [cat, lo + idx * step]));
+
+      return {
+        dataPositions: rawValues.map((v, i) =>
+          v != null ? basePos.get(String(v)) + stableJitter(data[i].id, axis, 22) : 0
+        ),
+        ticks: categories.map(cat => ({ label: cat, pos: basePos.get(cat) })),
+        visible,
+      };
+    }
+
+    // ── Axis decorations ────────────────────────────────────────────────────
+    const axisLayer = svg.append('g');
+
+    function drawAxis(field, axis, ticks) {
+      const isX = axis === 'x';
+      axisLayer.selectAll('.' + axis + '-deco').remove();
+      if (field === 'semantic' || ticks.length === 0) return;
+
+      const g2 = axisLayer.append('g').attr('class', axis + '-deco');
+
+      for (const { label, pos } of ticks) {
+        if (isX) {
+          g2.append('line')
+            .attr('x1', pos).attr('y1', pad - 8).attr('x2', pos).attr('y2', H - pad + 8)
+            .attr('stroke', '#2a2a5a').attr('stroke-width', 1);
+          g2.append('text')
+            .attr('x', pos).attr('y', H - pad + 24)
+            .attr('text-anchor', 'middle')
+            .attr('font-size', 11).attr('fill', '#999')
+            .text(label);
+        } else {
+          g2.append('line')
+            .attr('x1', pad - 8).attr('y1', pos).attr('x2', W - pad + 8).attr('y2', pos)
+            .attr('stroke', '#2a2a5a').attr('stroke-width', 1);
+          g2.append('text')
+            .attr('x', pad - 14).attr('y', pos + 4)
+            .attr('text-anchor', 'end')
+            .attr('font-size', 11).attr('fill', '#999')
+            .text(label);
+        }
+      }
+
+      // Axis title (field name)
+      const titleLabel = field.charAt(0).toUpperCase() + field.slice(1);
+      if (isX) {
+        g2.append('text')
+          .attr('x', W / 2).attr('y', H - pad + 48)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', 13).attr('fill', '#7ec8e3').attr('font-weight', 600)
+          .text(titleLabel);
+      } else {
+        g2.append('text')
+          .attr('x', 20).attr('y', H / 2)
+          .attr('text-anchor', 'middle')
+          .attr('font-size', 13).attr('fill', '#7ec8e3').attr('font-weight', 600)
+          .attr('transform', 'rotate(-90, 20, ' + (H / 2) + ')')
+          .text(titleLabel);
+      }
+    }
+
+    // ── Build scene ─────────────────────────────────────────────────────────
+    const g = svg.append('g');
+
+    const color = d3.scaleSequential(d3.interpolateTurbo).domain([0, Math.max(1, data.length - 1)]);
+    const tooltip = document.getElementById('tooltip');
+
+    function showTooltip(event, d) {
+      const rows = Object.entries(d.fields)
+        .map(([k, v]) => '<div class="field"><span class="key">' + k + '</span>' + v + '</div>').join('');
+      tooltip.innerHTML = '<div class="doc-id">' + d.id + '</div>' + rows;
+      tooltip.style.display = 'block';
+      const tx = event.clientX + 16;
+      tooltip.style.left = (tx + tooltip.offsetWidth > W ? tx - tooltip.offsetWidth - 32 : tx) + 'px';
+      tooltip.style.top  = Math.max(0, event.clientY - 10) + 'px';
+    }
+    function hideTooltip() { tooltip.style.display = 'none'; }
+
+    g.selectAll('circle.dot')
+      .data(data).join('circle').attr('class', 'dot')
+      .attr('r', 8).attr('fill', (_, i) => color(i))
+      .attr('stroke', '#fff').attr('stroke-width', 0.8)
+      .on('mousemove', showTooltip).on('mouseleave', hideTooltip);
+
+    g.selectAll('text.lbl').data(data).join('text').attr('class', 'lbl')
+      .attr('font-size', 11).attr('fill', '#ccc')
+      .attr('pointer-events', 'none').attr('user-select', 'none')
+      .text(d => d.label);
+
+    // ── Update ──────────────────────────────────────────────────────────────
+    function update(animate) {
+      const xLayout = computeLayout(xSel.value, 'x');
+      const yLayout = computeLayout(ySel.value, 'y');
+
+      // A document is shown only when it has a value on BOTH selected axes
+      const posMap = new Map(data.map((d, i) => [d.id, {
+        x:       xLayout.dataPositions[i],
+        y:       yLayout.dataPositions[i],
+        visible: xLayout.visible[i] && yLayout.visible[i],
+      }]));
+
+      const t = d3.transition().duration(animate ? 700 : 0).ease(d3.easeCubicInOut);
+
+      g.selectAll('circle.dot').transition(t)
+        .attr('cx',            d => posMap.get(d.id).x)
+        .attr('cy',            d => posMap.get(d.id).y)
+        .attr('opacity',       d => posMap.get(d.id).visible ? 0.82 : 0)
+        .attr('pointer-events',d => posMap.get(d.id).visible ? 'auto' : 'none');
+
+      g.selectAll('text.lbl').transition(t)
+        .attr('x',       d => posMap.get(d.id).x + 12)
+        .attr('y',       d => posMap.get(d.id).y + 4)
+        .attr('opacity', d => posMap.get(d.id).visible ? 1 : 0);
+
+      drawAxis(xSel.value, 'x', xLayout.ticks);
+      drawAxis(ySel.value, 'y', yLayout.ticks);
+    }
+
+    update(false);
+    xSel.addEventListener('change', () => { clearSelection(); update(true); });
+    ySel.addEventListener('change', () => { clearSelection(); update(true); });
+
+    // ── Lasso selection ──────────────────────────────────────────────────
+    const lassoLayer = svg.append('g').attr('class', 'lasso-layer');
+    let lassoPoints = [];
+    let lassoDrawing = false;
+    let lassoReady = false; // true = lasso shape drawn, waiting for Enter
+    let lassoPath = null;
+    let selectedIds = new Set();
+
+    // Current pixel position for each visible dot (updated after every update())
+    let currentPositions = new Map();
+    const origUpdate = update;
+    update = function(animate) {
+      origUpdate(animate);
+      const xLayout = computeLayout(xSel.value, 'x');
+      const yLayout = computeLayout(ySel.value, 'y');
+      currentPositions = new Map();
+      data.forEach((d, i) => {
+        if (xLayout.visible[i] && yLayout.visible[i]) {
+          currentPositions.set(d.id, { x: xLayout.dataPositions[i], y: yLayout.dataPositions[i] });
+        }
+      });
+    };
+    update(false);
+
+    // Zoom: disabled during Shift (lasso mode)
+    const zoom = d3.zoom()
+      .scaleExtent([0.15, 20])
+      .filter(event => !event.shiftKey)
+      .on('zoom', e => g.attr('transform', e.transform));
+    svg.call(zoom);
+
+    const hintEl = document.querySelector('.lasso-hint');
+    function setHint(text) { hintEl.innerHTML = text; }
+    const defaultHint = '<kbd>Shift</kbd>+ drag to lasso select';
+    setHint(defaultHint);
+
+    // Phase 1: Shift+drag draws the lasso shape
+    svg.node().addEventListener('mousedown', function(event) {
+      if (!event.shiftKey) return;
+      // If a lasso is already waiting for Enter, clear it first
+      if (lassoReady) cancelLasso();
+      event.preventDefault();
+      lassoDrawing = true;
+      lassoPoints = [[event.offsetX, event.offsetY]];
+      lassoPath = lassoLayer.append('path').attr('class', 'lasso-path');
+      svg.node().style.cursor = 'crosshair';
+    });
+
+    svg.node().addEventListener('mousemove', function(event) {
+      if (!lassoDrawing) return;
+      lassoPoints.push([event.offsetX, event.offsetY]);
+      lassoPath.attr('d', 'M' + lassoPoints.map(p => p.join(',')).join('L') + 'Z');
+    });
+
+    svg.node().addEventListener('mouseup', function() {
+      if (!lassoDrawing) return;
+      lassoDrawing = false;
+      svg.node().style.cursor = '';
+
+      if (lassoPoints.length < 3) {
+        lassoLayer.selectAll('path').remove();
+        return;
+      }
+
+      // Lasso shape is drawn — now pulse it and wait for Enter
+      lassoReady = true;
+      lassoPath.classed('lasso-ready', true);
+      setHint('Press <kbd>Enter</kbd> to confirm selection &nbsp;/&nbsp; <kbd>Esc</kbd> to cancel');
+    });
+
+    // Phase 2: Enter confirms, Esc cancels
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Enter' && lassoReady) {
+        event.preventDefault();
+        confirmLasso();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        if (lassoReady) cancelLasso();
+        else if (selectedIds.size > 0) clearSelection();
+      }
+    });
+
+    function confirmLasso() {
+      lassoReady = false;
+      setHint(defaultHint);
+
+      const transform = d3.zoomTransform(svg.node());
+
+      selectedIds = new Set();
+      currentPositions.forEach((pos, id) => {
+        const sx = transform.applyX(pos.x);
+        const sy = transform.applyY(pos.y);
+        if (pointInPolygon([sx, sy], lassoPoints)) {
+          selectedIds.add(id);
+        }
+      });
+
+      // Fade out lasso shape
+      lassoPath.transition().duration(500).attr('opacity', 0).remove();
+
+      if (selectedIds.size > 0) {
+        applySelection();
+        showStats();
+      } else {
+        clearSelection();
+      }
+    }
+
+    function cancelLasso() {
+      lassoReady = false;
+      lassoDrawing = false;
+      lassoLayer.selectAll('path').remove();
+      setHint(defaultHint);
+    }
+
+    // Point-in-polygon (ray casting)
+    function pointInPolygon(point, polygon) {
+      let inside = false;
+      const [px, py] = point;
+      for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const [xi, yi] = polygon[i];
+        const [xj, yj] = polygon[j];
+        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) {
+          inside = !inside;
+        }
+      }
+      return inside;
+    }
+
+    function applySelection() {
+      const t = d3.transition().duration(300).ease(d3.easeCubicOut);
+
+      g.selectAll('circle.dot').transition(t)
+        .attr('opacity', d => {
+          if (!currentPositions.has(d.id)) return 0;
+          return selectedIds.has(d.id) ? 1 : 0.12;
+        })
+        .attr('r', d => selectedIds.has(d.id) ? 10 : 6)
+        .attr('stroke', d => selectedIds.has(d.id) ? '#fff' : '#555')
+        .attr('stroke-width', d => selectedIds.has(d.id) ? 1.5 : 0.5);
+
+      g.selectAll('text.lbl').transition(t)
+        .attr('opacity', d => {
+          if (!currentPositions.has(d.id)) return 0;
+          return selectedIds.has(d.id) ? 1 : 0.08;
+        })
+        .attr('font-weight', d => selectedIds.has(d.id) ? 600 : 400);
+    }
+
+    function clearSelection() {
+      selectedIds = new Set();
+      lassoLayer.selectAll('path').remove();
+      document.getElementById('stats-panel').style.display = 'none';
+      setHint(defaultHint);
+
+      const t = d3.transition().duration(300).ease(d3.easeCubicOut);
+      g.selectAll('circle.dot').transition(t)
+        .attr('opacity', d => currentPositions.has(d.id) ? 0.82 : 0)
+        .attr('r', 8)
+        .attr('stroke', '#fff').attr('stroke-width', 0.8);
+      g.selectAll('text.lbl').transition(t)
+        .attr('opacity', d => currentPositions.has(d.id) ? 1 : 0)
+        .attr('font-weight', 400);
+    }
+
+    // Stats panel
+    const statsPanel = document.getElementById('stats-panel');
+    statsPanel.querySelector('.panel-close').addEventListener('click', clearSelection);
+
+    function showStats() {
+      const sel = data.filter(d => selectedIds.has(d.id));
+      if (sel.length === 0) { statsPanel.style.display = 'none'; return; }
+
+      statsPanel.querySelector('.panel-title').textContent = sel.length + ' item' + (sel.length > 1 ? 's' : '') + ' selected';
+
+      // Gather all fields present in selection
+      const fieldMap = {};
+      sel.forEach(d => {
+        Object.entries(d.fields).forEach(([k, v]) => {
+          if (!fieldMap[k]) fieldMap[k] = [];
+          fieldMap[k].push(v);
+        });
+      });
+
+      let html = '';
+
+      // Selected items chips
+      html += '<div class="stat-section"><div class="stat-field-name">Items</div>';
+      html += '<div class="selected-list">';
+      sel.forEach(d => { html += '<span class="selected-chip">' + d.label + '</span>'; });
+      html += '</div></div>';
+
+      // Field stats
+      Object.entries(fieldMap).forEach(([field, values]) => {
+        const isNumeric = values.every(v => typeof v === 'number');
+        html += '<div class="stat-section"><div class="stat-field-name">' + field + '</div>';
+
+        if (isNumeric) {
+          const nums = values;
+          const min = Math.min(...nums);
+          const max = Math.max(...nums);
+          const avg = nums.reduce((a, b) => a + b, 0) / nums.length;
+          const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'K' : String(n);
+          html += '<div class="stat-row"><span>Min</span><span class="stat-val">' + fmt(min) + '</span></div>';
+          html += '<div class="stat-row"><span>Avg</span><span class="stat-val">' + fmt(Math.round(avg)) + '</span></div>';
+          html += '<div class="stat-row"><span>Max</span><span class="stat-val">' + fmt(max) + '</span></div>';
+        } else {
+          // Categorical: bar breakdown
+          const counts = {};
+          values.forEach(v => { counts[v] = (counts[v] || 0) + 1; });
+          const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+          const maxCount = sorted[0][1];
+          sorted.forEach(([val, count]) => {
+            const pct = (count / maxCount) * 100;
+            html += '<div class="stat-bar-wrap">';
+            html += '<span class="stat-bar-label" title="' + val + '">' + val + '</span>';
+            html += '<div style="flex:1;background:#1a1a2e;border-radius:3px;height:6px">';
+            html += '<div class="stat-bar" style="width:' + pct + '%"></div></div>';
+            html += '<span class="stat-bar-count">' + count + '</span></div>';
+          });
+        }
+        html += '</div>';
+      });
+
+      statsPanel.querySelector('.panel-body').innerHTML = html;
+      statsPanel.style.display = 'block';
+    }
+  </script>
+</body>
+</html>
