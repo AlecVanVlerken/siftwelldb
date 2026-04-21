@@ -624,6 +624,7 @@ describe('SimpleDbms', () => {
     it('throws error when querying non-existent collection', async () => {
       const cursor = simpleDbms.cursor('nonexistent', 'id');
       await expect(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         for await (const _doc of cursor) {
           // Should throw before iterating
         }
@@ -636,6 +637,7 @@ describe('SimpleDbms', () => {
 
       const cursor = simpleDbms.cursor('test', '_private');
       await expect(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         for await (const _doc of cursor) {
           // Should throw
         }
@@ -648,6 +650,7 @@ describe('SimpleDbms', () => {
 
       const cursor = simpleDbms.cursor('test', 'nonexistentField');
       await expect(async () => {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         for await (const _doc of cursor) {
           // Should throw
         }

@@ -103,7 +103,7 @@ describe('DBMS Comprehensive Performance', () => {
     const runs = 3;
 
     for (const numCollections of collectionCounts) {
-      const _docsPerCollection = Math.floor(totalDocs / numCollections);
+      // const _docsPerCollection = Math.floor(totalDocs / numCollections);
       const allInsertResults: number[][] = [];
       const allDeleteResults: number[][] = [];
 

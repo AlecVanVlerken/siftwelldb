@@ -49,7 +49,7 @@ export class NodeStorageImpl<K, V> implements NodeStorage<K, V, LeafNodeImpl<K, 
     nodes: (LeafNodeImpl<K, V> | InternalNodeImpl<K, V>)[],
     keys: K[],
   ): Promise<InternalNodeImpl<K, V>> {
-    const node = new InternalNodeImpl(this.compareKeys, this.maxChildren);
+    const node = new InternalNodeImpl<K, V>(this.compareKeys, this.maxChildren);
     node.setChildren(nodes, keys);
     return Promise.resolve(node);
   }

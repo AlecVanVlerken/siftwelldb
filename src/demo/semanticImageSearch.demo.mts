@@ -389,6 +389,7 @@ async function main() {
     try {
       tempDb = await SimpleDbms.open(new RealFile(DATA_PATH), new RealFile(WAL_PATH), hnswConfig);
       let storedCount = 0;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       for await (const _ of tempDb.cursor('photos', 'id')) storedCount++;
       await tempDb.close();
       tempDb = undefined;

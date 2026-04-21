@@ -92,7 +92,7 @@ describe('Block-based BPlusTree', () => {
   const val = (s: string) => Buffer.from(s);
 
   it('creates an empty tree', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
     // Root should be allocated at a valid block (not header block 0)
     expect(tree.getRoot().getBlockNumber()).toBeGreaterThan(0);
 
@@ -101,7 +101,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('inserts and retrieves a single value', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree.insert(key('hello'), val('world'));
 
@@ -110,7 +110,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('inserts multiple values and retrieves them', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree.insert(key('c'), val('3'));
     await tree.insert(key('a'), val('1'));
@@ -123,7 +123,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('iterates in sorted order', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree.insert(key('c'), val('3'));
     await tree.insert(key('a'), val('1'));
@@ -131,14 +131,14 @@ describe('Block-based BPlusTree', () => {
 
     const results: string[] = [];
     for await (const [k, v] of tree.iterate()) {
-      results.push(`${k.toString()}=${(v as Buffer).toString()}`);
+      results.push(`${k.toString()}=${(v).toString()}`);
     }
 
     expect(results).toEqual(['a=1', 'b=2', 'c=3']);
   });
 
   it('iterates from a specific key', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree.insert(key('a'), val('1'));
     await tree.insert(key('b'), val('2'));
@@ -154,7 +154,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('deletes a key', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree.insert(key('a'), val('1'));
     await tree.insert(key('b'), val('2'));
@@ -165,7 +165,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('returns false when deleting non-existent key', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree.insert(key('a'), val('1'));
 
@@ -173,14 +173,14 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('rejects duplicate keys', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree.insert(key('a'), val('1'));
     await expect(tree.insert(key('a'), val('2'))).rejects.toThrow('Duplicate key');
   });
 
   it('handles many inserts causing splits', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     // Insert enough to cause multiple splits
     for (let i = 0; i < 100; i++) {
@@ -205,7 +205,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('root block can change after splits', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
     tree.getRoot().getBlockNumber();
 
     // Insert enough to cause splits
@@ -226,7 +226,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('can reopen tree from root block', async () => {
-    const tree1 = await BPlusTree.create(storage);
+    const tree1 = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree1.insert(key('test'), val('value'));
     await file.commit();
@@ -237,14 +237,14 @@ describe('Block-based BPlusTree', () => {
     // Create new storage and reopen the tree using proper API
     const storage2 = new BlockNodeStorage(file);
     const root = await storage2.openTree(rootBlock);
-    const tree2 = BPlusTree.open(storage2, root);
+    const tree2 = BPlusTree.open<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage2, root);
 
     const result = await tree2.get(key('test'));
     expect(result?.toString()).toBe('value');
   });
 
   it('updates an existing value', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree.insert(key('hello'), val('world'));
     expect((await tree.get(key('hello')))?.toString()).toBe('world');
@@ -255,15 +255,15 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('returns false when updating non-existent key', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     const updated = await tree.update(key('nonexistent'), val('value'));
     expect(updated).toBe(false);
   });
 
-  it('opens existing tree with BPlusTree.open()', async () => {
+  it('opens existing tree with BPlusTree.open<Buffer, Buffer, BlockLeafNode, BlockInternalNode>()', async () => {
     // Create and populate a tree
-    const tree1 = await BPlusTree.create(storage);
+    const tree1 = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
     await tree1.insert(key('a'), val('1'));
     await tree1.insert(key('b'), val('2'));
     await file.commit();
@@ -274,7 +274,7 @@ describe('Block-based BPlusTree', () => {
     // Open the tree using the new open() method
     const storage2 = new BlockNodeStorage(file);
     const root = await storage2.openTree(rootBlock);
-    const tree2 = BPlusTree.open(storage2, root);
+    const tree2 = BPlusTree.open<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage2, root);
 
     // Verify data is accessible
     expect((await tree2.get(key('a')))?.toString()).toBe('1');
@@ -287,7 +287,7 @@ describe('Block-based BPlusTree', () => {
 
   it('persists data after commit and reopen', async () => {
     // Create and populate tree
-    const tree1 = await BPlusTree.create(storage);
+    const tree1 = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     await tree1.insert(key('hello'), val('world'));
     await tree1.insert(key('foo'), val('bar'));
@@ -299,7 +299,7 @@ describe('Block-based BPlusTree', () => {
     // Simulate reopening by creating new storage and using proper API
     const storage2 = new BlockNodeStorage(file);
     const root = await storage2.openTree(rootBlock);
-    const tree2 = BPlusTree.open(storage2, root);
+    const tree2 = BPlusTree.open<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage2, root);
 
     // Verify data persisted - using public API, works regardless of tree structure
     expect((await tree2.get(key('hello')))?.toString()).toBe('world');
@@ -316,7 +316,7 @@ describe('Block-based BPlusTree', () => {
     const reverseStorage = new BlockNodeStorage(file, {
       compareKeys: (a, b) => Buffer.compare(b, a), // Reversed!
     });
-    const tree = await BPlusTree.create(reverseStorage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(reverseStorage);
 
     await tree.insert(key('a'), val('1'));
     await tree.insert(key('b'), val('2'));
@@ -332,7 +332,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('handles stress test with 500 entries', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
     const count = 500;
 
     // Insert 500 entries
@@ -360,7 +360,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('handles deletion from deep multi-level tree', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     // Insert enough to create multiple levels
     const keys: string[] = [];
@@ -394,7 +394,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('handles keys and values near block size limit', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     // Block size is 256, header is ~9 bytes, each entry has 4 bytes overhead
     // So we can fit maybe 1-2 entries with ~100 byte keys/values
@@ -403,14 +403,14 @@ describe('Block-based BPlusTree', () => {
 
     await tree.insert(largeKey, largeValue);
 
-    const result = (await tree.get(largeKey)) as Buffer | null;
+    const result = (await tree.get(largeKey));
     expect(result).not.toBeNull();
     expect(result!.length).toBe(100);
     expect(result!.every((b: number) => b === 'v'.charCodeAt(0))).toBe(true);
   });
 
   it('handles multiple large entries causing splits', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     // Insert several large entries that will force splits
     const insertedKeys: Buffer[] = [];
@@ -424,7 +424,7 @@ describe('Block-based BPlusTree', () => {
 
     // Verify all entries can be retrieved with correct values
     for (let i = 0; i < 20; i++) {
-      const result = (await tree.get(insertedKeys[i])) as Buffer | null;
+      const result = (await tree.get(insertedKeys[i]));
       expect(result).not.toBeNull();
       expect(result!.length).toBe(50);
       // Verify the value content (filled with byte value i)
@@ -440,7 +440,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('maintains data integrity after interleaved operations', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
     const data = new Map<string, string>();
 
     // Interleaved inserts, updates, deletes
@@ -486,7 +486,7 @@ describe('Block-based BPlusTree', () => {
   });
 
   it('tree survives many splits and merges', async () => {
-    const tree = await BPlusTree.create(storage);
+    const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
     // Insert many
     for (let i = 0; i < 100; i++) {
@@ -519,7 +519,7 @@ describe('Block-based BPlusTree', () => {
   // ==========================================================================
   describe('Tree structural invariants', () => {
     it('root is leaf initially and after all keys deleted', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Initial root should be a leaf
       expect(tree.getRoot().isLeaf).toBe(true);
@@ -544,7 +544,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('leaf chain is correctly linked after inserts', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Insert keys
       const insertedKeys: string[] = [];
@@ -560,7 +560,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('leaf chain remains correct after deletes with merging', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Insert keys
       for (let i = 0; i < 100; i++) {
@@ -580,7 +580,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('tree height decreases when deleting many keys', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Insert many keys to create a tall tree
       for (let i = 0; i < 200; i++) {
@@ -606,7 +606,7 @@ describe('Block-based BPlusTree', () => {
   // ==========================================================================
   describe('Deletion corner cases', () => {
     it('deletes the only key in the tree', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('only'), val('value'));
       expect(await tree.delete(key('only'))).toBe(true);
@@ -616,7 +616,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('deletes until tree becomes empty', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Insert
       for (let i = 0; i < 50; i++) {
@@ -635,7 +635,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('deletion causing multiple levels of merging', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Insert enough to create deep tree
       for (let i = 0; i < 150; i++) {
@@ -657,7 +657,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('can re-insert key after deletion', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('test'), val('original'));
       await tree.delete(key('test'));
@@ -667,7 +667,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('delete-insert-delete same key', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('a'), val('1'));
       expect(await tree.delete(key('a'))).toBe(true);
@@ -678,7 +678,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('deletes first and last keys in leaf', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('a'), val('1'));
       await tree.insert(key('b'), val('2'));
@@ -699,7 +699,7 @@ describe('Block-based BPlusTree', () => {
   // ==========================================================================
   describe('Iteration edge cases', () => {
     it('iterates empty tree', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       const results: string[] = [];
       for await (const [k] of tree.iterate()) {
@@ -710,7 +710,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('iterate with startKey before first key', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('b'), val('2'));
       await tree.insert(key('c'), val('3'));
@@ -724,7 +724,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('iterate with startKey after last key', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('a'), val('1'));
       await tree.insert(key('b'), val('2'));
@@ -738,7 +738,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('iterate with startKey exactly equal to existing key', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('a'), val('1'));
       await tree.insert(key('b'), val('2'));
@@ -753,7 +753,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('iterate across multiple leaves', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Insert enough to span multiple leaves
       for (let i = 0; i < 100; i++) {
@@ -775,7 +775,7 @@ describe('Block-based BPlusTree', () => {
   // ==========================================================================
   describe('Key comparison edge cases', () => {
     it('handles keys with shared prefixes', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('abc'), val('1'));
       await tree.insert(key('abcd'), val('2'));
@@ -792,7 +792,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('handles keys that differ only in last byte', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(Buffer.from([1, 2, 3, 4]), val('a'));
       await tree.insert(Buffer.from([1, 2, 3, 5]), val('b'));
@@ -804,7 +804,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('handles binary keys with all byte values', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Insert keys with various byte values including 0x00, 0xFF
       const keys = [
@@ -826,11 +826,11 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('handles empty value', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('empty'), Buffer.alloc(0));
 
-      const result = (await tree.get(key('empty'))) as Buffer | null;
+      const result = (await tree.get(key('empty')));
       expect(result).not.toBeNull();
       expect(result!.length).toBe(0);
     });
@@ -841,7 +841,7 @@ describe('Block-based BPlusTree', () => {
   // ==========================================================================
   describe('Update edge cases', () => {
     it('update with larger value that may trigger split', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Insert with small value
       await tree.insert(key('test'), val('small'));
@@ -850,12 +850,12 @@ describe('Block-based BPlusTree', () => {
       const largeValue = Buffer.alloc(100, 'x');
       await tree.update(key('test'), largeValue);
 
-      const result = (await tree.get(key('test'))) as Buffer | null;
+      const result = (await tree.get(key('test')));
       expect(result?.length).toBe(100);
     });
 
     it('update with smaller value', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       const largeValue = Buffer.alloc(50, 'x');
       await tree.insert(key('test'), largeValue);
@@ -867,7 +867,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('update same value size', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('test'), val('aaaa'));
       await tree.update(key('test'), val('bbbb'));
@@ -876,7 +876,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('update first and last key in tree', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('aaa'), val('1'));
       await tree.insert(key('mmm'), val('2'));
@@ -895,7 +895,7 @@ describe('Block-based BPlusTree', () => {
   // ==========================================================================
   describe('Interleaved operations', () => {
     it('insert -> delete -> insert same key', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('x'), val('first'));
       await tree.delete(key('x'));
@@ -905,7 +905,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('operations interleaved with commit and reopen', async () => {
-      let tree = await BPlusTree.create(storage);
+      let tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('a'), val('1'));
       await file.commit();
@@ -916,7 +916,7 @@ describe('Block-based BPlusTree', () => {
       // Simulate reopen
       const storage2 = new BlockNodeStorage(file);
       const root = await storage2.openTree(rootBlock);
-      tree = BPlusTree.open(storage2, root);
+      tree = BPlusTree.open<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage2, root);
 
       await tree.insert(key('b'), val('2'));
       await file.commit();
@@ -926,7 +926,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('insert duplicate after delete should succeed', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree.insert(key('dup'), val('original'));
       await tree.delete(key('dup'));
@@ -938,7 +938,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('uncommitted inserts are not persisted after reopen', async () => {
-      const tree1 = await BPlusTree.create(storage);
+      const tree1 = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       await tree1.insert(key('committed'), val('yes'));
       await file.commit();
@@ -968,7 +968,7 @@ describe('Block-based BPlusTree', () => {
   // ==========================================================================
   describe('Split edge cases', () => {
     it('split of root node creates new root', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Initially root is leaf
       expect(tree.getRoot().isLeaf).toBe(true);
@@ -990,7 +990,7 @@ describe('Block-based BPlusTree', () => {
     });
 
     it('handles entries that nearly fill a block', async () => {
-      const tree = await BPlusTree.create(storage);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
 
       // Create entries that are large but just fit
       // Block size is 256, header ~9 bytes, so ~247 usable
@@ -1007,7 +1007,7 @@ describe('Block-based BPlusTree', () => {
       // Verify all entries
       let count = 0;
       for await (const [_k, v] of tree.iterate()) {
-        expect((v as Buffer).length).toBe(100);
+        expect((v).length).toBe(100);
         count++;
       }
       expect(count).toBe(10);
