@@ -28,11 +28,14 @@
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import os from 'os';
 import type { KoffiFunction } from 'koffi';
 
 // ── Locate the DLL relative to this source file ──────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DLL_PATH = path.join(__dirname, 'hnsw_native.dll');
+const ext = os.platform() === 'win32' ? '.dll' : os.platform() === 'darwin' ? '.dylib' : '.so';
+const libPrefix = os.platform() === 'win32' ? '' : 'lib';
+const DLL_PATH = path.join(__dirname, `${libPrefix}hnsw_native${ext}`);
 
 // ── Lazy-load koffi so the module can be imported even if koffi is absent ────
 let _lib: ReturnType<(typeof import('koffi'))['load']> | null = null;
