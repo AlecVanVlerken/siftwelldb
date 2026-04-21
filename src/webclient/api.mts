@@ -207,7 +207,9 @@ export class ApiRouter {
         const collection = decodeURIComponent(collectionMatch[1]);
         const body = await parseBody(req);
         const document = body['document'];
-        const compression = body['compression'] as import('../dbms/compression.mts').FieldCompressionOverrides | undefined;
+        const compression = body['compression'] as
+          | import('../dbms/compression.mts').FieldCompressionOverrides
+          | undefined;
         if (document === undefined || document === null) {
           sendError(res, 400, 'Missing document');
           return;
@@ -232,8 +234,8 @@ export class ApiRouter {
         const collection = decodeURIComponent(metaMatch[1]);
         const id = decodeURIComponent(metaMatch[2]);
         const encodedStr = await this.db.getDocumentById(collection, id, { encoded: true });
-        const encodedDoc = JSON.parse(encodedStr);
-        
+        const encodedDoc = JSON.parse(encodedStr) as Record<string, unknown>;
+
         let totalPayloadSize = 0;
         const compressions: Record<string, string> = {};
         for (const [key, val] of Object.entries(encodedDoc)) {
@@ -242,14 +244,17 @@ export class ApiRouter {
             continue;
           }
           if (typeof val === 'object' && val !== null && 'payloadBase64' in val) {
-            const payloadLen = Buffer.from((val as any).payloadBase64, 'base64').length;
-            totalPayloadSize += payloadLen;
-            if ((val as any).compression && (val as any).compression !== 'none') {
-              compressions[key] = (val as any).compression;
+            const encodedField = val as { payloadBase64?: string; compression?: string };
+            if (encodedField.payloadBase64) {
+              const payloadLen = Buffer.from(encodedField.payloadBase64, 'base64').length;
+              totalPayloadSize += payloadLen;
+            }
+            if (encodedField.compression && encodedField.compression !== 'none') {
+              compressions[key] = encodedField.compression;
             }
           }
         }
-        
+
         sendJSON(res, 200, { storedSize: totalPayloadSize, compressions });
         return;
       }
