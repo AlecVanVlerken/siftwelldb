@@ -60,7 +60,7 @@ function fakeEmbed(text: string): Float32Array {
 
 const hnswConfig: HnswConfig = {
   dimension: DIM,
-  embeddingFn: async (text) => fakeEmbed(text),
+  embeddingFn: (text) => Promise.resolve(fakeEmbed(text)),
   M: 8,
   efConstruction: 50,
   efSearch: 20,

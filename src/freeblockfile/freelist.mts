@@ -81,7 +81,7 @@ async function setFirstFreeBlock(fbf: FreeBlockFile, blockNum: number): Promise<
  *
  * @author Alec Van Vlerken
  */
-async function allocateNewBlock(fbf: FreeBlockFile): Promise<number> {
+function allocateNewBlock(fbf: FreeBlockFile): Promise<number> {
   const blockCount = getBlockCount(fbf);
   const newBlockNum = blockCount;
 
@@ -89,7 +89,7 @@ async function allocateNewBlock(fbf: FreeBlockFile): Promise<number> {
   setBlockType(buf, layout.BlockType.Data);
 
   fbf._setDirtyBlock(newBlockNum, buf);
-  return newBlockNum;
+  return Promise.resolve(newBlockNum);
 }
 
 /**

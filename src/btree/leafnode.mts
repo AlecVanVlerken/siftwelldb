@@ -49,9 +49,8 @@ export class LeafNodeImpl<K, V>
     return { cursor, isAtKey };
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async getNextLeaf(): Promise<LeafNodeImpl<K, V> | null> {
-    return this.nextLeafNode;
+  getNextLeaf(): Promise<LeafNodeImpl<K, V> | null> {
+    return Promise.resolve(this.nextLeafNode);
   }
 
   getEntryCount(): number {
@@ -116,8 +115,7 @@ export class LeafNodeImpl<K, V>
     return this.entries.length;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  protected async absorbNextNode(nextNode: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>): Promise<void> {
+  protected absorbNextNode(nextNode: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>): Promise<void> {
     if (!(nextNode instanceof LeafNodeImpl)) {
       throw new Error('Leaf nodes can only absorb other leaf nodes.');
     }
@@ -126,6 +124,7 @@ export class LeafNodeImpl<K, V>
     if (this.nextLeafNode) {
       this.nextLeafNode.previousLeafNode = this;
     }
+    return Promise.resolve();
   }
 
   protected greatestKeyInternal(): K {
@@ -317,11 +316,12 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
   /**
    * Initialize as empty leaf. Flush is deferred to flushDirtyNodes() at commit time.
    */
-  async initEmpty(): Promise<void> {
+  initEmpty(): Promise<void> {
     this.entries = [];
     this.nextLeafBlock = 0;
     this.currentSize = LEAF_HEADER_SIZE;
     this.dirty = true;
+    return Promise.resolve();
   }
 
   getCursorBeforeFirst(): LeafCursor<Buffer, Buffer, BlockLeafNode, BlockInternalNode> {
@@ -413,7 +413,10 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
   }
 
   removeAt(index: number): void {
-    const entry = this.entries[index]!;
+    const entry = this.entries[index];
+    if (!entry) {
+      throw new Error('Entry not found.');
+    }
     this.currentSize -= 2 + entry.key.length + 2 + entry.value.length;
     this.entries.splice(index, 1);
     this.dirty = true;

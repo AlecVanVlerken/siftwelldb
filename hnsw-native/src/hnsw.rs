@@ -151,7 +151,10 @@ impl HnswCore {
                 ep = best.1;
             }
 
-            let neighbors = self.heuristic_select(&candidates, vector, m_max);
+            // Paper Algorithm 1: SELECT-NEIGHBORS(q, W, M, lc) — always M,
+            // NOT m_max.  m_max (= 2M at layer 0) is only the capacity for
+            // pruning existing nodes' back-link lists.
+            let neighbors = self.heuristic_select(&candidates, vector, self.m);
             self.nodes[node_id as usize].neighbors[lc] = neighbors.clone();
 
             for &nb in &neighbors {
@@ -484,9 +487,8 @@ impl HnswCore {
         let mut sorted: Vec<Dist> = candidates.to_vec();
         sorted.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
 
-        let mut result:    Vec<u32>     = Vec::with_capacity(m_max);
+        let mut result:    Vec<u32>      = Vec::with_capacity(m_max);
         let mut result_vecs: Vec<&[f32]> = Vec::with_capacity(m_max);
-        let mut discarded: Vec<u32>     = Vec::new();
 
         for c in &sorted {
             if result.len() >= m_max { break; }
@@ -495,8 +497,11 @@ impl HnswCore {
             let c_vec   = self.vec(c.1);
             let dist_qc = c.0;
 
-            // Keep `c` if it is closer to the query than to every already-
-            // selected neighbor (uniqueness-of-direction heuristic).
+            // Algorithm 4 (HNSW paper): keep candidate c if it is closer to
+            // the query than to every already-selected neighbor:
+            //   ∀ r ∈ result:  dist(q, c) < dist(c, r)
+            // Matches hnswlib's getNeighborsByHeuristic2: no backfill of
+            // discarded candidates (keepPrunedConnections = false).
             let is_useful = result_vecs.iter().all(|&r_vec| {
                 dist_qc < l2_squared(c_vec, r_vec)
             });
@@ -504,16 +509,7 @@ impl HnswCore {
             if is_useful || result.is_empty() {
                 result.push(c.1);
                 result_vecs.push(c_vec);
-            } else {
-                discarded.push(c.1);
             }
-        }
-
-        // Fill remaining slots with the "discarded" candidates so we always
-        // have well-connected nodes even in sparse regions.
-        for d in discarded {
-            if result.len() >= m_max { break; }
-            result.push(d);
         }
 
         result

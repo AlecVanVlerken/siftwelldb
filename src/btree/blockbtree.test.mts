@@ -9,12 +9,11 @@ import { BlockInternalNode } from './internalnode.mjs';
 
 // Helper type for tree introspection
 type AnyNode = BlockLeafNode | BlockInternalNode;
+type BlockTree = BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
 
 // Helper to count entries in tree via iteration
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function countEntries(tree: any): Promise<number> {
+async function countEntries(tree: BlockTree): Promise<number> {
   let count = 0;
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   for await (const [_k] of tree.iterate()) {
     count++;
   }
@@ -22,12 +21,10 @@ async function countEntries(tree: any): Promise<number> {
 }
 
 // Helper to get all keys from tree
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function getAllKeys(tree: any): Promise<string[]> {
+async function getAllKeys(tree: BlockTree): Promise<string[]> {
   const keys: string[] = [];
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
   for await (const [k] of tree.iterate()) {
-    keys.push((k as Buffer).toString());
+    keys.push(k.toString());
   }
   return keys;
 }
@@ -38,8 +35,8 @@ async function getTreeHeight(root: AnyNode): Promise<number> {
   let node: AnyNode = root;
   while (!node.isLeaf) {
     const internal = node;
-    const cursor = await internal.getChildCursorAtFirstChild();
-    node = await cursor.getChild();
+    const cursor = await Promise.resolve(internal.getChildCursorAtFirstChild());
+    node = await Promise.resolve(cursor.getChild());
     height++;
   }
   return height;
@@ -51,8 +48,8 @@ async function verifyLeafChain(root: AnyNode): Promise<{ count: number; keys: st
   let node: AnyNode = root;
   while (!node.isLeaf) {
     const internal = node;
-    const cursor = await internal.getChildCursorAtFirstChild();
-    node = await cursor.getChild();
+    const cursor = await Promise.resolve(internal.getChildCursorAtFirstChild());
+    node = await Promise.resolve(cursor.getChild());
   }
 
   // Traverse leaf chain
@@ -209,8 +206,7 @@ describe('Block-based BPlusTree', () => {
 
   it('root block can change after splits', async () => {
     const tree = await BPlusTree.create(storage);
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const initialRootBlock = tree.getRoot().getBlockNumber();
+    tree.getRoot().getBlockNumber();
 
     // Insert enough to cause splits
     for (let i = 0; i < 50; i++) {

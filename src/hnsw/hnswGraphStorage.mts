@@ -5,8 +5,6 @@ import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { type NodeId, HNSWNode } from './hnswNode.mjs';
 import type { VectorPointer } from './vectorHeapFile.mjs';
 import { HnswIndexNative } from './hnswNative.mjs';
-// BlockType.Data = 0x02 (from layout.mts const enum, inlined here to avoid import)
-const BLOCK_TYPE_DATA = 0x02;
 
 /**
  * Magic byte written at usable[0] (= raw byte 1) of every HNSW graph node page.
@@ -149,7 +147,7 @@ export class HNSWGraphStorage {
    * via `_setDirtyBlock` with ZERO buffer allocation.  The usable area
    * (bytes [1..blockSize-1]) is obtained as `cached.subarray(1)` on demand.
    */
-  private readonly _pageCache = new Map<number, {raw: Buffer, usable: Buffer}>();
+  private readonly _pageCache = new Map<number, { raw: Buffer; usable: Buffer }>();
 
   /**
    * Block number of the dedicated metadata block in the FreeBlockFile.
@@ -335,12 +333,12 @@ export class HNSWGraphStorage {
     const dirty = this.file._getDirtyBlock(pageId);
     if (dirty !== undefined) {
       const usable = dirty.subarray(1);
-      this._pageCache.set(pageId, {raw: dirty, usable});
+      this._pageCache.set(pageId, { raw: dirty, usable });
       return usable;
     }
     const raw = await this.file.readBlock(pageId);
     const usable = raw.subarray(1);
-    this._pageCache.set(pageId, {raw, usable});
+    this._pageCache.set(pageId, { raw, usable });
     return usable;
   }
 
@@ -358,7 +356,7 @@ export class HNSWGraphStorage {
     const dirty = this.file._getDirtyBlock(pageId);
     if (dirty !== undefined && dirty.buffer === usable.buffer && dirty.byteOffset === usable.byteOffset - 1) {
       const cached = this._pageCache.get(pageId);
-      if (cached === undefined || cached.raw !== dirty) this._pageCache.set(pageId, {raw: dirty, usable});
+      if (cached === undefined || cached.raw !== dirty) this._pageCache.set(pageId, { raw: dirty, usable });
       return;
     }
     // Stale path: usable is subarray(1) of a cached raw block — promote to dirty
@@ -372,7 +370,7 @@ export class HNSWGraphStorage {
     await this.file.writeBlock(pageId, usable);
     const newDirty = this.file._getDirtyBlock(pageId);
     if (newDirty !== undefined) {
-      this._pageCache.set(pageId, {raw: newDirty, usable: newDirty.subarray(1)});
+      this._pageCache.set(pageId, { raw: newDirty, usable: newDirty.subarray(1) });
     }
   }
 
@@ -442,7 +440,7 @@ export class HNSWGraphStorage {
       const id = neighbors0[i];
       // NodeId = pageId * 2^32 + slotId; store as uint32(pageId) + uint16(slotId) = 6 bytes.
       usable.writeUInt32LE(Math.floor(id / 4294967296), off0 + i * 6); // pageId
-      usable.writeUInt16LE(id >>> 0, off0 + i * 6 + 4);                // slotId
+      usable.writeUInt16LE(id >>> 0, off0 + i * 6 + 4); // slotId
     }
 
     // Layers 1 … maxLayer
@@ -626,8 +624,12 @@ export class HNSWGraphStorage {
         const o = off0 + actualCount0 * 6;
         const pg = Math.floor(nid / 4294967296);
         const sl = nid >>> 0;
-        usable[o] = pg; usable[o + 1] = pg >> 8; usable[o + 2] = pg >> 16; usable[o + 3] = pg >> 24;
-        usable[o + 4] = sl; usable[o + 5] = sl >> 8;
+        usable[o] = pg;
+        usable[o + 1] = pg >> 8;
+        usable[o + 2] = pg >> 16;
+        usable[o + 3] = pg >> 24;
+        usable[o + 4] = sl;
+        usable[o + 5] = sl >> 8;
         actualCount0++;
       }
     }
@@ -650,8 +652,12 @@ export class HNSWGraphStorage {
           const o = neighborsOff + actualCountL * 6;
           const pg = Math.floor(nid / 4294967296);
           const sl = nid >>> 0;
-          usable[o] = pg; usable[o + 1] = pg >> 8; usable[o + 2] = pg >> 16; usable[o + 3] = pg >> 24;
-          usable[o + 4] = sl; usable[o + 5] = sl >> 8;
+          usable[o] = pg;
+          usable[o + 1] = pg >> 8;
+          usable[o + 2] = pg >> 16;
+          usable[o + 3] = pg >> 24;
+          usable[o + 4] = sl;
+          usable[o + 5] = sl >> 8;
           actualCountL++;
         }
       }
@@ -678,7 +684,7 @@ export class HNSWGraphStorage {
     // Register as dirty and cache both raw + usable for future zero-allocation access.
     this.file._setDirtyBlock(pageId, raw);
     const usable = raw.subarray(1);
-    this._pageCache.set(pageId, {raw, usable});
+    this._pageCache.set(pageId, { raw, usable });
     const slotOff = this.slotOffset(slotId);
     const maxM0 = this.M * 2;
 
@@ -699,8 +705,12 @@ export class HNSWGraphStorage {
         const o = off0 + actualCount0 * 6;
         const pg = Math.floor(nid / 4294967296);
         const sl = nid >>> 0;
-        usable[o] = pg; usable[o + 1] = pg >> 8; usable[o + 2] = pg >> 16; usable[o + 3] = pg >> 24;
-        usable[o + 4] = sl; usable[o + 5] = sl >> 8;
+        usable[o] = pg;
+        usable[o + 1] = pg >> 8;
+        usable[o + 2] = pg >> 16;
+        usable[o + 3] = pg >> 24;
+        usable[o + 4] = sl;
+        usable[o + 5] = sl >> 8;
         actualCount0++;
       }
     }
@@ -723,8 +733,12 @@ export class HNSWGraphStorage {
           const o = neighborsOff + actualCountL * 6;
           const pg = Math.floor(nid / 4294967296);
           const sl = nid >>> 0;
-          usable[o] = pg; usable[o + 1] = pg >> 8; usable[o + 2] = pg >> 16; usable[o + 3] = pg >> 24;
-          usable[o + 4] = sl; usable[o + 5] = sl >> 8;
+          usable[o] = pg;
+          usable[o + 1] = pg >> 8;
+          usable[o + 2] = pg >> 16;
+          usable[o + 3] = pg >> 24;
+          usable[o + 4] = sl;
+          usable[o + 5] = sl >> 8;
           actualCountL++;
         }
       }
