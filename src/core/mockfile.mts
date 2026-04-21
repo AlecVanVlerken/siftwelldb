@@ -69,7 +69,10 @@ export class MockFile implements File {
       for (let i = 0; i < count; i++) {
         const so = sectorOrdinal + i;
         let list = this.newSectors.get(so);
-        if (!list) { list = []; this.newSectors.set(so, list); }
+        if (!list) {
+          list = [];
+          this.newSectors.set(so, list);
+        }
         list.push(copy.subarray(i * this.sectorSize, (i + 1) * this.sectorSize));
       }
       return Promise.resolve();

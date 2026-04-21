@@ -131,7 +131,7 @@ describe('Block-based BPlusTree', () => {
 
     const results: string[] = [];
     for await (const [k, v] of tree.iterate()) {
-      results.push(`${k.toString()}=${(v).toString()}`);
+      results.push(`${k.toString()}=${v.toString()}`);
     }
 
     expect(results).toEqual(['a=1', 'b=2', 'c=3']);
@@ -403,7 +403,7 @@ describe('Block-based BPlusTree', () => {
 
     await tree.insert(largeKey, largeValue);
 
-    const result = (await tree.get(largeKey));
+    const result = await tree.get(largeKey);
     expect(result).not.toBeNull();
     expect(result!.length).toBe(100);
     expect(result!.every((b: number) => b === 'v'.charCodeAt(0))).toBe(true);
@@ -424,7 +424,7 @@ describe('Block-based BPlusTree', () => {
 
     // Verify all entries can be retrieved with correct values
     for (let i = 0; i < 20; i++) {
-      const result = (await tree.get(insertedKeys[i]));
+      const result = await tree.get(insertedKeys[i]);
       expect(result).not.toBeNull();
       expect(result!.length).toBe(50);
       // Verify the value content (filled with byte value i)
@@ -830,7 +830,7 @@ describe('Block-based BPlusTree', () => {
 
       await tree.insert(key('empty'), Buffer.alloc(0));
 
-      const result = (await tree.get(key('empty')));
+      const result = await tree.get(key('empty'));
       expect(result).not.toBeNull();
       expect(result!.length).toBe(0);
     });
@@ -850,7 +850,7 @@ describe('Block-based BPlusTree', () => {
       const largeValue = Buffer.alloc(100, 'x');
       await tree.update(key('test'), largeValue);
 
-      const result = (await tree.get(key('test')));
+      const result = await tree.get(key('test'));
       expect(result?.length).toBe(100);
     });
 
@@ -1007,7 +1007,7 @@ describe('Block-based BPlusTree', () => {
       // Verify all entries
       let count = 0;
       for await (const [_k, v] of tree.iterate()) {
-        expect((v).length).toBe(100);
+        expect(v.length).toBe(100);
         count++;
       }
       expect(count).toBe(10);
