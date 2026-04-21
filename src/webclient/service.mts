@@ -227,13 +227,23 @@ export class DatabaseService {
   }
 
   /** Insert a document into a collection. */
-  async insertDocument(collection: string, document: unknown): Promise<void> {
+  async insertDocument(
+    collection: string,
+    document: unknown,
+    compression?: import('../dbms/compression.mts').FieldCompressionOverrides,
+  ): Promise<void> {
     this.ensureConnected();
-    await this.dbms!.insertDocumentObject(collection, document);
+    await this.dbms!.insertDocumentObject(collection, document, { compression });
     await this.dbms!.commit();
   }
 
-  /** Delete a document by ID from a collection. */
+  /** Retrieve a specific document by its ID. */
+  async getDocumentById(collection: string, id: string, options?: { encoded?: boolean }): Promise<string> {
+    this.ensureConnected();
+    return this.dbms!.getDocumentById(collection, id, options);
+  }
+
+  /** Delete a document from a collection. */
   async deleteDocument(collection: string, id: string): Promise<void> {
     this.ensureConnected();
     await this.dbms!.deleteDocumentById(collection, id);

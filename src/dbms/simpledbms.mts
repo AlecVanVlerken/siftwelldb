@@ -246,9 +246,13 @@ export class SimpleDbms {
    * Insert a document from a pre-parsed object (avoids JSONtoDocument regex issues).
    * Use this when the document is already a JS object (e.g. from the web API).
    */
-  async insertDocumentObject(collection: string, document: unknown): Promise<void> {
+  async insertDocumentObject(
+    collection: string,
+    document: unknown,
+    options?: { compression?: FieldCompressionOverrides },
+  ): Promise<void> {
     const documentObj = parseRawDocument(collection, document);
-    return this.dbmsback.insertDocument(documentObj);
+    return this.dbmsback.insertDocument(documentObj, options?.compression);
   }
 
   /**
