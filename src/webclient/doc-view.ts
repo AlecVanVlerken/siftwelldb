@@ -231,7 +231,7 @@ function renderDocFields(doc: Document, editMode: boolean): void {
       } else {
         contentHTML += `<input type="text" class="doc-field-section-title" value="${escapeHTML(key)}" placeholder="Sectie Naam">`;
       }
-      
+
       contentHTML += `<select class="doc-field-compression" title="Compressie in Database" style="margin-left:8px; padding:4px; border-radius:4px;">
           <option value="none">Geen compressie</option>
           <option value="gzip">Gzip</option>
@@ -576,7 +576,10 @@ function renderInfobox(doc: Document): void {
 
   if (!state.isNewDocument && state.currentCollection) {
     const docId = toDisplayString(doc['id']);
-    apiCall(`/api/documents/${encodeURIComponent(state.currentCollection)}/${encodeURIComponent(docId)}/metadata`, 'GET')
+    apiCall(
+      `/api/documents/${encodeURIComponent(state.currentCollection)}/${encodeURIComponent(docId)}/metadata`,
+      'GET',
+    )
       .then((metaResult) => {
         const row = document.getElementById('infobox-db-size-row');
         if (row && metaResult && typeof metaResult['storedSize'] === 'number') {
@@ -586,14 +589,14 @@ function renderInfobox(doc: Document): void {
             let compHtml = '';
             for (const [k, v] of Object.entries(comps)) {
               if (v !== 'none') {
-                 compHtml += `<tr><th>${escapeHTML(k)}</th><td style="color: blue;">${escapeHTML(v)}</td></tr>`;
+                compHtml += `<tr><th>${escapeHTML(k)}</th><td style="color: blue;">${escapeHTML(v)}</td></tr>`;
               }
             }
             row.insertAdjacentHTML('afterend', compHtml);
           }
         }
       })
-      .catch((e) => {
+      .catch(() => {
         const row = document.getElementById('infobox-db-size-row');
         if (row) row.innerHTML = `<th>Grootte (Disk)</th><td>Onbekend</td>`;
       });
