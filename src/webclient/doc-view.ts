@@ -123,6 +123,7 @@ export async function saveDocView(): Promise<void> {
 
   const newDoc: Record<string, unknown> = { id };
   const order: string[] = [];
+  const compression: Record<string, string> = {};
 
   cfg.docViewContent.querySelectorAll('.doc-field-section').forEach((sec) => {
     const titleEl = sec.querySelector<HTMLInputElement>('.doc-field-section-title');
@@ -130,8 +131,11 @@ export async function saveDocView(): Promise<void> {
     const textarea = sec.querySelector<HTMLTextAreaElement>('textarea');
     const fileInput = sec.querySelector<HTMLInputElement>('input[type="file"]');
     const posInput = sec.querySelector<HTMLInputElement>('.image-position-value');
+    const compSelect = sec.querySelector<HTMLSelectElement>('.doc-field-compression');
 
     if (!title) return;
+
+    let didAdd = false;
 
     if (textarea && textarea.value.trim() !== '') {
       let val: unknown = textarea.value;
@@ -142,18 +146,29 @@ export async function saveDocView(): Promise<void> {
       }
       newDoc[title] = val;
       if (!order.includes(title)) order.push(title);
+      didAdd = true;
     } else if (fileInput) {
       const finalBase64 = fileInput.dataset['newbase64'] || fileInput.dataset['original'];
       if (finalBase64 && isImageField(title)) {
         newDoc[title] = finalBase64;
         if (posInput) newDoc[`_layout_${title}`] = posInput.value;
         if (!order.includes(title)) order.push(title);
+        didAdd = true;
       }
+    }
+
+    if (didAdd && compSelect && compSelect.value !== 'none') {
+      compression[title] = compSelect.value;
     }
   });
 
   if (order.length > 0) newDoc['_order_'] = order.join(',');
   newDoc['title'] = id; // For semantic search indexing
+
+  const reqBody: Record<string, unknown> = { document: newDoc };
+  if (Object.keys(compression).length > 0) {
+    reqBody['compression'] = compression;
+  }
 
   try {
     if (!state.isNewDocument) {
@@ -162,7 +177,7 @@ export async function saveDocView(): Promise<void> {
         'DELETE',
       );
     }
-    await apiCall(`/api/documents/${encodeURIComponent(state.currentCollection)}`, 'POST', { document: newDoc });
+    await apiCall(`/api/documents/${encodeURIComponent(state.currentCollection)}`, 'POST', reqBody);
     await cfg.loadDocuments(state.currentCollection);
     await cfg.loadCollections();
 
@@ -216,6 +231,13 @@ function renderDocFields(doc: Document, editMode: boolean): void {
       } else {
         contentHTML += `<input type="text" class="doc-field-section-title" value="${escapeHTML(key)}" placeholder="Sectie Naam">`;
       }
+      
+      contentHTML += `<select class="doc-field-compression" title="Compressie in Database" style="margin-left:8px; padding:4px; border-radius:4px;">
+          <option value="none">Geen compressie</option>
+          <option value="gzip">Gzip</option>
+          <option value="deflate">Deflate</option>
+        </select>`;
+
       contentHTML += `<div class="field-actions">
         <button class="remove-field-btn" type="button" title="Sectie verwijderen" onclick="this.closest('.doc-field-section').remove()">✕</button>
       </div></div>`;
@@ -384,6 +406,15 @@ function addNewFieldToView(type: 'text' | 'image' = 'text'): void {
     headerDiv.appendChild(titleInput);
   }
 
+  const compSelect = document.createElement('select');
+  compSelect.className = 'doc-field-compression';
+  compSelect.title = 'Compressie in Database';
+  compSelect.style.marginLeft = '8px';
+  compSelect.style.padding = '4px';
+  compSelect.style.borderRadius = '4px';
+  compSelect.innerHTML = `<option value="none">Geen compressie</option><option value="gzip">Gzip</option><option value="deflate">Deflate</option>`;
+  headerDiv.appendChild(compSelect);
+
   const actionsDiv = document.createElement('div');
   actionsDiv.className = 'field-actions';
   const delBtn = document.createElement('button');
@@ -537,9 +568,36 @@ function renderInfobox(doc: Document): void {
 
   const size = formatSize(new TextEncoder().encode(JSON.stringify(doc)).length);
   html += `<tr><th>Collectie</th><td>${escapeHTML(state.currentCollection || '')}</td></tr>`;
-  html += `<tr><th>Grootte</th><td>${escapeHTML(size)}</td></tr>`;
+  html += `<tr><th>Grootte (Mem)</th><td>${escapeHTML(size)}</td></tr>`;
+  html += `<tr id="infobox-db-size-row"><th>Grootte (Disk)</th><td style="color: grey; font-style: italic;">Berekent...</td></tr>`;
+
   html += `</tbody></table>`;
   infobox.innerHTML = html;
+
+  if (!state.isNewDocument && state.currentCollection) {
+    const docId = toDisplayString(doc['id']);
+    apiCall(`/api/documents/${encodeURIComponent(state.currentCollection)}/${encodeURIComponent(docId)}/metadata`, 'GET')
+      .then((metaResult) => {
+        const row = document.getElementById('infobox-db-size-row');
+        if (row && metaResult && typeof metaResult['storedSize'] === 'number') {
+          row.innerHTML = `<th>Grootte (Disk)</th><td style="color: green; font-weight: bold;">${escapeHTML(formatSize(metaResult['storedSize']))}</td>`;
+          const comps = metaResult['compressions'] as Record<string, string> | undefined;
+          if (comps && Object.keys(comps).length > 0) {
+            let compHtml = '';
+            for (const [k, v] of Object.entries(comps)) {
+              if (v !== 'none') {
+                 compHtml += `<tr><th>${escapeHTML(k)}</th><td style="color: blue;">${escapeHTML(v)}</td></tr>`;
+              }
+            }
+            row.insertAdjacentHTML('afterend', compHtml);
+          }
+        }
+      })
+      .catch((e) => {
+        const row = document.getElementById('infobox-db-size-row');
+        if (row) row.innerHTML = `<th>Grootte (Disk)</th><td>Onbekend</td>`;
+      });
+  }
 }
 
 // ── TOC toggle ───────────────────────────────────────────────

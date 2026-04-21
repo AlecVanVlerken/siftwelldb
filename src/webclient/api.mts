@@ -207,21 +207,50 @@ export class ApiRouter {
         const collection = decodeURIComponent(collectionMatch[1]);
         const body = await parseBody(req);
         const document = body['document'];
+        const compression = body['compression'] as import('../dbms/compression.mts').FieldCompressionOverrides | undefined;
         if (document === undefined || document === null) {
           sendError(res, 400, 'Missing document');
           return;
         }
-        await this.db.insertDocument(collection, document);
+        await this.db.insertDocument(collection, document, compression);
         sendJSON(res, 201, { message: 'Document inserted' });
         return;
       }
 
       // DELETE /api/documents/:collection/:id
-      if (method === 'DELETE' && documentMatch) {
+      if (method === 'DELETE' && documentMatch && !pathname.endsWith('/metadata') && !pathname.endsWith('/edit')) {
         const collection = decodeURIComponent(documentMatch[1]);
         const id = decodeURIComponent(documentMatch[2]);
         await this.db.deleteDocument(collection, id);
         sendJSON(res, 200, { message: 'Document deleted' });
+        return;
+      }
+
+      // GET /api/documents/:collection/:id/metadata
+      const metaMatch = pathname.match(/^\/api\/documents\/([^/]+)\/([^/]+)\/metadata$/);
+      if (method === 'GET' && metaMatch) {
+        const collection = decodeURIComponent(metaMatch[1]);
+        const id = decodeURIComponent(metaMatch[2]);
+        const encodedStr = await this.db.getDocumentById(collection, id, { encoded: true });
+        const encodedDoc = JSON.parse(encodedStr);
+        
+        let totalPayloadSize = 0;
+        const compressions: Record<string, string> = {};
+        for (const [key, val] of Object.entries(encodedDoc)) {
+          if (key === 'id') {
+            totalPayloadSize += Buffer.from(String(val)).length;
+            continue;
+          }
+          if (typeof val === 'object' && val !== null && 'payloadBase64' in val) {
+            const payloadLen = Buffer.from((val as any).payloadBase64, 'base64').length;
+            totalPayloadSize += payloadLen;
+            if ((val as any).compression && (val as any).compression !== 'none') {
+              compressions[key] = (val as any).compression;
+            }
+          }
+        }
+        
+        sendJSON(res, 200, { storedSize: totalPayloadSize, compressions });
         return;
       }
 
