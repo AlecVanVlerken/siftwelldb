@@ -47,14 +47,12 @@ describe('FreeBlockFile', () => {
   it('open() throws if already open', async () => {
     const fbf = makeFBF();
     await fbf.create();
-    await fbf.open();
     await assert.rejects(() => fbf.open());
   });
 
   it('close() after close()', async () => {
     const fbf = makeFBF();
     await fbf.create();
-    await fbf.open();
     await fbf.close();
     await fbf.close();
   });
@@ -68,13 +66,12 @@ describe('FreeBlockFile', () => {
   // ---------------------------------------------------------
   // create()
   // ---------------------------------------------------------
-  it('create() initializes a valid header and closes the file afterwards', async () => {
+  it('create() initializes a valid header', async () => {
     const fbf = makeFBF();
     await fbf.create();
 
     await assert.rejects(() => fbf.readBlock(0));
 
-    await fbf.open();
     const header = await getHeader(fbf);
     assert.strictEqual(header.readUInt8(0), layout.BlockType.Header);
   });
@@ -85,7 +82,6 @@ describe('FreeBlockFile', () => {
   it('dirty block cache stores and retrieves references', async () => {
     const fbf = makeFBF();
     await fbf.create();
-    await fbf.open();
 
     const buf = Buffer.alloc(32, 1);
     fbf._setDirtyBlock(5, buf);
@@ -95,7 +91,6 @@ describe('FreeBlockFile', () => {
   it('_clearDirty() removes all staged blocks', async () => {
     const fbf = makeFBF();
     await fbf.create();
-    await fbf.open();
 
     fbf._setDirtyBlock(1, Buffer.alloc(1));
     fbf._setDirtyBlock(2, Buffer.alloc(1));
@@ -111,7 +106,6 @@ describe('FreeBlockFile', () => {
   it('allocate → write → commit → read', async () => {
     const fbf = makeFBF();
     await fbf.create();
-    await fbf.open();
 
     const b = await fbf.allocateBlock();
     const buf = Buffer.alloc(fbf._getBlockSize() - 1);
@@ -127,7 +121,6 @@ describe('FreeBlockFile', () => {
   it('allocate → free → commit → allocate', async () => {
     const fbf = makeFBF();
     await fbf.create();
-    await fbf.open();
 
     const b1 = await fbf.allocateBlock();
     await fbf.commit();
@@ -145,7 +138,6 @@ describe('FreeBlockFile', () => {
   it('committed data survives crash', async () => {
     const fbf = makeFBF();
     await fbf.create();
-    await fbf.open();
 
     const b = await fbf.allocateBlock();
     const buf = Buffer.alloc(fbf._getBlockSize() - 1);
@@ -165,7 +157,6 @@ describe('FreeBlockFile', () => {
   it('uncommitted data is lost after crash', async () => {
     const fbf = makeFBF();
     await fbf.create();
-    await fbf.open();
 
     const b = await fbf.allocateBlock();
     const buf = Buffer.alloc(fbf._getBlockSize() - 1);
