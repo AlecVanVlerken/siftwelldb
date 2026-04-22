@@ -30,6 +30,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import koffi from 'koffi';
 import type { KoffiFunction } from 'koffi';
 
 // ── Locate the DLL relative to this source file ──────────────────────────────
@@ -51,10 +52,6 @@ let _fns: Record<string, KoffiFunction> = {};
 
 function getLib() {
   if (_lib) return _lib;
-
-  // Dynamic import via createRequire so this works from ESM.
-  const require = createRequire(import.meta.url);
-  const koffi = require('koffi') as typeof import('koffi');
 
   _lib = koffi.load(DLL_PATH);
 
