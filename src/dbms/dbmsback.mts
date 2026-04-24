@@ -19,6 +19,8 @@ import {
   type FieldCompressionDefaults,
   type FieldCompressionOverrides,
 } from './compression.mjs';
+import { vacuumCompactInto as runVacuumCompactInto } from '../compaction/compaction.mjs';
+import type { VacuumProgress } from '../compaction/compaction.mjs';
 
 /**
  * Optional configuration block that enables per-collection HNSW semantic
@@ -833,6 +835,123 @@ export class DbmsBack {
     // write block ids to client area
     const newBinaryBlockIds = Buffer.from(JSON.stringify(metaBlockIds));
     await this.freeblockFile.writeClientArea(newBinaryBlockIds);
+  }
+
+  /**
+   * Return a snapshot of regular collection metadata for the vacuum subsystem.
+   *
+   * @returns Copied regular collection metadata.
+   *
+   * @author Alec Van Vlerken
+   */
+  getVacuumCollectionMetaSnapshot(): Record<string, Record<string, [number, string]>> {
+    const result: Record<string, Record<string, [number, string]>> = {};
+
+    for (const [key, value] of Object.entries(this.metaCache)) {
+      if (key === '__hnsw__' || key === '__compression__') continue;
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const collectionMeta = value as Record<string, [number, string]>;
+        const copiedCollectionMeta: Record<string, [number, string]> = {};
+
+        for (const [field, tuple] of Object.entries(collectionMeta)) {
+          copiedCollectionMeta[field] = [...tuple] as [number, string];
+        }
+
+        result[key] = copiedCollectionMeta;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Return a snapshot of compression metadata for the vacuum subsystem.
+   *
+   * @returns Copied compression metadata.
+   *
+   * @author Alec Van Vlerken
+   */
+  getVacuumCompressionMetaSnapshot(): Record<string, FieldCompressionDefaults> {
+    const result: Record<string, FieldCompressionDefaults> = {};
+    for (const [collection, defaults] of Object.entries(this.getCompressionMeta())) {
+      result[collection] = { ...defaults };
+    }
+    return result;
+  }
+
+  /**
+   * Return a snapshot of HNSW metadata for the vacuum subsystem.
+   *
+   * @returns Copied HNSW metadata.
+   *
+   * @author Alec Van Vlerken
+   */
+  getVacuumHnswMetaSnapshot(): Record<string, [number, string]> {
+    const result: Record<string, [number, string]> = {};
+    for (const [collection, meta] of Object.entries(this.getHnswMeta())) {
+      result[collection] = [...meta] as [number, string];
+    }
+    return result;
+  }
+
+  /**
+   * Return the runtime HNSW configuration used by the vacuum subsystem.
+   *
+   * @returns HNSW config, or `undefined` if HNSW is disabled.
+   *
+   * @author Alec Van Vlerken
+   */
+  getVacuumHnswConfig(): HnswConfig | undefined {
+    return this.hnswConfig;
+  }
+
+  /**
+   * Return the source data file used by the vacuum subsystem.
+   *
+   * @returns Source data file.
+   *
+   * @author Alec Van Vlerken
+   */
+  getVacuumDataFile(): File {
+    return this.dataFile;
+  }
+
+  /**
+   * Return the source log file used by the vacuum subsystem.
+   *
+   * @returns Source log file.
+   *
+   * @author Alec Van Vlerken
+   */
+  getVacuumLogFile(): File {
+    return this.logFile;
+  }
+
+  /**
+   * Rebuild this database into fresh temporary files using vacuum compaction.
+   *
+   * @param tempDataFile - Fresh temporary data file.
+   * @param tempLogFile - Fresh temporary log file.
+   * @param onProgress - Optional progress callback.
+   * @returns The rebuilt compacted database backend.
+   *
+   * @author Alec Van Vlerken
+   */
+  async vacuumCompactInto(
+    tempDataFile: File,
+    tempLogFile: File,
+    onProgress?: (progress: VacuumProgress) => void,
+  ): Promise<DbmsBack> {
+    const result = await runVacuumCompactInto({
+      source: this,
+      tempDataFile,
+      tempLogFile,
+      validate: true,
+      rebuildHnsw: true,
+      onProgress,
+    });
+
+    return result.target;
   }
 }
 
