@@ -136,6 +136,7 @@ import { documentToJSON, parseRawDocument, type Document, type FieldValue } from
 import { JSONtoDocument } from './document.mjs';
 import { type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
 import { type EncodedDocument } from './recordstore.mjs';
+import type { VacuumProgress } from '../compaction/compaction.mjs';
 
 /**
  * SimpleDbms class
@@ -188,9 +189,12 @@ export class SimpleDbms {
    * Reopens an existing instance of the SimpleDbms class.
    * @param datafile - The data file to use for the database.
    * @param logfile - The log file to use for the database.
+   * @param hnswConfig - Optional. Must be the same config (same `embeddingFn`
+   *   and `dimension`) that was used when the database was created. Required
+   *   if you want to call `semanticSearch()` on the reopened instance.
    */
-  async reopen(datafile: File, logfile: File): Promise<void> {
-    const dbmsback = await DbmsBack.open(datafile, logfile);
+  async reopen(datafile: File, logfile: File, hnswConfig?: HnswConfig): Promise<void> {
+    const dbmsback = await DbmsBack.open(datafile, logfile, hnswConfig);
     this.dbmsback = dbmsback;
   }
 
@@ -382,5 +386,30 @@ export class SimpleDbms {
       id: document.id,
       ...fields,
     };
+  }
+
+  /**
+   * Rebuilds this database into fresh temporary files using the vacuum
+   * compaction subsystem.
+   *
+   * This is the public DBMS wrapper around the backend vacuum operation.
+   * The returned SimpleDbms instance wraps the newly created compacted target
+   * database.
+   *
+   * Replacing the original files is intentionally left to a higher layer.
+   *
+   * @param tempDataFile - Fresh temporary data file for the compacted database.
+   * @param tempLogFile - Fresh temporary log file for the compacted database.
+   * @param onProgress - Optional progress callback.
+   * @returns A new SimpleDbms instance backed by the compacted database.
+   */
+  async vacuumCompactInto(
+    tempDataFile: File,
+    tempLogFile: File,
+    onProgress?: (progress: VacuumProgress) => void,
+  ): Promise<SimpleDbms> {
+    const compactedBack = await this.dbmsback.vacuumCompactInto(tempDataFile, tempLogFile, onProgress);
+
+    return new SimpleDbms(compactedBack);
   }
 }
