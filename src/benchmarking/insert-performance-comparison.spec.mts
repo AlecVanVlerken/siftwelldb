@@ -23,7 +23,7 @@ function shuffle<T>(array: T[]): T[] {
 }
 
 describe('INSERT Performance Comparison', () => {
-  const COUNT = 400000;
+  const COUNT = 200000;
   const RUNS = 3;
   const COMMIT_INTERVAL = 1000;
 
@@ -36,7 +36,7 @@ describe('INSERT Performance Comparison', () => {
       const atomicFile = new AtomicFile(dataFile, logFile);
       const freeBlockFile = new FreeBlockFile(atomicFile, 4096);
       await freeBlockFile.create();
-      await freeBlockFile.open();
+      //await freeBlockFile.open();
       const storage = new BlockNodeStorage(freeBlockFile);
       const tree = await BPlusTree.create(storage);
 

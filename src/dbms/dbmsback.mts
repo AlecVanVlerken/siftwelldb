@@ -255,6 +255,10 @@ export class DbmsBack {
    * @returns A Promise that resolves when the commit is complete.
    */
   async commit(): Promise<void> {
+    // Flush all dirty B+tree nodes to the FBF dirty-block cache before committing.
+    for (const storage of this.storageCache.values()) {
+      await storage.flushDirtyNodes();
+    }
     await this.metaWriteJSON(this.metaCache);
     await this.freeblockFile.commit();
   }

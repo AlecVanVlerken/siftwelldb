@@ -1,0 +1,20 @@
+[package]
+name    = "hnsw-native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# cdylib = C-compatible shared library (DLL on Windows, .so on Linux).
+# No node headers or napi-build required — koffi loads it via plain FFI.
+crate-type = ["cdylib"]
+
+[dependencies]
+fastrand   = "2"
+rustc-hash = "2"
+
+# ── Release profile: maximum throughput ─────────────────────────────────────
+[profile.release]
+opt-level     = 3
+lto           = "fat"
+codegen-units = 1
+panic         = "abort"
