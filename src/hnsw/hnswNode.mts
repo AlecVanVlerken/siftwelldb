@@ -4,16 +4,16 @@
 import type { VectorPointer } from './vectorHeapFile.mjs';
 
 /**
- * A `NodeId` is a 64-bit value that encodes the physical location of a node
- * on disk: the high 32 bits are the FBF block (page) number, and the low
- * 32 bits are the slot index within that page.
+ * A `NodeId` is a 53-bit safe integer that encodes the physical location of a
+ * node on disk: the high bits encode the FBF block (page) number and the low
+ * 32 bits encode the slot index within that page.
  *
- *   NodeId = BigInt(pageId) << 32n | BigInt(slotId)
+ *   NodeId = pageId * 2^32 + slotId
  *
  * Encoding and decoding is handled by `encodeNodeId` / `decodeNodeId` in
  * `hnswGraphStorage.mts`.
  */
-export type NodeId = bigint;
+export type NodeId = number;
 
 /**
  * HNSWNode
@@ -24,7 +24,7 @@ export type NodeId = bigint;
  * `graphStorage.insertNode()` or `graphStorage.saveNode()`.
  */
 export class HNSWNode {
-  /** Persistent disk location of this node (page + slot encoded as bigint). */
+  /** Persistent disk location of this node (page << 32 | slot, as a safe integer). */
   nodeId!: NodeId;
   /** Block number of the document this node indexes in the RecordStore. */
   docId!: number;
