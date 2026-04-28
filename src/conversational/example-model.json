@@ -1,0 +1,86 @@
+{
+  "explores": [
+    {
+      "collection": "employees",
+      "label": "Employee Records",
+      "description": "Employee information including salary and department data",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "label": "Employee ID",
+          "description": "Unique identifier for each employee"
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "label": "Full Name",
+          "description": "The employee's full name",
+          "synonyms": ["employee", "person", "worker"]
+        },
+        {
+          "name": "department",
+          "type": "string",
+          "label": "Department",
+          "description": "The department the employee works in",
+          "synonyms": ["dept", "team", "division"]
+        },
+        {
+          "name": "salary",
+          "type": "number",
+          "label": "Annual Salary",
+          "description": "Gross annual salary in EUR",
+          "synonyms": ["pay", "wage", "compensation", "income", "earnings"]
+        },
+        {
+          "name": "age",
+          "type": "number",
+          "label": "Age",
+          "description": "Employee's age in years"
+        },
+        {
+          "name": "city",
+          "type": "string",
+          "label": "City",
+          "description": "City where the employee is based",
+          "synonyms": ["location", "office"]
+        }
+      ],
+      "measures": [
+        {
+          "name": "average_salary",
+          "label": "Average Salary",
+          "aggregation": "AVG",
+          "field": "salary",
+          "description": "Mean salary across employees"
+        },
+        {
+          "name": "total_salary",
+          "label": "Total Salary",
+          "aggregation": "SUM",
+          "field": "salary",
+          "description": "Sum of all salaries"
+        },
+        {
+          "name": "headcount",
+          "label": "Headcount",
+          "aggregation": "COUNT",
+          "field": "*",
+          "description": "Number of employees"
+        },
+        {
+          "name": "max_salary",
+          "label": "Highest Salary",
+          "aggregation": "MAX",
+          "field": "salary"
+        },
+        {
+          "name": "min_salary",
+          "label": "Lowest Salary",
+          "aggregation": "MIN",
+          "field": "salary"
+        }
+      ]
+    }
+  ]
+}

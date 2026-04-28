@@ -1463,6 +1463,39 @@ export class DbmsBack {
     return result.target;
   }
 
+  /**
+   * Return the names of all collections in the database.
+   */
+  listCollections(): string[] {
+    return Object.keys(this.metaCache).filter((k) => !RESERVED_META_KEYS.has(k) && this.hasCollectionMeta(k));
+  }
+
+  /**
+   * Return field names and inferred types for a collection, derived from the
+   * B+ tree metadata.
+   *
+   * The "vorm" encoding: for the 'id' field it is a single char ('S' or 'N');
+   * for other indexed fields it is two chars where the first is the field type.
+   * Booleans are stored as 'N' (numbers) so they appear as 'number' here -
+   * sample-based refinement can correct that.
+   */
+  describeCollection(collection: string): { name: string; type: 'string' | 'number' }[] {
+    if (!this.hasCollectionMeta(collection)) return [];
+    const meta = this.getCollectionMeta(collection);
+    const fields: { name: string; type: 'string' | 'number' }[] = [];
+
+    for (const [fieldName, [, vorm]] of Object.entries(meta)) {
+      if (fieldName === 'id') {
+        fields.push({ name: 'id', type: vorm === 'N' ? 'number' : 'string' });
+      } else {
+        const fieldTypeChar = vorm.charAt(0);
+        fields.push({ name: fieldName, type: fieldTypeChar === 'N' ? 'number' : 'string' });
+      }
+    }
+
+    return fields;
+  }
+
   //hulperfuncties voor de meta
 
   /**

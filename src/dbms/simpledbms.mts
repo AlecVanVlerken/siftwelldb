@@ -426,6 +426,21 @@ export class SimpleDbms {
     return new SimpleDbms(compactedBack);
   }
 
+  /**
+   * Return the names of all collections in the database.
+   */
+  listCollections(): string[] {
+    return this.dbmsback.listCollections();
+  }
+
+  /**
+   * Return indexed field names and their inferred types for a collection.
+   * Useful for auto-generating a semantic model config.
+   */
+  describeCollection(collection: string): { name: string; type: 'string' | 'number' }[] {
+    return this.dbmsback.describeCollection(collection);
+  }
+
   private encodedDocumentToObject(document: EncodedDocument): Record<string, unknown> {
     const toFieldValue = (entry: EncodedDocument['iterableEntries'][number]) => ({
       valueType: entry.valueType,
