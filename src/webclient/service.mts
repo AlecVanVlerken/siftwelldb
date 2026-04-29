@@ -4,6 +4,8 @@
 import * as fs from 'node:fs/promises';
 import { SimpleDbms, type HnswConfig } from '../dbms/simpledbms.mjs';
 import { RealFile } from '../core/file.mjs';
+import { fetchPageCursor } from '../largedatasets/pagination.mjs';
+import { searchWordIndex } from '../largedatasets/wordindex.mjs';
 
 /**
  * Delete a file if it exists (ignores the error if not found).
@@ -185,10 +187,11 @@ export class DatabaseService {
 
   // ── Collections ──────────────────────────────────────────────
 
-  /** Return the list of collection names. */
+  /** Return the list of collection names, hiding internal _-prefixed ones. */
   async getCollections(): Promise<string[]> {
     this.ensureConnected();
-    return this.dbms!.getCollections();
+    const all = await this.dbms!.getCollections();
+    return all.filter((c) => !c.startsWith('_'));
   }
 
   /** Delete an entire collection. */
@@ -199,31 +202,36 @@ export class DatabaseService {
 
   // ── Documents ────────────────────────────────────────────────
 
-  /**
-   * Query documents from a collection.
-   *
-   * Future: this method could accept a query-language string
-   * and parse it into the appropriate cursor parameters.
-   */
+  /** Fetch a cursor-paginated page of documents from a collection. */
   async getDocuments(
     collection: string,
     iterableKey: string = 'id',
-    value?: string,
-    limit: number = 100,
-  ): Promise<string[]> {
+    cursor?: string,
+    limit: number = 50,
+  ): Promise<{ documents: string[]; hasMore: boolean; nextCursor?: string | number }> {
     this.ensureConnected();
+    const page = await fetchPageCursor(this.dbms!, { collection, iterableKey, limit, afterCursor: cursor });
+    return { documents: page.data, hasMore: page.hasMore, nextCursor: page.nextCursor };
+  }
 
+  /** Find all articles containing a word via the persistent word index. */
+  async wordSearch(
+    collection: string,
+    word: string,
+    limit: number,
+    offset: number,
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
+    this.ensureConnected();
+    const { docIds, total, hasMore } = await searchWordIndex(this.dbms!, word, limit, offset);
     const documents: string[] = [];
-    const cursor = this.dbms!.cursor(collection, iterableKey, value);
-
-    let count = 0;
-    for await (const doc of cursor) {
-      documents.push(doc);
-      count++;
-      if (count >= limit) break;
+    for (const id of docIds) {
+      try {
+        documents.push(await this.dbms!.getDocumentById(collection, id));
+      } catch {
+        // Article deleted after indexing — skip silently
+      }
     }
-
-    return documents;
+    return { documents, total, hasMore };
   }
 
   /** Insert a document into a collection. */
