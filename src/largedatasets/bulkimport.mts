@@ -63,7 +63,7 @@ export async function bulkImportArray(
   docs: Record<string, unknown>[],
   options: BulkImportOptions,
 ): Promise<BulkImportResult> {
-  async function* generate() {
+  function* generate() {
     for (const doc of docs) {
       yield doc;
     }
@@ -85,7 +85,7 @@ export async function bulkImportArray(
  */
 export async function bulkImportStream(
   db: SimpleDbms,
-  stream: AsyncIterable<Record<string, unknown>>,
+  stream: AsyncIterable<Record<string, unknown>> | Iterable<Record<string, unknown>>,
   options: BulkImportOptions,
 ): Promise<BulkImportResult> {
   const batchSize = options.batchSize ?? 100;
@@ -105,7 +105,8 @@ export async function bulkImportStream(
     } catch (err) {
       failedCount++;
       const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`Document ${doc.id ?? 'unknown'}: ${msg}`);
+      const docId = typeof doc['id'] === 'string' ? doc['id'] : 'unknown';
+      errors.push(`Document ${docId}: ${msg}`);
       continue;
     }
 
@@ -167,7 +168,7 @@ export function parseJsonLines(jsonlText: string): Record<string, unknown>[] {
  * @param jsonlText - The JSONL text to parse.
  * @yields Parsed objects one at a time.
  */
-export async function* streamJsonLines(jsonlText: string): AsyncGenerator<Record<string, unknown>> {
+export function* streamJsonLines(jsonlText: string): Generator<Record<string, unknown>> {
   const lines = jsonlText.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();

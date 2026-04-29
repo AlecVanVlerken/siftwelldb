@@ -165,8 +165,8 @@ describe('InvertedIndex', () => {
   describe('documents actually stored in DB', () => {
     it('can retrieve indexed documents from the database', async () => {
       const doc = await db.getDocumentById('articles', 'a1');
-      const parsed = JSON.parse(doc);
-      expect(parsed.title).toBe('Introduction to Databases');
+      const parsed = JSON.parse(doc) as Record<string, unknown>;
+      expect(parsed['title']).toBe('Introduction to Databases');
     });
   });
 });

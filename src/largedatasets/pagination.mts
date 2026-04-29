@@ -59,7 +59,7 @@ export async function fetchPageCursor(
   const { collection, iterableKey, limit, afterCursor } = options;
 
   // Start iterating from afterCursor (or from the beginning if undefined)
-  const iterable = db.cursor(collection, iterableKey, afterCursor as string | number | undefined);
+  const iterable = db.cursor(collection, iterableKey, afterCursor);
 
   const data: string[] = [];
   let lastKey: string | number | undefined;
@@ -75,7 +75,7 @@ export async function fetchPageCursor(
     data.push(jsonStr);
 
     // Extract the key value for the next cursor
-    const parsed = JSON.parse(jsonStr);
+    const parsed = JSON.parse(jsonStr) as Record<string, string | number>;
     lastKey = parsed[iterableKey];
 
     if (data.length >= limit + 1) {
@@ -88,7 +88,7 @@ export async function fetchPageCursor(
   if (hasMore) {
     data.pop(); // Remove the extra lookahead document
     // Recalculate lastKey from the actual last document
-    const lastDoc = JSON.parse(data[data.length - 1]);
+    const lastDoc = JSON.parse(data[data.length - 1]) as Record<string, string | number>;
     lastKey = lastDoc[iterableKey];
   }
 

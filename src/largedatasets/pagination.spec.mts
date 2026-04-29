@@ -37,8 +37,8 @@ describe('Pagination', () => {
       expect(page.hasMore).toBe(true);
       expect(page.nextCursor).toBeDefined();
 
-      const firstDoc = JSON.parse(page.data[0]);
-      expect(firstDoc.id).toBe('city-00');
+      const firstDoc = JSON.parse(page.data[0]) as Record<string, unknown>;
+      expect(firstDoc['id']).toBe('city-00');
     });
 
     it('paginates through all results', async () => {
@@ -66,7 +66,7 @@ describe('Pagination', () => {
       expect(pageCount).toBe(3); // 7 + 7 + 6
 
       // Verify no duplicates
-      const ids = allDocs.map((d) => JSON.parse(d).id);
+      const ids = allDocs.map((d) => (JSON.parse(d) as Record<string, unknown>)['id']);
       expect(new Set(ids).size).toBe(20);
     });
 
@@ -147,8 +147,8 @@ describe('Pagination', () => {
       });
 
       expect(page.data).toHaveLength(5);
-      const firstDoc = JSON.parse(page.data[0]);
-      expect(firstDoc.id).toBe('city-05');
+      const firstDoc = JSON.parse(page.data[0]) as Record<string, unknown>;
+      expect(firstDoc['id']).toBe('city-05');
     });
 
     it('returns partial last page', async () => {
@@ -194,7 +194,7 @@ describe('Pagination', () => {
       }
 
       expect(allDocs).toHaveLength(20);
-      const ids = allDocs.map((d) => JSON.parse(d).id);
+      const ids = allDocs.map((d) => (JSON.parse(d) as Record<string, unknown>)['id']);
       expect(new Set(ids).size).toBe(20);
     });
   });
