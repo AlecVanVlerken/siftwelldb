@@ -30,11 +30,11 @@ describe('Bulk Import', () => {
       expect(result.errors).toHaveLength(0);
 
       // Verify documents are in the database
-      const doc1 = JSON.parse(await db.getDocumentById('people', 'doc1'));
-      expect(doc1.name).toBe('Alice');
+      const doc1 = JSON.parse(await db.getDocumentById('people', 'doc1')) as Record<string, unknown>;
+      expect(doc1['name']).toBe('Alice');
 
-      const doc3 = JSON.parse(await db.getDocumentById('people', 'doc3'));
-      expect(doc3.name).toBe('Charlie');
+      const doc3 = JSON.parse(await db.getDocumentById('people', 'doc3')) as Record<string, unknown>;
+      expect(doc3['name']).toBe('Charlie');
     });
 
     it('commits in batches', async () => {
@@ -103,7 +103,7 @@ describe('Bulk Import', () => {
 
   describe('bulkImportStream', () => {
     it('imports from an async generator', async () => {
-      async function* generate() {
+      function* generate() {
         for (let i = 0; i < 10; i++) {
           yield { id: `stream-${i}`, value: i * 10 };
         }
@@ -117,12 +117,12 @@ describe('Bulk Import', () => {
       expect(result.totalImported).toBe(10);
       expect(result.batchesCommitted).toBe(3); // 4 + 4 + 2
 
-      const doc = JSON.parse(await db.getDocumentById('streamed', 'stream-5'));
-      expect(doc.value).toBe(50);
+      const doc = JSON.parse(await db.getDocumentById('streamed', 'stream-5')) as Record<string, unknown>;
+      expect(doc['value']).toBe(50);
     });
 
     it('handles errors in stream without stopping', async () => {
-      async function* generate() {
+      function* generate() {
         yield { id: 'ok1', val: 1 };
         yield { id: 'ok1', val: 2 }; // duplicate, will fail
         yield { id: 'ok2', val: 3 };
@@ -161,11 +161,11 @@ describe('Bulk Import', () => {
   });
 
   describe('streamJsonLines', () => {
-    it('yields objects one at a time', async () => {
+    it('yields objects one at a time', () => {
       const text = '{"id":"x1","val":10}\n{"id":"x2","val":20}';
       const results: Record<string, unknown>[] = [];
 
-      for await (const obj of streamJsonLines(text)) {
+      for (const obj of streamJsonLines(text)) {
         results.push(obj);
       }
 
@@ -184,8 +184,8 @@ describe('Bulk Import', () => {
       expect(result.totalImported).toBe(50);
       expect(result.batchesCommitted).toBe(3); // 20 + 20 + 10
 
-      const doc = JSON.parse(await db.getDocumentById('jsonl', 'j-49'));
-      expect(doc.n).toBe(49);
+      const doc = JSON.parse(await db.getDocumentById('jsonl', 'j-49')) as Record<string, unknown>;
+      expect(doc['n']).toBe(49);
     });
   });
 
@@ -208,15 +208,16 @@ describe('Bulk Import', () => {
       expect(result.failedCount).toBe(0);
 
       // Spot-check some documents
-      const first = JSON.parse(await db.getDocumentById('large', 'large-0000'));
-      expect(first.description).toBe('Document number 0 in the large dataset test');
+      const first = JSON.parse(await db.getDocumentById('large', 'large-0000')) as Record<string, unknown>;
+      expect(first['description']).toBe('Document number 0 in the large dataset test');
 
-      const last = JSON.parse(await db.getDocumentById('large', 'large-0499'));
-      expect(last.description).toBe('Document number 499 in the large dataset test');
+      const last = JSON.parse(await db.getDocumentById('large', 'large-0499')) as Record<string, unknown>;
+      expect(last['description']).toBe('Document number 499 in the large dataset test');
 
       // Verify we can paginate through them
       let count = 0;
       for await (const _ of db.cursor('large', 'id')) {
+        void _;
         count++;
       }
       expect(count).toBe(500);

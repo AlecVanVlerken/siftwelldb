@@ -67,7 +67,7 @@ export class InvertedIndex {
    * Index an already-inserted document (build index without re-inserting).
    */
   indexObject(doc: Record<string, unknown>): void {
-    const id = doc.id as string;
+    const id = doc['id'] as string;
 
     for (const [key, value] of Object.entries(doc)) {
       if (key === 'id') continue;
@@ -93,7 +93,7 @@ export class InvertedIndex {
    */
   async buildFromExisting(iterableKey: string): Promise<void> {
     for await (const jsonStr of this.db.cursor(this.collection, iterableKey)) {
-      const doc = JSON.parse(jsonStr);
+      const doc = JSON.parse(jsonStr) as Record<string, unknown>;
       this.indexObject(doc);
     }
   }
