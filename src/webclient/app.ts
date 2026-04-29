@@ -39,6 +39,12 @@ const semanticSearchBtn = document.getElementById('semantic-search-btn') as HTML
 const semanticSearchClearBtn = document.getElementById('semantic-search-clear-btn') as HTMLButtonElement;
 const searchModeTextBtn = document.getElementById('search-mode-text') as HTMLButtonElement | null;
 const searchModeImageBtn = document.getElementById('search-mode-image') as HTMLButtonElement | null;
+const searchModeWordBtn = document.getElementById('search-mode-word') as HTMLButtonElement | null;
+
+// Pagination
+const loadMoreBar = document.getElementById('load-more-bar') as HTMLElement;
+const loadMoreBtn = document.getElementById('load-more-btn') as HTMLButtonElement;
+const loadMoreInfo = document.getElementById('load-more-info') as HTMLElement;
 
 // Doc view buttons
 const docViewBack = document.getElementById('doc-view-back') as HTMLButtonElement;
@@ -73,9 +79,15 @@ initDocView({
 function clearWorkspace(): void {
   state.currentCollection = null;
   state.allDocuments = [];
+  state.hasMore = false;
+  state.nextCursor = undefined;
+  state.wordSearchOffset = 0;
+  state.wordSearchTotal = 0;
+  state.lastWordQuery = '';
   dataTableHead.innerHTML = '';
   dataTableBody.innerHTML = '';
   filterInput.value = '';
+  loadMoreBar.classList.add('hidden');
   closeDocView();
 }
 
@@ -129,6 +141,7 @@ async function disconnect() {
     refreshBtn.disabled = true;
     if (searchModeTextBtn) searchModeTextBtn.disabled = true;
     if (searchModeImageBtn) searchModeImageBtn.disabled = true;
+    if (searchModeWordBtn) searchModeWordBtn.disabled = true;
     semanticSearchInput.disabled = true;
     semanticSearchInput.value = '';
     semanticSearchBtn.disabled = true;
@@ -223,6 +236,7 @@ function selectCollection(collection: string) {
   refreshBtn.disabled = false;
   if (searchModeTextBtn) searchModeTextBtn.disabled = false;
   if (searchModeImageBtn) searchModeImageBtn.disabled = false;
+  if (searchModeWordBtn) searchModeWordBtn.disabled = false;
   semanticSearchInput.disabled = false;
   semanticSearchBtn.disabled = false;
   semanticSearchInput.value = '';
@@ -232,15 +246,94 @@ function selectCollection(collection: string) {
 
 // ── Documents ────────────────────────────────────────────────
 
-async function loadDocuments(collection: string): Promise<void> {
+async function loadDocuments(collection: string, append = false): Promise<void> {
   try {
-    const data = await apiCall(`/api/documents/${encodeURIComponent(collection)}`);
+    const cursor = append ? state.nextCursor : undefined;
+    const params = new URLSearchParams({ limit: '50' });
+    if (cursor !== undefined) params.set('cursor', String(cursor));
+    const data = await apiCall(`/api/documents/${encodeURIComponent(collection)}?${params.toString()}`);
     const rawDocs = (data['documents'] as string[] | undefined) ?? [];
-    state.allDocuments = rawDocs.map((d) => JSON.parse(d) as Document);
+    const newDocs = rawDocs.map((d) => JSON.parse(d) as Document);
+    state.allDocuments = append ? [...state.allDocuments, ...newDocs] : newDocs;
+    state.hasMore = (data['hasMore'] as boolean | undefined) ?? false;
+    state.nextCursor = data['nextCursor'] as string | number | undefined;
     applyFilter(filterInput);
+    updateLoadMoreBar();
   } catch (error) {
     console.error('Failed to load documents:', error);
     dataTableBody.innerHTML = `<tr><td colspan="4" class="error">Fout bij laden: ${(error as Error).message}</td></tr>`;
+  }
+}
+
+function updateLoadMoreBar(): void {
+  if (state.hasMore) {
+    loadMoreBar.classList.remove('hidden');
+    const total = state.currentSearchMode === 'word' && state.wordSearchTotal > 0
+      ? ` van ${state.wordSearchTotal}`
+      : '';
+    loadMoreInfo.textContent = `${state.allDocuments.length}${total} geladen`;
+  } else {
+    loadMoreBar.classList.add('hidden');
+  }
+}
+
+async function loadMore(): Promise<void> {
+  if (!state.currentCollection || !state.hasMore) return;
+  if (state.currentSearchMode === 'word' && state.lastWordQuery) {
+    await performWordSearch(true);
+  } else {
+    await loadDocuments(state.currentCollection, true);
+  }
+}
+
+async function performWordSearch(append = false): Promise<void> {
+  if (!state.currentCollection) return;
+
+  const word = append ? state.lastWordQuery : semanticSearchInput.value.trim();
+  if (!word) {
+    semanticSearchClearBtn.classList.add('hidden');
+    applyFilter(filterInput);
+    return;
+  }
+
+  if (!append) {
+    state.wordSearchOffset = 0;
+    state.wordSearchTotal = 0;
+    state.lastWordQuery = word;
+    semanticSearchClearBtn.classList.remove('hidden');
+  }
+
+  semanticSearchBtn.classList.add('loading');
+  semanticSearchBtn.disabled = true;
+  semanticSearchInput.disabled = true;
+  if (searchModeTextBtn) searchModeTextBtn.disabled = true;
+  if (searchModeImageBtn) searchModeImageBtn.disabled = true;
+  if (searchModeWordBtn) searchModeWordBtn.disabled = true;
+
+  try {
+    const params = new URLSearchParams({ word, limit: '50', offset: String(state.wordSearchOffset) });
+    const data = await apiCall(
+      `/api/documents/${encodeURIComponent(state.currentCollection)}/wordsearch?${params.toString()}`,
+    );
+    const rawDocs = (data['documents'] as string[] | undefined) ?? [];
+    const newDocs = rawDocs.map((d) => JSON.parse(d) as Document);
+    state.wordSearchOffset += newDocs.length;
+    state.wordSearchTotal = (data['total'] as number | undefined) ?? 0;
+    state.hasMore = (data['hasMore'] as boolean | undefined) ?? false;
+    state.allDocuments = append ? [...state.allDocuments, ...newDocs] : newDocs;
+    renderTable(state.allDocuments);
+    updateLoadMoreBar();
+  } catch (error) {
+    console.error('Word search failed:', error);
+    dataTableBody.innerHTML = `<tr><td colspan="4" class="error">Woordzoekfout: ${(error as Error).message}</td></tr>`;
+  } finally {
+    semanticSearchBtn.classList.remove('loading');
+    semanticSearchBtn.disabled = false;
+    semanticSearchInput.disabled = false;
+    if (searchModeTextBtn) searchModeTextBtn.disabled = false;
+    if (searchModeImageBtn) searchModeImageBtn.disabled = false;
+    if (searchModeWordBtn) searchModeWordBtn.disabled = false;
+    semanticSearchInput.focus();
   }
 }
 
@@ -293,6 +386,11 @@ function createCollection(name: string) {
 async function performSemanticSearch() {
   if (!state.currentCollection) return;
 
+  if (state.currentSearchMode === 'word') {
+    await performWordSearch();
+    return;
+  }
+
   const query = semanticSearchInput.value.trim();
   if (!query) {
     semanticSearchClearBtn.classList.add('hidden');
@@ -306,6 +404,7 @@ async function performSemanticSearch() {
   semanticSearchInput.disabled = true;
   if (searchModeTextBtn) searchModeTextBtn.disabled = true;
   if (searchModeImageBtn) searchModeImageBtn.disabled = true;
+  if (searchModeWordBtn) searchModeWordBtn.disabled = true;
 
   try {
     const data = await apiCall(
@@ -328,6 +427,7 @@ async function performSemanticSearch() {
     semanticSearchInput.disabled = false;
     if (searchModeTextBtn) searchModeTextBtn.disabled = false;
     if (searchModeImageBtn) searchModeImageBtn.disabled = false;
+    if (searchModeWordBtn) searchModeWordBtn.disabled = false;
     semanticSearchInput.focus();
   }
 }
@@ -385,13 +485,24 @@ if (searchModeTextBtn && searchModeImageBtn) {
     state.currentSearchMode = 'text';
     searchModeTextBtn.classList.add('active');
     searchModeImageBtn.classList.remove('active');
+    if (searchModeWordBtn) searchModeWordBtn.classList.remove('active');
     semanticSearchInput.placeholder = 'Zoek op betekenis...';
   });
   searchModeImageBtn.addEventListener('click', () => {
     state.currentSearchMode = 'image';
     searchModeImageBtn.classList.add('active');
     searchModeTextBtn.classList.remove('active');
+    if (searchModeWordBtn) searchModeWordBtn.classList.remove('active');
     semanticSearchInput.placeholder = 'Zoek foto op beschrijving...';
+  });
+}
+if (searchModeWordBtn && searchModeTextBtn && searchModeImageBtn) {
+  searchModeWordBtn.addEventListener('click', () => {
+    state.currentSearchMode = 'word';
+    searchModeWordBtn.classList.add('active');
+    searchModeTextBtn.classList.remove('active');
+    searchModeImageBtn.classList.remove('active');
+    semanticSearchInput.placeholder = 'Zoek op woord...';
   });
 }
 
@@ -403,8 +514,16 @@ semanticSearchBtn.addEventListener('click', () => void performSemanticSearch());
 semanticSearchClearBtn.addEventListener('click', () => {
   semanticSearchInput.value = '';
   semanticSearchClearBtn.classList.add('hidden');
-  applyFilter(filterInput);
+  state.lastWordQuery = '';
+  state.wordSearchOffset = 0;
+  state.wordSearchTotal = 0;
+  if (state.currentCollection && state.currentSearchMode === 'word') {
+    void loadDocuments(state.currentCollection);
+  } else {
+    applyFilter(filterInput);
+  }
 });
+loadMoreBtn.addEventListener('click', () => void loadMore());
 
 // New collection
 if (newCollectionBtn) newCollectionBtn.addEventListener('click', openNewCollectionModal);

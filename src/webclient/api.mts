@@ -153,6 +153,22 @@ export class ApiRouter {
       const documentMatch = pathname.match(/^\/api\/documents\/([^/]+)\/([^/]+)$/);
       const editMatch = pathname.match(/^\/api\/documents\/([^/]+)\/([^/]+)\/edit$/);
 
+      // GET /api/documents/:collection/wordsearch?word=...&limit=...&offset=...
+      const wordSearchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/wordsearch$/);
+      if (method === 'GET' && wordSearchMatch) {
+        const collection = decodeURIComponent(wordSearchMatch[1]);
+        const word = url.searchParams.get('word') ?? '';
+        const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
+        const offset = parseInt(url.searchParams.get('offset') ?? '0', 10);
+        if (!word) {
+          sendError(res, 400, 'Missing word parameter');
+          return;
+        }
+        const result = await this.db.wordSearch(collection, word, limit, offset);
+        sendJSON(res, 200, result);
+        return;
+      }
+
       // GET /api/documents/:collection/search
       const searchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search$/);
       if (method === 'GET' && searchMatch) {
@@ -189,16 +205,15 @@ export class ApiRouter {
         return;
       }
 
-      // GET /api/documents/:collection
+      // GET /api/documents/:collection?cursor=...&limit=...&iterableKey=...
       if (method === 'GET' && collectionMatch) {
         const collection = decodeURIComponent(collectionMatch[1]);
         const iterableKey = url.searchParams.get('iterableKey') ?? 'id';
-        const rawValue = url.searchParams.get('value');
-        const value = rawValue ?? undefined;
-        const limit = parseInt(url.searchParams.get('limit') ?? '100', 10);
+        const cursor = url.searchParams.get('cursor') ?? undefined;
+        const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
 
-        const documents = await this.db.getDocuments(collection, iterableKey, value, limit);
-        sendJSON(res, 200, { documents });
+        const result = await this.db.getDocuments(collection, iterableKey, cursor, limit);
+        sendJSON(res, 200, result);
         return;
       }
 
