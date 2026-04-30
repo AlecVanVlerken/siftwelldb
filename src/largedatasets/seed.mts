@@ -29,7 +29,7 @@ function makeArticle(i: number): Record<string, unknown> {
   return {
     id: title.replace(/ /g, '_'),
     title,
-    content: `Dit is een artikel over ${title}. Het bevat informatie over ${topic.toLowerCase()} en verwante onderwerpen. ` +
+    _content: `Dit is een artikel over ${title}. Het bevat informatie over ${topic.toLowerCase()} en verwante onderwerpen. ` +
       `Dit artikel is nummer ${i + 1} in de collectie en dient als testdata voor de SimpleDBMS demonstratie.`,
   };
 }
@@ -60,7 +60,7 @@ async function main() {
   }
 
   const COLLECTION = 'articles';
-  const index = new InvertedIndex(db, COLLECTION, ['title', 'content']);
+  const index = new InvertedIndex(db, COLLECTION, ['title']);
 
   function* docs(): Generator<Record<string, unknown>> {
     for (let i = 0; i < count; i++) {
