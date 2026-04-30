@@ -130,7 +130,7 @@ async function* parseWikipediaDump(
     } else if (trimmed === '</page>') {
       if (ns === '0' && title && !isRedirect) {
         const rawText = textBuf.join('\n');
-        const _content = stripWikitext(rawText).slice(0, 4000);
+        const _content = stripWikitext(rawText);
         yield { id: titleToId(title), title, _content };
         yielded++;
       }

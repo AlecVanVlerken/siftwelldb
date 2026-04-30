@@ -228,6 +228,9 @@ function renderCollectionList() {
 
 function selectCollection(collection: string) {
   state.currentCollection = collection;
+  state.lastWordQuery = '';
+  state.wordSearchOffset = 0;
+  state.wordSearchTotal = 0;
   filterInput.value = '';
   closeDocView();
   renderCollectionList();
@@ -475,7 +478,14 @@ if (resetDbBtn) {
 // Toolbar
 addDocBtn.addEventListener('click', () => openDocView({ id: '' }, true, true));
 refreshBtn.addEventListener('click', () => {
-  if (state.currentCollection) void loadDocuments(state.currentCollection);
+  if (state.currentCollection) {
+    state.lastWordQuery = '';
+    state.wordSearchOffset = 0;
+    state.wordSearchTotal = 0;
+    semanticSearchInput.value = '';
+    semanticSearchClearBtn.classList.add('hidden');
+    void loadDocuments(state.currentCollection);
+  }
 });
 filterInput.addEventListener('input', () => applyFilter(filterInput));
 
