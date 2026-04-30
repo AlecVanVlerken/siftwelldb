@@ -209,6 +209,16 @@ export async function importWikipedia(
   console.log(`Word index persisted (${wordsDone} words total).`);
 
   await db.close();
+
+  // Verify the index was persisted correctly by reopening the DB fresh.
+  console.log('Verifying index (fresh DB open)...');
+  const db2 = await SimpleDbms.open(new RealFile(dbPath), new RealFile(`${dbPath}.log`));
+  const { searchWordIndex } = await import('./wordindex.mjs');
+  for (const probe of ['amsterdam', 'nederland', '11', 'van']) {
+    const r = await searchWordIndex(db2, probe, 5, 0);
+    console.log(`  probe "${probe}": ${r.total} docs`);
+  }
+  await db2.close();
   const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
   console.log(`Done in ${elapsed}s.`);
 }
