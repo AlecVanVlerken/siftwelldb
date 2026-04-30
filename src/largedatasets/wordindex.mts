@@ -26,10 +26,17 @@ export async function persistWordIndex(
   onProgress?: (wordsDone: number) => void,
 ): Promise<void> {
   let count = 0;
+  let skipped = 0;
   for (const word of index.words) {
     const docIds = index.search(word);
     if (docIds.length === 0) continue;
-    await db.insertDocumentObject(WORD_INDEX_COLLECTION, { id: word, _docIds: docIds.join(SEP) });
+    try {
+      await db.insertDocumentObject(WORD_INDEX_COLLECTION, { id: word, _docIds: docIds.join(SEP) });
+    } catch {
+      // Word already exists in index (e.g. from a previous import run) — skip it.
+      skipped++;
+      continue;
+    }
     count++;
     if (count % batchSize === 0) {
       await db.commit();
@@ -39,6 +46,9 @@ export async function persistWordIndex(
   if (count % batchSize !== 0) {
     await db.commit();
     onProgress?.(count);
+  }
+  if (skipped > 0) {
+    console.warn(`[persistWordIndex] Skipped ${skipped} duplicate words (already in index).`);
   }
 }
 
@@ -59,6 +69,7 @@ export async function searchWordIndex(
   try {
     raw = await db.getDocumentById(WORD_INDEX_COLLECTION, normalized);
   } catch {
+    console.log(`[searchWordIndex] word="${normalized}" → not found in index`);
     return { docIds: [], total: 0, hasMore: false };
   }
 
