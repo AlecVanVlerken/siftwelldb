@@ -79,7 +79,7 @@ function titleToId(title: string): string {
 interface WikiArticle {
   id: string;
   title: string;
-  content: string;
+  _content: string;
 }
 
 async function* parseWikipediaDump(
@@ -130,8 +130,8 @@ async function* parseWikipediaDump(
     } else if (trimmed === '</page>') {
       if (ns === '0' && title && !isRedirect) {
         const rawText = textBuf.join('\n');
-        const content = stripWikitext(rawText).slice(0, 4000);
-        yield { id: titleToId(title), title, content };
+        const _content = stripWikitext(rawText).slice(0, 4000);
+        yield { id: titleToId(title), title, _content };
         yielded++;
       }
       title = '';
