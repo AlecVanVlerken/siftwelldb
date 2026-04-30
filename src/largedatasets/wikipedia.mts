@@ -82,10 +82,7 @@ interface WikiArticle {
   _content: string;
 }
 
-async function* parseWikipediaDump(
-  filePath: string,
-  limit = Infinity,
-): AsyncGenerator<WikiArticle> {
+async function* parseWikipediaDump(filePath: string, limit = Infinity): AsyncGenerator<WikiArticle> {
   const raw = fs.createReadStream(filePath);
   const input = filePath.endsWith('.gz') ? raw.pipe(zlib.createGunzip()) : raw;
   const rl = readline.createInterface({ input, crlfDelay: Infinity });

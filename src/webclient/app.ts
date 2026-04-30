@@ -271,9 +271,8 @@ async function loadDocuments(collection: string, append = false): Promise<void> 
 function updateLoadMoreBar(): void {
   if (state.hasMore) {
     loadMoreBar.classList.remove('hidden');
-    const total = state.currentSearchMode === 'word' && state.wordSearchTotal > 0
-      ? ` van ${state.wordSearchTotal}`
-      : '';
+    const total =
+      state.currentSearchMode === 'word' && state.wordSearchTotal > 0 ? ` van ${state.wordSearchTotal}` : '';
     loadMoreInfo.textContent = `${state.allDocuments.length}${total} geladen`;
   } else {
     loadMoreBar.classList.add('hidden');

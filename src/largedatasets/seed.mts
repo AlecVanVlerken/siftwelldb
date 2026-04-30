@@ -11,15 +11,51 @@ import { InvertedIndex } from './invertedindex.mjs';
 import { persistWordIndex } from './wordindex.mjs';
 
 const TOPICS = [
-  'Amsterdam', 'Rotterdam', 'Den Haag', 'Utrecht', 'Eindhoven',
-  'Groningen', 'Tilburg', 'Almere', 'Breda', 'Nijmegen',
-  'Voetbal', 'Tennis', 'Wielrennen', 'Zwemmen', 'Atletiek',
-  'Biologie', 'Scheikunde', 'Natuurkunde', 'Wiskunde', 'Informatica',
-  'Muziek', 'Schilderkunst', 'Architectuur', 'Literatuur', 'Film',
-  'Nederland', 'België', 'Duitsland', 'Frankrijk', 'Spanje',
-  'Rembrandt', 'Van Gogh', 'Vermeer', 'Mondriaan', 'Escher',
-  'Tulpen', 'Molens', 'Fietsen', 'Kaas', 'Klompen',
-  'Wetenschap', 'Technologie', 'Geschiedenis', 'Aardrijkskunde', 'Economie',
+  'Amsterdam',
+  'Rotterdam',
+  'Den Haag',
+  'Utrecht',
+  'Eindhoven',
+  'Groningen',
+  'Tilburg',
+  'Almere',
+  'Breda',
+  'Nijmegen',
+  'Voetbal',
+  'Tennis',
+  'Wielrennen',
+  'Zwemmen',
+  'Atletiek',
+  'Biologie',
+  'Scheikunde',
+  'Natuurkunde',
+  'Wiskunde',
+  'Informatica',
+  'Muziek',
+  'Schilderkunst',
+  'Architectuur',
+  'Literatuur',
+  'Film',
+  'Nederland',
+  'België',
+  'Duitsland',
+  'Frankrijk',
+  'Spanje',
+  'Rembrandt',
+  'Van Gogh',
+  'Vermeer',
+  'Mondriaan',
+  'Escher',
+  'Tulpen',
+  'Molens',
+  'Fietsen',
+  'Kaas',
+  'Klompen',
+  'Wetenschap',
+  'Technologie',
+  'Geschiedenis',
+  'Aardrijkskunde',
+  'Economie',
 ];
 
 function makeArticle(i: number): Record<string, unknown> {
@@ -29,7 +65,8 @@ function makeArticle(i: number): Record<string, unknown> {
   return {
     id: title.replace(/ /g, '_'),
     title,
-    _content: `Dit is een artikel over ${title}. Het bevat informatie over ${topic.toLowerCase()} en verwante onderwerpen. ` +
+    _content:
+      `Dit is een artikel over ${title}. Het bevat informatie over ${topic.toLowerCase()} en verwante onderwerpen. ` +
       `Dit artikel is nummer ${i + 1} in de collectie en dient als testdata voor de SimpleDBMS demonstratie.`,
   };
 }
