@@ -165,6 +165,7 @@ export class ApiRouter {
           return;
         }
         const result = await this.db.wordSearch(collection, word, limit, offset);
+        console.log(`[wordsearch] word="${word}" → ${result.documents.length} docs, total=${result.total}`);
         sendJSON(res, 200, result);
         return;
       }
