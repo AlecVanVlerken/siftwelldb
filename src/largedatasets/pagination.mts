@@ -52,10 +52,7 @@ export interface OffsetPaginationOptions {
  * @param options - Cursor pagination options.
  * @returns A Page object containing the results.
  */
-export async function fetchPageCursor(
-  db: SimpleDbms,
-  options: CursorPaginationOptions,
-): Promise<Page> {
+export async function fetchPageCursor(db: SimpleDbms, options: CursorPaginationOptions): Promise<Page> {
   const { collection, iterableKey, limit, afterCursor } = options;
 
   // Start iterating from afterCursor (or from the beginning if undefined)
@@ -110,10 +107,7 @@ export async function fetchPageCursor(
  * @param options - Offset pagination options.
  * @returns A Page object containing the results.
  */
-export async function fetchPageOffset(
-  db: SimpleDbms,
-  options: OffsetPaginationOptions,
-): Promise<Page> {
+export async function fetchPageOffset(db: SimpleDbms, options: OffsetPaginationOptions): Promise<Page> {
   const { collection, iterableKey, limit, offset } = options;
 
   const iterable = db.cursor(collection, iterableKey);
