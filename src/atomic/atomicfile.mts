@@ -195,9 +195,10 @@ export class AtomicFile implements File {
       await this.cleanupLog();
 
       return true;
-    } catch {
+    } catch (e) {
       // If something fails after writeAndSyncLog(), we leave the WAL intact
       // so recover() can finish the write (redo-only protocol).
+      console.error('[atomicWrite] underlying error:', e);
       return false;
     } finally {
       this.inFlight = false;
