@@ -46,6 +46,13 @@ const loadMoreBar = document.getElementById('load-more-bar') as HTMLElement;
 const loadMoreBtn = document.getElementById('load-more-btn') as HTMLButtonElement;
 const loadMoreInfo = document.getElementById('load-more-info') as HTMLElement;
 
+// Content search bar
+const contentSearchBar = document.getElementById('content-search-bar') as HTMLElement;
+const contentSearchInput = document.getElementById('content-search-input') as HTMLInputElement;
+const contentSearchBtn = document.getElementById('content-search-btn') as HTMLButtonElement;
+const contentSearchClearBtn = document.getElementById('content-search-clear-btn') as HTMLButtonElement;
+const contentSearchInfo = document.getElementById('content-search-info') as HTMLElement;
+
 // Doc view buttons
 const docViewBack = document.getElementById('doc-view-back') as HTMLButtonElement;
 const docViewEdit = document.getElementById('doc-view-edit') as HTMLButtonElement;
@@ -84,10 +91,17 @@ function clearWorkspace(): void {
   state.wordSearchOffset = 0;
   state.wordSearchTotal = 0;
   state.lastWordQuery = '';
+  state.contentSearchOffset = 0;
+  state.contentSearchTotal = 0;
+  state.lastContentQuery = '';
   dataTableHead.innerHTML = '';
   dataTableBody.innerHTML = '';
   filterInput.value = '';
   loadMoreBar.classList.add('hidden');
+  contentSearchBar.classList.add('hidden');
+  contentSearchInput.value = '';
+  contentSearchClearBtn.classList.add('hidden');
+  contentSearchInfo.textContent = '';
   closeDocView();
 }
 
@@ -146,6 +160,10 @@ async function disconnect() {
     semanticSearchInput.value = '';
     semanticSearchBtn.disabled = true;
     semanticSearchClearBtn.classList.add('hidden');
+    contentSearchBar.classList.add('hidden');
+    contentSearchInput.value = '';
+    contentSearchClearBtn.classList.add('hidden');
+    contentSearchInfo.textContent = '';
     connectModal.classList.remove('hidden');
   } catch (error) {
     console.error('Disconnect failed:', error);
@@ -231,6 +249,9 @@ function selectCollection(collection: string) {
   state.lastWordQuery = '';
   state.wordSearchOffset = 0;
   state.wordSearchTotal = 0;
+  state.lastContentQuery = '';
+  state.contentSearchOffset = 0;
+  state.contentSearchTotal = 0;
   filterInput.value = '';
   closeDocView();
   renderCollectionList();
@@ -244,6 +265,10 @@ function selectCollection(collection: string) {
   semanticSearchBtn.disabled = false;
   semanticSearchInput.value = '';
   semanticSearchClearBtn.classList.add('hidden');
+  contentSearchBar.classList.remove('hidden');
+  contentSearchInput.value = '';
+  contentSearchClearBtn.classList.add('hidden');
+  contentSearchInfo.textContent = '';
   void loadDocuments(collection);
 }
 
@@ -271,8 +296,12 @@ async function loadDocuments(collection: string, append = false): Promise<void> 
 function updateLoadMoreBar(): void {
   if (state.hasMore) {
     loadMoreBar.classList.remove('hidden');
-    const total =
-      state.currentSearchMode === 'word' && state.wordSearchTotal > 0 ? ` van ${state.wordSearchTotal}` : '';
+    let total = '';
+    if (state.currentSearchMode === 'word' && state.wordSearchTotal > 0) {
+      total = ` van ${state.wordSearchTotal}`;
+    } else if (state.lastContentQuery && state.contentSearchTotal > 0) {
+      total = ` van ${state.contentSearchTotal}`;
+    }
     loadMoreInfo.textContent = `${state.allDocuments.length}${total} geladen`;
   } else {
     loadMoreBar.classList.add('hidden');
@@ -283,6 +312,8 @@ async function loadMore(): Promise<void> {
   if (!state.currentCollection || !state.hasMore) return;
   if (state.currentSearchMode === 'word' && state.lastWordQuery) {
     await performWordSearch(true);
+  } else if (state.lastContentQuery) {
+    await performContentSearch(true);
   } else {
     await loadDocuments(state.currentCollection, true);
   }
@@ -336,6 +367,50 @@ async function performWordSearch(append = false): Promise<void> {
     if (searchModeImageBtn) searchModeImageBtn.disabled = false;
     if (searchModeWordBtn) searchModeWordBtn.disabled = false;
     semanticSearchInput.focus();
+  }
+}
+
+async function performContentSearch(append = false): Promise<void> {
+  if (!state.currentCollection) return;
+
+  const word = append ? state.lastContentQuery : contentSearchInput.value.trim();
+  if (!word) {
+    contentSearchClearBtn.classList.add('hidden');
+    contentSearchInfo.textContent = '';
+    return;
+  }
+
+  if (!append) {
+    state.contentSearchOffset = 0;
+    state.contentSearchTotal = 0;
+    state.lastContentQuery = word;
+    contentSearchClearBtn.classList.remove('hidden');
+  }
+
+  contentSearchBtn.disabled = true;
+  contentSearchInput.disabled = true;
+
+  try {
+    const params = new URLSearchParams({ word, limit: '50', offset: String(state.contentSearchOffset) });
+    const data = await apiCall(
+      `/api/documents/${encodeURIComponent(state.currentCollection)}/contentsearch?${params.toString()}`,
+    );
+    const rawDocs = (data['documents'] as string[] | undefined) ?? [];
+    const newDocs = rawDocs.map((d) => JSON.parse(d) as Document);
+    state.contentSearchOffset += newDocs.length;
+    state.contentSearchTotal = (data['total'] as number | undefined) ?? 0;
+    state.hasMore = (data['hasMore'] as boolean | undefined) ?? false;
+    state.allDocuments = append ? [...state.allDocuments, ...newDocs] : newDocs;
+    renderTable(state.allDocuments);
+    contentSearchInfo.textContent = `${state.contentSearchTotal} artikel(en) gevonden`;
+    updateLoadMoreBar();
+  } catch (error) {
+    console.error('Content search failed:', error);
+    dataTableBody.innerHTML = `<tr><td colspan="4" class="error">Inhoudszoekfout: ${(error as Error).message}</td></tr>`;
+  } finally {
+    contentSearchBtn.disabled = false;
+    contentSearchInput.disabled = false;
+    contentSearchInput.focus();
   }
 }
 
@@ -481,8 +556,14 @@ refreshBtn.addEventListener('click', () => {
     state.lastWordQuery = '';
     state.wordSearchOffset = 0;
     state.wordSearchTotal = 0;
+    state.lastContentQuery = '';
+    state.contentSearchOffset = 0;
+    state.contentSearchTotal = 0;
     semanticSearchInput.value = '';
     semanticSearchClearBtn.classList.add('hidden');
+    contentSearchInput.value = '';
+    contentSearchClearBtn.classList.add('hidden');
+    contentSearchInfo.textContent = '';
     void loadDocuments(state.currentCollection);
   }
 });
@@ -533,6 +614,21 @@ semanticSearchClearBtn.addEventListener('click', () => {
   }
 });
 loadMoreBtn.addEventListener('click', () => void loadMore());
+
+// Content search bar
+contentSearchInput.addEventListener('keyup', (e) => {
+  if (e.key === 'Enter') void performContentSearch();
+});
+contentSearchBtn.addEventListener('click', () => void performContentSearch());
+contentSearchClearBtn.addEventListener('click', () => {
+  contentSearchInput.value = '';
+  contentSearchClearBtn.classList.add('hidden');
+  contentSearchInfo.textContent = '';
+  state.lastContentQuery = '';
+  state.contentSearchOffset = 0;
+  state.contentSearchTotal = 0;
+  if (state.currentCollection) void loadDocuments(state.currentCollection);
+});
 
 // New collection
 if (newCollectionBtn) newCollectionBtn.addEventListener('click', openNewCollectionModal);

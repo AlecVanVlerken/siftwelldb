@@ -13,6 +13,7 @@ import { SimpleDbms } from '../dbms/simpledbms.mjs';
 import { type InvertedIndex } from './invertedindex.mjs';
 
 export const WORD_INDEX_COLLECTION = '_word_index';
+export const CONTENT_INDEX_COLLECTION = '_content_index';
 const SEP = '|';
 
 /**
@@ -24,6 +25,7 @@ export async function persistWordIndex(
   index: InvertedIndex,
   batchSize = 500,
   onProgress?: (wordsDone: number) => void,
+  collection = WORD_INDEX_COLLECTION,
 ): Promise<void> {
   let count = 0;
   let skipped = 0;
@@ -31,7 +33,7 @@ export async function persistWordIndex(
     const docIds = index.search(word);
     if (docIds.length === 0) continue;
     try {
-      await db.insertDocumentObject(WORD_INDEX_COLLECTION, { id: word, _docIds: docIds.join(SEP) });
+      await db.insertDocumentObject(collection, { id: word, _docIds: docIds.join(SEP) });
     } catch {
       // Word already exists in index (e.g. from a previous import run) — skip it.
       skipped++;
@@ -50,6 +52,35 @@ export async function persistWordIndex(
   if (skipped > 0) {
     console.warn(`[persistWordIndex] Skipped ${skipped} duplicate words (already in index).`);
   }
+}
+
+/**
+ * Look up a single word in the persistent content index.
+ * Returns a paginated slice of matching document IDs.
+ */
+export async function searchContentIndex(
+  db: SimpleDbms,
+  word: string,
+  limit: number,
+  offset: number,
+): Promise<{ docIds: string[]; total: number; hasMore: boolean }> {
+  const normalized = word.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!normalized) return { docIds: [], total: 0, hasMore: false };
+
+  let raw: string;
+  try {
+    raw = await db.getDocumentById(CONTENT_INDEX_COLLECTION, normalized);
+  } catch {
+    return { docIds: [], total: 0, hasMore: false };
+  }
+
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  const docIdsStr = parsed['_docIds'];
+  if (typeof docIdsStr !== 'string' || !docIdsStr) return { docIds: [], total: 0, hasMore: false };
+
+  const all = docIdsStr.split(SEP);
+  const page = all.slice(offset, offset + limit);
+  return { docIds: page, total: all.length, hasMore: offset + limit < all.length };
 }
 
 /**
