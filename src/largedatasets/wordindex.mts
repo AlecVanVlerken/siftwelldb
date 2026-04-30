@@ -29,8 +29,7 @@ export async function persistWordIndex(
   for (const word of index.words) {
     const docIds = index.search(word);
     if (docIds.length === 0) continue;
-    const doc = JSON.stringify({ id: word, _docIds: docIds.join(SEP) });
-    await db.insertDocument(WORD_INDEX_COLLECTION, doc);
+    await db.insertDocumentObject(WORD_INDEX_COLLECTION, { id: word, _docIds: docIds.join(SEP) });
     count++;
     if (count % batchSize === 0) {
       await db.commit();
