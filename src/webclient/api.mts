@@ -170,6 +170,22 @@ export class ApiRouter {
         return;
       }
 
+      // GET /api/documents/:collection/contentsearch?word=...&limit=...&offset=...
+      const contentSearchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/contentsearch$/);
+      if (method === 'GET' && contentSearchMatch) {
+        const collection = decodeURIComponent(contentSearchMatch[1]);
+        const word = url.searchParams.get('word') ?? '';
+        const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
+        const offset = parseInt(url.searchParams.get('offset') ?? '0', 10);
+        if (!word) {
+          sendError(res, 400, 'Missing word parameter');
+          return;
+        }
+        const result = await this.db.contentSearch(collection, word, limit, offset);
+        sendJSON(res, 200, result);
+        return;
+      }
+
       // GET /api/documents/:collection/search
       const searchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search$/);
       if (method === 'GET' && searchMatch) {

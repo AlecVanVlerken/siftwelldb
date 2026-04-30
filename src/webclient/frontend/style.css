@@ -703,6 +703,29 @@ button:disabled {
   display: none;
 }
 
+#content-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-alt, #f9f9f9);
+  border-bottom: 1px solid var(--border);
+}
+
+#content-search-input {
+  flex: 1;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+#content-search-info {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 .doc-view-header {
   display: flex;
   align-items: center;

@@ -20,7 +20,7 @@ import { SimpleDbms } from '../dbms/simpledbms.mjs';
 import { RealFile } from '../core/file.mjs';
 import { bulkImportStream } from './bulkimport.mjs';
 import { InvertedIndex } from './invertedindex.mjs';
-import { persistWordIndex } from './wordindex.mjs';
+import { persistWordIndex, CONTENT_INDEX_COLLECTION } from './wordindex.mjs';
 
 // ── Wikitext stripping ───────────────────────────────────────
 
@@ -166,14 +166,16 @@ export async function importWikipedia(
 
   const COLLECTION = 'articles';
   const index = new InvertedIndex(db, COLLECTION, ['title']);
+  const contentIndex = new InvertedIndex(db, COLLECTION, ['_content']);
 
   let totalInserted = 0;
 
-  // Stream articles and build in-memory title index simultaneously
+  // Stream articles and build both in-memory indexes simultaneously
   async function* articleStream(): AsyncGenerator<Record<string, unknown>> {
     for await (const article of parseWikipediaDump(dumpPath, limit)) {
       const doc = article as unknown as Record<string, unknown>;
       index.indexObject(doc);
+      contentIndex.indexObject(doc);
       yield doc;
     }
   }
@@ -197,13 +199,27 @@ export async function importWikipedia(
     console.warn('First errors:', result.errors.slice(0, 5));
   }
 
-  console.log(`Building word index (${index.wordCount} unique title words)...`);
+  console.log(`Building title word index (${index.wordCount} unique words)...`);
   let wordsDone = 0;
   await persistWordIndex(db, index, 500, (n) => {
     wordsDone = n;
     if (n % 5000 === 0) console.log(`  ${n} words persisted...`);
   });
-  console.log(`Word index persisted (${wordsDone} words total).`);
+  console.log(`Title index persisted (${wordsDone} words total).`);
+
+  console.log(`Building content word index (${contentIndex.wordCount} unique words)...`);
+  let contentWordsDone = 0;
+  await persistWordIndex(
+    db,
+    contentIndex,
+    500,
+    (n) => {
+      contentWordsDone = n;
+      if (n % 5000 === 0) console.log(`  ${n} content words persisted...`);
+    },
+    CONTENT_INDEX_COLLECTION,
+  );
+  console.log(`Content index persisted (${contentWordsDone} words total).`);
 
   await db.close();
 

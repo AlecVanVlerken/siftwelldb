@@ -5,7 +5,7 @@ import * as fs from 'node:fs/promises';
 import { SimpleDbms, type HnswConfig } from '../dbms/simpledbms.mjs';
 import { RealFile } from '../core/file.mjs';
 import { fetchPageCursor } from '../largedatasets/pagination.mjs';
-import { searchWordIndex } from '../largedatasets/wordindex.mjs';
+import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
 
 /**
  * Delete a file if it exists (ignores the error if not found).
@@ -223,6 +223,26 @@ export class DatabaseService {
   ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
     this.ensureConnected();
     const { docIds, total, hasMore } = await searchWordIndex(this.dbms!, word, limit, offset);
+    const documents: string[] = [];
+    for (const id of docIds) {
+      try {
+        documents.push(await this.dbms!.getDocumentById(collection, id));
+      } catch {
+        // Article deleted after indexing — skip silently
+      }
+    }
+    return { documents, total, hasMore };
+  }
+
+  /** Find all articles whose body contains a word via the persistent content index. */
+  async contentSearch(
+    collection: string,
+    word: string,
+    limit: number,
+    offset: number,
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
+    this.ensureConnected();
+    const { docIds, total, hasMore } = await searchContentIndex(this.dbms!, word, limit, offset);
     const documents: string[] = [];
     for (const id of docIds) {
       try {

@@ -48,4 +48,8 @@ export const state = {
   wordSearchOffset: 0,
   wordSearchTotal: 0,
   lastWordQuery: '',
+  // Offset-based pagination for content search results
+  contentSearchOffset: 0,
+  contentSearchTotal: 0,
+  lastContentQuery: '',
 };
