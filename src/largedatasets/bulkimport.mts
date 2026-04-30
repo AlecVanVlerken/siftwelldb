@@ -99,7 +99,7 @@ export async function bulkImportStream(
 
   for await (const doc of stream) {
     try {
-      await db.insertDocument(collection, JSON.stringify(doc));
+      await db.insertDocumentObject(collection, doc);
       currentBatch++;
       totalImported++;
     } catch (err) {
