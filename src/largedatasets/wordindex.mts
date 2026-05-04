@@ -55,6 +55,49 @@ export async function persistWordIndex(
 }
 
 /**
+ * Persist an in-memory InvertedIndex into the database, merging with any
+ * existing entries. Unlike persistWordIndex, when a word already exists in
+ * the DB its docIds are unioned with the new ones (no duplicates). Use this
+ * when indexing in chunks so each chunk's index can be flushed and cleared
+ * without losing previously persisted data.
+ */
+export async function mergeWordIndex(
+  db: SimpleDbms,
+  index: InvertedIndex,
+  batchSize = 500,
+  onProgress?: (wordsDone: number) => void,
+  collection = WORD_INDEX_COLLECTION,
+): Promise<void> {
+  let count = 0;
+  for (const word of index.words) {
+    const newDocIds = index.search(word);
+    if (newDocIds.length === 0) continue;
+
+    try {
+      await db.insertDocumentObject(collection, { id: word, _docIds: newDocIds.join(SEP) });
+    } catch {
+      // Word already exists — read, union, delete, re-insert.
+      const raw = await db.getDocumentById(collection, word);
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const existing = typeof parsed['_docIds'] === 'string' && parsed['_docIds'] ? parsed['_docIds'].split(SEP) : [];
+      const merged = [...new Set([...existing, ...newDocIds])];
+      await db.deleteDocumentById(collection, word);
+      await db.insertDocumentObject(collection, { id: word, _docIds: merged.join(SEP) });
+    }
+
+    count++;
+    if (count % batchSize === 0) {
+      await db.commit();
+      onProgress?.(count);
+    }
+  }
+  if (count % batchSize !== 0) {
+    await db.commit();
+    onProgress?.(count);
+  }
+}
+
+/**
  * Look up a single word in the persistent content index.
  * Returns a paginated slice of matching document IDs.
  */

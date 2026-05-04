@@ -20,7 +20,7 @@ import { SimpleDbms } from '../dbms/simpledbms.mjs';
 import { RealFile } from '../core/file.mjs';
 import { bulkImportStream } from './bulkimport.mjs';
 import { InvertedIndex } from './invertedindex.mjs';
-import { persistWordIndex, CONTENT_INDEX_COLLECTION } from './wordindex.mjs';
+import { persistWordIndex, mergeWordIndex, CONTENT_INDEX_COLLECTION } from './wordindex.mjs';
 
 // ── Wikitext stripping ───────────────────────────────────────
 
@@ -168,15 +168,35 @@ export async function importWikipedia(
   const index = new InvertedIndex(db, COLLECTION, ['title']);
   const contentIndex = new InvertedIndex(db, COLLECTION, ['_content']);
 
+  // Flush the content index to disk every CHUNK_SIZE articles so the
+  // in-memory index never grows beyond ~2-3 GB regardless of dataset size.
+  const CHUNK_SIZE = 50_000;
   let totalInserted = 0;
+  let chunkArticleCount = 0;
+  let contentChunksDone = 0;
 
-  // Stream articles and build both in-memory indexes simultaneously
+  async function flushContentChunk(): Promise<void> {
+    if (contentIndex.wordCount === 0) return;
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    console.log(`  [${elapsed}s] Flushing content index chunk ${contentChunksDone + 1} (${contentIndex.wordCount} words)...`);
+    await mergeWordIndex(db, contentIndex, 500, undefined, CONTENT_INDEX_COLLECTION);
+    contentIndex.clear();
+    chunkArticleCount = 0;
+    contentChunksDone++;
+  }
+
+  // Stream articles, build both in-memory indexes, flush content index periodically
   async function* articleStream(): AsyncGenerator<Record<string, unknown>> {
     for await (const article of parseWikipediaDump(dumpPath, limit)) {
       const doc = article as unknown as Record<string, unknown>;
       index.indexObject(doc);
       contentIndex.indexObject(doc);
+      chunkArticleCount++;
       yield doc;
+
+      if (chunkArticleCount >= CHUNK_SIZE) {
+        await flushContentChunk();
+      }
     }
   }
 
@@ -199,6 +219,10 @@ export async function importWikipedia(
     console.warn('First errors:', result.errors.slice(0, 5));
   }
 
+  // Flush the final partial content index chunk
+  await flushContentChunk();
+  console.log(`Content index fully persisted (${contentChunksDone} chunks).`);
+
   console.log(`Building title word index (${index.wordCount} unique words)...`);
   let wordsDone = 0;
   await persistWordIndex(db, index, 500, (n) => {
@@ -206,20 +230,6 @@ export async function importWikipedia(
     if (n % 5000 === 0) console.log(`  ${n} words persisted...`);
   });
   console.log(`Title index persisted (${wordsDone} words total).`);
-
-  console.log(`Building content word index (${contentIndex.wordCount} unique words)...`);
-  let contentWordsDone = 0;
-  await persistWordIndex(
-    db,
-    contentIndex,
-    500,
-    (n) => {
-      contentWordsDone = n;
-      if (n % 5000 === 0) console.log(`  ${n} content words persisted...`);
-    },
-    CONTENT_INDEX_COLLECTION,
-  );
-  console.log(`Content index persisted (${contentWordsDone} words total).`);
 
   await db.close();
 
