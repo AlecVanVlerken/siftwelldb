@@ -178,7 +178,9 @@ export async function importWikipedia(
   async function flushContentChunk(): Promise<void> {
     if (contentIndex.wordCount === 0) return;
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`  [${elapsed}s] Flushing content index chunk ${contentChunksDone + 1} (${contentIndex.wordCount} words)...`);
+    console.log(
+      `  [${elapsed}s] Flushing content index chunk ${contentChunksDone + 1} (${contentIndex.wordCount} words)...`,
+    );
     await mergeWordIndex(db, contentIndex, 500, undefined, CONTENT_INDEX_COLLECTION);
     contentIndex.clear();
     chunkArticleCount = 0;
