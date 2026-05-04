@@ -161,4 +161,9 @@ export class InvertedIndex {
   get words(): string[] {
     return [...this.index.keys()];
   }
+
+  /** Clears all entries from the in-memory index, freeing RAM. */
+  clear(): void {
+    this.index = new Map();
+  }
 }
