@@ -73,8 +73,12 @@ export interface InternalNode<
   InternalNodeType extends InternalNode<K, V, LeafNodeType, InternalNodeType>,
 > extends NodeBase<K, V, LeafNodeType, InternalNodeType> {
   readonly isLeaf: false;
-  getChildCursorAtFirstChild(): Promise<ChildCursor<K, V, LeafNodeType, InternalNodeType>>;
-  getChildCursorAtKey(key: K): Promise<ChildCursor<K, V, LeafNodeType, InternalNodeType>>;
+  getChildCursorAtFirstChild():
+    | ChildCursor<K, V, LeafNodeType, InternalNodeType>
+    | PromiseLike<ChildCursor<K, V, LeafNodeType, InternalNodeType>>;
+  getChildCursorAtKey(
+    key: K,
+  ): ChildCursor<K, V, LeafNodeType, InternalNodeType> | PromiseLike<ChildCursor<K, V, LeafNodeType, InternalNodeType>>;
   isUnderfull(): boolean;
   deallocateUnderfull(): Promise<LeafNodeType | InternalNodeType>;
   /**
@@ -104,7 +108,7 @@ export interface ChildCursor<
 > {
   isFirstChild(): boolean;
   isLastChild(): boolean;
-  getChild(offset?: number): Promise<LeafNodeType | InternalNodeType>;
+  getChild(offset?: number): LeafNodeType | InternalNodeType | PromiseLike<LeafNodeType | InternalNodeType>;
   getKeyAfter(): K;
   movePrevious(): void;
   moveNext(): void;

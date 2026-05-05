@@ -2,6 +2,8 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { RealFile } from '../../core/file.mjs';
 import { SimpleDbms } from '../simpledbms.mjs';
 import { QueryLanguage } from './querylanguage.mjs';
@@ -12,8 +14,8 @@ let dbCounter = 0;
 
 async function setupDb(): Promise<QueryLanguage> {
   const id = dbCounter++;
-  const dataPath = `/tmp/test_querylang_${id}.data`;
-  const logPath = `/tmp/test_querylang_${id}.log`;
+  const dataPath = path.join(os.tmpdir(), `test_querylang_${id}.data`);
+  const logPath = path.join(os.tmpdir(), `test_querylang_${id}.log`);
 
   if (fs.existsSync(dataPath)) fs.unlinkSync(dataPath);
   if (fs.existsSync(logPath)) fs.unlinkSync(logPath);

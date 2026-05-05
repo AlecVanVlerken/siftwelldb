@@ -32,8 +32,8 @@ export class ChildCursorImpl<K, V, L extends LeafNode<K, V, L, I>, I extends Int
     return this.index === this.access.getChildCount() - 1;
   }
 
-  async getChild(offset = 0): Promise<L | I> {
-    return await this.access.getChildAt(this.index + offset);
+  getChild(offset = 0): L | I | Promise<L | I> {
+    return this.access.getChildAt(this.index + offset);
   }
 
   getKeyAfter(): K {

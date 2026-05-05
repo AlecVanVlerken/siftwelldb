@@ -3,6 +3,7 @@ build/
 coverage/
 
 src/benchmarking/large-dataset/db/
+src/benchmarking/datasets/
 uitleg/
 
 .DS_Store

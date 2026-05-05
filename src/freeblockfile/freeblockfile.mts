@@ -37,6 +37,9 @@ export class FreeBlockFile {
   // Updated on open() and commit()
   private cachedPhysicalBlockCount: number = 0;
 
+  /** Callbacks invoked (in registration order) immediately before every commit. */
+  private _preCommitHooks: Array<() => Promise<void>> = [];
+
   /**
    * Creates a new FreeBlockFile instance controlling a block-structured file.
    *
@@ -211,7 +214,19 @@ export class FreeBlockFile {
    *
    * @author Alec Van Vlerken
    */
+  /**
+   * Registers a callback that is awaited before every commit().
+   * Use this to flush higher-level in-memory state (e.g. B+tree node cache)
+   * into the dirty-block map before the WAL write starts.
+   */
+  addPreCommitHook(hook: () => Promise<void>): void {
+    this._preCommitHooks.push(hook);
+  }
+
   async commit(): Promise<void> {
+    for (const hook of this._preCommitHooks) {
+      await hook();
+    }
     await commit(this);
   }
 
