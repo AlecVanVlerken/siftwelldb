@@ -133,16 +133,4 @@ describe('RecordStore', () => {
 
     expect(compressedBytes).toBeLessThan(uncompressedBytes);
   });
-
-  it('estimates block savings with the same serializer used for writes', async () => {
-    const { recordStore } = await createRecordStore();
-    const doc = parseRawDocument('docs', { id: 'cmp2', content: 'ABCD '.repeat(1200) });
-
-    const raw = recordStore.estimateRecordStorage(doc, { compressionDefaults: { content: 'none' } });
-    const compressed = recordStore.estimateRecordStorage(doc, { compressionDefaults: { content: 'zstd-fast' } });
-
-    expect(compressed.serializedBytes).toBeLessThan(raw.serializedBytes);
-    expect(compressed.blocks).toBeLessThanOrEqual(raw.blocks);
-    expect(raw.blockSize).toBe(compressed.blockSize);
-  });
 });

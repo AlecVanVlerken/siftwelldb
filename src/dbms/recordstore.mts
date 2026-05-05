@@ -29,14 +29,6 @@ export type EncodedDocument = {
   nonIterableEntries: EncodedFieldEntry[];
 };
 
-export type RecordStorageEstimate = {
-  serializedBytes: number;
-  blocks: number;
-  allocatedBytes: number;
-  blockSize: number;
-  dataBytesPerBlock: number;
-};
-
 type LegacyStoredDocument = {
   collection: string;
   id: RawId;
@@ -101,7 +93,7 @@ export class RecordStore {
     const data = this.serializeDocument(doc, options);
 
     // Block size minus block type byte and next block pointer
-    const maxDataPerBlock = this.getDataBytesPerBlock();
+    const maxDataPerBlock = this.blockSize - RecordStore.DATA_OFFSET;
 
     // split data into chunks fitting in blocks
     const chunks: Buffer[] = [];
@@ -140,20 +132,6 @@ export class RecordStore {
 
     // return the first block ID (head of the chain)
     return blockIDs[0];
-  }
-
-  estimateRecordStorage(doc: Document, options?: RecordWriteOptions): RecordStorageEstimate {
-    const data = this.serializeDocument(doc, options);
-    const dataBytesPerBlock = this.getDataBytesPerBlock();
-    const blocks = Math.max(1, Math.ceil(data.length / dataBytesPerBlock));
-
-    return {
-      serializedBytes: data.length,
-      blocks,
-      allocatedBytes: blocks * this.blockSize,
-      blockSize: this.blockSize,
-      dataBytesPerBlock,
-    };
   }
 
   /**
@@ -297,10 +275,6 @@ export class RecordStore {
     throw new Error('Unsupported value type');
   }
 
-  private getDataBytesPerBlock(): number {
-    return this.blockSize - RecordStore.DATA_OFFSET;
-  }
-
   private resolveCompressionAlgorithm(key: string, options?: RecordWriteOptions): CompressionAlgorithm {
     const override = options?.compressionOverrides?.[key];
     if (override === 'off') return 'none';
@@ -429,7 +403,7 @@ export class RecordStore {
 
       // Validate encoded bytes agree with expected algorithm magic when available.
       const detected = this.compressionRegistry.detect(payload);
-      if (detected && !this.compressionFormatsMatch(detected.id, entry.compression)) {
+      if (detected && detected.id !== entry.compression) {
         throw new Error(`Compression metadata mismatch for field ${entry.key}`);
       }
 
@@ -452,10 +426,5 @@ export class RecordStore {
     }
 
     throw new Error(`Unknown value type: ${entry.valueType as string}`);
-  }
-
-  private compressionFormatsMatch(detected: CompressionAlgorithm, expected: CompressionAlgorithm): boolean {
-    if (detected === expected) return true;
-    return detected.startsWith('zstd') && expected.startsWith('zstd');
   }
 }

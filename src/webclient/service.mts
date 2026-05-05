@@ -2,71 +2,8 @@
 // @date 2026-03-31
 
 import * as fs from 'node:fs/promises';
-import { gzipSync } from 'node:zlib';
-import {
-  SimpleDbms,
-  type CompressionProfileSummary,
-  type CompressionRecommendation,
-  type CompressionRecommendationItem,
-  type CompressionRecommendationRequest,
-  type HnswConfig,
-} from '../dbms/simpledbms.mjs';
-import { listAvailableCompressionProfiles } from '../dbms/compression-advisor.mjs';
-import { type CompressionAlgorithm } from '../dbms/compression.mjs';
-import { isImageField } from '../dbms/document.mjs';
-import { generateWikiArticles } from '../dbms/lab-fixtures/wiki.mjs';
+import { SimpleDbms, type HnswConfig } from '../dbms/simpledbms.mjs';
 import { RealFile } from '../core/file.mjs';
-import { fetchPageCursor } from '../largedatasets/pagination.mjs';
-import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
-
-export type LabPolicyKey = 'none-uniform' | 'gzip-uniform' | 'zstd-uniform' | 'gzip-everything' | 'advisor-mix';
-
-export type LabPolicyTotals = {
-  totalBytes: number;
-  totalBlocks: number;
-  blocksSavedVsRaw: number;
-  writeCostMs: number;
-  readAmplification: number;
-};
-
-export type LabFieldReport = {
-  field: string;
-  recommended: CompressionAlgorithm;
-  summary: string;
-  rationale: string;
-  detectedProfile: CompressionProfileSummary;
-  activeProfile: CompressionProfileSummary;
-  avgBytes: number | null;
-  presenceRate: number;
-  documentsScanned: number;
-  ranking: Array<{
-    algorithm: CompressionAlgorithm;
-    score: number;
-    blocksSaved: number;
-    bytesSaved: number;
-    writeCostMs: number;
-  }>;
-};
-
-export type LabReport = {
-  collection: string;
-  workload: number;
-  sampleSize: number;
-  baseline: {
-    totalBytes: number;
-    totalBlocks: number;
-    blockSize: number | null;
-    dataBytesPerBlock: number | null;
-  };
-  perField: LabFieldReport[];
-  policies: Record<LabPolicyKey, LabPolicyTotals>;
-};
-
-type LabRecommendationBundle = {
-  field: string;
-  recommendation: CompressionRecommendation;
-  forcedGzipBytesSaved: number | null;
-};
 
 /**
  * Delete a file if it exists (ignores the error if not found).
@@ -84,19 +21,6 @@ async function deleteIfExists(filePath: string): Promise<void> {
   }
 }
 
-function clamp01(value: number): number {
-  return Math.min(1, Math.max(0, value));
-}
-
-function rankingItem(
-  recommendation: CompressionRecommendation,
-  algorithm: CompressionAlgorithm,
-): CompressionRecommendationItem {
-  const item = recommendation.ranking.find((entry) => entry.algorithm === algorithm);
-  if (!item) throw new Error(`Compression ranking missing algorithm: ${algorithm}`);
-  return item;
-}
-
 /**
  * Manages the lifecycle of a SimpleDbms instance and exposes
  * high-level operations on collections and documents.
@@ -108,7 +32,6 @@ function rankingItem(
 export class DatabaseService {
   private dbms: SimpleDbms | null = null;
   private currentFilepath: string | null = null;
-  private lifecycleQueue: Promise<void> = Promise.resolve();
 
   // HNSW semantic search config
   private hnswConfigPromise: Promise<HnswConfig> | null = null;
@@ -185,62 +108,58 @@ export class DatabaseService {
    * file does not exist yet.
    */
   async connect(filepath: string): Promise<string> {
-    return this.runLifecycle(async () => {
-      await this.closeInternal();
+    await this.closeInternal();
 
-      // Load HNSW config first (this can take a long time loading CLIP models).
-      const hnswConfig = await this.getHnswConfig();
+    // Load HNSW config first (this can take a long time loading CLIP models).
+    const hnswConfig = await this.getHnswConfig();
 
-      // Check file existence right before opening to avoid race conditions
-      // (e.g. file state changing during the slow HNSW model loading above).
-      let fileExists = false;
-      try {
-        await fs.access(filepath);
-        fileExists = true;
-      } catch {
-        fileExists = false;
-      }
+    // Check file existence right before opening to avoid race conditions
+    // (e.g. file state changing during the slow HNSW model loading above).
+    let fileExists = false;
+    try {
+      await fs.access(filepath);
+      fileExists = true;
+    } catch {
+      fileExists = false;
+    }
 
-      const dataFile = new RealFile(filepath);
-      const logFile = new RealFile(`${filepath}.log`);
+    const dataFile = new RealFile(filepath);
+    const logFile = new RealFile(`${filepath}.log`);
 
-      if (fileExists) {
-        this.dbms = await SimpleDbms.open(dataFile, logFile, hnswConfig);
-        this.currentFilepath = filepath;
-        return 'Connected to existing database';
-      } else {
-        this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
-        await this.dbms.commit();
-        this.currentFilepath = filepath;
-        return 'Created new database';
-      }
-    });
+    if (fileExists) {
+      this.dbms = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+      this.currentFilepath = filepath;
+      return 'Connected to existing database';
+    } else {
+      this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
+      await this.dbms.commit();
+      this.currentFilepath = filepath;
+      return 'Created new database';
+    }
   }
 
   /**
    * Force-create a new database, deleting any existing files first.
    */
   async create(filepath: string): Promise<string> {
-    return this.runLifecycle(async () => {
-      await this.closeInternal();
+    await this.closeInternal();
 
-      await deleteIfExists(filepath);
-      await deleteIfExists(`${filepath}.log`);
+    await deleteIfExists(filepath);
+    await deleteIfExists(`${filepath}.log`);
 
-      const dataFile = new RealFile(filepath);
-      const logFile = new RealFile(`${filepath}.log`);
-      const hnswConfig = await this.getHnswConfig();
+    const dataFile = new RealFile(filepath);
+    const logFile = new RealFile(`${filepath}.log`);
+    const hnswConfig = await this.getHnswConfig();
 
-      this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
-      await this.dbms.commit();
-      this.currentFilepath = filepath;
-      return 'Created new database';
-    });
+    this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
+    await this.dbms.commit();
+    this.currentFilepath = filepath;
+    return 'Created new database';
   }
 
   /** Disconnect from the current database. */
   async disconnect(): Promise<void> {
-    await this.runLifecycle(async () => this.closeInternal());
+    await this.closeInternal();
   }
 
   /**
@@ -266,11 +185,10 @@ export class DatabaseService {
 
   // ── Collections ──────────────────────────────────────────────
 
-  /** Return the list of collection names, hiding internal _-prefixed ones. */
+  /** Return the list of collection names. */
   async getCollections(): Promise<string[]> {
     this.ensureConnected();
-    const all = await this.dbms!.getCollections();
-    return all.filter((c) => !c.startsWith('_'));
+    return this.dbms!.getCollections();
   }
 
   /** Delete an entire collection. */
@@ -279,178 +197,33 @@ export class DatabaseService {
     await this.dbms!.deleteCollection(collection);
   }
 
-  listCompressionProfiles(): CompressionProfileSummary[] {
-    return this.dbms ? this.dbms.listCompressionProfiles() : listAvailableCompressionProfiles();
-  }
-
-  getCompressionDefaults(collection: string): Record<string, CompressionAlgorithm> {
-    this.ensureConnected();
-    return this.dbms!.getFieldCompressionDefaults(collection);
-  }
-
-  async recommendCompression(request: CompressionRecommendationRequest): Promise<CompressionRecommendation> {
-    this.ensureConnected();
-    return this.dbms!.recommendCompression(request);
-  }
-
-  /**
-   * Rebuild the deterministic Wikipedia-style Compression Lab collection.
-   */
-  async seedWikiLab(options: { count?: number } = {}): Promise<{ collection: string; inserted: number }> {
-    this.ensureConnected();
-
-    const collection = 'wiki_lab';
-    try {
-      await this.dbms!.deleteCollection(collection);
-    } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('does not exist')) {
-        throw error;
-      }
-    }
-
-    const articles = generateWikiArticles({ count: options.count });
-    for (const article of articles) {
-      await this.dbms!.insertDocumentObject(collection, article, {
-        skipSemanticIndex: true,
-        indexPredicate: (field) => field === 'title',
-      });
-    }
-    await this.dbms!.commit();
-
-    return { collection, inserted: articles.length };
-  }
-
-  /**
-   * Build a read-only Compression Lab report for a collection.
-   */
-  async recommendCollectionLab(request: {
-    collection: string;
-    workload?: number;
-    sampleSize?: number;
-  }): Promise<LabReport> {
-    this.ensureConnected();
-
-    const workload = clamp01(request.workload ?? 0);
-    const sampleSize = Math.max(1, Math.floor(request.sampleSize ?? 100));
-    const documents = await this.loadLabDocuments(request.collection, sampleSize);
-    if (documents.length === 0) {
-      throw new Error(`Collection "${request.collection}" has no documents`);
-    }
-
-    const fields = Object.keys(documents[0]).filter(
-      (field) => field !== 'id' && field !== '_order_' && !field.startsWith('_layout_'),
-    );
-    if (fields.length === 0) {
-      throw new Error(`Collection "${request.collection}" has no recommendable fields`);
-    }
-
-    const bundles: LabRecommendationBundle[] = [];
-    for (const field of fields) {
-      const recommendation = await this.dbms!.recommendCompression({
-        collection: request.collection,
-        field,
-        workload,
-        sampleSize,
-      });
-      bundles.push({
-        field,
-        recommendation,
-        forcedGzipBytesSaved: isImageField(field) ? this.estimateForcedGzipBytesSaved(field, documents) : null,
-      });
-    }
-
-    const baseline = this.labBaseline(bundles);
-    const policies = this.aggregateLabPolicies(bundles, baseline);
-
-    return {
-      collection: request.collection,
-      workload,
-      sampleSize,
-      baseline,
-      perField: bundles.map(({ field, recommendation }) => this.toLabFieldReport(field, recommendation)),
-      policies,
-    };
-  }
-
-  /**
-   * Persist the current lab advisor policy as field compression defaults.
-   * The policy affects future writes only; existing records are not rewritten.
-   */
-  async applyCollectionLabAdvice(request: {
-    collection: string;
-    workload?: number;
-    sampleSize?: number;
-  }): Promise<{ collection: string; defaults: Record<string, CompressionAlgorithm>; fields: number }> {
-    this.ensureConnected();
-
-    const report = await this.recommendCollectionLab(request);
-    const defaults: Record<string, CompressionAlgorithm> = {};
-    for (const field of report.perField) {
-      defaults[field.field] = field.recommended;
-    }
-
-    this.dbms!.setFieldCompressionDefaults(request.collection, defaults);
-    await this.dbms!.commit();
-
-    return {
-      collection: request.collection,
-      defaults,
-      fields: Object.keys(defaults).length,
-    };
-  }
-
   // ── Documents ────────────────────────────────────────────────
 
-  /** Fetch a cursor-paginated page of documents from a collection. */
+  /**
+   * Query documents from a collection.
+   *
+   * Future: this method could accept a query-language string
+   * and parse it into the appropriate cursor parameters.
+   */
   async getDocuments(
     collection: string,
     iterableKey: string = 'id',
-    cursor?: string,
-    limit: number = 50,
-  ): Promise<{ documents: string[]; hasMore: boolean; nextCursor?: string | number }> {
+    value?: string,
+    limit: number = 100,
+  ): Promise<string[]> {
     this.ensureConnected();
-    const page = await fetchPageCursor(this.dbms!, { collection, iterableKey, limit, afterCursor: cursor });
-    return { documents: page.data, hasMore: page.hasMore, nextCursor: page.nextCursor };
-  }
 
-  /** Find all articles containing a word via the persistent word index. */
-  async wordSearch(
-    collection: string,
-    word: string,
-    limit: number,
-    offset: number,
-  ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
-    this.ensureConnected();
-    const { docIds, total, hasMore } = await searchWordIndex(this.dbms!, word, limit, offset);
     const documents: string[] = [];
-    for (const id of docIds) {
-      try {
-        documents.push(await this.dbms!.getDocumentById(collection, id));
-      } catch {
-        // Article deleted after indexing — skip silently
-      }
-    }
-    return { documents, total, hasMore };
-  }
+    const cursor = this.dbms!.cursor(collection, iterableKey, value);
 
-  /** Find all articles whose body contains a word via the persistent content index. */
-  async contentSearch(
-    collection: string,
-    word: string,
-    limit: number,
-    offset: number,
-  ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
-    this.ensureConnected();
-    const { docIds, total, hasMore } = await searchContentIndex(this.dbms!, word, limit, offset);
-    const documents: string[] = [];
-    for (const id of docIds) {
-      try {
-        documents.push(await this.dbms!.getDocumentById(collection, id));
-      } catch {
-        // Article deleted after indexing — skip silently
-      }
+    let count = 0;
+    for await (const doc of cursor) {
+      documents.push(doc);
+      count++;
+      if (count >= limit) break;
     }
-    return { documents, total, hasMore };
+
+    return documents;
   }
 
   /** Insert a document into a collection. */
@@ -460,10 +233,7 @@ export class DatabaseService {
     compression?: import('../dbms/compression.mts').FieldCompressionOverrides,
   ): Promise<void> {
     this.ensureConnected();
-    await this.dbms!.insertDocumentObject(collection, document, {
-      compression,
-      indexPredicate: collection === 'wiki_lab' ? (field) => field === 'title' : undefined,
-    });
+    await this.dbms!.insertDocumentObject(collection, document, { compression });
     await this.dbms!.commit();
   }
 
@@ -501,156 +271,8 @@ export class DatabaseService {
 
   // ── Internal helpers ─────────────────────────────────────────
 
-  private async loadLabDocuments(collection: string, limit: number): Promise<Array<Record<string, unknown>>> {
-    const rawDocuments = await this.getDocuments(collection, 'id', undefined, limit);
-    return rawDocuments.documents.map((raw) => JSON.parse(raw) as Record<string, unknown>);
-  }
-
-  private estimateForcedGzipBytesSaved(field: string, documents: Array<Record<string, unknown>>): number {
-    let saved = 0;
-    for (const document of documents) {
-      const value = document[field];
-      if (typeof value !== 'string' || value.length === 0) continue;
-      const raw = Buffer.from(value, 'base64');
-      const compressed = gzipSync(raw);
-      const actualSaved = raw.toString('base64').length - compressed.toString('base64').length;
-      // The lab sabotage policy intentionally models forcing gzip onto JPEG
-      // payloads even when the storage layer would normally reject regressions.
-      saved += Math.min(actualSaved, -Math.ceil(raw.length * 0.03));
-    }
-    return saved;
-  }
-
-  private labBaseline(bundles: LabRecommendationBundle[]): LabReport['baseline'] {
-    let totalBytes = 0;
-    let totalBlocks = 0;
-    let blockSize: number | null = null;
-    let dataBytesPerBlock: number | null = null;
-
-    for (const { recommendation } of bundles) {
-      const estimate = rankingItem(recommendation, 'none').storageEstimate;
-      if (!estimate) continue;
-      if (estimate.rawSerializedBytes > totalBytes) totalBytes = estimate.rawSerializedBytes;
-      if (estimate.rawBlocks > totalBlocks) totalBlocks = estimate.rawBlocks;
-      blockSize = recommendation.analysis.blockSize ?? blockSize;
-      dataBytesPerBlock = recommendation.analysis.dataBytesPerBlock ?? dataBytesPerBlock;
-    }
-
-    if (totalBytes === 0 || totalBlocks === 0) {
-      throw new Error('Compression Lab could not compute a raw storage baseline');
-    }
-
-    return {
-      totalBytes: blockSize === null ? totalBytes : totalBlocks * blockSize,
-      totalBlocks,
-      blockSize,
-      dataBytesPerBlock,
-    };
-  }
-
-  private aggregateLabPolicies(
-    bundles: LabRecommendationBundle[],
-    baseline: LabReport['baseline'],
-  ): Record<LabPolicyKey, LabPolicyTotals> {
-    const policies: LabPolicyKey[] = ['none-uniform', 'gzip-uniform', 'zstd-uniform', 'gzip-everything', 'advisor-mix'];
-    const totals = {} as Record<LabPolicyKey, LabPolicyTotals>;
-
-    for (const policy of policies) {
-      let bytesSaved = 0;
-      let blocksSaved = 0;
-      let writeCostMs = 0;
-
-      for (const bundle of bundles) {
-        const algorithm = this.policyAlgorithm(policy, bundle);
-        const item = rankingItem(bundle.recommendation, algorithm);
-        const estimate = item.storageEstimate;
-        if (!estimate) continue;
-
-        if (policy === 'gzip-everything' && isImageField(bundle.field) && bundle.forcedGzipBytesSaved !== null) {
-          bytesSaved += bundle.forcedGzipBytesSaved;
-          if (baseline.dataBytesPerBlock && bundle.forcedGzipBytesSaved < 0) {
-            blocksSaved -= Math.ceil(Math.abs(bundle.forcedGzipBytesSaved) / baseline.dataBytesPerBlock);
-          } else if (baseline.dataBytesPerBlock) {
-            blocksSaved += Math.floor(bundle.forcedGzipBytesSaved / baseline.dataBytesPerBlock);
-          }
-        } else {
-          bytesSaved += estimate.rawSerializedBytes - estimate.compressedSerializedBytes;
-          blocksSaved += estimate.blocksSaved;
-        }
-
-        writeCostMs += estimate.writeCost;
-      }
-
-      const totalBlocks = Math.max(1, baseline.totalBlocks - blocksSaved);
-      const totalBytes =
-        baseline.blockSize === null ? Math.max(1, baseline.totalBytes - bytesSaved) : totalBlocks * baseline.blockSize;
-      totals[policy] = {
-        totalBytes,
-        totalBlocks,
-        blocksSavedVsRaw: baseline.totalBlocks - totalBlocks,
-        writeCostMs,
-        readAmplification: baseline.totalBlocks === 0 ? 1 : totalBlocks / baseline.totalBlocks,
-      };
-    }
-
-    return totals;
-  }
-
-  private policyAlgorithm(policy: LabPolicyKey, bundle: LabRecommendationBundle): CompressionAlgorithm {
-    switch (policy) {
-      case 'none-uniform':
-        return 'none';
-      case 'gzip-uniform':
-        return isImageField(bundle.field) ? 'none' : 'gzip';
-      case 'zstd-uniform':
-        return 'zstd';
-      case 'gzip-everything':
-        return 'gzip';
-      case 'advisor-mix':
-        return bundle.recommendation.recommended;
-    }
-  }
-
-  private toLabFieldReport(field: string, recommendation: CompressionRecommendation): LabFieldReport {
-    return {
-      field,
-      recommended: recommendation.recommended,
-      summary: recommendation.summary,
-      rationale: rankingItem(recommendation, recommendation.recommended).rationale,
-      detectedProfile: recommendation.detectedProfile,
-      activeProfile: recommendation.activeProfile,
-      avgBytes: recommendation.analysis.avgBytes,
-      presenceRate: recommendation.analysis.fieldPresenceRate,
-      documentsScanned: recommendation.analysis.documentsScanned,
-      ranking: recommendation.ranking.map((item) => ({
-        algorithm: item.algorithm,
-        score: item.score,
-        blocksSaved: item.storageEstimate?.blocksSaved ?? 0,
-        bytesSaved: item.storageEstimate
-          ? item.storageEstimate.rawSerializedBytes - item.storageEstimate.compressedSerializedBytes
-          : 0,
-        writeCostMs: item.storageEstimate?.writeCost ?? 0,
-      })),
-    };
-  }
-
   private ensureConnected(): void {
     if (!this.dbms) throw new Error('No database connected');
-  }
-
-  private async runLifecycle<T>(operation: () => Promise<T>): Promise<T> {
-    const previous = this.lifecycleQueue;
-    let release: () => void = () => {};
-    this.lifecycleQueue = new Promise((resolve) => {
-      release = resolve;
-    });
-
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
   }
 
   private async closeInternal(): Promise<void> {
