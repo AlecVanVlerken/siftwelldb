@@ -43,13 +43,7 @@ type LabInitOptions = {
 };
 
 const COLLECTION = 'wiki_lab';
-const POLICY_ORDER: LabPolicyKey[] = [
-  'none-uniform',
-  'gzip-uniform',
-  'zstd-uniform',
-  'gzip-everything',
-  'advisor-mix',
-];
+const POLICY_ORDER: LabPolicyKey[] = ['none-uniform', 'gzip-uniform', 'zstd-uniform', 'gzip-everything', 'advisor-mix'];
 const POLICY_LABELS: Record<LabPolicyKey, string> = {
   'none-uniform': 'None',
   'gzip-uniform': 'Gzip',
@@ -68,11 +62,11 @@ let chartHost: HTMLElement;
 let fieldsHost: HTMLElement;
 let totalsHost: HTMLElement;
 let debounceHandle: number | null = null;
-let lastRecommendations = new Map<string, CompressionAlgorithm>();
+const lastRecommendations = new Map<string, CompressionAlgorithm>();
 
 export function initLab(options: LabInitOptions): void {
   opts = options;
-  const panel = document.getElementById('lab-panel') as HTMLElement | null;
+  const panel = document.getElementById('lab-panel');
   if (!panel) return;
 
   panel.innerHTML = `

@@ -8,6 +8,8 @@ export class MockFile implements File {
   private sectors: Buffer[] = [];
   // Invariant: for each `[key, value]` in `newSectors`, and for each buffer in `value`, buffer.length === sectorSize
   private newSectors: Map<number, Buffer[]> = new Map();
+  // Pool of freed sector buffers to avoid re-allocating on log truncate/grow cycles
+  private sectorPool: Buffer[] = [];
 
   public constructor(sectorSize: number) {
     this.sectorSize = sectorSize;
@@ -54,10 +56,29 @@ export class MockFile implements File {
   }
 
   public async writev(buffers: Buffer[], position: number) {
-    let buffer = Buffer.concat(buffers);
+    let buffer = buffers.length === 1 ? buffers[0] : Buffer.concat(buffers);
     if (position + buffer.length > this.size) await this.truncate(position + buffer.length);
     let sectorOrdinal = Math.floor(position / this.sectorSize);
     let offsetInSector = position - sectorOrdinal * this.sectorSize;
+
+    // Fast path: sector-aligned write spanning full sectors only.
+    // One Buffer.from copy for the entire data, then free subarray per sector.
+    if (offsetInSector === 0 && buffer.length >= this.sectorSize && buffer.length % this.sectorSize === 0) {
+      const copy = Buffer.from(buffer);
+      const count = buffer.length / this.sectorSize;
+      for (let i = 0; i < count; i++) {
+        const so = sectorOrdinal + i;
+        let list = this.newSectors.get(so);
+        if (!list) {
+          list = [];
+          this.newSectors.set(so, list);
+        }
+        list.push(copy.subarray(i * this.sectorSize, (i + 1) * this.sectorSize));
+      }
+      return Promise.resolve();
+    }
+
+    // Slow path: partial sectors or unaligned writes.
     while (buffer.length > this.sectorSize - offsetInSector) {
       this.write_sector(offsetInSector, buffer.subarray(0, this.sectorSize - offsetInSector), sectorOrdinal);
       buffer = buffer.subarray(this.sectorSize - offsetInSector);
@@ -88,13 +109,31 @@ export class MockFile implements File {
   public async truncate(length: number) {
     const sectorCount = Math.ceil(length / this.sectorSize);
     if (sectorCount < this.sectors.length) {
+      // Return freed sectors to pool for reuse
+      for (let i = sectorCount; i < this.sectors.length; i++) {
+        this.sectorPool.push(this.sectors[i]);
+      }
       this.sectors.length = sectorCount;
       for (const [sectorOrdinal, _writes] of this.newSectors.entries()) {
         if (sectorOrdinal >= sectorCount) this.newSectors.delete(sectorOrdinal);
       }
     } else if (sectorCount > this.sectors.length) {
-      for (let sectorOrdinal = this.sectors.length; sectorOrdinal < sectorCount; sectorOrdinal++)
-        this.sectors.push(Buffer.alloc(this.sectorSize));
+      const needed = sectorCount - this.sectors.length;
+      const poolCount = Math.min(needed, this.sectorPool.length);
+      // Reuse pooled sectors first (zero-fill for clean reads)
+      for (let i = 0; i < poolCount; i++) {
+        const buf = this.sectorPool.pop()!;
+        buf.fill(0);
+        this.sectors.push(buf);
+      }
+      // Bulk-allocate any remaining sectors (1 alloc instead of N)
+      const remaining = needed - poolCount;
+      if (remaining > 0) {
+        const bulk = Buffer.alloc(remaining * this.sectorSize);
+        for (let i = 0; i < remaining; i++) {
+          this.sectors.push(bulk.subarray(i * this.sectorSize, (i + 1) * this.sectorSize));
+        }
+      }
     }
     this.size = length;
     return Promise.resolve();

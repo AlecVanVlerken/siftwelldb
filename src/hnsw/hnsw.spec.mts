@@ -4,7 +4,7 @@ import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { MockFile } from '../core/mockfile.mjs';
 import { VectorSerializer } from './vectorSerializer.mjs';
 import { VectorHeapFile } from './vectorHeapFile.mjs';
-import { HNSWGraphStorage } from './hnswGraphStorage.mjs';
+import { HNSWGraphStorage, encodeNodeId } from './hnswGraphStorage.mjs';
 import { HNSWNode } from './hnswNode.mjs';
 import { HNSWIndex } from './hnswIndex.mjs';
 
@@ -314,7 +314,7 @@ describe('HNSWGraphStorage', () => {
   /** Build a minimal HNSWNode with the given properties. */
   function makeNode(overrides: Partial<HNSWNode> = {}): HNSWNode {
     return new HNSWNode({
-      nodeId: 0n,
+      nodeId: 0,
       docId: 1,
       level: 0,
       vectorPtr: { pageId: 2, slotId: 3 },
@@ -348,7 +348,7 @@ describe('HNSWGraphStorage', () => {
   it('insertNode assigns a valid non-zero nodeId', async () => {
     const node = makeNode();
     const id = await gs.insertNode(node);
-    expect(id).not.toBe(0n);
+    expect(id).not.toBe(0);
     expect(node.nodeId).toBe(id);
   });
 
@@ -393,7 +393,7 @@ describe('HNSWGraphStorage', () => {
 
   it('getNode throws for an unoccupied slot', async () => {
     // Encode a pageId+slotId that was never allocated
-    const fakeId = (BigInt(99) << 32n) | BigInt(0);
+    const fakeId = encodeNodeId(99, 0);
     await expect(gs.getNode(fakeId)).rejects.toThrow();
   });
 
@@ -415,7 +415,7 @@ describe('HNSWGraphStorage', () => {
 
   it('saveNode throws for an unoccupied slot', async () => {
     const phantom = makeNode();
-    phantom.nodeId = (BigInt(99) << 32n) | BigInt(0);
+    phantom.nodeId = encodeNodeId(99, 0);
     await expect(gs.saveNode(phantom)).rejects.toThrow();
   });
 

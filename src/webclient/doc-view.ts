@@ -185,7 +185,7 @@ async function ensureCompressionDefaultsLoaded(): Promise<Record<string, Compres
       'GET',
     )
       .then((result) => {
-        compressionDefaults = ((result['defaults'] as Record<string, CompressionAlgorithm> | undefined) ?? {});
+        compressionDefaults = (result['defaults'] as Record<string, CompressionAlgorithm> | undefined) ?? {};
         compressionDefaultsCollection = collection;
         return compressionDefaults;
       })
