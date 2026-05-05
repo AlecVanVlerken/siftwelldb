@@ -35,8 +35,8 @@ const headerMenuBtn = document.getElementById('header-menu-btn') as HTMLButtonEl
 const headerDropdown = document.getElementById('header-dropdown') as HTMLDivElement | null;
 const tabCollections = document.getElementById('tab-collections') as HTMLButtonElement | null;
 const tabLab = document.getElementById('tab-lab') as HTMLButtonElement | null;
-const contentPanel = document.getElementById('content') as HTMLElement | null;
-const labPanel = document.getElementById('lab-panel') as HTMLElement | null;
+const contentPanel = document.getElementById('content');
+const labPanel = document.getElementById('lab-panel');
 
 // Semantic search
 const semanticSearchInput = document.getElementById('semantic-search-input') as HTMLInputElement;

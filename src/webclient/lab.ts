@@ -62,11 +62,11 @@ let chartHost: HTMLElement;
 let fieldsHost: HTMLElement;
 let totalsHost: HTMLElement;
 let debounceHandle: number | null = null;
-let lastRecommendations = new Map<string, CompressionAlgorithm>();
+const lastRecommendations = new Map<string, CompressionAlgorithm>();
 
 export function initLab(options: LabInitOptions): void {
   opts = options;
-  const panel = document.getElementById('lab-panel') as HTMLElement | null;
+  const panel = document.getElementById('lab-panel');
   if (!panel) return;
 
   panel.innerHTML = `
