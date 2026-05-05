@@ -9,7 +9,7 @@ import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { parseRawDocument } from '../dbms/document.mjs';
 import { RecordStore, type EncodedDocument } from '../dbms/recordstore.mjs';
-import type { CompressionAlgorithm } from '../dbms/compression.mjs';
+import { COMPRESSION_ALGORITHMS, type CompressionAlgorithm } from '../dbms/compression.mjs';
 
 type ScenarioName = 'highly-compressible' | 'mixed' | 'low-compressible';
 
@@ -25,6 +25,8 @@ type BenchResult = {
   readMs: number;
   totalPayloadBytes: number;
   contentPayloadBytes: number;
+  estimatedBlocks: number;
+  estimatedAllocatedBytes: number;
 };
 
 function parseArgs(): BenchConfig {
@@ -56,9 +58,12 @@ function makeMixedText(index: number, size: number): string {
 }
 
 function makeLowCompressibleText(size: number): string {
-  return randomBytes(Math.ceil(size / 2))
-    .toString('hex')
-    .slice(0, size);
+  const bytes = randomBytes(size);
+  let result = '';
+  for (const byte of bytes) {
+    result += String.fromCharCode(33 + (byte % 94));
+  }
+  return result;
 }
 
 function buildDocuments(scenario: ScenarioName, docs: number, size: number): Array<Record<string, unknown>> {
@@ -103,10 +108,15 @@ async function runScenario(
 
   const store = new RecordStore(freeBlockFile);
   const blockIds: number[] = [];
+  let estimatedBlocks = 0;
+  let estimatedAllocatedBytes = 0;
 
   const writeStart = performance.now();
   for (const raw of docs) {
     const doc = parseRawDocument('bench', raw);
+    const estimate = store.estimateRecordStorage(doc, { compressionDefaults: { content: algorithm } });
+    estimatedBlocks += estimate.blocks;
+    estimatedAllocatedBytes += estimate.allocatedBytes;
     const blockId = await store.writeRecord(doc, { compressionDefaults: { content: algorithm } });
     blockIds.push(blockId);
   }
@@ -144,6 +154,8 @@ async function runScenario(
     readMs,
     totalPayloadBytes,
     contentPayloadBytes,
+    estimatedBlocks,
+    estimatedAllocatedBytes,
   };
 }
 
@@ -152,24 +164,21 @@ function pctChange(base: number, compared: number): string {
   return `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%`;
 }
 
-function printPair(noneResult: BenchResult, gzipResult: BenchResult): void {
-  const totalSaved = noneResult.totalPayloadBytes - gzipResult.totalPayloadBytes;
-  const contentSaved = noneResult.contentPayloadBytes - gzipResult.contentPayloadBytes;
-
+function printScenario(noneResult: BenchResult, results: BenchResult[]): void {
   console.log(`\nScenario: ${noneResult.scenario}`);
-  console.log(`  none   -> write ${noneResult.writeMs.toFixed(2)} ms | read ${noneResult.readMs.toFixed(2)} ms`);
-  console.log(`            total payload: ${noneResult.totalPayloadBytes.toLocaleString()} bytes`);
-  console.log(`            content bytes: ${noneResult.contentPayloadBytes.toLocaleString()} bytes`);
-  console.log(`  gzip   -> write ${gzipResult.writeMs.toFixed(2)} ms | read ${gzipResult.readMs.toFixed(2)} ms`);
   console.log(
-    `            total payload: ${gzipResult.totalPayloadBytes.toLocaleString()} bytes (${pctChange(noneResult.totalPayloadBytes, gzipResult.totalPayloadBytes)})`,
+    `  ${'algorithm'.padEnd(10)} ${'write'.padStart(10)} ${'read'.padStart(10)} ${'blocks'.padStart(10)} ${'total bytes'.padStart(16)} ${'content bytes'.padStart(16)} ${'content saved'.padStart(14)}`,
   );
-  console.log(
-    `            content bytes: ${gzipResult.contentPayloadBytes.toLocaleString()} bytes (${pctChange(noneResult.contentPayloadBytes, gzipResult.contentPayloadBytes)})`,
-  );
-  console.log(
-    `  saved  -> total ${totalSaved.toLocaleString()} bytes | content ${contentSaved.toLocaleString()} bytes`,
-  );
+
+  for (const result of results) {
+    const contentSaved = noneResult.contentPayloadBytes - result.contentPayloadBytes;
+    const contentSavedPercent =
+      noneResult.contentPayloadBytes === 0 ? 0 : (contentSaved / noneResult.contentPayloadBytes) * 100;
+    const blocksSaved = noneResult.estimatedBlocks - result.estimatedBlocks;
+    console.log(
+      `  ${result.algorithm.padEnd(10)} ${`${result.writeMs.toFixed(2)} ms`.padStart(10)} ${`${result.readMs.toFixed(2)} ms`.padStart(10)} ${`${result.estimatedBlocks.toLocaleString()} (${blocksSaved.toLocaleString()} saved)`.padStart(10)} ${`${result.totalPayloadBytes.toLocaleString()} (${pctChange(noneResult.totalPayloadBytes, result.totalPayloadBytes)})`.padStart(16)} ${`${result.contentPayloadBytes.toLocaleString()} (${pctChange(noneResult.contentPayloadBytes, result.contentPayloadBytes)})`.padStart(16)} ${`${contentSaved.toLocaleString()} B (${contentSavedPercent.toFixed(2)}%)`.padStart(14)}`,
+    );
+  }
 }
 
 async function main(): Promise<void> {
@@ -180,9 +189,13 @@ async function main(): Promise<void> {
 
   for (const scenario of scenarios) {
     const docs = buildDocuments(scenario, cfg.docs, cfg.size);
-    const noneResult = await runScenario(scenario, 'none', docs);
-    const gzipResult = await runScenario(scenario, 'gzip', docs);
-    printPair(noneResult, gzipResult);
+    const results: BenchResult[] = [];
+    for (const algorithm of COMPRESSION_ALGORITHMS) {
+      results.push(await runScenario(scenario, algorithm, docs));
+    }
+    const noneResult = results.find((result) => result.algorithm === 'none');
+    if (!noneResult) throw new Error('Missing none benchmark result');
+    printScenario(noneResult, results);
   }
 }
 

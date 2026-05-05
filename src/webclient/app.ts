@@ -7,6 +7,7 @@ import { apiCall } from './api.js';
 import { isImageField } from './utils.js';
 import { initTable, applyFilter, renderTable, closeAllDropdowns } from './table.js';
 import { initDocView, openDocView, closeDocView, enterEditMode, cancelEditMode, saveDocView } from './doc-view.js';
+import { initLab } from './lab.js';
 
 // ── DOM Elements ─────────────────────────────────────────────
 
@@ -32,6 +33,10 @@ const newCollectionConfirmBtn = document.getElementById('new-collection-confirm-
 const newCollectionError = document.getElementById('new-collection-error');
 const headerMenuBtn = document.getElementById('header-menu-btn') as HTMLButtonElement | null;
 const headerDropdown = document.getElementById('header-dropdown') as HTMLDivElement | null;
+const tabCollections = document.getElementById('tab-collections') as HTMLButtonElement | null;
+const tabLab = document.getElementById('tab-lab') as HTMLButtonElement | null;
+const contentPanel = document.getElementById('content') as HTMLElement | null;
+const labPanel = document.getElementById('lab-panel') as HTMLElement | null;
 
 // Semantic search
 const semanticSearchInput = document.getElementById('semantic-search-input') as HTMLInputElement;
@@ -81,6 +86,11 @@ initDocView({
   loadCollections,
 });
 
+initLab({
+  loadCollections,
+  openCollection: (collection) => selectCollection(collection),
+});
+
 // ── Workspace reset helper ───────────────────────────────────
 
 function clearWorkspace(): void {
@@ -109,24 +119,35 @@ function clearWorkspace(): void {
 
 async function connect(filepath: string) {
   connectError.textContent = '';
+  setConnectionButtonsBusy(true);
   try {
     await apiCall('/api/connect', 'POST', { filepath });
     onConnected(filepath);
     await loadCollections();
   } catch (error) {
     connectError.textContent = (error as Error).message;
+  } finally {
+    setConnectionButtonsBusy(false);
   }
 }
 
 async function createNew(filepath: string) {
   connectError.textContent = '';
+  setConnectionButtonsBusy(true);
   try {
     await apiCall('/api/create', 'POST', { filepath });
     onConnected(filepath);
     await loadCollections();
   } catch (error) {
     connectError.textContent = (error as Error).message;
+  } finally {
+    setConnectionButtonsBusy(false);
   }
+}
+
+function setConnectionButtonsBusy(busy: boolean): void {
+  connectConfirmBtn.disabled = busy;
+  createNewBtn.disabled = busy;
 }
 
 function onConnected(filepath: string) {
@@ -245,6 +266,7 @@ function renderCollectionList() {
 }
 
 function selectCollection(collection: string) {
+  switchTab('collections');
   state.currentCollection = collection;
   state.lastWordQuery = '';
   state.wordSearchOffset = 0;
@@ -270,6 +292,15 @@ function selectCollection(collection: string) {
   contentSearchClearBtn.classList.add('hidden');
   contentSearchInfo.textContent = '';
   void loadDocuments(collection);
+}
+
+function switchTab(tab: 'collections' | 'lab'): void {
+  const showLab = tab === 'lab';
+  tabCollections?.classList.toggle('active', !showLab);
+  tabLab?.classList.toggle('active', showLab);
+  contentPanel?.classList.toggle('hidden', showLab);
+  labPanel?.classList.toggle('hidden', !showLab);
+  if (showLab) closeDocView();
 }
 
 // ── Documents ────────────────────────────────────────────────
@@ -548,6 +579,9 @@ if (resetDbBtn) {
     void resetDb();
   });
 }
+
+tabCollections?.addEventListener('click', () => switchTab('collections'));
+tabLab?.addEventListener('click', () => switchTab('lab'));
 
 // Toolbar
 addDocBtn.addEventListener('click', () => openDocView({ id: '' }, true, true));

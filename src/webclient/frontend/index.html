@@ -11,6 +11,10 @@
       <header>
         <h1>SimpleDBMS <span class="header-team">Team-03</span></h1>
         <div id="connection-status">Disconnected</div>
+        <nav class="tab-nav" aria-label="Dashboard tabs">
+          <button id="tab-collections" class="tab-btn active" type="button">Collections</button>
+          <button id="tab-lab" class="tab-btn" type="button">Compression Lab</button>
+        </nav>
         <div class="semantic-search-container">
           <div class="semantic-search-toggle">
             <button id="search-mode-text" class="search-mode-btn active" disabled>Tekst</button>
@@ -70,6 +74,7 @@
             <span id="load-more-info"></span>
           </div>
         </main>
+        <section id="lab-panel" class="hidden"></section>
       </div>
     </div>
 
