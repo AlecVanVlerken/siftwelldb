@@ -184,6 +184,48 @@ describe('vacuumvalidator.mjs', () => {
     await assert.rejects(() => validator.validate());
   });
 
+  it('rejects when a target document has the same id but different contents', async () => {
+    await source.insertDocument(
+      JSONtoDocument(
+        JSON.stringify({
+          id: '1',
+          title: 'source',
+        }),
+        'articles',
+      ),
+    );
+
+    await source.commit();
+
+    await target.insertDocument(
+      JSONtoDocument(
+        JSON.stringify({
+          id: '1',
+          title: 'target',
+        }),
+        'articles',
+      ),
+    );
+
+    await target.commit();
+
+    const validator = new VacuumValidator(source, target, new CollectionCatalog(source));
+
+    await assert.rejects(() => validator.validate());
+  });
+
+  it('rejects when compression defaults differ', async () => {
+    source.setFieldCompressionDefaults('articles', { title: 'gzip' });
+    target.setFieldCompressionDefaults('articles', { title: 'deflate' });
+
+    await source.commit();
+    await target.commit();
+
+    const validator = new VacuumValidator(source, target, new CollectionCatalog(source));
+
+    await assert.rejects(() => validator.validate());
+  });
+
   it('rejects when source has an id tree but target does not', async () => {
     await source.insertDocument(
       JSONtoDocument(

@@ -119,6 +119,11 @@ export class ApiRouter {
 
       // ── Everything below requires an active connection ─────
 
+      if (method === 'GET' && pathname === '/api/database/status') {
+        sendJSON(res, 200, await this.db.getStatus());
+        return;
+      }
+
       if (!this.db.isConnected) {
         sendError(res, 400, 'No database connected');
         return;
@@ -135,6 +140,12 @@ export class ApiRouter {
       if (method === 'POST' && pathname === '/api/debug/reset') {
         await this.db.reset();
         sendJSON(res, 200, { message: 'Database reset' });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/database/vacuum') {
+        const result = await this.db.vacuum();
+        sendJSON(res, 200, { message: 'Database compacted', ...result });
         return;
       }
 

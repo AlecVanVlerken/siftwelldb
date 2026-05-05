@@ -4,7 +4,7 @@
 import { state } from './state.js';
 import type { Document } from './state.js';
 import { apiCall } from './api.js';
-import { isImageField } from './utils.js';
+import { formatSize, isImageField } from './utils.js';
 import { initTable, applyFilter, renderTable, closeAllDropdowns } from './table.js';
 import { initDocView, openDocView, closeDocView, enterEditMode, cancelEditMode, saveDocView } from './doc-view.js';
 
@@ -25,13 +25,26 @@ const filterInput = document.getElementById('filter-input') as HTMLInputElement;
 const refreshBtn = document.getElementById('refresh-btn') as HTMLButtonElement;
 const modalCloseBtns = document.querySelectorAll('.close-btn');
 const resetDbBtn = document.getElementById('reset-db-btn') as HTMLButtonElement | null;
-const newCollectionBtn = document.getElementById('new-collection-btn') as HTMLButtonElement | null;
+const vacuumDbBtn = document.getElementById('vacuum-db-btn') as HTMLButtonElement | null;
+const databaseSizeValue = document.getElementById('database-size-value');
+const newCollectionBtn = document.querySelector('#new-collection-btn');
 const newCollectionModal = document.getElementById('new-collection-modal');
 const newCollectionInput = document.getElementById('new-collection-name') as HTMLInputElement | null;
 const newCollectionConfirmBtn = document.getElementById('new-collection-confirm-btn') as HTMLButtonElement | null;
 const newCollectionError = document.getElementById('new-collection-error');
 const headerMenuBtn = document.getElementById('header-menu-btn') as HTMLButtonElement | null;
 const headerDropdown = document.getElementById('header-dropdown') as HTMLDivElement | null;
+const maintenanceOverlay = document.getElementById('maintenance-overlay');
+const maintenanceTitle = document.getElementById('maintenance-title');
+const maintenanceStatus = document.getElementById('maintenance-status');
+
+type DatabaseSizeInfo = {
+  dataFileBytes: number;
+  logFileBytes: number;
+  totalBytes: number;
+};
+
+let connectionRequestActive = false;
 
 // Semantic search
 const semanticSearchInput = document.getElementById('semantic-search-input') as HTMLInputElement;
@@ -76,30 +89,62 @@ function clearWorkspace(): void {
   dataTableHead.innerHTML = '';
   dataTableBody.innerHTML = '';
   filterInput.value = '';
+  addDocBtn.disabled = true;
+  filterInput.disabled = true;
+  refreshBtn.disabled = true;
+  if (searchModeTextBtn) searchModeTextBtn.disabled = true;
+  if (searchModeImageBtn) searchModeImageBtn.disabled = true;
+  semanticSearchInput.disabled = true;
+  semanticSearchBtn.disabled = true;
+  semanticSearchClearBtn.classList.add('hidden');
   closeDocView();
 }
 
 // ── Connection ───────────────────────────────────────────────
 
+function setConnectBusy(active: boolean, statusText = ''): void {
+  connectConfirmBtn.disabled = active;
+  createNewBtn.disabled = active;
+  dbFilepathInput.disabled = active;
+  connectConfirmBtn.textContent = active ? 'Openen...' : 'Openen';
+  createNewBtn.textContent = active ? 'Bezig...' : 'Nieuw aanmaken';
+  if (active) setMaintenance(true, statusText, 'Database openen');
+  else setMaintenance(false);
+}
+
 async function connect(filepath: string) {
+  if (connectionRequestActive) return;
+  connectionRequestActive = true;
   connectError.textContent = '';
+  setConnectBusy(true, 'De database wordt geopend en de semantische zoekmodellen worden geladen.');
   try {
     await apiCall('/api/connect', 'POST', { filepath });
     onConnected(filepath);
     await loadCollections();
+    await updateDatabaseStatus();
   } catch (error) {
     connectError.textContent = (error as Error).message;
+  } finally {
+    connectionRequestActive = false;
+    setConnectBusy(false);
   }
 }
 
 async function createNew(filepath: string) {
+  if (connectionRequestActive) return;
+  connectionRequestActive = true;
   connectError.textContent = '';
+  setConnectBusy(true, 'De nieuwe database wordt aangemaakt en de semantische zoekmodellen worden geladen.');
   try {
     await apiCall('/api/create', 'POST', { filepath });
     onConnected(filepath);
     await loadCollections();
+    await updateDatabaseStatus();
   } catch (error) {
     connectError.textContent = (error as Error).message;
+  } finally {
+    connectionRequestActive = false;
+    setConnectBusy(false);
   }
 }
 
@@ -108,7 +153,8 @@ function onConnected(filepath: string) {
   connectionStatus.classList.add('connected');
   disconnectBtn.disabled = false;
   if (resetDbBtn) resetDbBtn.disabled = false;
-  if (newCollectionBtn) newCollectionBtn.disabled = false;
+  if (vacuumDbBtn) vacuumDbBtn.disabled = false;
+  if (newCollectionBtn instanceof HTMLButtonElement) newCollectionBtn.disabled = false;
   if (headerMenuBtn) headerMenuBtn.disabled = false;
   connectModal.classList.add('hidden');
 }
@@ -120,7 +166,9 @@ async function disconnect() {
     connectionStatus.classList.remove('connected');
     disconnectBtn.disabled = true;
     if (resetDbBtn) resetDbBtn.disabled = true;
-    if (newCollectionBtn) newCollectionBtn.disabled = true;
+    if (vacuumDbBtn) vacuumDbBtn.disabled = true;
+    renderDatabaseSize(null);
+    if (newCollectionBtn instanceof HTMLButtonElement) newCollectionBtn.disabled = true;
     if (headerMenuBtn) headerMenuBtn.disabled = true;
     collectionList.innerHTML = '';
     clearWorkspace();
@@ -145,10 +193,80 @@ async function resetDb() {
     await apiCall('/api/debug/reset', 'POST');
     clearWorkspace();
     await loadCollections();
+    await updateDatabaseStatus();
     alert('Database reset successfully.');
   } catch (error) {
     alert('Reset failed: ' + (error as Error).message);
   }
+}
+
+async function compactDatabase() {
+  if (!confirm('Database compacten? De database is tijdelijk niet bruikbaar tot dit klaar is.')) return;
+
+  const previousCollection = state.currentCollection;
+  if (headerDropdown) headerDropdown.classList.add('hidden');
+  setMaintenance(true, 'Database wordt gecompacteerd. De database is tijdelijk vergrendeld.');
+
+  try {
+    const data = await apiCall('/api/database/vacuum', 'POST');
+    const before = readSizeInfo(data['before']);
+    const after = readSizeInfo(data['after']);
+    if (after) renderDatabaseSize(after);
+
+    await loadCollections();
+    if (previousCollection && state.collections.includes(previousCollection)) {
+      selectCollection(previousCollection);
+    } else {
+      clearWorkspace();
+    }
+
+    const savedBytes = before && after ? before.totalBytes - after.totalBytes : undefined;
+    const savedText = savedBytes !== undefined ? ` Bespaard: ${formatSize(Math.max(0, savedBytes))}.` : '';
+    alert(`Database compactie klaar.${savedText}`);
+  } catch (error) {
+    alert('Compactie mislukt: ' + (error as Error).message);
+    await updateDatabaseStatus();
+  } finally {
+    setMaintenance(false);
+  }
+}
+
+async function updateDatabaseStatus(): Promise<void> {
+  if (!databaseSizeValue || !connectionStatus.classList.contains('connected')) return;
+
+  try {
+    const data = await apiCall('/api/database/status');
+    renderDatabaseSize(readSizeInfo(data['size']));
+  } catch (error) {
+    console.error('Failed to load database status:', error);
+    renderDatabaseSize(null);
+  }
+}
+
+function readSizeInfo(value: unknown): DatabaseSizeInfo | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const dataFileBytes = record['dataFileBytes'];
+  const logFileBytes = record['logFileBytes'];
+  const totalBytes = record['totalBytes'];
+
+  if (typeof dataFileBytes !== 'number' || typeof logFileBytes !== 'number' || typeof totalBytes !== 'number') {
+    return null;
+  }
+
+  return { dataFileBytes, logFileBytes, totalBytes };
+}
+
+function renderDatabaseSize(size: DatabaseSizeInfo | null): void {
+  if (!databaseSizeValue) return;
+  databaseSizeValue.textContent = size ? formatSize(size.totalBytes) : '-';
+}
+
+function setMaintenance(active: boolean, statusText = '', titleText = 'Database compacteren'): void {
+  if (maintenanceOverlay) maintenanceOverlay.classList.toggle('hidden', !active);
+  if (maintenanceTitle && titleText) maintenanceTitle.textContent = titleText;
+  if (maintenanceStatus && statusText) maintenanceStatus.textContent = statusText;
+  if (vacuumDbBtn) vacuumDbBtn.disabled = active || !connectionStatus.classList.contains('connected');
 }
 
 // ── Collections ──────────────────────────────────────────────
@@ -158,6 +276,7 @@ async function loadCollections(): Promise<void> {
     const data = await apiCall('/api/collections');
     state.collections = (data['collections'] as string[] | undefined) ?? [];
     renderCollectionList();
+    void updateDatabaseStatus();
   } catch (error) {
     console.error('Failed to load collections:', error);
   }
@@ -370,6 +489,9 @@ if (resetDbBtn) {
     if (headerDropdown) headerDropdown.classList.add('hidden');
     void resetDb();
   });
+}
+if (vacuumDbBtn) {
+  vacuumDbBtn.addEventListener('click', () => void compactDatabase());
 }
 
 // Toolbar
