@@ -83,6 +83,12 @@ export class ApiRouter {
     try {
       // ── Connection management ──────────────────────────────
 
+      if (method === 'GET' && pathname === '/api/compression/profiles') {
+        const profiles = this.db.listCompressionProfiles();
+        sendJSON(res, 200, { profiles });
+        return;
+      }
+
       if (method === 'POST' && pathname === '/api/connect') {
         const body = await parseBody(req);
         const filepath = body['filepath'];
@@ -121,6 +127,106 @@ export class ApiRouter {
 
       if (!this.db.isConnected) {
         sendError(res, 400, 'No database connected');
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/compression/defaults') {
+        const collection = url.searchParams.get('collection');
+        if (!collection) {
+          sendError(res, 400, 'Missing collection');
+          return;
+        }
+        const defaults = this.db.getCompressionDefaults(collection);
+        sendJSON(res, 200, { defaults });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/compression/recommendation') {
+        const body = await parseBody(req);
+        const collection = body['collection'];
+        const field = body['field'];
+        const workload = body['workload'];
+        const profileOverride = body['profileOverride'];
+        const draftValue = body['draftValue'];
+        const sampleSize = body['sampleSize'];
+
+        if (typeof collection !== 'string' || collection.length === 0) {
+          sendError(res, 400, 'Missing collection');
+          return;
+        }
+        if (typeof field !== 'string' || field.length === 0) {
+          sendError(res, 400, 'Missing field');
+          return;
+        }
+
+        const recommendation = await this.db.recommendCompression({
+          collection,
+          field,
+          workload: typeof workload === 'number' ? workload : undefined,
+          profileOverride:
+            typeof profileOverride === 'string' && profileOverride.length > 0 ? profileOverride : undefined,
+          sampleSize: typeof sampleSize === 'number' ? sampleSize : undefined,
+          draftValue: typeof draftValue === 'string' ? draftValue : undefined,
+        });
+        sendJSON(res, 200, { recommendation });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/compression/lab/seed-wiki') {
+        const body = await parseBody(req);
+        const count = body['count'];
+        const result = await this.db.seedWikiLab({
+          count: typeof count === 'number' ? count : undefined,
+        });
+        sendJSON(res, 200, result);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/compression/lab/recommend-collection') {
+        const body = await parseBody(req);
+        const collection = body['collection'];
+        const workload = body['workload'];
+        const sampleSize = body['sampleSize'];
+
+        if (typeof collection !== 'string' || collection.length === 0) {
+          sendError(res, 400, 'Missing collection');
+          return;
+        }
+        if (workload !== undefined && (typeof workload !== 'number' || workload < 0 || workload > 1)) {
+          sendError(res, 400, 'Invalid workload');
+          return;
+        }
+
+        const report = await this.db.recommendCollectionLab({
+          collection,
+          workload: typeof workload === 'number' ? workload : undefined,
+          sampleSize: typeof sampleSize === 'number' ? sampleSize : undefined,
+        });
+        sendJSON(res, 200, { report });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/compression/lab/apply-advice') {
+        const body = await parseBody(req);
+        const collection = body['collection'];
+        const workload = body['workload'];
+        const sampleSize = body['sampleSize'];
+
+        if (typeof collection !== 'string' || collection.length === 0) {
+          sendError(res, 400, 'Missing collection');
+          return;
+        }
+        if (workload !== undefined && (typeof workload !== 'number' || workload < 0 || workload > 1)) {
+          sendError(res, 400, 'Invalid workload');
+          return;
+        }
+
+        const result = await this.db.applyCollectionLabAdvice({
+          collection,
+          workload: typeof workload === 'number' ? workload : undefined,
+          sampleSize: typeof sampleSize === 'number' ? sampleSize : undefined,
+        });
+        sendJSON(res, 200, result);
         return;
       }
 

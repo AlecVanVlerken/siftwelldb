@@ -6,7 +6,12 @@ import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
 import { allocateBlock } from '../freeblockfile/freelist.mjs';
 import { Document, type FieldValue, isImageField } from '../dbms/document.mjs';
-import { RecordStore, type EncodedDocument, type RecordWriteOptions } from './recordstore.mjs';
+import {
+  RecordStore,
+  type EncodedDocument,
+  type RecordStorageEstimate,
+  type RecordWriteOptions,
+} from './recordstore.mjs';
 import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
 import type { BlockLeafNode } from '../btree/leafnode.mjs';
@@ -15,10 +20,19 @@ import { HNSWIndex } from '../hnsw/hnswIndex.mjs';
 import { HNSWGraphStorage } from '../hnsw/hnswGraphStorage.mjs';
 import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
 import {
+  COMPRESSION_ALGORITHMS,
   type CompressionAlgorithm,
   type FieldCompressionDefaults,
   type FieldCompressionOverrides,
 } from './compression.mjs';
+import {
+  compressionSampleFromValue,
+  recommendCompression,
+  type CompressionRecommendation,
+  type CompressionRecommendationRequest,
+  type CompressionSample,
+  type CompressionStorageEstimate,
+} from './compression-advisor.mjs';
 
 /**
  * Optional configuration block that enables per-collection HNSW semantic
@@ -63,7 +77,7 @@ export type HnswConfig = {
 const HNSW_META_KEY = '__hnsw__';
 const COMPRESSION_META_KEY = '__compression__';
 const RESERVED_META_KEYS = new Set([HNSW_META_KEY, COMPRESSION_META_KEY]);
-const SUPPORTED_COMPRESSION_ALGORITHMS: Set<CompressionAlgorithm> = new Set(['none', 'gzip', 'deflate']);
+const SUPPORTED_COMPRESSION_ALGORITHMS: Set<CompressionAlgorithm> = new Set(COMPRESSION_ALGORITHMS);
 
 type CachedTree = {
   storage: BlockNodeStorage;
@@ -71,6 +85,7 @@ type CachedTree = {
 };
 
 type MetaCache = Record<string, unknown>;
+type CompressionStorageTotals = Map<CompressionAlgorithm, CompressionStorageEstimate>;
 
 /**
  * DbmsBack class
@@ -302,6 +317,173 @@ export class DbmsBack {
     compressionMeta[collection] = { ...defaults };
   }
 
+  getFieldCompressionDefaults(collection: string): FieldCompressionDefaults {
+    return { ...this.getCompressionDefaults(collection) };
+  }
+
+  private createCompressionStorageEstimate(): CompressionStorageEstimate {
+    return {
+      samples: 0,
+      rawSerializedBytes: 0,
+      compressedSerializedBytes: 0,
+      rawBlocks: 0,
+      compressedBlocks: 0,
+      blocksSaved: 0,
+      allocatedBytesSaved: 0,
+      readAmplification: 1,
+      writeCost: 0,
+    };
+  }
+
+  private ensureCompressionStorageTotal(
+    totals: CompressionStorageTotals,
+    algorithm: CompressionAlgorithm,
+  ): CompressionStorageEstimate {
+    const existing = totals.get(algorithm);
+    if (existing) return existing;
+
+    const created = this.createCompressionStorageEstimate();
+    totals.set(algorithm, created);
+    return created;
+  }
+
+  private addCompressionStorageTotals(
+    totals: CompressionStorageTotals,
+    algorithm: CompressionAlgorithm,
+    rawEstimate: RecordStorageEstimate,
+    candidateEstimate: RecordStorageEstimate,
+  ): void {
+    const total = this.ensureCompressionStorageTotal(totals, algorithm);
+    total.samples++;
+    total.rawSerializedBytes += rawEstimate.serializedBytes;
+    total.compressedSerializedBytes += candidateEstimate.serializedBytes;
+    total.rawBlocks += rawEstimate.blocks;
+    total.compressedBlocks += candidateEstimate.blocks;
+    total.blocksSaved += rawEstimate.blocks - candidateEstimate.blocks;
+    total.allocatedBytesSaved += rawEstimate.allocatedBytes - candidateEstimate.allocatedBytes;
+  }
+
+  private estimateCompressionStorageForDocument(
+    totals: CompressionStorageTotals,
+    document: Document,
+    field: string,
+    compressionDefaults: FieldCompressionDefaults,
+  ): Pick<RecordStorageEstimate, 'blockSize' | 'dataBytesPerBlock'> {
+    const rawEstimate = this.recordStore.estimateRecordStorage(document, {
+      compressionDefaults,
+      compressionOverrides: { [field]: 'off' },
+    });
+
+    for (const algorithm of COMPRESSION_ALGORITHMS) {
+      const candidateEstimate = this.recordStore.estimateRecordStorage(document, {
+        compressionDefaults,
+        compressionOverrides: { [field]: algorithm === 'none' ? 'off' : algorithm },
+      });
+      this.addCompressionStorageTotals(totals, algorithm, rawEstimate, candidateEstimate);
+    }
+
+    return {
+      blockSize: rawEstimate.blockSize,
+      dataBytesPerBlock: rawEstimate.dataBytesPerBlock,
+    };
+  }
+
+  private finalizeCompressionStorageEstimates(
+    totals: CompressionStorageTotals,
+  ): Partial<Record<CompressionAlgorithm, CompressionStorageEstimate>> {
+    const estimates: Partial<Record<CompressionAlgorithm, CompressionStorageEstimate>> = {};
+
+    for (const [algorithm, total] of totals) {
+      estimates[algorithm] = {
+        ...total,
+        readAmplification: total.rawBlocks === 0 ? 1 : total.compressedBlocks / total.rawBlocks,
+      };
+    }
+
+    return estimates;
+  }
+
+  private draftDocumentForCompressionEstimate(
+    request: CompressionRecommendationRequest,
+    sample: CompressionSample,
+  ): Document {
+    const value: FieldValue =
+      sample.kind === 'text' ? (request.draftValue ?? sample.raw.toString('utf-8')) : sample.raw;
+    const entry: [string, FieldValue] = [request.field, value];
+
+    if (request.field.startsWith('_') || isImageField(request.field)) {
+      return new Document(request.collection, '__draft__', [], [entry]);
+    }
+
+    return new Document(request.collection, '__draft__', [entry], []);
+  }
+
+  async recommendCompression(request: CompressionRecommendationRequest): Promise<CompressionRecommendation> {
+    const sampleLimit = Math.max(1, Math.floor(request.sampleSize ?? 50));
+    const samples: CompressionSample[] = [];
+    const storageTotals: CompressionStorageTotals = new Map();
+    let documentsScanned = 0;
+    let fieldPresenceCount = 0;
+    let blockSize: number | undefined;
+    let dataBytesPerBlock: number | undefined;
+    const collectionExists = this.hasCollectionMeta(request.collection);
+    const compressionDefaults = collectionExists ? this.getCompressionDefaults(request.collection) : {};
+
+    if (collectionExists) {
+      const cursor = await this.cursor(request.collection, 'id');
+      for await (const document of cursor) {
+        documentsScanned++;
+        const fieldValue = document.getFields()[request.field];
+        if (fieldValue !== undefined) {
+          fieldPresenceCount++;
+          const sample = compressionSampleFromValue(request.field, fieldValue);
+          if (sample) {
+            samples.push(sample);
+          }
+
+          const estimateShape = this.estimateCompressionStorageForDocument(
+            storageTotals,
+            document,
+            request.field,
+            compressionDefaults,
+          );
+          blockSize = estimateShape.blockSize;
+          dataBytesPerBlock = estimateShape.dataBytesPerBlock;
+        }
+        if (documentsScanned >= sampleLimit) break;
+      }
+    }
+
+    let draftValueUsed = false;
+    if (request.draftValue !== undefined && request.draftValue !== '') {
+      const draftSample = compressionSampleFromValue(request.field, request.draftValue);
+      if (draftSample) {
+        samples.push(draftSample);
+        draftValueUsed = true;
+        const draftDocument = this.draftDocumentForCompressionEstimate(request, draftSample);
+        const estimateShape = this.estimateCompressionStorageForDocument(
+          storageTotals,
+          draftDocument,
+          request.field,
+          compressionDefaults,
+        );
+        blockSize = estimateShape.blockSize;
+        dataBytesPerBlock = estimateShape.dataBytesPerBlock;
+      }
+    }
+
+    return recommendCompression({
+      request,
+      samples,
+      documentsScanned,
+      fieldPresenceCount,
+      draftValueUsed,
+      storageEstimates: this.finalizeCompressionStorageEstimates(storageTotals),
+      blockSize,
+      dataBytesPerBlock,
+    });
+  }
+
   /**
    * Commits all changes to the database.
    * A single commit atomically flushes records, B+ tree indexes, HNSW graph
@@ -318,7 +500,11 @@ export class DbmsBack {
    * @param document - The Document to insert.
    * @returns A Promise that resolves when the document is inserted.
    */
-  async insertDocument(document: Document, compressionOverrides?: FieldCompressionOverrides): Promise<void> {
+  async insertDocument(
+    document: Document,
+    compressionOverrides?: FieldCompressionOverrides,
+    options?: { skipSemanticIndex?: boolean },
+  ): Promise<void> {
     const collectionName = document.getCollectionName(); //constant time
     const writeOptions: RecordWriteOptions = {
       compressionDefaults: this.getCompressionDefaults(collectionName),
@@ -397,7 +583,7 @@ export class DbmsBack {
     // END FOR LOOP
 
     // HNSW: embed and index the document (image or text) if HNSW is configured.
-    if (this.hnswConfig) {
+    if (this.hnswConfig && !options?.skipSemanticIndex) {
       const imageData = this.extractImageData(document);
       if (imageData !== null && this.hnswConfig.imageEmbeddingFn) {
         // Document contains an image field — embed with the image encoder.
