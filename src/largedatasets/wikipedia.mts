@@ -186,9 +186,7 @@ export async function importWikipedia(
       contentIndex.clear();
     }
     if (index.wordCount > 0) {
-      console.log(
-        `  [${elapsed}s] Flushing title index chunk ${contentChunksDone + 1} (${index.wordCount} words)...`,
-      );
+      console.log(`  [${elapsed}s] Flushing title index chunk ${contentChunksDone + 1} (${index.wordCount} words)...`);
       await mergeWordIndex(db, index, 500, undefined, WORD_INDEX_COLLECTION);
       index.clear();
     }
