@@ -28,7 +28,9 @@
  * `cursor(collection, 'id')`.
  */
 
+import type { FieldCompressionDefaults } from '../dbms/compression.mjs';
 import type { DbmsBack } from '../dbms/dbmsback.mjs';
+import { documentToJSON } from '../dbms/document.mjs';
 import { CollectionCatalog } from './collectioncatalog.mjs';
 
 /**
@@ -95,6 +97,8 @@ export class VacuumValidator {
    */
   private async validateCollection(collection: string): Promise<void> {
     this.assertTargetHasCollection(collection);
+    this.assertCompressionDefaultsMatch(collection);
+    this.assertHnswPresenceMatches(collection);
 
     const sourceHasIdTree = this.catalog.hasIdTree(collection);
     const targetHasIdTree = this.targetCatalog.hasIdTree(collection);
@@ -141,6 +145,15 @@ export class VacuumValidator {
       let found = false;
       for await (const targetDoc of targetDocs) {
         if (targetDoc.getId() === id) {
+          const sourceJson = documentToJSON(doc);
+          const targetJson = documentToJSON(targetDoc);
+          if (targetJson !== sourceJson) {
+            throw new Error(
+              `Vacuum validation failed for collection "${collection}": ` +
+                `document with id "${String(id)}" has different contents in target database.`,
+            );
+          }
+
           found = true;
           break;
         }
@@ -204,5 +217,29 @@ export class VacuumValidator {
     if (!targetCollections.has(collection)) {
       throw new Error(`Vacuum validation failed: target database is missing collection "${collection}".`);
     }
+  }
+
+  private assertCompressionDefaultsMatch(collection: string): void {
+    const sourceDefaults = this.catalog.getCompressionDefaults(collection);
+    const targetDefaults = this.targetCatalog.getCompressionDefaults(collection);
+
+    if (this.normalizedCompressionDefaults(sourceDefaults) !== this.normalizedCompressionDefaults(targetDefaults)) {
+      throw new Error(
+        `Vacuum validation failed for collection "${collection}": compression defaults differ between source and target.`,
+      );
+    }
+  }
+
+  private assertHnswPresenceMatches(collection: string): void {
+    if (this.catalog.hasHnsw(collection) !== this.targetCatalog.hasHnsw(collection)) {
+      throw new Error(
+        `Vacuum validation failed for collection "${collection}": HNSW metadata presence differs between source and target.`,
+      );
+    }
+  }
+
+  private normalizedCompressionDefaults(defaults: FieldCompressionDefaults | undefined): string {
+    if (!defaults) return '';
+    return JSON.stringify(Object.entries(defaults).sort(([left], [right]) => left.localeCompare(right)));
   }
 }

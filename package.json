@@ -6,7 +6,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run --dir src --exclude '**/benchmarking/**'",
+    "test": "vitest run --dir src --exclude '**/benchmarking/**' --fileParallelism=false",
     "test-build": "vitest run --dir build",
     "coverage": "vitest run --coverage --exclude '**/benchmarking/**'",
     "build": "tsc --build",

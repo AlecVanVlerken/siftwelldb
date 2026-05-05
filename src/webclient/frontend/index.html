@@ -27,6 +27,11 @@
         <div class="header-actions" style="position: relative">
           <button id="header-menu-btn" class="menu-btn" disabled>⋮</button>
           <div id="header-dropdown" class="dropdown hidden">
+            <div class="dropdown-status">
+              <span>Database grootte</span>
+              <strong id="database-size-value">-</strong>
+            </div>
+            <button id="vacuum-db-btn" disabled class="dropdown-item">Database compacten</button>
             <button id="reset-db-btn" disabled class="dropdown-item dropdown-item--danger">DB Resetten</button>
             <button id="disconnect-btn" disabled class="dropdown-item">Verbinding verbreken</button>
           </div>
@@ -117,6 +122,13 @@
             </nav>
           </aside>
         </div>
+      </div>
+    </div>
+
+    <div id="maintenance-overlay" class="maintenance-overlay hidden">
+      <div class="maintenance-dialog">
+        <h2 id="maintenance-title">Database compacteren</h2>
+        <p id="maintenance-status">Even geduld. De database is tijdelijk vergrendeld.</p>
       </div>
     </div>
 
