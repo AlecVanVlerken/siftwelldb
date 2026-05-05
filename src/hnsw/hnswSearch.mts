@@ -148,7 +148,7 @@ export class HNSWSearch {
     const entryVec = await this.context.getVector(entry);
     const entryDist = this.context.computeDistance(queryVector, entryVec);
 
-    const visited = new Set<bigint>([entry]);
+    const visited = new Set<NodeId>([entry]);
     const candidates = new CandidateList(); // min-heap by distance
     const dynamic = new CandidateList(); // working set, kept ≤ ef; max-heap for removal
 
