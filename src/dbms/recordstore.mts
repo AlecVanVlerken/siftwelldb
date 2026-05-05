@@ -125,12 +125,17 @@ export class RecordStore {
       const chunk = chunks[i];
       const nextBlockID = i < chunks.length - 1 ? blockIDs[i + 1] : 0;
 
-      // make buffer for block data
-      const blockBuffer = Buffer.alloc(this.blockSize - RecordStore.BLOCK_TYPE_BYTES);
-      blockBuffer.writeUInt32LE(nextBlockID, 0); // written after the type byte by writeBlock
-      chunk.copy(blockBuffer, RecordStore.NEXT_BLOCK_BYTES);
-
-      await this.freeBlockFile.writeBlock(blockID, blockBuffer);
+      // Write directly into the FBF dirty block that allocateBlock created.
+      // This avoids Buffer.alloc(blockSize) + data.copy() inside writeBlock().
+      let rawBlock = this.freeBlockFile._getDirtyBlock(blockID);
+      if (rawBlock === undefined) {
+        // Fallback path (should not happen for freshly allocated blocks).
+        rawBlock = await this.freeBlockFile.readBlock(blockID);
+        this.freeBlockFile._setDirtyBlock(blockID, rawBlock);
+      }
+      const usable = rawBlock.subarray(1);
+      usable.writeUInt32LE(nextBlockID, 0);
+      chunk.copy(usable, RecordStore.NEXT_BLOCK_BYTES);
     }
 
     // return the first block ID (head of the chain)

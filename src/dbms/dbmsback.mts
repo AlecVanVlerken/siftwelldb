@@ -491,6 +491,10 @@ export class DbmsBack {
    * @returns A Promise that resolves when the commit is complete.
    */
   async commit(): Promise<void> {
+    // Flush all dirty B+tree nodes to the FBF dirty-block cache before committing.
+    for (const storage of this.storageCache.values()) {
+      await storage.flushDirtyNodes();
+    }
     await this.metaWriteJSON(this.metaCache);
     await this.freeblockFile.commit();
   }
@@ -540,6 +544,7 @@ export class DbmsBack {
     const valueBuffer = Buffer.alloc(4); // 32-bit block number
     valueBuffer.writeUInt32BE(documentLocation, 0);
     await idTree.insert(idBuffer, valueBuffer);
+    collectionMeta['id'][0] = idTree.getRoot().getBlockNumber();
     // START FOR LOOP: voor elke iterabele key in document
 
     for (const key of document.getIterableKeys()) {
@@ -579,6 +584,7 @@ export class DbmsBack {
       const valueBuffer = Buffer.alloc(4);
       valueBuffer.writeUInt32BE(documentLocation, 0);
       await keyTree.insert(keyBuffer, valueBuffer);
+      collectionMeta[key][0] = keyTree.getRoot().getBlockNumber();
     }
     // END FOR LOOP
 

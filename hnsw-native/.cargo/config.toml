@@ -1,0 +1,9 @@
+[build]
+target = "x86_64-pc-windows-gnu"
+# Emit AVX2+FMA instructions on the build machine for maximum vector throughput.
+# Dimension 384 = 48 × 8, so the L2 loop tiles perfectly into f32x8 SIMD.
+rustflags = ["-C", "target-cpu=native"]
+
+[target.x86_64-pc-windows-gnu]
+linker = "C:\\msys64\\mingw64\\bin\\gcc.exe"
+ar     = "C:\\msys64\\mingw64\\bin\\ar.exe"

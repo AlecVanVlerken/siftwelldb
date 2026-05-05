@@ -16,13 +16,10 @@ import { type CompressionAlgorithm } from '../dbms/compression.mjs';
 import { isImageField } from '../dbms/document.mjs';
 import { generateWikiArticles } from '../dbms/lab-fixtures/wiki.mjs';
 import { RealFile } from '../core/file.mjs';
+import { fetchPageCursor } from '../largedatasets/pagination.mjs';
+import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
 
-export type LabPolicyKey =
-  | 'none-uniform'
-  | 'gzip-uniform'
-  | 'zstd-uniform'
-  | 'gzip-everything'
-  | 'advisor-mix';
+export type LabPolicyKey = 'none-uniform' | 'gzip-uniform' | 'zstd-uniform' | 'gzip-everything' | 'advisor-mix';
 
 export type LabPolicyTotals = {
   totalBytes: number;
@@ -269,10 +266,11 @@ export class DatabaseService {
 
   // ── Collections ──────────────────────────────────────────────
 
-  /** Return the list of collection names. */
+  /** Return the list of collection names, hiding internal _-prefixed ones. */
   async getCollections(): Promise<string[]> {
     this.ensureConnected();
-    return this.dbms!.getCollections();
+    const all = await this.dbms!.getCollections();
+    return all.filter((c) => !c.startsWith('_'));
   }
 
   /** Delete an entire collection. */
@@ -403,31 +401,56 @@ export class DatabaseService {
 
   // ── Documents ────────────────────────────────────────────────
 
-  /**
-   * Query documents from a collection.
-   *
-   * Future: this method could accept a query-language string
-   * and parse it into the appropriate cursor parameters.
-   */
+  /** Fetch a cursor-paginated page of documents from a collection. */
   async getDocuments(
     collection: string,
     iterableKey: string = 'id',
-    value?: string,
-    limit: number = 100,
-  ): Promise<string[]> {
+    cursor?: string,
+    limit: number = 50,
+  ): Promise<{ documents: string[]; hasMore: boolean; nextCursor?: string | number }> {
     this.ensureConnected();
+    const page = await fetchPageCursor(this.dbms!, { collection, iterableKey, limit, afterCursor: cursor });
+    return { documents: page.data, hasMore: page.hasMore, nextCursor: page.nextCursor };
+  }
 
+  /** Find all articles containing a word via the persistent word index. */
+  async wordSearch(
+    collection: string,
+    word: string,
+    limit: number,
+    offset: number,
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
+    this.ensureConnected();
+    const { docIds, total, hasMore } = await searchWordIndex(this.dbms!, word, limit, offset);
     const documents: string[] = [];
-    const cursor = this.dbms!.cursor(collection, iterableKey, value);
-
-    let count = 0;
-    for await (const doc of cursor) {
-      documents.push(doc);
-      count++;
-      if (count >= limit) break;
+    for (const id of docIds) {
+      try {
+        documents.push(await this.dbms!.getDocumentById(collection, id));
+      } catch {
+        // Article deleted after indexing — skip silently
+      }
     }
+    return { documents, total, hasMore };
+  }
 
-    return documents;
+  /** Find all articles whose body contains a word via the persistent content index. */
+  async contentSearch(
+    collection: string,
+    word: string,
+    limit: number,
+    offset: number,
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
+    this.ensureConnected();
+    const { docIds, total, hasMore } = await searchContentIndex(this.dbms!, word, limit, offset);
+    const documents: string[] = [];
+    for (const id of docIds) {
+      try {
+        documents.push(await this.dbms!.getDocumentById(collection, id));
+      } catch {
+        // Article deleted after indexing — skip silently
+      }
+    }
+    return { documents, total, hasMore };
   }
 
   /** Insert a document into a collection. */
@@ -480,7 +503,7 @@ export class DatabaseService {
 
   private async loadLabDocuments(collection: string, limit: number): Promise<Array<Record<string, unknown>>> {
     const rawDocuments = await this.getDocuments(collection, 'id', undefined, limit);
-    return rawDocuments.map((raw) => JSON.parse(raw) as Record<string, unknown>);
+    return rawDocuments.documents.map((raw) => JSON.parse(raw) as Record<string, unknown>);
   }
 
   private estimateForcedGzipBytesSaved(field: string, documents: Array<Record<string, unknown>>): number {
@@ -529,13 +552,7 @@ export class DatabaseService {
     bundles: LabRecommendationBundle[],
     baseline: LabReport['baseline'],
   ): Record<LabPolicyKey, LabPolicyTotals> {
-    const policies: LabPolicyKey[] = [
-      'none-uniform',
-      'gzip-uniform',
-      'zstd-uniform',
-      'gzip-everything',
-      'advisor-mix',
-    ];
+    const policies: LabPolicyKey[] = ['none-uniform', 'gzip-uniform', 'zstd-uniform', 'gzip-everything', 'advisor-mix'];
     const totals = {} as Record<LabPolicyKey, LabPolicyTotals>;
 
     for (const policy of policies) {

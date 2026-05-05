@@ -76,13 +76,29 @@ export class VectorHeapFile {
 
   // LOW-LEVEL PAGE HELPERS
 
+  /** Page-level read/write cache: keyed by pageId, stores the usable-area Buffer.
+   * When the underlying block is in the FBF dirty cache the stored Buffer is a
+   * zero-copy subarray, so vector writes are reflected in-place without Buffer copies.
+   */
+  private readonly _pageCache = new Map<number, Buffer>();
+
   /**
    * Read usable area of a page (bytes [1..blockSize-1] of the raw block).
-   * FreeBlockFile.readBlock returns the full blockSize buffer; our data is at offset 1.
+   * Checks the FBF dirty cache first to avoid an extra Buffer.from() copy.
    */
   private async readPage(pageId: number): Promise<Buffer> {
+    const inCache = this._pageCache.get(pageId);
+    if (inCache !== undefined) return inCache;
+    const dirty = this.file._getDirtyBlock(pageId);
+    if (dirty !== undefined) {
+      const usable = dirty.subarray(1);
+      this._pageCache.set(pageId, usable);
+      return usable;
+    }
     const raw = await this.file.readBlock(pageId);
-    return raw.subarray(1); // view into the raw buffer, offset 1
+    const usable = raw.subarray(1);
+    this._pageCache.set(pageId, usable);
+    return usable;
   }
 
   /**
@@ -100,10 +116,22 @@ export class VectorHeapFile {
 
   /**
    * Write usable area back to the block.
-   * We pass a buffer of (blockSize-1) bytes to FreeBlockFile.writeBlock.
+   * If the usable buffer is already a zero-copy subarray of the FBF dirty block,
+   * the write has already happened in-place and we skip the redundant copy.
    */
   private async writePage(pageId: number, usable: Buffer): Promise<void> {
+    this._pageCache.set(pageId, usable);
+    const dirty = this.file._getDirtyBlock(pageId);
+    if (dirty !== undefined && dirty.buffer === usable.buffer && dirty.byteOffset === usable.byteOffset - 1) {
+      return; // already dirty in-place, no copy needed
+    }
     await this.file.writeBlock(pageId, usable);
+    // After writeBlock a new dirty entry was created; update cache to its subarray
+    // so the NEXT write to this page is also zero-copy.
+    const newDirty = this.file._getDirtyBlock(pageId);
+    if (newDirty !== undefined) {
+      this._pageCache.set(pageId, newDirty.subarray(1));
+    }
   }
 
   /** Create a fresh, empty usable-area buffer with the page magic byte set. */
@@ -179,7 +207,7 @@ export class VectorHeapFile {
       throw new Error(`Vector dimension mismatch: expected ${this.dimension}, got ${vector.length}`);
     }
 
-    // Try the cached hint page first.
+    // Try the cached hint page first — O(1) fast path.
     if (this.insertHint > 0) {
       const usable = await this.readPage(this.insertHint);
       const slotId = this.findFreeSlot(usable);
@@ -188,20 +216,10 @@ export class VectorHeapFile {
       }
     }
 
-    // Scan all existing data pages (blocks 1 … cachedBlockCount−1) for a free slot.
-    const blockCount = Math.max(this.file._getCachedBlockCount(), this.file._getHighestDirtyBlock() + 1);
-    for (let pageId = 1; pageId < blockCount; pageId++) {
-      if (pageId === this.insertHint) continue; // already tried above
-      const usable = await this.readPageIfData(pageId);
-      if (usable === null) continue; // freed or non-Data block
-      const slotId = this.findFreeSlot(usable);
-      if (slotId >= 0) {
-        this.insertHint = pageId;
-        return this.writeToSlot(pageId, usable, slotId, vector);
-      }
-    }
-
-    // All pages are full (or no pages yet): allocate a new page.
+    // Hint page is full — allocate a new page directly (O(1)).
+    // Skipping the previous O(N) scan of all existing data pages.
+    // Freed slots from deletes are reclaimed lazily when the hint page
+    // itself has space (after a delete frees a slot on the hint page).
     const { pageId, usable } = await this.allocatePage();
     this.insertHint = pageId;
     return this.writeToSlot(pageId, usable, 0, vector);
@@ -243,6 +261,7 @@ export class VectorHeapFile {
     this.setUsedCount(usable, newCount);
     if (newCount === 0) {
       // Page is empty — return it to the free list.
+      this._pageCache.delete(ptr.pageId);
       await this.file.freeBlock(ptr.pageId);
       if (this.insertHint === ptr.pageId) this.insertHint = 0;
     } else {
