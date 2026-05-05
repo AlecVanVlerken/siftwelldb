@@ -503,7 +503,7 @@ export class DatabaseService {
 
   private async loadLabDocuments(collection: string, limit: number): Promise<Array<Record<string, unknown>>> {
     const rawDocuments = await this.getDocuments(collection, 'id', undefined, limit);
-    return rawDocuments.map((raw) => JSON.parse(raw) as Record<string, unknown>);
+    return rawDocuments.documents.map((raw) => JSON.parse(raw) as Record<string, unknown>);
   }
 
   private estimateForcedGzipBytesSaved(field: string, documents: Array<Record<string, unknown>>): number {
