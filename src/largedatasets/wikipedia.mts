@@ -20,7 +20,7 @@ import { SimpleDbms } from '../dbms/simpledbms.mjs';
 import { RealFile } from '../core/file.mjs';
 import { bulkImportStream } from './bulkimport.mjs';
 import { InvertedIndex } from './invertedindex.mjs';
-import { persistWordIndex, mergeWordIndex, CONTENT_INDEX_COLLECTION } from './wordindex.mjs';
+import { mergeWordIndex, CONTENT_INDEX_COLLECTION, WORD_INDEX_COLLECTION } from './wordindex.mjs';
 
 // ── Wikitext stripping ───────────────────────────────────────
 
@@ -176,13 +176,22 @@ export async function importWikipedia(
   let contentChunksDone = 0;
 
   async function flushContentChunk(): Promise<void> {
-    if (contentIndex.wordCount === 0) return;
+    if (contentIndex.wordCount === 0 && index.wordCount === 0) return;
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(
-      `  [${elapsed}s] Flushing content index chunk ${contentChunksDone + 1} (${contentIndex.wordCount} words)...`,
-    );
-    await mergeWordIndex(db, contentIndex, 500, undefined, CONTENT_INDEX_COLLECTION);
-    contentIndex.clear();
+    if (contentIndex.wordCount > 0) {
+      console.log(
+        `  [${elapsed}s] Flushing content index chunk ${contentChunksDone + 1} (${contentIndex.wordCount} words)...`,
+      );
+      await mergeWordIndex(db, contentIndex, 500, undefined, CONTENT_INDEX_COLLECTION);
+      contentIndex.clear();
+    }
+    if (index.wordCount > 0) {
+      console.log(
+        `  [${elapsed}s] Flushing title index chunk ${contentChunksDone + 1} (${index.wordCount} words)...`,
+      );
+      await mergeWordIndex(db, index, 500, undefined, WORD_INDEX_COLLECTION);
+      index.clear();
+    }
     chunkArticleCount = 0;
     contentChunksDone++;
   }
@@ -225,13 +234,7 @@ export async function importWikipedia(
   await flushContentChunk();
   console.log(`Content index fully persisted (${contentChunksDone} chunks).`);
 
-  console.log(`Building title word index (${index.wordCount} unique words)...`);
-  let wordsDone = 0;
-  await persistWordIndex(db, index, 500, (n) => {
-    wordsDone = n;
-    if (n % 5000 === 0) console.log(`  ${n} words persisted...`);
-  });
-  console.log(`Title index persisted (${wordsDone} words total).`);
+  console.log(`Title index fully persisted (${contentChunksDone} chunks).`);
 
   await db.close();
 
