@@ -12,6 +12,8 @@ import { HnswIndexNative } from './hnswNative.mjs';
  * (B+ trees, RecordStore, VectorHeapFile) when everything shares a single FBF.
  */
 const HNSW_GRAPH_PAGE_MAGIC = 0xa3;
+const CURRENT_NODE_ID_BYTES = 6;
+const LEGACY_NODE_ID_BYTES = 8;
 
 // ** NodeId encoding **
 // NodeId = pageId * 2^32 + slotId  (fits safely in a JS number for any
@@ -68,33 +70,33 @@ const META_CURRENT_MAX_LEVEL = 21;
 //   [9-10] vectorPtr.slotId   (uint16 LE)
 //   [11]   deleted            (uint8, 0 or 1)
 //
-// Layer 0 neighbors: 1 + 2*M*6 bytes
+// Layer 0 neighbors: 1 + 2*M*nodeIdBytes bytes
 //   [12]        count0   (uint8)
-//   [13 … 12+2*M*6] NodeId[]  (each 6 bytes: uint32 LE pageId then uint16 LE slotId)
+//   [13 …] NodeId[]  (current: 6 bytes; legacy files: 8 bytes)
 //
-// Layer l (1 ≤ l ≤ maxStoredLevel): 1 + M*6 bytes
+// Layer l (1 ≤ l ≤ maxStoredLevel): 1 + M*nodeIdBytes bytes
 //   neighborsOffset(l) + [0]   count_l (uint8)
-//   neighborsOffset(l) + [1 … M*6] NodeId[]
+//   neighborsOffset(l) + [1 …] NodeId[]
 //
-// nodeSize = 12 + (1 + 2*M*6) + maxStoredLevel*(1 + M*6)
+// nodeSize = 12 + (1 + 2*M*nodeIdBytes) + maxStoredLevel*(1 + M*nodeIdBytes)
 
-function computeNodeSize(M: number, maxStoredLevel: number): number {
-  return 12 + (1 + 2 * M * 6) + maxStoredLevel * (1 + M * 6);
+function computeNodeSize(M: number, maxStoredLevel: number, nodeIdBytes = CURRENT_NODE_ID_BYTES): number {
+  return 12 + (1 + 2 * M * nodeIdBytes) + maxStoredLevel * (1 + M * nodeIdBytes);
 }
 
 function layer0NeighborOffset(): number {
   return 13; // after 12-byte header + 1 byte count
 }
 
-function layerNNeighborOffset(M: number, layer: number): number {
+function layerNNeighborOffset(M: number, layer: number, nodeIdBytes = CURRENT_NODE_ID_BYTES): number {
   // layer must be ≥ 1
-  const base = 12 + (1 + 2 * M * 6); // skip fixed header + layer-0 block
-  return base + (layer - 1) * (1 + M * 6) + 1; // +1 for count byte
+  const base = 12 + (1 + 2 * M * nodeIdBytes); // skip fixed header + layer-0 block
+  return base + (layer - 1) * (1 + M * nodeIdBytes) + 1; // +1 for count byte
 }
 
-function layerNCountOffset(M: number, layer: number): number {
-  const base = 12 + (1 + 2 * M * 6);
-  return base + (layer - 1) * (1 + M * 6);
+function layerNCountOffset(M: number, layer: number, nodeIdBytes = CURRENT_NODE_ID_BYTES): number {
+  const base = 12 + (1 + 2 * M * nodeIdBytes);
+  return base + (layer - 1) * (1 + M * nodeIdBytes);
 }
 
 const LAYER0_COUNT_OFFSET = 12; // byte index of count0 in the slot
@@ -160,10 +162,11 @@ export class HNSWGraphStorage {
     private readonly file: FreeBlockFile,
     M: number,
     maxStoredLevel: number,
+    private readonly nodeIdBytes = CURRENT_NODE_ID_BYTES,
   ) {
     this.M = M;
     this.maxStoredLevel = maxStoredLevel;
-    this.nodeSize = computeNodeSize(M, maxStoredLevel);
+    this.nodeSize = computeNodeSize(M, maxStoredLevel, nodeIdBytes);
     this._levelHistogram = new Array<number>(maxStoredLevel + 1).fill(0);
     const blockSize = file._getBlockSize();
     // usable area = blockSize - 1 (byte 0 is block-type owned by FreeBlockFile)
@@ -219,14 +222,21 @@ export class HNSWGraphStorage {
     const M = clientArea.readUInt32LE(META_M);
     const maxStoredLevel = clientArea.readUInt32LE(META_MAX_LEVEL);
     const storedNodeSize = clientArea.readUInt32LE(META_NODE_SIZE);
-    const gs = new HNSWGraphStorage(file, M, maxStoredLevel);
-    gs._metaBlockId = metaBlockId;
-    if (gs.nodeSize !== storedNodeSize) {
+    const currentNodeSize = computeNodeSize(M, maxStoredLevel, CURRENT_NODE_ID_BYTES);
+    const legacyNodeSize = computeNodeSize(M, maxStoredLevel, LEGACY_NODE_ID_BYTES);
+    let nodeIdBytes: number;
+    if (storedNodeSize === currentNodeSize) {
+      nodeIdBytes = CURRENT_NODE_ID_BYTES;
+    } else if (storedNodeSize === legacyNodeSize) {
+      nodeIdBytes = LEGACY_NODE_ID_BYTES;
+    } else {
       throw new Error(
-        `HNSWGraphStorage: stored nodeSize=${storedNodeSize} ≠ computed nodeSize=${gs.nodeSize}. ` +
-          `Parameters do not match the file.`,
+        `HNSWGraphStorage: stored nodeSize=${storedNodeSize} does not match supported node sizes ` +
+          `${currentNodeSize} or ${legacyNodeSize}. Parameters do not match the file.`,
       );
     }
+    const gs = new HNSWGraphStorage(file, M, maxStoredLevel, nodeIdBytes);
+    gs._metaBlockId = metaBlockId;
     // Restore entry point and current max level
     const hasEp = clientArea.readUInt8(META_HAS_EP);
     if (hasEp) {
@@ -420,6 +430,24 @@ export class HNSWGraphStorage {
 
   // ** Node serialisation helpers **
 
+  private writeNodeId(usable: Buffer, offset: number, nodeId: NodeId): void {
+    const { pageId, slotId } = decodeNodeId(nodeId);
+    usable.writeUInt32LE(pageId, offset);
+    if (this.nodeIdBytes === CURRENT_NODE_ID_BYTES) {
+      if (slotId > 0xffff) throw new Error(`HNSWGraphStorage: slotId ${slotId} exceeds current node-id format.`);
+      usable.writeUInt16LE(slotId, offset + 4);
+    } else {
+      usable.writeUInt32LE(slotId, offset + 4);
+    }
+  }
+
+  private readNodeId(usable: Buffer, offset: number): NodeId {
+    const pageId = usable.readUInt32LE(offset);
+    const slotId =
+      this.nodeIdBytes === CURRENT_NODE_ID_BYTES ? usable.readUInt16LE(offset + 4) : usable.readUInt32LE(offset + 4);
+    return pageId * 4294967296 + slotId;
+  }
+
   private serialiseNode(usable: Buffer, slotOffset: number, node: HNSWNode): void {
     usable.writeUInt32LE(node.docId, slotOffset + 0);
     usable.writeUInt8(node.level, slotOffset + 4);
@@ -437,23 +465,18 @@ export class HNSWGraphStorage {
     usable.writeUInt8(count0, slotOffset + LAYER0_COUNT_OFFSET);
     const off0 = slotOffset + layer0NeighborOffset();
     for (let i = 0; i < count0; i++) {
-      const id = neighbors0[i];
-      // NodeId = pageId * 2^32 + slotId; store as uint32(pageId) + uint16(slotId) = 6 bytes.
-      usable.writeUInt32LE(Math.floor(id / 4294967296), off0 + i * 6); // pageId
-      usable.writeUInt16LE(id >>> 0, off0 + i * 6 + 4); // slotId
+      this.writeNodeId(usable, off0 + i * this.nodeIdBytes, neighbors0[i]);
     }
 
     // Layers 1 … maxLayer
     for (let l = 1; l <= this.maxStoredLevel; l++) {
-      const countOff = slotOffset + layerNCountOffset(this.M, l);
-      const neighborsOff = slotOffset + layerNNeighborOffset(this.M, l);
+      const countOff = slotOffset + layerNCountOffset(this.M, l, this.nodeIdBytes);
+      const neighborsOff = slotOffset + layerNNeighborOffset(this.M, l, this.nodeIdBytes);
       const neighborsL = l <= maxLayer ? (node.neighbors[l] ?? []) : [];
       const countL = Math.min(neighborsL.length, this.M);
       usable.writeUInt8(countL, countOff);
       for (let i = 0; i < countL; i++) {
-        const id = neighborsL[i];
-        usable.writeUInt32LE(Math.floor(id / 4294967296), neighborsOff + i * 6);
-        usable.writeUInt16LE(id >>> 0, neighborsOff + i * 6 + 4);
+        this.writeNodeId(usable, neighborsOff + i * this.nodeIdBytes, neighborsL[i]);
       }
     }
   }
@@ -473,9 +496,7 @@ export class HNSWGraphStorage {
     const off0 = slotOffset + layer0NeighborOffset();
     const neighbors0: NodeId[] = new Array<NodeId>(count0);
     for (let i = 0; i < count0; i++) {
-      const pageId = usable.readUInt32LE(off0 + i * 6);
-      const slotId = usable.readUInt16LE(off0 + i * 6 + 4);
-      neighbors0[i] = pageId * 4294967296 + slotId;
+      neighbors0[i] = this.readNodeId(usable, off0 + i * this.nodeIdBytes);
     }
     neighbors.push(neighbors0);
 
@@ -486,14 +507,12 @@ export class HNSWGraphStorage {
         neighbors.push([]);
         continue;
       }
-      const countOff = slotOffset + layerNCountOffset(this.M, l);
-      const neighborsOff = slotOffset + layerNNeighborOffset(this.M, l);
+      const countOff = slotOffset + layerNCountOffset(this.M, l, this.nodeIdBytes);
+      const neighborsOff = slotOffset + layerNNeighborOffset(this.M, l, this.nodeIdBytes);
       const countL = usable.readUInt8(countOff);
       const neighborsL: NodeId[] = new Array<NodeId>(countL);
       for (let i = 0; i < countL; i++) {
-        const pageId = usable.readUInt32LE(neighborsOff + i * 6);
-        const slotId = usable.readUInt16LE(neighborsOff + i * 6 + 4);
-        neighborsL[i] = pageId * 4294967296 + slotId;
+        neighborsL[i] = this.readNodeId(usable, neighborsOff + i * this.nodeIdBytes);
       }
       neighbors.push(neighborsL);
     }
@@ -621,15 +640,7 @@ export class HNSWGraphStorage {
     for (let i = 0; i < maxCount0; i++) {
       const nid = docIdIndex.get(allNb[nbPos + i]);
       if (nid !== undefined) {
-        const o = off0 + actualCount0 * 6;
-        const pg = Math.floor(nid / 4294967296);
-        const sl = nid >>> 0;
-        usable[o] = pg;
-        usable[o + 1] = pg >> 8;
-        usable[o + 2] = pg >> 16;
-        usable[o + 3] = pg >> 24;
-        usable[o + 4] = sl;
-        usable[o + 5] = sl >> 8;
+        this.writeNodeId(usable, off0 + actualCount0 * this.nodeIdBytes, nid);
         actualCount0++;
       }
     }
@@ -637,8 +648,8 @@ export class HNSWGraphStorage {
     usable[slotOff + LAYER0_COUNT_OFFSET] = actualCount0;
 
     for (let l = 1; l <= this.maxStoredLevel; l++) {
-      const countOff = slotOff + layerNCountOffset(this.M, l);
-      const neighborsOff = slotOff + layerNNeighborOffset(this.M, l);
+      const countOff = slotOff + layerNCountOffset(this.M, l, this.nodeIdBytes);
+      const neighborsOff = slotOff + layerNNeighborOffset(this.M, l, this.nodeIdBytes);
       if (l > maxLayer) {
         usable[countOff] = 0;
         continue;
@@ -649,15 +660,7 @@ export class HNSWGraphStorage {
       for (let i = 0; i < maxCountL; i++) {
         const nid = docIdIndex.get(allNb[nbPos + i]);
         if (nid !== undefined) {
-          const o = neighborsOff + actualCountL * 6;
-          const pg = Math.floor(nid / 4294967296);
-          const sl = nid >>> 0;
-          usable[o] = pg;
-          usable[o + 1] = pg >> 8;
-          usable[o + 2] = pg >> 16;
-          usable[o + 3] = pg >> 24;
-          usable[o + 4] = sl;
-          usable[o + 5] = sl >> 8;
+          this.writeNodeId(usable, neighborsOff + actualCountL * this.nodeIdBytes, nid);
           actualCountL++;
         }
       }
@@ -702,15 +705,7 @@ export class HNSWGraphStorage {
     for (let i = 0; i < maxCount0; i++) {
       const nid = docIdIndex.get(allNb[nbPos + i]);
       if (nid !== undefined) {
-        const o = off0 + actualCount0 * 6;
-        const pg = Math.floor(nid / 4294967296);
-        const sl = nid >>> 0;
-        usable[o] = pg;
-        usable[o + 1] = pg >> 8;
-        usable[o + 2] = pg >> 16;
-        usable[o + 3] = pg >> 24;
-        usable[o + 4] = sl;
-        usable[o + 5] = sl >> 8;
+        this.writeNodeId(usable, off0 + actualCount0 * this.nodeIdBytes, nid);
         actualCount0++;
       }
     }
@@ -718,8 +713,8 @@ export class HNSWGraphStorage {
     usable[slotOff + LAYER0_COUNT_OFFSET] = actualCount0;
 
     for (let l = 1; l <= this.maxStoredLevel; l++) {
-      const countOff = slotOff + layerNCountOffset(this.M, l);
-      const neighborsOff = slotOff + layerNNeighborOffset(this.M, l);
+      const countOff = slotOff + layerNCountOffset(this.M, l, this.nodeIdBytes);
+      const neighborsOff = slotOff + layerNNeighborOffset(this.M, l, this.nodeIdBytes);
       if (l > maxLayer) {
         usable[countOff] = 0;
         continue;
@@ -730,15 +725,7 @@ export class HNSWGraphStorage {
       for (let i = 0; i < maxCountL; i++) {
         const nid = docIdIndex.get(allNb[nbPos + i]);
         if (nid !== undefined) {
-          const o = neighborsOff + actualCountL * 6;
-          const pg = Math.floor(nid / 4294967296);
-          const sl = nid >>> 0;
-          usable[o] = pg;
-          usable[o + 1] = pg >> 8;
-          usable[o + 2] = pg >> 16;
-          usable[o + 3] = pg >> 24;
-          usable[o + 4] = sl;
-          usable[o + 5] = sl >> 8;
+          this.writeNodeId(usable, neighborsOff + actualCountL * this.nodeIdBytes, nid);
           actualCountL++;
         }
       }
