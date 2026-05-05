@@ -28,61 +28,6 @@ interface DocViewConfig {
 
 let cfg: DocViewConfig;
 
-type CompressionProfileSummary = {
-  id: string;
-  kind: 'text' | 'image' | 'binary';
-  displayName: string;
-  description: string;
-};
-
-type CompressionAlgorithm = 'none' | 'gzip' | 'deflate' | 'brotli' | 'zstd-fast' | 'zstd';
-
-type CompressionRecommendation = {
-  recommended: CompressionAlgorithm;
-  summary: string;
-  detectedProfile: CompressionProfileSummary;
-  activeProfile: CompressionProfileSummary;
-  availableProfiles: CompressionProfileSummary[];
-  workload: number;
-  ranking: Array<{
-    algorithm: CompressionAlgorithm;
-    score: number;
-    rationale: string;
-    benchmark: {
-      compressionPercent: number;
-      compressMsPerMB: number;
-      decompressMsPerMB: number;
-    };
-    observedCompressionPercent: number | null;
-    effectiveCompressionPercent: number;
-    beneficialSampleShare: number | null;
-    estimatedStoredBytes: number | null;
-    storageEstimate: {
-      samples: number;
-      rawSerializedBytes: number;
-      compressedSerializedBytes: number;
-      rawBlocks: number;
-      compressedBlocks: number;
-      blocksSaved: number;
-      allocatedBytesSaved: number;
-      readAmplification: number;
-      writeCost: number;
-    } | null;
-  }>;
-};
-
-let compressionProfiles: CompressionProfileSummary[] = [];
-let compressionProfilesPromise: Promise<CompressionProfileSummary[]> | null = null;
-let compressionDefaultsCollection: string | null = null;
-let compressionDefaults: Record<string, CompressionAlgorithm> = {};
-let compressionDefaultsPromise: Promise<Record<string, CompressionAlgorithm>> | null = null;
-
-window.addEventListener('compression-defaults-updated', () => {
-  compressionDefaultsCollection = null;
-  compressionDefaults = {};
-  compressionDefaultsPromise = null;
-});
-
 /**
  * Initializes the document view component.
  *
@@ -92,113 +37,6 @@ window.addEventListener('compression-defaults-updated', () => {
  */
 export function initDocView(config: DocViewConfig): void {
   cfg = config;
-  void ensureCompressionProfilesLoaded();
-}
-
-function compressionProfileOptionsHTML(selectedId: string | undefined, autoLabel = 'Automatisch detecteren'): string {
-  const autoSelected = selectedId ? '' : ' selected';
-  const autoOption = `<option value=""${autoSelected}>${escapeHTML(autoLabel)}</option>`;
-
-  if (compressionProfiles.length === 0) {
-    return autoOption;
-  }
-
-  return (
-    autoOption +
-    compressionProfiles
-      .map((profile) => {
-        const selected = profile.id === selectedId ? ' selected' : '';
-        return `<option value="${escapeHTML(profile.id)}"${selected}>${escapeHTML(profile.displayName)}</option>`;
-      })
-      .join('')
-  );
-}
-
-function compressionAdvisorControlsHTML(): string {
-  return `
-    <div class="compression-advisor">
-      <div class="compression-advisor-row">
-        <label class="compression-inline-label">
-          Compressie
-          <select class="doc-field-compression" title="Compressie in Database">
-            <option value="none">Geen compressie</option>
-            <option value="gzip">Gzip</option>
-            <option value="deflate">Deflate</option>
-            <option value="brotli">Brotli</option>
-            <option value="zstd-fast">Zstd snel</option>
-            <option value="zstd">Zstd</option>
-          </select>
-        </label>
-        <label class="compression-inline-label">
-          Profiel
-          <select class="doc-field-profile-override" title="Benchmarkprofiel" data-profile-overridden="false">
-            ${compressionProfileOptionsHTML(undefined)}
-          </select>
-        </label>
-      </div>
-      <div class="compression-default-notice hidden"></div>
-      <div class="compression-advisor-row">
-        <label class="compression-workload-label">
-          <span>Koud</span>
-          <input type="range" class="doc-field-workload" min="0" max="100" value="50" />
-          <span>Heet</span>
-        </label>
-        <span class="doc-field-workload-value">Gebalanceerd</span>
-        <button type="button" class="doc-field-recommend-btn btn-secondary">Adviseer</button>
-        <button type="button" class="doc-field-apply-recommendation btn-success hidden">Gebruik advies</button>
-        <button type="button" class="doc-field-explain-toggle btn-secondary hidden">Leg uit waarom</button>
-      </div>
-      <div class="compression-advisor-summary">Detecteert profiel en advies...</div>
-      <div class="compression-advisor-details hidden"></div>
-    </div>`;
-}
-
-async function ensureCompressionProfilesLoaded(): Promise<CompressionProfileSummary[]> {
-  if (compressionProfiles.length > 0) return compressionProfiles;
-  if (!compressionProfilesPromise) {
-    compressionProfilesPromise = apiCall('/api/compression/profiles', 'GET')
-      .then((result) => {
-        compressionProfiles = ((result['profiles'] as CompressionProfileSummary[] | undefined) ?? []).slice();
-        return compressionProfiles;
-      })
-      .catch(() => {
-        compressionProfiles = [];
-        return compressionProfiles;
-      })
-      .finally(() => {
-        compressionProfilesPromise = null;
-        if (state.currentViewDoc && state.isEditMode) {
-          renderDocFields(state.currentViewDoc, true);
-        }
-      });
-  }
-  return compressionProfilesPromise;
-}
-
-async function ensureCompressionDefaultsLoaded(): Promise<Record<string, CompressionAlgorithm>> {
-  if (!state.currentCollection) return {};
-  if (compressionDefaultsCollection === state.currentCollection) return compressionDefaults;
-  if (!compressionDefaultsPromise) {
-    const collection = state.currentCollection;
-    compressionDefaultsPromise = apiCall(
-      `/api/compression/defaults?collection=${encodeURIComponent(collection)}`,
-      'GET',
-    )
-      .then((result) => {
-        compressionDefaults = (result['defaults'] as Record<string, CompressionAlgorithm> | undefined) ?? {};
-        compressionDefaultsCollection = collection;
-        return compressionDefaults;
-      })
-      .catch(() => {
-        compressionDefaults = {};
-        compressionDefaultsCollection = collection;
-        return compressionDefaults;
-      })
-      .finally(() => {
-        compressionDefaultsPromise = null;
-      });
-  }
-  return compressionDefaultsPromise;
 }
 
 // ── Public API ───────────────────────────────────────────────
@@ -319,16 +157,8 @@ export async function saveDocView(): Promise<void> {
       }
     }
 
-    if (didAdd && compSelect) {
-      const hasAdvisorDefault = compSelect.dataset['hasCompressionDefault'] === 'true';
-      const defaultCompression = compSelect.dataset['defaultCompression'] ?? 'none';
-      if (hasAdvisorDefault) {
-        if (compSelect.value !== defaultCompression) {
-          compression[title] = compSelect.value;
-        }
-      } else if (compSelect.value !== 'none') {
-        compression[title] = compSelect.value;
-      }
+    if (didAdd && compSelect && compSelect.value !== 'none') {
+      compression[title] = compSelect.value;
     }
   });
 
@@ -402,10 +232,15 @@ function renderDocFields(doc: Document, editMode: boolean): void {
         contentHTML += `<input type="text" class="doc-field-section-title" value="${escapeHTML(key)}" placeholder="Sectie Naam">`;
       }
 
+      contentHTML += `<select class="doc-field-compression" title="Compressie in Database" style="margin-left:8px; padding:4px; border-radius:4px;">
+          <option value="none">Geen compressie</option>
+          <option value="gzip">Gzip</option>
+          <option value="deflate">Deflate</option>
+        </select>`;
+
       contentHTML += `<div class="field-actions">
         <button class="remove-field-btn" type="button" title="Sectie verwijderen" onclick="this.closest('.doc-field-section').remove()">✕</button>
       </div></div>`;
-      contentHTML += compressionAdvisorControlsHTML();
     } else {
       if (!isImageField(key)) {
         contentHTML += `<h2>${escapeHTML(key)}</h2>`;
@@ -460,7 +295,6 @@ function renderDocFields(doc: Document, editMode: boolean): void {
 
     attachImageEvents(cfg.docViewContent);
     attachPositionEvents(cfg.docViewContent);
-    initializeCompressionAdvisorControls(cfg.docViewContent);
   }
 }
 
@@ -543,7 +377,6 @@ function attachPositionEvents(container: HTMLElement): void {
 function addNewFieldToView(type: 'text' | 'image' = 'text'): void {
   const section = document.createElement('div');
   section.className = 'doc-field-section';
-  let fieldName = '';
 
   // Header row
   const headerDiv = document.createElement('div');
@@ -559,8 +392,7 @@ function addNewFieldToView(type: 'text' | 'image' = 'text'): void {
     const hiddenTitle = document.createElement('input');
     hiddenTitle.type = 'hidden';
     hiddenTitle.className = 'doc-field-section-title';
-    fieldName = `_img_${Date.now()}.jpeg`;
-    hiddenTitle.value = fieldName;
+    hiddenTitle.value = `_img_${Date.now()}.jpeg`;
     const label = document.createElement('span');
     label.className = 'image-field-label';
     label.textContent = 'Afbeelding sectie';
@@ -573,6 +405,15 @@ function addNewFieldToView(type: 'text' | 'image' = 'text'): void {
     titleInput.placeholder = 'Sectie Naam';
     headerDiv.appendChild(titleInput);
   }
+
+  const compSelect = document.createElement('select');
+  compSelect.className = 'doc-field-compression';
+  compSelect.title = 'Compressie in Database';
+  compSelect.style.marginLeft = '8px';
+  compSelect.style.padding = '4px';
+  compSelect.style.borderRadius = '4px';
+  compSelect.innerHTML = `<option value="none">Geen compressie</option><option value="gzip">Gzip</option><option value="deflate">Deflate</option>`;
+  headerDiv.appendChild(compSelect);
 
   const actionsDiv = document.createElement('div');
   actionsDiv.className = 'field-actions';
@@ -616,8 +457,6 @@ function addNewFieldToView(type: 'text' | 'image' = 'text'): void {
     section.appendChild(controls);
   }
 
-  section.insertAdjacentHTML('beforeend', compressionAdvisorControlsHTML());
-
   const wrapper = cfg.docViewContent.querySelector('.doc-add-buttons');
   if (wrapper) {
     cfg.docViewContent.insertBefore(section, wrapper);
@@ -627,247 +466,6 @@ function addNewFieldToView(type: 'text' | 'image' = 'text'): void {
 
   const inputToFocus = section.querySelector<HTMLInputElement>('input.doc-field-section-title');
   if (inputToFocus && inputToFocus.type !== 'hidden') inputToFocus.focus();
-
-  initializeCompressionAdvisorControls(section);
-}
-
-function workloadTextFromValue(value: number): string {
-  if (value <= 0.25) return 'Koud';
-  if (value >= 0.75) return 'Heet';
-  return 'Gebalanceerd';
-}
-
-function getSectionFieldName(section: Element): string {
-  const titleInput = section.querySelector<HTMLInputElement>('.doc-field-section-title');
-  if (titleInput) return titleInput.value.trim();
-  return section.querySelector('h2')?.textContent?.trim() ?? '';
-}
-
-function getSectionDraftValue(section: Element, fieldName: string): string | undefined {
-  const textarea = section.querySelector<HTMLTextAreaElement>('textarea.doc-field-value');
-  if (textarea) return textarea.value;
-
-  const fileInput = section.querySelector<HTMLInputElement>('input[type="file"]');
-  if (fileInput && isImageField(fieldName)) {
-    return fileInput.dataset['newbase64'] || fileInput.dataset['original'] || undefined;
-  }
-
-  return undefined;
-}
-
-async function applyCompressionDefaultToSection(section: HTMLElement): Promise<void> {
-  const fieldName = getSectionFieldName(section);
-  const compressionSelect = section.querySelector<HTMLSelectElement>('.doc-field-compression');
-  const notice = section.querySelector<HTMLElement>('.compression-default-notice');
-  if (!compressionSelect || !notice || !fieldName) return;
-
-  const defaults = await ensureCompressionDefaultsLoaded();
-  const defaultCompression = defaults[fieldName];
-  if (!defaultCompression) {
-    compressionSelect.dataset['hasCompressionDefault'] = 'false';
-    compressionSelect.dataset['defaultCompression'] = 'none';
-    notice.classList.add('hidden');
-    notice.textContent = '';
-    return;
-  }
-
-  compressionSelect.dataset['hasCompressionDefault'] = 'true';
-  compressionSelect.dataset['defaultCompression'] = defaultCompression;
-  compressionSelect.value = defaultCompression;
-  notice.textContent =
-    defaultCompression === 'none'
-      ? 'Advisor default active: no compression. Change this field to override for this document.'
-      : `Advisor default active: ${defaultCompression}. Change this field to override for this document.`;
-  notice.classList.remove('hidden');
-}
-
-function renderCompressionExplanation(recommendation: CompressionRecommendation): string {
-  const items = recommendation.ranking
-    .map((item) => {
-      const observed =
-        item.observedCompressionPercent === null
-          ? 'geen lokale sample'
-          : `${item.observedCompressionPercent.toFixed(0)}% lokaal`;
-      const storedBytes =
-        item.estimatedStoredBytes === null ? 'n.v.t.' : `${item.estimatedStoredBytes.toFixed(0)} B gemiddeld`;
-      const blockEstimate =
-        item.storageEstimate === null
-          ? 'geen blockschatting'
-          : `${item.storageEstimate.blocksSaved} blocks bespaard, ${formatSize(
-              item.storageEstimate.allocatedBytesSaved,
-            )} allocatie bespaard, read x${item.storageEstimate.readAmplification.toFixed(2)}`;
-      return `
-        <div class="compression-ranking-item">
-          <div class="compression-ranking-header">
-            <strong>${escapeHTML(item.algorithm)}</strong>
-            <span class="compression-score">${item.score.toFixed(2)}</span>
-          </div>
-          <div class="compression-ranking-meta">
-            ${escapeHTML(
-              `${item.benchmark.compressionPercent.toFixed(0)}% benchmark compressie, ${item.benchmark.compressMsPerMB.toFixed(1)} ms/MB enc, ${item.benchmark.decompressMsPerMB.toFixed(1)} ms/MB dec, ${observed}, ${storedBytes}, ${blockEstimate}`,
-            )}
-          </div>
-          <p>${escapeHTML(item.rationale)}</p>
-        </div>`;
-    })
-    .join('');
-
-  return `
-    <div class="compression-detected-profile">
-      Gedetecteerd: <strong>${escapeHTML(recommendation.detectedProfile.displayName)}</strong>
-      ${
-        recommendation.detectedProfile.id !== recommendation.activeProfile.id
-          ? ` | Actief: <strong>${escapeHTML(recommendation.activeProfile.displayName)}</strong>`
-          : ''
-      }
-    </div>
-    ${items}`;
-}
-
-async function requestCompressionRecommendation(section: HTMLElement, silent = false): Promise<void> {
-  if (!state.currentCollection) return;
-
-  const fieldName = getSectionFieldName(section);
-  if (!fieldName) return;
-
-  const summary = section.querySelector<HTMLElement>('.compression-advisor-summary');
-  const details = section.querySelector<HTMLElement>('.compression-advisor-details');
-  const explainBtn = section.querySelector<HTMLButtonElement>('.doc-field-explain-toggle');
-  const applyBtn = section.querySelector<HTMLButtonElement>('.doc-field-apply-recommendation');
-  const compressionSelect = section.querySelector<HTMLSelectElement>('.doc-field-compression');
-  const profileSelect = section.querySelector<HTMLSelectElement>('.doc-field-profile-override');
-  const workload = section.querySelector<HTMLInputElement>('.doc-field-workload');
-
-  if (!summary || !details || !explainBtn || !applyBtn || !compressionSelect || !profileSelect || !workload) {
-    return;
-  }
-
-  summary.textContent = silent ? 'Analyseert...' : 'Advies wordt berekend...';
-
-  try {
-    const profileOverride =
-      profileSelect.dataset['profileOverridden'] === 'true' && profileSelect.value ? profileSelect.value : undefined;
-    const response = await apiCall('/api/compression/recommendation', 'POST', {
-      collection: state.currentCollection,
-      field: fieldName,
-      workload: Number(workload.value) / 100,
-      profileOverride,
-      draftValue: getSectionDraftValue(section, fieldName),
-    });
-
-    const recommendation = response['recommendation'] as CompressionRecommendation;
-    const hasManualProfileOverride = profileSelect.dataset['profileOverridden'] === 'true';
-    section.dataset['recommendedCompression'] = recommendation.recommended;
-    profileSelect.innerHTML = compressionProfileOptionsHTML(
-      hasManualProfileOverride ? recommendation.activeProfile.id : undefined,
-      `Automatisch: ${recommendation.activeProfile.displayName}`,
-    );
-    summary.textContent = recommendation.summary;
-    details.innerHTML = renderCompressionExplanation(recommendation);
-    explainBtn.classList.remove('hidden');
-    applyBtn.classList.remove('hidden');
-    applyBtn.onclick = () => {
-      compressionSelect.value = recommendation.recommended;
-      compressionSelect.dispatchEvent(new Event('change'));
-      summary.textContent = `Advies toegepast: ${recommendation.recommended}. ${recommendation.summary}`;
-    };
-  } catch (error) {
-    summary.textContent = `Advies mislukt: ${(error as Error).message}`;
-    details.classList.add('hidden');
-    explainBtn.classList.add('hidden');
-    applyBtn.classList.add('hidden');
-  }
-}
-
-function getAdvisorSections(container: HTMLElement): HTMLElement[] {
-  const nested = Array.from(container.querySelectorAll<HTMLElement>('.doc-field-section'));
-  if (container.classList.contains('doc-field-section')) {
-    return [container, ...nested];
-  }
-  return nested;
-}
-
-function initializeCompressionAdvisorControls(container: HTMLElement): void {
-  if (compressionProfiles.length === 0) {
-    void ensureCompressionProfilesLoaded();
-  }
-
-  for (const section of getAdvisorSections(container)) {
-    const workload = section.querySelector<HTMLInputElement>('.doc-field-workload');
-    const workloadLabel = section.querySelector<HTMLElement>('.doc-field-workload-value');
-    const recommendBtn = section.querySelector<HTMLButtonElement>('.doc-field-recommend-btn');
-    const explainBtn = section.querySelector<HTMLButtonElement>('.doc-field-explain-toggle');
-    const details = section.querySelector<HTMLElement>('.compression-advisor-details');
-    const profileSelect = section.querySelector<HTMLSelectElement>('.doc-field-profile-override');
-    const titleInput = section.querySelector<HTMLInputElement>('.doc-field-section-title');
-    const compressionSelect = section.querySelector<HTMLSelectElement>('.doc-field-compression');
-
-    if (workload && workloadLabel) {
-      workloadLabel.textContent = workloadTextFromValue(Number(workload.value) / 100);
-      workload.oninput = () => {
-        workloadLabel.textContent = workloadTextFromValue(Number(workload.value) / 100);
-      };
-    }
-
-    if (profileSelect) {
-      if (compressionProfiles.length > 0 && profileSelect.options.length <= 1) {
-        profileSelect.innerHTML = compressionProfileOptionsHTML(undefined);
-      }
-      profileSelect.onchange = () => {
-        const summary = section.querySelector<HTMLElement>('.compression-advisor-summary');
-        profileSelect.dataset['profileOverridden'] = profileSelect.value ? 'true' : 'false';
-        if (summary) summary.textContent = 'Profiel aangepast. Klik op Adviseer om opnieuw te berekenen.';
-      };
-    }
-
-    if (compressionSelect) {
-      compressionSelect.onchange = () => {
-        const notice = section.querySelector<HTMLElement>('.compression-default-notice');
-        if (notice && compressionSelect.dataset['hasCompressionDefault'] === 'true') {
-          const defaultCompression = compressionSelect.dataset['defaultCompression'] ?? 'none';
-          if (compressionSelect.value === defaultCompression) {
-            notice.textContent =
-              defaultCompression === 'none'
-                ? 'Advisor default active: no compression. Change this field to override for this document.'
-                : `Advisor default active: ${defaultCompression}. Change this field to override for this document.`;
-          } else {
-            notice.textContent = `Override for this document: ${compressionSelect.value} instead of advisor default ${defaultCompression}.`;
-          }
-        }
-      };
-    }
-
-    if (recommendBtn) {
-      recommendBtn.onclick = () => {
-        void requestCompressionRecommendation(section, false);
-      };
-    }
-
-    if (explainBtn && details) {
-      explainBtn.onclick = () => {
-        details.classList.toggle('hidden');
-        explainBtn.textContent = details.classList.contains('hidden') ? 'Leg uit waarom' : 'Verberg uitleg';
-      };
-    }
-
-    if (titleInput && titleInput.type !== 'hidden') {
-      titleInput.onchange = () => {
-        const summary = section.querySelector<HTMLElement>('.compression-advisor-summary');
-        const profile = section.querySelector<HTMLSelectElement>('.doc-field-profile-override');
-        if (summary) summary.textContent = 'Veld aangepast. Klik op Adviseer om het profiel opnieuw te detecteren.';
-        if (profile) {
-          profile.dataset['profileOverridden'] = 'false';
-          profile.innerHTML = compressionProfileOptionsHTML(undefined);
-        }
-        void applyCompressionDefaultToSection(section);
-      };
-    }
-
-    if (!section.dataset['advisorInitialized']) {
-      section.dataset['advisorInitialized'] = 'true';
-      void applyCompressionDefaultToSection(section).then(() => requestCompressionRecommendation(section, false));
-    }
-  }
 }
 
 // ── Edit mode UI ─────────────────────────────────────────────
