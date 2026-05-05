@@ -33,6 +33,70 @@
     .doc-id { color: #7ec8e3; font-size: 14px; font-weight: 600; margin-bottom: 8px; }
     .field { margin: 3px 0; }
     .field .key { color: #888; margin-right: 6px; }
+
+    /* Lasso */
+    .lasso-path {
+      fill: rgba(126, 200, 227, 0.08);
+      stroke: #7ec8e3; stroke-width: 1.5;
+      stroke-dasharray: 6 3;
+    }
+    .lasso-ready {
+      animation: lasso-pulse 1s ease-in-out infinite;
+    }
+    @keyframes lasso-pulse {
+      0%, 100% { stroke-opacity: 1; fill: rgba(126, 200, 227, 0.08); }
+      50%      { stroke-opacity: 0.4; fill: rgba(126, 200, 227, 0.15); }
+    }
+    .lasso-hint {
+      font-size: 0.72rem; color: #556; white-space: nowrap;
+      display: flex; align-items: center; gap: 4px;
+    }
+    .lasso-hint kbd {
+      background: #1e2a4a; border: 1px solid #3a3a6a; border-radius: 3px;
+      padding: 1px 5px; font-size: 0.7rem; color: #7ec8e3; font-family: inherit;
+    }
+
+    /* Stats panel */
+    #stats-panel {
+      position: fixed; right: 20px; top: 72px;
+      background: #16213eee; border: 1px solid #2a2a5a;
+      border-radius: 10px; padding: 0; width: 280px;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.5); z-index: 90;
+      display: none; overflow: hidden;
+      backdrop-filter: blur(8px);
+    }
+    #stats-panel .panel-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 14px; background: #1a2848; border-bottom: 1px solid #2a2a5a;
+    }
+    #stats-panel .panel-title { font-size: 13px; font-weight: 600; color: #7ec8e3; }
+    #stats-panel .panel-close {
+      background: none; border: none; color: #666; cursor: pointer;
+      font-size: 16px; padding: 0 2px; line-height: 1;
+    }
+    #stats-panel .panel-close:hover { color: #e0e0e0; }
+    #stats-panel .panel-body {
+      padding: 12px 14px; max-height: 60vh; overflow-y: auto; font-size: 12px;
+    }
+    #stats-panel .panel-body::-webkit-scrollbar { width: 4px; }
+    #stats-panel .panel-body::-webkit-scrollbar-thumb { background: #3a3a6a; border-radius: 2px; }
+    .stat-section { margin-bottom: 10px; }
+    .stat-section:last-child { margin-bottom: 0; }
+    .stat-field-name {
+      font-size: 11px; color: #7ec8e3; text-transform: uppercase;
+      letter-spacing: 0.5px; margin-bottom: 4px; font-weight: 600;
+    }
+    .stat-row { display: flex; justify-content: space-between; padding: 2px 0; color: #bbb; }
+    .stat-row .stat-val { color: #e0e0e0; font-weight: 500; }
+    .stat-bar-wrap { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+    .stat-bar-label { color: #bbb; min-width: 70px; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stat-bar { height: 6px; border-radius: 3px; background: #7ec8e3; transition: width 0.3s; }
+    .stat-bar-count { color: #888; font-size: 10px; min-width: 16px; text-align: right; }
+    .selected-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+    .selected-chip {
+      background: #1e2a4a; border: 1px solid #3a3a6a; border-radius: 4px;
+      padding: 2px 7px; font-size: 10px; color: #ccc;
+    }
   </style>
 </head>
 <body>
@@ -47,180 +111,311 @@
       <label>Y axis</label>
       <select id="y-select"></select>
     </div>
+    <div class="divider"></div>
+    <div class="lasso-hint" id="lasso-hint"><kbd>Shift</kbd>+ drag to lasso select</div>
   </header>
   <svg id="map"></svg>
   <div id="tooltip"></div>
+  <div id="stats-panel">
+    <div class="panel-header">
+      <span class="panel-title"></span>
+      <button class="panel-close">&times;</button>
+    </div>
+    <div class="panel-body"></div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
   <script>
-    const data = [{"x":-0.1403313447288134,"y":0.18544899749098834,"id":"Auckland","label":"Auckland","fields":{"country":"New Zealand","continent":"Oceania","population":1614000,"language":"English"}},{"x":-0.14683417698085238,"y":0.20105768914702904,"id":"Bangkok","label":"Bangkok","fields":{"country":"Thailand","continent":"Asia","population":10539000,"language":"Thai"}},{"x":-0.13362432879819747,"y":0.16850026478634153,"id":"Beijing","label":"Beijing","fields":{"country":"China","continent":"Asia","population":21540000,"language":"Mandarin"}},{"x":-0.09454910849303527,"y":0.260070714304104,"id":"Berlin","label":"Berlin","fields":{"country":"Germany","continent":"Europe","population":3645000,"language":"German"}},{"x":-0.16074806208425932,"y":0.21226109918716785,"id":"Buenos Aires","label":"Buenos Aires","fields":{"country":"Argentina","continent":"America","population":2891000,"language":"Spanish"}},{"x":-0.14084415026268937,"y":0.18078475351910755,"id":"Cairo","label":"Cairo","fields":{"country":"Egypt","continent":"Africa","population":10107000,"language":"Arabic"}},{"x":-0.1944822425313142,"y":0.108480154861634,"id":"Chicago","label":"Chicago","fields":{"country":"USA","continent":"America","population":2696000,"language":"English"}},{"x":-0.16109878779286002,"y":0.20984709500928905,"id":"Delhi","label":"Delhi","fields":{"country":"India","continent":"Asia","population":32941000,"language":"Hindi"}},{"x":-0.15628616170759513,"y":0.21271708566931527,"id":"Lagos","label":"Lagos","fields":{"country":"Nigeria","continent":"Africa","population":14800000,"language":"English"}},{"x":-0.10201193133556055,"y":0.2655617670822079,"id":"London","label":"London","fields":{"country":"UK","continent":"Europe","population":8982000,"language":"English"}},{"x":-0.1944822425313142,"y":0.108480154861634,"id":"Los Angeles","label":"Los Angeles","fields":{"country":"USA","continent":"America","population":3979000,"language":"English"}},{"x":-0.10440317759679277,"y":0.23093057618601773,"id":"Lyon","label":"Lyon","fields":{"country":"France","continent":"Europe","population":522000,"language":"French"}},{"x":-0.16325452639724716,"y":0.2624839103037327,"id":"Madrid","label":"Madrid","fields":{"country":"Spain","continent":"Europe","population":3223000,"language":"Spanish"}},{"x":-0.16074806208425932,"y":0.21226109918716787,"id":"Mexico City","label":"Mexico City","fields":{"country":"Mexico","continent":"America","population":9209000,"language":"Spanish"}},{"x":-0.16161351839592172,"y":0.2618886952350976,"id":"Milan","label":"Milan","fields":{"country":"Italy","continent":"Europe","population":1352000,"language":"Italian"}},{"x":-0.16109878779286002,"y":0.20984709500928905,"id":"Mumbai","label":"Mumbai","fields":{"country":"India","continent":"Asia","population":12442000,"language":"Hindi"}},{"x":-0.09454910849303527,"y":0.260070714304104,"id":"Munich","label":"Munich","fields":{"country":"Germany","continent":"Europe","population":1488000,"language":"German"}},{"x":-0.13617001231769038,"y":0.18946336469368363,"id":"Nairobi","label":"Nairobi","fields":{"country":"Kenya","continent":"Africa","population":4397000,"language":"Swahili"}},{"x":-0.19448224253131413,"y":0.10848015486163398,"id":"New York","label":"New York","fields":{"country":"USA","continent":"America","population":8336000,"language":"English"}},{"x":-0.11573617527372632,"y":0.21662535191523904,"id":"Osaka","label":"Osaka","fields":{"country":"Japan","continent":"Asia","population":2691000,"language":"Japanese"}},{"x":-0.10440317759679277,"y":0.23093057618601776,"id":"Paris","label":"Paris","fields":{"country":"France","continent":"Europe","population":2161000,"language":"French"}},{"x":-0.16203531312511382,"y":0.21208705569158703,"id":"Rio de Janeiro","label":"Rio de Janeiro","fields":{"country":"Brazil","continent":"America","population":6748000,"language":"Portuguese"}},{"x":-0.16161351839592175,"y":0.2618886952350976,"id":"Rome","label":"Rome","fields":{"country":"Italy","continent":"Europe","population":2873000,"language":"Italian"}},{"x":-0.16203531312511382,"y":0.212087055691587,"id":"Sao Paulo","label":"Sao Paulo","fields":{"country":"Brazil","continent":"America","population":12325000,"language":"Portuguese"}},{"x":-0.13355963197531542,"y":0.17904797341737302,"id":"Seoul","label":"Seoul","fields":{"country":"South Korea","continent":"Asia","population":9776000,"language":"Korean"}},{"x":-0.13362432879819747,"y":0.16850026478634153,"id":"Shanghai","label":"Shanghai","fields":{"country":"China","continent":"Asia","population":24280000,"language":"Mandarin"}},{"x":-0.1574606401056159,"y":0.20017927056576879,"id":"Sydney","label":"Sydney","fields":{"country":"Australia","continent":"Oceania","population":5312000,"language":"English"}},{"x":-0.11573617527372629,"y":0.2166253519152391,"id":"Tokyo","label":"Tokyo","fields":{"country":"Japan","continent":"Asia","population":13960000,"language":"Japanese"}},{"x":0.011880897500913678,"y":-0.041795583225993076,"id":"Albert Einstein","label":"Albert Einstein","fields":{"country":"Germany","profession":"physicist","field":"science","era":"20th century"}},{"x":-0.03702102706819538,"y":-0.06691459207247016,"id":"Cleopatra","label":"Cleopatra","fields":{"country":"Egypt","profession":"pharaoh","field":"politics","era":"1st century BC"}},{"x":-0.019921687757672328,"y":-0.08928755995510972,"id":"Confucius","label":"Confucius","fields":{"country":"China","profession":"philosopher","field":"philosophy","era":"5th century BC"}},{"x":-0.038684171657442264,"y":-0.03192496871107661,"id":"Leonardo da Vinci","label":"Leonardo da Vinci","fields":{"country":"Italy","profession":"artist inventor","field":"art science","era":"15th century"}},{"x":-0.04133068018740734,"y":-0.06427372607428569,"id":"Mahatma Gandhi","label":"Mahatma Gandhi","fields":{"country":"India","profession":"independence leader","field":"politics","era":"20th century"}},{"x":-0.05166011020608743,"y":-0.1397413813399276,"id":"Martin Luther King Jr","label":"Martin Luther King Jr","fields":{"country":"USA","profession":"civil rights leader","field":"politics","era":"20th century"}},{"x":-0.0013823897957684229,"y":-0.07064961088077376,"id":"Napoleon Bonaparte","label":"Napoleon Bonaparte","fields":{"country":"France","profession":"military leader","field":"politics","era":"19th century"}},{"x":-0.02899880163553594,"y":-0.07502613319751748,"id":"Simon Bolivar","label":"Simon Bolivar","fields":{"country":"Venezuela","profession":"liberator","field":"politics","era":"19th century"}},{"x":-0.028347297371492115,"y":-0.07227065152155321,"id":"Socrates","label":"Socrates","fields":{"country":"Greece","profession":"philosopher","field":"philosophy","era":"5th century BC"}},{"x":-0.02695820161141712,"y":-0.06575308931547141,"id":"Wolfgang Amadeus Mozart","label":"Wolfgang Amadeus Mozart","fields":{"country":"Austria","profession":"composer","field":"music","era":"18th century"}},{"x":-0.15801500242860145,"y":-0.06194184719033122,"id":"Angkor Wat","label":"Angkor Wat","fields":{"country":"Cambodia","continent":"Asia","built":1150,"type":"ancient"}},{"x":-0.1666741208485733,"y":0.0004216503955846509,"id":"Colosseum","label":"Colosseum","fields":{"country":"Italy","continent":"Europe","built":80,"type":"ancient"}},{"x":-0.10814019487225154,"y":-0.027157887946420205,"id":"Eiffel Tower","label":"Eiffel Tower","fields":{"country":"France","continent":"Europe","built":1889,"type":"manmade"}},{"x":-0.14081827405646516,"y":-0.08418005599104834,"id":"Great Wall","label":"Great Wall","fields":{"country":"China","continent":"Asia","built":700,"type":"ancient"}},{"x":-0.16212066095241384,"y":-0.06851328020436329,"id":"Machu Picchu","label":"Machu Picchu","fields":{"country":"Peru","continent":"America","built":1450,"type":"ancient"}},{"x":-0.1517878222146911,"y":-0.06623807090630351,"id":"Pyramids of Giza","label":"Pyramids of Giza","fields":{"country":"Egypt","continent":"Africa","built":-2560,"type":"ancient"}},{"x":-0.15888026447961479,"y":-0.0019888603849424285,"id":"Sagrada Familia","label":"Sagrada Familia","fields":{"country":"Spain","continent":"Europe","built":1882,"type":"manmade"}},{"x":-0.18075826646062088,"y":-0.1605085539822498,"id":"Statue of Liberty","label":"Statue of Liberty","fields":{"country":"USA","continent":"America","built":1886,"type":"manmade"}},{"x":-0.14373666403492272,"y":-0.06880943827811517,"id":"Sydney Opera House","label":"Sydney Opera House","fields":{"country":"Australia","continent":"Oceania","built":1973,"type":"manmade"}},{"x":-0.16619862681841222,"y":-0.04672346315387247,"id":"Taj Mahal","label":"Taj Mahal","fields":{"country":"India","continent":"Asia","built":1643,"type":"ancient"}},{"x":-0.10507511948348681,"y":0.23245385389500867,"id":"Ajax","label":"Ajax","fields":{"country":"Netherlands","continent":"Europe","city":"Amsterdam","founded":1900}},{"x":-0.05678473369449079,"y":0.24734821068775747,"id":"Bayern Munich","label":"Bayern Munich","fields":{"country":"Germany","continent":"Europe","city":"Munich","founded":1900}},{"x":-0.05303961043586037,"y":0.2382116766018159,"id":"Borussia Dortmund","label":"Borussia Dortmund","fields":{"country":"Germany","continent":"Europe","city":"Dortmund","founded":1909}},{"x":-0.11574779060944385,"y":0.23690882154177983,"id":"FC Barcelona","label":"FC Barcelona","fields":{"country":"Spain","continent":"Europe","city":"Barcelona","founded":1899}},{"x":-0.11795849393365104,"y":0.23995704488586683,"id":"Inter Milan","label":"Inter Milan","fields":{"country":"Italy","continent":"Europe","city":"Milan","founded":1908}},{"x":-0.11795849393365104,"y":0.23995704488586683,"id":"Juventus","label":"Juventus","fields":{"country":"Italy","continent":"Europe","city":"Turin","founded":1897}},{"x":-0.04177572135654011,"y":0.23538478059231166,"id":"Liverpool","label":"Liverpool","fields":{"country":"UK","continent":"Europe","city":"Liverpool","founded":1892}},{"x":-0.04177572135654011,"y":0.23538478059231166,"id":"Manchester City","label":"Manchester City","fields":{"country":"UK","continent":"Europe","city":"Manchester","founded":1880}},{"x":-0.06257842885282518,"y":0.2102353962640157,"id":"Paris Saint-Germain","label":"Paris Saint-Germain","fields":{"country":"France","continent":"Europe","city":"Paris","founded":1970}},{"x":-0.11574779060944385,"y":0.23690882154177983,"id":"Real Madrid","label":"Real Madrid","fields":{"country":"Spain","continent":"Europe","city":"Madrid","founded":1902}},{"x":-0.16213146615401952,"y":-0.674078007627102,"id":"ChatGPT","label":"ChatGPT","fields":{"country":"USA","company":"OpenAI","launched":2022,"type":"proprietary"}},{"x":-0.17370586459430087,"y":-0.7433260938252024,"id":"Claude","label":"Claude","fields":{"country":"USA","company":"Anthropic","launched":2023,"type":"proprietary"}},{"x":-0.17370586459430087,"y":-0.7433260938252024,"id":"Copilot","label":"Copilot","fields":{"country":"USA","company":"Microsoft","launched":2023,"type":"proprietary"}},{"x":-0.10125338386218254,"y":-0.5234473215450985,"id":"DeepSeek","label":"DeepSeek","fields":{"country":"China","company":"DeepSeek","launched":2024,"type":"open-source"}},{"x":-0.17370586459430087,"y":-0.7433260938252024,"id":"Gemini","label":"Gemini","fields":{"country":"USA","company":"Google","launched":2023,"type":"proprietary"}},{"x":-0.17370586459430087,"y":-0.7433260938252024,"id":"Grok","label":"Grok","fields":{"country":"USA","company":"xAI","launched":2023,"type":"proprietary"}},{"x":-0.1545037644317614,"y":-0.6744455042949566,"id":"Llama","label":"Llama","fields":{"country":"USA","company":"Meta","launched":2023,"type":"open-source"}},{"x":-0.093952611322136,"y":-0.5638221953841827,"id":"Mistral","label":"Mistral","fields":{"country":"France","company":"Mistral AI","launched":2023,"type":"open-source"}},{"x":-0.1515564479140755,"y":-0.6354687635509089,"id":"Perplexity","label":"Perplexity","fields":{"country":"USA","company":"Perplexity AI","launched":2022,"type":"proprietary"}},{"x":-0.11778380806218593,"y":-0.6124298245060646,"id":"Qwen","label":"Qwen","fields":{"country":"China","company":"Alibaba","launched":2023,"type":"open-source"}},{"x":0.808581902433719,"y":0.011939703517356622,"id":"Beagle","label":"Beagle","fields":{"country":"UK","size":"small","group":"hunting"}},{"x":0.794897709305875,"y":-0.07007904753002392,"id":"Chow Chow","label":"Chow Chow","fields":{"country":"China","size":"medium","group":"working"}},{"x":0.7824047858855032,"y":-0.023636863214696907,"id":"French Bulldog","label":"French Bulldog","fields":{"country":"France","size":"small","group":"companion"}},{"x":0.7891135204506694,"y":0.01734269167895553,"id":"German Shepherd","label":"German Shepherd","fields":{"country":"Germany","size":"large","group":"herding"}},{"x":0.851673997721723,"y":0.011438715659171927,"id":"Golden Retriever","label":"Golden Retriever","fields":{"country":"UK","size":"large","group":"sporting"}},{"x":0.848418081976195,"y":-0.022694980781257347,"id":"Labrador Retriever","label":"Labrador Retriever","fields":{"country":"Canada","size":"large","group":"sporting"}},{"x":0.7860568418987453,"y":-0.03296056521767091,"id":"Poodle","label":"Poodle","fields":{"country":"France","size":"medium","group":"companion"}},{"x":0.8694042232972764,"y":0.008602242090527127,"id":"Rottweiler","label":"Rottweiler","fields":{"country":"Germany","size":"large","group":"working"}},{"x":0.77321516465412,"y":0.0025088479545756835,"id":"Shiba Inu","label":"Shiba Inu","fields":{"country":"Japan","size":"small","group":"hunting"}},{"x":0.8480502302474756,"y":-0.0415450606038762,"id":"Siberian Husky","label":"Siberian Husky","fields":{"country":"Russia","size":"medium","group":"working"}}];
+    const data = [{"x":-0.14032986563059796,"y":0.18544907282759018,"id":"Auckland","label":"Auckland","fields":{"country":"New Zealand","continent":"Oceania","population":1614000,"language":"English"}},{"x":-0.14683257340423345,"y":0.2010577693231884,"id":"Bangkok","label":"Bangkok","fields":{"country":"Thailand","continent":"Asia","population":10539000,"language":"Thai"}},{"x":-0.13362298483162569,"y":0.16850023193507893,"id":"Beijing","label":"Beijing","fields":{"country":"China","continent":"Asia","population":21540000,"language":"Mandarin"}},{"x":-0.09454703439741799,"y":0.26007052580760964,"id":"Berlin","label":"Berlin","fields":{"country":"Germany","continent":"Europe","population":3645000,"language":"German"}},{"x":-0.16074636910818538,"y":0.21226108799516105,"id":"Buenos Aires","label":"Buenos Aires","fields":{"country":"Argentina","continent":"America","population":2891000,"language":"Spanish"}},{"x":-0.14084270849688493,"y":0.1807852802115822,"id":"Cairo","label":"Cairo","fields":{"country":"Egypt","continent":"Africa","population":10107000,"language":"Arabic"}},{"x":-0.19448137697119597,"y":0.10847999729759394,"id":"Chicago","label":"Chicago","fields":{"country":"USA","continent":"America","population":2696000,"language":"English"}},{"x":-0.16109711419449202,"y":0.2098474983824196,"id":"Delhi","label":"Delhi","fields":{"country":"India","continent":"Asia","population":32941000,"language":"Hindi"}},{"x":-0.15628446512438487,"y":0.21271713092676833,"id":"Lagos","label":"Lagos","fields":{"country":"Nigeria","continent":"Africa","population":14800000,"language":"English"}},{"x":-0.10200981328676598,"y":0.2655611034550852,"id":"London","label":"London","fields":{"country":"UK","continent":"Europe","population":8982000,"language":"English"}},{"x":-0.19448137697119597,"y":0.10847999729759393,"id":"Los Angeles","label":"Los Angeles","fields":{"country":"USA","continent":"America","population":3979000,"language":"English"}},{"x":-0.10440133582737816,"y":0.23093035054707067,"id":"Lyon","label":"Lyon","fields":{"country":"France","continent":"Europe","population":522000,"language":"French"}},{"x":-0.16325243295617717,"y":0.26248394816329573,"id":"Madrid","label":"Madrid","fields":{"country":"Spain","continent":"Europe","population":3223000,"language":"Spanish"}},{"x":-0.16074636910818538,"y":0.21226108799516105,"id":"Mexico City","label":"Mexico City","fields":{"country":"Mexico","continent":"America","population":9209000,"language":"Spanish"}},{"x":-0.16161142978233767,"y":0.2618889795153994,"id":"Milan","label":"Milan","fields":{"country":"Italy","continent":"Europe","population":1352000,"language":"Italian"}},{"x":-0.16109711419449202,"y":0.2098474983824196,"id":"Mumbai","label":"Mumbai","fields":{"country":"India","continent":"Asia","population":12442000,"language":"Hindi"}},{"x":-0.094547034397418,"y":0.26007052580760964,"id":"Munich","label":"Munich","fields":{"country":"Germany","continent":"Europe","population":1488000,"language":"German"}},{"x":-0.136168501249231,"y":0.18946353485879816,"id":"Nairobi","label":"Nairobi","fields":{"country":"Kenya","continent":"Africa","population":4397000,"language":"Swahili"}},{"x":-0.19448137697119602,"y":0.10847999729759394,"id":"New York","label":"New York","fields":{"country":"USA","continent":"America","population":8336000,"language":"English"}},{"x":-0.11573444750068336,"y":0.2166249889716422,"id":"Osaka","label":"Osaka","fields":{"country":"Japan","continent":"Asia","population":2691000,"language":"Japanese"}},{"x":-0.10440133582737815,"y":0.23093035054707067,"id":"Paris","label":"Paris","fields":{"country":"France","continent":"Europe","population":2161000,"language":"French"}},{"x":-0.16203362153064294,"y":0.21208703546625227,"id":"Rio de Janeiro","label":"Rio de Janeiro","fields":{"country":"Brazil","continent":"America","population":6748000,"language":"Portuguese"}},{"x":-0.16161142978233767,"y":0.2618889795153994,"id":"Rome","label":"Rome","fields":{"country":"Italy","continent":"Europe","population":2873000,"language":"Italian"}},{"x":-0.16203362153064294,"y":0.21208703546625224,"id":"Sao Paulo","label":"Sao Paulo","fields":{"country":"Brazil","continent":"America","population":12325000,"language":"Portuguese"}},{"x":-0.13355820395949858,"y":0.17904812452289842,"id":"Seoul","label":"Seoul","fields":{"country":"South Korea","continent":"Asia","population":9776000,"language":"Korean"}},{"x":-0.13362298483162569,"y":0.16850023193507893,"id":"Shanghai","label":"Shanghai","fields":{"country":"China","continent":"Asia","population":24280000,"language":"Mandarin"}},{"x":-0.1574590434772923,"y":0.200179256594556,"id":"Sydney","label":"Sydney","fields":{"country":"Australia","continent":"Oceania","population":5312000,"language":"English"}},{"x":-0.11573444750068336,"y":0.2166249889716422,"id":"Tokyo","label":"Tokyo","fields":{"country":"Japan","continent":"Asia","population":13960000,"language":"Japanese"}},{"x":0.011880561768125677,"y":-0.04178781925464929,"id":"Albert Einstein","label":"Albert Einstein","fields":{"country":"Germany","profession":"physicist","field":"science","era":"20th century"}},{"x":-0.03702156314124781,"y":-0.06690629813285105,"id":"Cleopatra","label":"Cleopatra","fields":{"country":"Egypt","profession":"pharaoh","field":"politics","era":"1st century BC"}},{"x":-0.01992240217079043,"y":-0.08927960070718031,"id":"Confucius","label":"Confucius","fields":{"country":"China","profession":"philosopher","field":"philosophy","era":"5th century BC"}},{"x":-0.03868442821899119,"y":-0.031918279113015854,"id":"Leonardo da Vinci","label":"Leonardo da Vinci","fields":{"country":"Italy","profession":"artist inventor","field":"art science","era":"15th century"}},{"x":-0.04133119529491611,"y":-0.06426510043617285,"id":"Mahatma Gandhi","label":"Mahatma Gandhi","fields":{"country":"India","profession":"independence leader","field":"politics","era":"20th century"}},{"x":-0.0516612268165445,"y":-0.13973355119441477,"id":"Martin Luther King Jr","label":"Martin Luther King Jr","fields":{"country":"USA","profession":"civil rights leader","field":"politics","era":"20th century"}},{"x":-0.0013829556679294131,"y":-0.0706415536355348,"id":"Napoleon Bonaparte","label":"Napoleon Bonaparte","fields":{"country":"France","profession":"military leader","field":"politics","era":"19th century"}},{"x":-0.028999402597442214,"y":-0.07501723978130133,"id":"Simon Bolivar","label":"Simon Bolivar","fields":{"country":"Venezuela","profession":"liberator","field":"politics","era":"19th century"}},{"x":-0.028347876200141772,"y":-0.07226227898153796,"id":"Socrates","label":"Socrates","fields":{"country":"Greece","profession":"philosopher","field":"philosophy","era":"5th century BC"}},{"x":-0.02695872829970064,"y":-0.06574527057836611,"id":"Wolfgang Amadeus Mozart","label":"Wolfgang Amadeus Mozart","fields":{"country":"Austria","profession":"composer","field":"music","era":"18th century"}},{"x":-0.15801549593399566,"y":-0.061941906430574345,"id":"Angkor Wat","label":"Angkor Wat","fields":{"country":"Cambodia","continent":"Asia","built":1150,"type":"ancient"}},{"x":-0.16667411711370417,"y":0.0004218001880451712,"id":"Colosseum","label":"Colosseum","fields":{"country":"Italy","continent":"Europe","built":80,"type":"ancient"}},{"x":-0.10814041104896233,"y":-0.027158233237393616,"id":"Eiffel Tower","label":"Eiffel Tower","fields":{"country":"France","continent":"Europe","built":1889,"type":"manmade"}},{"x":-0.1408189449068622,"y":-0.08418019596772681,"id":"Great Wall","label":"Great Wall","fields":{"country":"China","continent":"Asia","built":700,"type":"ancient"}},{"x":-0.1621212068325593,"y":-0.06851338861964816,"id":"Machu Picchu","label":"Machu Picchu","fields":{"country":"Peru","continent":"America","built":1450,"type":"ancient"}},{"x":-0.1517883501273601,"y":-0.06623770307109973,"id":"Pyramids of Giza","label":"Pyramids of Giza","fields":{"country":"Egypt","continent":"Africa","built":-2560,"type":"ancient"}},{"x":-0.15888027991462747,"y":-0.0019889389588696933,"id":"Sagrada Familia","label":"Sagrada Familia","fields":{"country":"Spain","continent":"Europe","built":1882,"type":"manmade"}},{"x":-0.18075954583158713,"y":-0.1605087600771588,"id":"Statue of Liberty","label":"Statue of Liberty","fields":{"country":"USA","continent":"America","built":1886,"type":"manmade"}},{"x":-0.14373721233768322,"y":-0.06880950078019667,"id":"Sydney Opera House","label":"Sydney Opera House","fields":{"country":"Australia","continent":"Oceania","built":1973,"type":"manmade"}},{"x":-0.16619899905027793,"y":-0.04672320753063561,"id":"Taj Mahal","label":"Taj Mahal","fields":{"country":"India","continent":"Asia","built":1643,"type":"ancient"}},{"x":-0.10507326575316354,"y":0.23245421657554674,"id":"Ajax","label":"Ajax","fields":{"country":"Netherlands","continent":"Europe","city":"Amsterdam","founded":1900}},{"x":-0.056782761232667824,"y":0.24734829789245252,"id":"Bayern Munich","label":"Bayern Munich","fields":{"country":"Germany","continent":"Europe","city":"Munich","founded":1900}},{"x":-0.053037710835907415,"y":0.238211757684741,"id":"Borussia Dortmund","label":"Borussia Dortmund","fields":{"country":"Germany","continent":"Europe","city":"Dortmund","founded":1909}},{"x":-0.1157459013160101,"y":0.23690914477378477,"id":"FC Barcelona","label":"FC Barcelona","fields":{"country":"Spain","continent":"Europe","city":"Barcelona","founded":1899}},{"x":-0.11795658039572246,"y":0.23995758456681537,"id":"Inter Milan","label":"Inter Milan","fields":{"country":"Italy","continent":"Europe","city":"Milan","founded":1908}},{"x":-0.11795658039572246,"y":0.23995758456681537,"id":"Juventus","label":"Juventus","fields":{"country":"Italy","continent":"Europe","city":"Turin","founded":1897}},{"x":-0.0417738441943591,"y":0.23538443829137615,"id":"Liverpool","label":"Liverpool","fields":{"country":"UK","continent":"Europe","city":"Liverpool","founded":1892}},{"x":-0.0417738441943591,"y":0.23538443829137615,"id":"Manchester City","label":"Manchester City","fields":{"country":"UK","continent":"Europe","city":"Manchester","founded":1880}},{"x":-0.0625767523002254,"y":0.21023544315915685,"id":"Paris Saint-Germain","label":"Paris Saint-Germain","fields":{"country":"France","continent":"Europe","city":"Paris","founded":1970}},{"x":-0.11574590131601009,"y":0.23690914477378477,"id":"Real Madrid","label":"Real Madrid","fields":{"country":"Spain","continent":"Europe","city":"Madrid","founded":1902}},{"x":-0.16213684063268996,"y":-0.674078634525578,"id":"ChatGPT","label":"ChatGPT","fields":{"country":"USA","company":"OpenAI","launched":2022,"type":"proprietary"}},{"x":-0.1737117911848654,"y":-0.7433268541332945,"id":"Claude","label":"Claude","fields":{"country":"USA","company":"Anthropic","launched":2023,"type":"proprietary"}},{"x":-0.1737117911848654,"y":-0.7433268541332945,"id":"Copilot","label":"Copilot","fields":{"country":"USA","company":"Microsoft","launched":2023,"type":"proprietary"}},{"x":-0.10125755742352291,"y":-0.5234477725144492,"id":"DeepSeek","label":"DeepSeek","fields":{"country":"China","company":"DeepSeek","launched":2024,"type":"open-source"}},{"x":-0.1737117911848654,"y":-0.7433268541332945,"id":"Gemini","label":"Gemini","fields":{"country":"USA","company":"Google","launched":2023,"type":"proprietary"}},{"x":-0.1737117911848654,"y":-0.7433268541332945,"id":"Grok","label":"Grok","fields":{"country":"USA","company":"xAI","launched":2023,"type":"proprietary"}},{"x":-0.1545091418638932,"y":-0.6744461191298201,"id":"Llama","label":"Llama","fields":{"country":"USA","company":"Meta","launched":2023,"type":"open-source"}},{"x":-0.0939571067719635,"y":-0.5638228979485903,"id":"Mistral","label":"Mistral","fields":{"country":"France","company":"Mistral AI","launched":2023,"type":"open-source"}},{"x":-0.15156151457449907,"y":-0.6354693125493835,"id":"Perplexity","label":"Perplexity","fields":{"country":"USA","company":"Perplexity AI","launched":2022,"type":"proprietary"}},{"x":-0.11778869107346704,"y":-0.6124304449562932,"id":"Qwen","label":"Qwen","fields":{"country":"China","company":"Alibaba","launched":2023,"type":"open-source"}},{"x":0.8085819979922999,"y":0.011932048124970632,"id":"Beagle","label":"Beagle","fields":{"country":"UK","size":"small","group":"hunting"}},{"x":0.7948971507574759,"y":-0.07008629822713484,"id":"Chow Chow","label":"Chow Chow","fields":{"country":"China","size":"medium","group":"working"}},{"x":0.7824045976585847,"y":-0.023643990668462,"id":"French Bulldog","label":"French Bulldog","fields":{"country":"France","size":"small","group":"companion"}},{"x":0.7891136589279385,"y":0.017335719961259072,"id":"German Shepherd","label":"German Shepherd","fields":{"country":"Germany","size":"large","group":"herding"}},{"x":0.8516740892807909,"y":0.011430726699164201,"id":"Golden Retriever","label":"Golden Retriever","fields":{"country":"UK","size":"large","group":"sporting"}},{"x":0.8484179012982581,"y":-0.02270276408147237,"id":"Labrador Retriever","label":"Labrador Retriever","fields":{"country":"Canada","size":"large","group":"sporting"}},{"x":0.7860565793118298,"y":-0.03296768038900327,"id":"Poodle","label":"Poodle","fields":{"country":"France","size":"medium","group":"companion"}},{"x":0.869404292120387,"y":0.00859448794762274,"id":"Rottweiler","label":"Rottweiler","fields":{"country":"Germany","size":"large","group":"working"}},{"x":0.7732151849990676,"y":0.002501519332738915,"id":"Shiba Inu","label":"Shiba Inu","fields":{"country":"Japan","size":"small","group":"hunting"}},{"x":0.8480498992483929,"y":-0.04155280483576529,"id":"Siberian Husky","label":"Siberian Husky","fields":{"country":"Russia","size":"medium","group":"working"}}];
 
-    const W = window.innerWidth;
-    const H = window.innerHeight - 52;
-    const pad = 80;
+    var W = window.innerWidth;
+    var H = window.innerHeight - 52;
+    var pad = 100;
+    var svg = d3.select('#map').attr('width', W).attr('height', H);
+    var xScalePCA = d3.scaleLinear().domain(d3.extent(data, function(d){return d.x;})).range([pad, W - pad]);
+    var yScalePCA = d3.scaleLinear().domain(d3.extent(data, function(d){return d.y;})).range([H - pad, pad]);
 
-    const svg = d3.select('#map').attr('width', W).attr('height', H);
-
-    const xScalePCA = d3.scaleLinear().domain(d3.extent(data, d => d.x)).range([pad, W - pad]);
-    const yScalePCA = d3.scaleLinear().domain(d3.extent(data, d => d.y)).range([H - pad, pad]);
-
-    // ── Populate dropdowns ──────────────────────────────────────────────────
-    const allFields = ['semantic', ...new Set(data.flatMap(d => Object.keys(d.fields)))];
-    const xSel = document.getElementById('x-select');
-    const ySel = document.getElementById('y-select');
-    for (const f of allFields) {
-      const label = f === 'semantic' ? 'Semantic (PCA)' : f;
+    // -- Dropdowns --
+    var allFields = ['semantic'].concat([...new Set(data.flatMap(function(d){return Object.keys(d.fields);}))]);
+    var xSel = document.getElementById('x-select');
+    var ySel = document.getElementById('y-select');
+    allFields.forEach(function(f) {
+      var label = f === 'semantic' ? 'Semantic (PCA)' : f;
       xSel.appendChild(new Option(label, f));
       ySel.appendChild(new Option(label, f));
-    }
+    });
     if (allFields.length > 1) ySel.value = allFields[1];
 
-    // ── Deterministic per-document jitter ───────────────────────────────────
+    // -- Jitter --
     function stableJitter(id, seed, range) {
-      const s = id + seed;
-      let h = 0x811c9dc5;
-      for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (Math.imul(h, 0x01000193)) >>> 0; }
+      var s = id + seed, h = 0x811c9dc5;
+      for (var i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = (Math.imul(h, 0x01000193)) >>> 0; }
       return (h / 4294967296 - 0.5) * range;
     }
 
-    /**
-     * Computes pixel positions for one axis AND marks which documents are visible.
-     * A document is visible only if it has a value for the chosen field.
-     * In semantic mode every document is visible.
-     *
-     * Returns:
-     *   dataPositions — pixel value per document (jitter applied for categoricals)
-     *   ticks         — [{label, pos}] for axis tick marks (no jitter, exact base)
-     *   visible       — boolean[] — false means this document is missing the field
-     */
+    // -- Layout --
     function computeLayout(field, axis) {
-      const isX = axis === 'x';
-      const lo  = isX ? pad     : H - pad;
-      const hi  = isX ? W - pad : pad;
-
+      var isX = axis === 'x';
+      var lo = isX ? pad : H - pad;
+      var hi = isX ? W - pad : pad;
       if (field === 'semantic') {
         return {
-          dataPositions: data.map(d => isX ? xScalePCA(d.x) : yScalePCA(d.y)),
-          ticks: [],
-          visible: data.map(() => true),
+          dataPositions: data.map(function(d){return isX ? xScalePCA(d.x) : yScalePCA(d.y);}),
+          ticks: [], visible: data.map(function(){return true;}),
         };
       }
-
-      const rawValues = data.map(d => d.fields[field]);
-      const visible   = rawValues.map(v => v != null);
-      const defined   = rawValues.filter(v => v != null);
-      const isNumeric = defined.length > 0 && defined.every(v => typeof v === 'number');
-
+      var rawValues = data.map(function(d){return d.fields[field];});
+      var visible = rawValues.map(function(v){return v != null;});
+      var defined = rawValues.filter(function(v){return v != null;});
+      var isNumeric = defined.length > 0 && defined.every(function(v){return typeof v === 'number';});
       if (isNumeric) {
-        const scale = d3.scaleLinear().domain(d3.extent(defined)).range([lo, hi]);
+        var scale = d3.scaleLinear().domain(d3.extent(defined)).range([lo, hi]);
         return {
-          dataPositions: rawValues.map((v, i) =>
-            v != null ? scale(v) + stableJitter(data[i].id, axis, 18) : 0
-          ),
-          ticks: scale.ticks(5).map(t => ({ label: String(t), pos: scale(t) })),
-          visible,
+          dataPositions: rawValues.map(function(v, i){return v != null ? scale(v) + stableJitter(data[i].id, axis, 18) : 0;}),
+          ticks: scale.ticks(5).map(function(t){return {label: String(t), pos: scale(t)};}),
+          visible: visible,
         };
       }
-
-      // Categorical
-      const categories = [...new Set(defined.map(String))].sort();
-      const step    = categories.length > 1 ? (hi - lo) / (categories.length - 1) : 0;
-      const basePos = new Map(categories.map((cat, idx) => [cat, lo + idx * step]));
-
+      var categories = [...new Set(defined.map(String))].sort();
+      var step = categories.length > 1 ? (hi - lo) / (categories.length - 1) : 0;
+      var basePos = new Map(categories.map(function(cat, idx){return [cat, lo + idx * step];}));
       return {
-        dataPositions: rawValues.map((v, i) =>
-          v != null ? basePos.get(String(v)) + stableJitter(data[i].id, axis, 22) : 0
-        ),
-        ticks: categories.map(cat => ({ label: cat, pos: basePos.get(cat) })),
-        visible,
+        dataPositions: rawValues.map(function(v, i){return v != null ? basePos.get(String(v)) + stableJitter(data[i].id, axis, 22) : 0;}),
+        ticks: categories.map(function(cat){return {label: cat, pos: basePos.get(cat)};}),
+        visible: visible,
       };
     }
 
-    // ── Axis decorations ────────────────────────────────────────────────────
-    const axisLayer = svg.append('g');
-
+    // -- Axis labels + titles --
+    var axisLayer = svg.append('g');
     function drawAxis(field, axis, ticks) {
-      const isX = axis === 'x';
+      var isX = axis === 'x';
       axisLayer.selectAll('.' + axis + '-deco').remove();
       if (field === 'semantic' || ticks.length === 0) return;
-
-      const g2 = axisLayer.append('g').attr('class', axis + '-deco');
-
-      // Ticks — positions come directly from computeLayout, same arithmetic as data
-      for (const { pos } of ticks) {
+      var g2 = axisLayer.append('g').attr('class', axis + '-deco');
+      ticks.forEach(function(tick) {
         if (isX) {
-          g2.append('line')
-            .attr('x1', pos).attr('y1', pad - 8).attr('x2', pos).attr('y2', H - pad + 8)
+          g2.append('line').attr('x1', tick.pos).attr('y1', pad - 8).attr('x2', tick.pos).attr('y2', H - pad + 8)
             .attr('stroke', '#2a2a5a').attr('stroke-width', 1);
+          g2.append('text').attr('x', tick.pos).attr('y', H - pad + 24)
+            .attr('text-anchor', 'middle').attr('font-size', 11).attr('fill', '#999').text(tick.label);
         } else {
-          g2.append('line')
-            .attr('x1', pad - 8).attr('y1', pos).attr('x2', W - pad + 8).attr('y2', pos)
+          g2.append('line').attr('x1', pad - 8).attr('y1', tick.pos).attr('x2', W - pad + 8).attr('y2', tick.pos)
             .attr('stroke', '#2a2a5a').attr('stroke-width', 1);
+          g2.append('text').attr('x', pad - 14).attr('y', tick.pos + 4)
+            .attr('text-anchor', 'end').attr('font-size', 11).attr('fill', '#999').text(tick.label);
         }
+      });
+      var titleLabel = field.charAt(0).toUpperCase() + field.slice(1);
+      if (isX) {
+        g2.append('text').attr('x', W / 2).attr('y', H - pad + 48)
+          .attr('text-anchor', 'middle').attr('font-size', 13).attr('fill', '#7ec8e3').attr('font-weight', 600).text(titleLabel);
+      } else {
+        g2.append('text').attr('x', 20).attr('y', H / 2)
+          .attr('text-anchor', 'middle').attr('font-size', 13).attr('fill', '#7ec8e3').attr('font-weight', 600)
+          .attr('transform', 'rotate(-90, 20, ' + (H / 2) + ')').text(titleLabel);
       }
     }
 
-    // ── Build scene ─────────────────────────────────────────────────────────
-    const g = svg.append('g');
-    svg.call(d3.zoom().scaleExtent([0.15, 20]).on('zoom', e => g.attr('transform', e.transform)));
+    // -- Scene + lasso state (all declared before update) --
+    var g = svg.append('g');
+    var lassoLayer = svg.append('g');
+    var lassoPoints = [];
+    var lassoDrawing = false;
+    var lassoReady = false;
+    var lassoPath = null;
+    var selectedIds = new Set();
+    var currentPositions = new Map();
 
-    const color = d3.scaleSequential(d3.interpolateTurbo).domain([0, Math.max(1, data.length - 1)]);
-    const tooltip = document.getElementById('tooltip');
+    var zoom = d3.zoom().scaleExtent([0.15, 20])
+      .filter(function(event){return !event.shiftKey;})
+      .on('zoom', function(e){g.attr('transform', e.transform);});
+    svg.call(zoom);
+
+    var color = d3.scaleSequential(d3.interpolateTurbo).domain([0, Math.max(1, data.length - 1)]);
+    var tooltipEl = document.getElementById('tooltip');
 
     function showTooltip(event, d) {
-      const rows = Object.entries(d.fields)
-        .map(([k, v]) => '<div class="field"><span class="key">' + k + '</span>' + v + '</div>').join('');
-      tooltip.innerHTML = '<div class="doc-id">' + d.id + '</div>' + rows;
-      tooltip.style.display = 'block';
-      const tx = event.clientX + 16;
-      tooltip.style.left = (tx + tooltip.offsetWidth > W ? tx - tooltip.offsetWidth - 32 : tx) + 'px';
-      tooltip.style.top  = Math.max(0, event.clientY - 10) + 'px';
+      var rows = Object.entries(d.fields).map(function(e){return '<div class="field"><span class="key">'+e[0]+'</span>'+e[1]+'</div>';}).join('');
+      tooltipEl.innerHTML = '<div class="doc-id">' + d.id + '</div>' + rows;
+      tooltipEl.style.display = 'block';
+      var tx = event.clientX + 16;
+      tooltipEl.style.left = (tx + tooltipEl.offsetWidth > W ? tx - tooltipEl.offsetWidth - 32 : tx) + 'px';
+      tooltipEl.style.top = Math.max(0, event.clientY - 10) + 'px';
     }
-    function hideTooltip() { tooltip.style.display = 'none'; }
+    function hideTooltip() { tooltipEl.style.display = 'none'; }
 
-    g.selectAll('circle.dot')
-      .data(data).join('circle').attr('class', 'dot')
-      .attr('r', 8).attr('fill', (_, i) => color(i))
+    g.selectAll('circle.dot').data(data).join('circle').attr('class', 'dot')
+      .attr('r', 8).attr('fill', function(_, i){return color(i);})
       .attr('stroke', '#fff').attr('stroke-width', 0.8)
       .on('mousemove', showTooltip).on('mouseleave', hideTooltip);
 
     g.selectAll('text.lbl').data(data).join('text').attr('class', 'lbl')
       .attr('font-size', 11).attr('fill', '#ccc')
       .attr('pointer-events', 'none').attr('user-select', 'none')
-      .text(d => d.label);
+      .text(function(d){return d.label;});
 
-    // ── Update ──────────────────────────────────────────────────────────────
-    function update(animate) {
-      const xLayout = computeLayout(xSel.value, 'x');
-      const yLayout = computeLayout(ySel.value, 'y');
+    // -- Hint --
+    var hintEl = document.getElementById('lasso-hint');
+    var defaultHint = '<kbd>Shift</kbd>+ drag to lasso select';
+    function setHint(text) { hintEl.innerHTML = text; }
 
-      // A document is shown only when it has a value on BOTH selected axes
-      const posMap = new Map(data.map((d, i) => [d.id, {
-        x:       xLayout.dataPositions[i],
-        y:       yLayout.dataPositions[i],
-        visible: xLayout.visible[i] && yLayout.visible[i],
-      }]));
-
-      const t = d3.transition().duration(animate ? 700 : 0).ease(d3.easeCubicInOut);
-
+    // -- Clear selection --
+    function clearSelection() {
+      selectedIds = new Set();
+      lassoLayer.selectAll('path').remove();
+      document.getElementById('stats-panel').style.display = 'none';
+      setHint(defaultHint);
+      var t = d3.transition().duration(300).ease(d3.easeCubicOut);
       g.selectAll('circle.dot').transition(t)
-        .attr('cx',            d => posMap.get(d.id).x)
-        .attr('cy',            d => posMap.get(d.id).y)
-        .attr('opacity',       d => posMap.get(d.id).visible ? 0.82 : 0)
-        .attr('pointer-events',d => posMap.get(d.id).visible ? 'auto' : 'none');
-
+        .attr('opacity', function(d){return currentPositions.has(d.id) ? 0.82 : 0;})
+        .attr('r', 8).attr('stroke', '#fff').attr('stroke-width', 0.8);
       g.selectAll('text.lbl').transition(t)
-        .attr('x',       d => posMap.get(d.id).x + 12)
-        .attr('y',       d => posMap.get(d.id).y + 4)
-        .attr('opacity', d => posMap.get(d.id).visible ? 1 : 0);
+        .attr('opacity', function(d){return currentPositions.has(d.id) ? 1 : 0;})
+        .attr('font-weight', 400);
+    }
 
+    // -- Update --
+    function update(animate) {
+      var xLayout = computeLayout(xSel.value, 'x');
+      var yLayout = computeLayout(ySel.value, 'y');
+      var posMap = new Map(data.map(function(d, i){
+        return [d.id, {x: xLayout.dataPositions[i], y: yLayout.dataPositions[i], visible: xLayout.visible[i] && yLayout.visible[i]}];
+      }));
+      currentPositions = new Map();
+      data.forEach(function(d, i) {
+        if (xLayout.visible[i] && yLayout.visible[i])
+          currentPositions.set(d.id, {x: xLayout.dataPositions[i], y: yLayout.dataPositions[i]});
+      });
+      var t = d3.transition().duration(animate ? 700 : 0).ease(d3.easeCubicInOut);
+      g.selectAll('circle.dot').transition(t)
+        .attr('cx', function(d){return posMap.get(d.id).x;})
+        .attr('cy', function(d){return posMap.get(d.id).y;})
+        .attr('opacity', function(d){return posMap.get(d.id).visible ? 0.82 : 0;})
+        .attr('pointer-events', function(d){return posMap.get(d.id).visible ? 'auto' : 'none';});
+      g.selectAll('text.lbl').transition(t)
+        .attr('x', function(d){return posMap.get(d.id).x + 12;})
+        .attr('y', function(d){return posMap.get(d.id).y + 4;})
+        .attr('opacity', function(d){return posMap.get(d.id).visible ? 1 : 0;});
       drawAxis(xSel.value, 'x', xLayout.ticks);
       drawAxis(ySel.value, 'y', yLayout.ticks);
     }
 
     update(false);
-    xSel.addEventListener('change', () => update(true));
-    ySel.addEventListener('change', () => update(true));
+    xSel.addEventListener('change', function(){clearSelection(); update(true);});
+    ySel.addEventListener('change', function(){clearSelection(); update(true);});
+
+    // -- Lasso drawing --
+    svg.node().addEventListener('mousedown', function(event) {
+      if (!event.shiftKey) return;
+      if (lassoReady) { lassoReady = false; lassoLayer.selectAll('path').remove(); setHint(defaultHint); }
+      event.preventDefault();
+      lassoDrawing = true;
+      lassoPoints = [[event.offsetX, event.offsetY]];
+      lassoPath = lassoLayer.append('path').attr('class', 'lasso-path');
+      svg.node().style.cursor = 'crosshair';
+    });
+    svg.node().addEventListener('mousemove', function(event) {
+      if (!lassoDrawing) return;
+      lassoPoints.push([event.offsetX, event.offsetY]);
+      lassoPath.attr('d', 'M' + lassoPoints.map(function(p){return p.join(',');}).join('L') + 'Z');
+    });
+    svg.node().addEventListener('mouseup', function() {
+      if (!lassoDrawing) return;
+      lassoDrawing = false;
+      svg.node().style.cursor = '';
+      if (lassoPoints.length < 3) { lassoLayer.selectAll('path').remove(); return; }
+      lassoReady = true;
+      lassoPath.classed('lasso-ready', true);
+      setHint('Press <kbd>Enter</kbd> to confirm &nbsp;/&nbsp; <kbd>Esc</kbd> to cancel');
+    });
+
+    // -- Enter / Esc --
+    function pointInPolygon(point, polygon) {
+      var inside = false, px = point[0], py = point[1];
+      for (var i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        var xi = polygon[i][0], yi = polygon[i][1], xj = polygon[j][0], yj = polygon[j][1];
+        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) inside = !inside;
+      }
+      return inside;
+    }
+    function applySelection() {
+      var t = d3.transition().duration(300).ease(d3.easeCubicOut);
+      g.selectAll('circle.dot').transition(t)
+        .attr('opacity', function(d){return !currentPositions.has(d.id) ? 0 : selectedIds.has(d.id) ? 1 : 0.12;})
+        .attr('r', function(d){return selectedIds.has(d.id) ? 10 : 6;})
+        .attr('stroke', function(d){return selectedIds.has(d.id) ? '#fff' : '#555';})
+        .attr('stroke-width', function(d){return selectedIds.has(d.id) ? 1.5 : 0.5;});
+      g.selectAll('text.lbl').transition(t)
+        .attr('opacity', function(d){return !currentPositions.has(d.id) ? 0 : selectedIds.has(d.id) ? 1 : 0.08;})
+        .attr('font-weight', function(d){return selectedIds.has(d.id) ? 600 : 400;});
+    }
+    function confirmLasso() {
+      lassoReady = false;
+      setHint(defaultHint);
+      var transform = d3.zoomTransform(svg.node());
+      selectedIds = new Set();
+      currentPositions.forEach(function(pos, id) {
+        if (pointInPolygon([transform.applyX(pos.x), transform.applyY(pos.y)], lassoPoints)) selectedIds.add(id);
+      });
+      lassoPath.transition().duration(500).attr('opacity', 0).remove();
+      if (selectedIds.size > 0) { applySelection(); showStats(); }
+      else clearSelection();
+    }
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Enter' && lassoReady) { event.preventDefault(); confirmLasso(); }
+      else if (event.key === 'Escape') {
+        event.preventDefault();
+        if (lassoReady) { lassoReady = false; lassoLayer.selectAll('path').remove(); setHint(defaultHint); }
+        else if (selectedIds.size > 0) clearSelection();
+      }
+    });
+
+    // -- Stats panel --
+    var statsPanel = document.getElementById('stats-panel');
+    statsPanel.querySelector('.panel-close').addEventListener('click', clearSelection);
+    function showStats() {
+      var sel = data.filter(function(d){return selectedIds.has(d.id);});
+      if (sel.length === 0) { statsPanel.style.display = 'none'; return; }
+      statsPanel.querySelector('.panel-title').textContent = sel.length + ' item' + (sel.length > 1 ? 's' : '') + ' selected';
+      var fieldMap = {};
+      sel.forEach(function(d) {
+        Object.entries(d.fields).forEach(function(e) {
+          if (!fieldMap[e[0]]) fieldMap[e[0]] = [];
+          fieldMap[e[0]].push(e[1]);
+        });
+      });
+      var html = '<div class="stat-section"><div class="stat-field-name">Items</div><div class="selected-list">';
+      sel.forEach(function(d){html += '<span class="selected-chip">' + d.label + '</span>';});
+      html += '</div></div>';
+      Object.entries(fieldMap).forEach(function(entry) {
+        var field = entry[0], values = entry[1];
+        var isNumeric = values.every(function(v){return typeof v === 'number';});
+        html += '<div class="stat-section"><div class="stat-field-name">' + field + '</div>';
+        if (isNumeric) {
+          var min = Math.min.apply(null, values), max = Math.max.apply(null, values);
+          var avg = values.reduce(function(a,b){return a+b;}, 0) / values.length;
+          var fmt = function(n){return n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(1)+'K' : String(n);};
+          html += '<div class="stat-row"><span>Min</span><span class="stat-val">' + fmt(min) + '</span></div>';
+          html += '<div class="stat-row"><span>Avg</span><span class="stat-val">' + fmt(Math.round(avg)) + '</span></div>';
+          html += '<div class="stat-row"><span>Max</span><span class="stat-val">' + fmt(max) + '</span></div>';
+        } else {
+          var counts = {};
+          values.forEach(function(v){counts[v] = (counts[v]||0)+1;});
+          var sorted = Object.entries(counts).sort(function(a,b){return b[1]-a[1];});
+          var maxCount = sorted[0][1];
+          sorted.forEach(function(s) {
+            html += '<div class="stat-bar-wrap"><span class="stat-bar-label" title="'+s[0]+'">'+s[0]+'</span>';
+            html += '<div style="flex:1;background:#1a1a2e;border-radius:3px;height:6px">';
+            html += '<div class="stat-bar" style="width:'+(s[1]/maxCount*100)+'%"></div></div>';
+            html += '<span class="stat-bar-count">'+s[1]+'</span></div>';
+          });
+        }
+        html += '</div>';
+      });
+      statsPanel.querySelector('.panel-body').innerHTML = html;
+      statsPanel.style.display = 'block';
+    }
   </script>
 </body>
 </html>
