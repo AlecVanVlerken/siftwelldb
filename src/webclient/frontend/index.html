@@ -11,15 +11,10 @@
       <header>
         <h1>SimpleDBMS <span class="header-team">Team-03</span></h1>
         <div id="connection-status">Disconnected</div>
-        <nav class="tab-nav" aria-label="Dashboard tabs">
-          <button id="tab-collections" class="tab-btn active" type="button">Collections</button>
-          <button id="tab-lab" class="tab-btn" type="button">Compression Lab</button>
-        </nav>
         <div class="semantic-search-container">
           <div class="semantic-search-toggle">
             <button id="search-mode-text" class="search-mode-btn active" disabled>Tekst</button>
             <button id="search-mode-image" class="search-mode-btn" disabled>Foto</button>
-            <button id="search-mode-word" class="search-mode-btn" disabled>Woord</button>
           </div>
           <div class="semantic-search-input-wrapper">
             <input type="text" id="semantic-search-input" placeholder="Zoek op betekenis..." disabled />
@@ -56,25 +51,13 @@
             <button id="refresh-btn" disabled class="btn-secondary btn-icon-text">↻ Vernieuwen</button>
           </div>
 
-          <div id="content-search-bar" class="hidden">
-            <input type="text" id="content-search-input" placeholder="Zoek woord in artikeltekst..." />
-            <button id="content-search-btn" class="btn-primary">Zoeken</button>
-            <button id="content-search-clear-btn" class="btn-secondary hidden">✕ Wissen</button>
-            <span id="content-search-info"></span>
-          </div>
-
           <div id="table-wrapper">
             <table id="data-table">
               <thead></thead>
               <tbody></tbody>
             </table>
           </div>
-          <div id="load-more-bar" class="hidden">
-            <button id="load-more-btn" class="btn-secondary">Meer laden</button>
-            <span id="load-more-info"></span>
-          </div>
         </main>
-        <section id="lab-panel" class="hidden"></section>
       </div>
     </div>
 
