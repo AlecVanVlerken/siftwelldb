@@ -132,7 +132,7 @@ import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
  */
 export type { HnswConfig };
 import { type File } from '../core/file.mjs';
-import { documentToJSON, type Document, type FieldValue } from './document.mjs';
+import { documentToJSON, parseRawDocument, type Document, type FieldValue } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
 import { type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
 import { type EncodedDocument } from './recordstore.mjs';
@@ -195,6 +195,23 @@ export class SimpleDbms {
   }
 
   /**
+   * Retrieves a list of all collection names in the database.
+   * @returns A Promise that resolves to an array of collection names.
+   */
+  async getCollections(): Promise<string[]> {
+    return this.dbmsback.getCollections();
+  }
+
+  /**
+   * Deletes a collection from the database and commits the change.
+   * @param collection - The name of the collection to delete.
+   */
+  async deleteCollection(collection: string): Promise<void> {
+    await this.dbmsback.deleteCollection(collection);
+    await this.dbmsback.commit();
+  }
+
+  /**
    * Closes the database management system.
    * @returns A Promise that resolves when the database is closed.
    */
@@ -222,6 +239,19 @@ export class SimpleDbms {
     options?: { compression?: FieldCompressionOverrides },
   ): Promise<void> {
     const documentObj = JSONtoDocument(documentJSON, collection);
+    return this.dbmsback.insertDocument(documentObj, options?.compression);
+  }
+
+  /**
+   * Insert a document from a pre-parsed object (avoids JSONtoDocument regex issues).
+   * Use this when the document is already a JS object (e.g. from the web API).
+   */
+  async insertDocumentObject(
+    collection: string,
+    document: unknown,
+    options?: { compression?: FieldCompressionOverrides },
+  ): Promise<void> {
+    const documentObj = parseRawDocument(collection, document);
     return this.dbmsback.insertDocument(documentObj, options?.compression);
   }
 

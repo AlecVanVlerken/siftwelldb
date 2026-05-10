@@ -14,7 +14,7 @@
  *   • reading/writing block type bytes.
  */
 
-import { FreeBlockFile } from './freeblockfile.mjs';
+import type { FreeBlockFile } from './freeblockfile.mjs';
 import { BlockType } from './layout.mjs';
 
 /**
@@ -34,10 +34,10 @@ export async function readBlock(fbf: FreeBlockFile, blockNumber: number): Promis
     return Buffer.from(cached);
   }
 
-  await validateBlockNumber(fbf, blockNumber);
+  validateBlockNumber(fbf, blockNumber);
 
   const offset = offsetOf(fbf, blockNumber);
-  const buffer = Buffer.alloc(fbf._getBlockSize());
+  const buffer = Buffer.allocUnsafe(fbf._getBlockSize());
   await fbf._getFile().read(buffer, { position: offset });
   return buffer;
 }
@@ -47,7 +47,7 @@ export async function readBlock(fbf: FreeBlockFile, blockNumber: number): Promis
  */
 export async function writeBlock(fbf: FreeBlockFile, blockNumber: number, data: Buffer): Promise<void> {
   fbf._ensureOpen();
-  await validateBlockNumber(fbf, blockNumber);
+  validateBlockNumber(fbf, blockNumber);
 
   if (data.length > fbf._getBlockSize() - 1) {
     throw new Error(`Block too large (${data.length})`);
@@ -64,7 +64,12 @@ export async function writeBlock(fbf: FreeBlockFile, blockNumber: number, data: 
     throw new Error(`writeBlock() allowed only for Data blocks; found type ${type}`);
   }
 
-  buffer.fill(0, 1);
+  // Only zero the usable area when data doesn't fill it entirely.
+  // When data.length === blockSize-1 the copy overwrites every byte,
+  // so the fill is redundant and just wastes memory bandwidth.
+  if (data.length < fbf._getBlockSize() - 1) {
+    buffer.fill(0, 1);
+  }
   data.copy(buffer, 1);
   fbf._setDirtyBlock(blockNumber, buffer);
 }
@@ -98,14 +103,13 @@ export function offsetOf(fbf: FreeBlockFile, blockNum: number): number {
  * Returns the total number of blocks currently stored in the file.
  *
  * @param {FreeBlockFile} fbf - The FreeBlockFile instance.
- * @returns {Promise<number>} Total number of blocks in the file.
+ * @returns {number} Total number of blocks in the file.
  * @throws {Error} If the file is not open.
  * @throws {Error} If the file size is not a multiple of the block size (corrupted file).
  *
  * @author Arthur Cukier, Alec Van Vlerken
  */
-// eslint-disable-next-line @typescript-eslint/require-await
-export async function getBlockCount(fbf: FreeBlockFile): Promise<number> {
+export function getBlockCount(fbf: FreeBlockFile): number {
   fbf._ensureOpen();
   // Use cached block count instead of calling stat() every time
   const physicalBlocks = fbf._getCachedBlockCount();
@@ -140,8 +144,8 @@ function getHighestDirtyBlock(fbf: FreeBlockFile): number {
  *
  * @author Alec Van Vlerken
  */
-export async function validateBlockNumber(fbf: FreeBlockFile, blockNum: number): Promise<void> {
-  const blockCount = await getBlockCount(fbf);
+export function validateBlockNumber(fbf: FreeBlockFile, blockNum: number): void {
+  const blockCount = getBlockCount(fbf);
   if (blockNum < 0 || blockNum >= blockCount) {
     throw new Error(`Invalid block number ${blockNum.toString()} (block count = ${blockCount.toString()})`);
   }

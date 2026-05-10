@@ -1,7 +1,7 @@
 import type { ChildCursor, InternalNode } from './interfaces.mts';
 import { NodeBaseImpl, type NodeDescriptor } from './nodebase.mjs';
 import { ChildCursorImpl, type ChildAccess } from './childcursor.mjs';
-import { BlockLeafNode, type LeafNodeImpl } from './leafnode.mjs';
+import type { BlockLeafNode, LeafNodeImpl } from './leafnode.mjs';
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 
 type BlockInternalDescriptor = NodeDescriptor<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
@@ -29,13 +29,13 @@ export class InternalNodeImpl<K, V>
     this.keys = [...keys];
   }
 
-  getChildCursorAtFirstChild(): Promise<ChildCursor<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>>> {
-    return Promise.resolve(new ChildCursorImpl(this.createAccess(), 0));
+  getChildCursorAtFirstChild(): ChildCursor<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>> {
+    return new ChildCursorImpl(this.createAccess(), 0);
   }
 
-  getChildCursorAtKey(key: K): Promise<ChildCursor<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>>> {
+  getChildCursorAtKey(key: K): ChildCursor<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>> {
     const index = this.findChildIndex(key);
-    return Promise.resolve(new ChildCursorImpl(this.createAccess(), index));
+    return new ChildCursorImpl(this.createAccess(), index);
   }
 
   describe(): NodeDescriptor<K, V, LeafNodeImpl<K, V>, InternalNodeImpl<K, V>> {
@@ -77,34 +77,31 @@ export class InternalNodeImpl<K, V>
     return this.children.length < this.minChildren && this.children.length > 0;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async deallocateUnderfull(): Promise<LeafNodeImpl<K, V> | InternalNodeImpl<K, V>> {
+  deallocateUnderfull(): Promise<LeafNodeImpl<K, V> | InternalNodeImpl<K, V>> {
     if (this.children.length !== 1) {
       throw new Error('Internal node can only be deallocated when it has exactly one child.');
     }
-    return this.children[0];
+    return Promise.resolve(this.children[0]);
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async moveLastChildTo(_separatorKey: K, nextNode: InternalNodeImpl<K, V>): Promise<K> {
+  moveLastChildTo(_separatorKey: K, nextNode: InternalNodeImpl<K, V>): Promise<K> {
     const child = this.children.pop();
     const key = this.keys.pop();
     if (!child || key === undefined) {
       throw new Error('Internal node has no child to move.');
     }
     nextNode.prependChild(child, key);
-    return this.getKeyAt(this.keys.length - 1);
+    return Promise.resolve(this.getKeyAt(this.keys.length - 1));
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async moveFirstChildTo(previousNode: InternalNodeImpl<K, V>, _separatorKey: K): Promise<K> {
+  moveFirstChildTo(previousNode: InternalNodeImpl<K, V>, _separatorKey: K): Promise<K> {
     if (this.children.length === 0) {
       throw new Error('Internal node has no child to move.');
     }
     const child = this.children.shift()!;
     const key = this.keys.shift();
     previousNode.appendChild(child, key ?? previousNode.keys[previousNode.keys.length - 1]);
-    return this.keys[this.keys.length - 1] ?? previousNode.keys[previousNode.keys.length - 1];
+    return Promise.resolve(this.keys[this.keys.length - 1] ?? previousNode.keys[previousNode.keys.length - 1]);
   }
 
   replaceChildren(
@@ -142,13 +139,13 @@ export class InternalNodeImpl<K, V>
     return this.children.length;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  protected async absorbNextNode(nextNode: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>): Promise<void> {
+  protected absorbNextNode(nextNode: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>): Promise<void> {
     if (!(nextNode instanceof InternalNodeImpl)) {
       throw new Error('Internal nodes can only absorb other internal nodes.');
     }
     this.children.push(...nextNode.children);
     this.keys.push(...nextNode.keys);
+    return Promise.resolve();
   }
 
   protected greatestKeyInternal(): K {
@@ -233,6 +230,17 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
   private children: BlockChild[] = [];
   private dirty = false;
   private childrenLoaded: Map<number, BlockLeafNode | BlockInternalNode> = new Map();
+  /** Incrementally maintained serialized size. Avoids O(n) scans in needsSplit / canMergeWithNext. */
+  private currentSize: number = INTERNAL_HEADER_SIZE;
+  /**
+   * Pre-created access object — avoids allocating a new object + closures on every B+tree
+   * traversal. No flush callback: flushing is deferred to flushDirtyNodes() at commit time.
+   */
+  private _childAccess: ChildAccess<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
+  /**
+   * Persistent raw block buffer reused across commit cycles (same semantics as BlockLeafNode._rawBuffer).
+   */
+  private _rawBuffer: Buffer | undefined = undefined;
 
   constructor(
     private readonly file: FreeBlockFile,
@@ -242,7 +250,22 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     private readonly loadNode: (blockNumber: number) => Promise<BlockLeafNode | BlockInternalNode>,
     private readonly allocateInternalNode: () => Promise<BlockInternalNode>,
     private readonly onNodeFreed?: (blockNumber: number) => void,
-  ) {}
+  ) {
+    this._childAccess = {
+      node: this,
+      getChildCount: () => this.children.length,
+      getChildAt: (index: number) => this.getChildAt(index),
+      getKeyAt: (index: number) => this.getKeyAt(index),
+      replaceChildren: (
+        start: number,
+        count: number,
+        replacementKeys: Buffer[],
+        replacementChildren: (BlockLeafNode | BlockInternalNode)[],
+      ) => this.replaceChildren(start, count, replacementChildren, replacementKeys),
+      splitIfNeeded: () => this.splitIfNeeded(),
+      describe: () => this.describe(),
+    };
+  }
 
   getBlockNumber(): number {
     return this.blockNumber;
@@ -251,10 +274,10 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
   /**
    * Load node data from disk.
    */
-  async load(): Promise<void> {
-    const rawBuffer = await this.file.readBlock(this.blockNumber);
+  async load(rawBuffer?: Buffer): Promise<void> {
+    const buf = rawBuffer ?? (await this.file.readBlock(this.blockNumber));
     // FreeBlockFile stores block type at byte 0, our data starts at byte 1
-    const buffer = rawBuffer.subarray(1);
+    const buffer = buf.subarray(1);
     this.children = [];
     this.childrenLoaded.clear();
 
@@ -273,17 +296,32 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
 
       this.children.push({ blockNumber: childBlock, key });
     }
+    this.currentSize = INTERNAL_HEADER_SIZE;
+    for (const c of this.children) this.currentSize += 4 + 2 + c.key.length;
     this.dirty = false;
   }
 
   /**
-   * Write node data to disk.
+   * Serialise children directly into the FBF dirty block (zero-copy: no data.copy via writeBlock).
+   * Deferred: only called at commit time via BlockNodeStorage.flushDirtyNodes().
    */
   async flush(): Promise<void> {
     if (!this.dirty) return;
 
-    // FreeBlockFile expects blockSize - 1 bytes (it reserves 1 byte for block type)
-    const buffer = Buffer.alloc(this.blockSize - 1);
+    // Obtain raw block buffer: prefer existing dirty entry,
+    // fall back to cached own buffer, then allocate once from disk.
+    let rawBlock = this.file._getDirtyBlock(this.blockNumber);
+    if (rawBlock !== undefined) {
+      this._rawBuffer = rawBlock;
+    } else if (this._rawBuffer !== undefined) {
+      this.file._setDirtyBlock(this.blockNumber, this._rawBuffer);
+      rawBlock = this._rawBuffer;
+    } else {
+      rawBlock = await this.file.readBlock(this.blockNumber);
+      this._rawBuffer = rawBlock;
+      this.file._setDirtyBlock(this.blockNumber, rawBlock);
+    }
+    const buffer = rawBlock.subarray(1);
     buffer.writeUInt8(INTERNAL_TYPE_BYTE, 0);
     buffer.writeUInt32LE(this.children.length, 1);
 
@@ -297,15 +335,13 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       child.key.copy(buffer, offset);
       offset += child.key.length;
     }
-
-    await this.file.writeBlock(this.blockNumber, buffer);
     this.dirty = false;
   }
 
   /**
-   * Initialize with children and write to disk.
+   * Initialize with children. Flush is deferred to flushDirtyNodes() at commit time.
    */
-  async initWith(children: (BlockLeafNode | BlockInternalNode)[], keys: Buffer[]): Promise<void> {
+  initWith(children: (BlockLeafNode | BlockInternalNode)[], keys: Buffer[]): Promise<void> {
     this.children = [];
     for (let i = 0; i < children.length; i++) {
       const child = children[i];
@@ -313,19 +349,19 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       this.children.push({ blockNumber: blockNum, key: keys[i] });
       this.childrenLoaded.set(blockNum, child);
     }
+    this.currentSize = INTERNAL_HEADER_SIZE;
+    for (const c of this.children) this.currentSize += 4 + 2 + c.key.length;
     this.dirty = true;
-    await this.flush();
+    return Promise.resolve();
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async getChildCursorAtFirstChild(): Promise<ChildCursor<Buffer, Buffer, BlockLeafNode, BlockInternalNode>> {
-    return new ChildCursorImpl(this.createAccess(), 0);
+  getChildCursorAtFirstChild(): ChildCursor<Buffer, Buffer, BlockLeafNode, BlockInternalNode> {
+    return new ChildCursorImpl(this._childAccess, 0);
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async getChildCursorAtKey(key: Buffer): Promise<ChildCursor<Buffer, Buffer, BlockLeafNode, BlockInternalNode>> {
+  getChildCursorAtKey(key: Buffer): ChildCursor<Buffer, Buffer, BlockLeafNode, BlockInternalNode> {
     const index = this.findChildIndex(key);
-    return new ChildCursorImpl(this.createAccess(), index);
+    return new ChildCursorImpl(this._childAccess, index);
   }
 
   describe(): BlockInternalDescriptor {
@@ -339,20 +375,21 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     return this.children.length;
   }
 
-  async getChildAt(index: number): Promise<BlockLeafNode | BlockInternalNode> {
+  getChildAt(index: number): BlockLeafNode | BlockInternalNode | Promise<BlockLeafNode | BlockInternalNode> {
     const child = this.children[index];
     if (!child) {
       throw new Error('Child index out of range.');
     }
 
-    // Check cache first
+    // Cache hit: return synchronously to avoid microtask overhead
     const cached = this.childrenLoaded.get(child.blockNumber);
     if (cached) return cached;
 
-    // Load from disk
-    const loaded = await this.loadNode(child.blockNumber);
-    this.childrenLoaded.set(child.blockNumber, loaded);
-    return loaded;
+    // Cache miss: load from disk asynchronously
+    return this.loadNode(child.blockNumber).then((loaded) => {
+      this.childrenLoaded.set(child.blockNumber, loaded);
+      return loaded;
+    });
   }
 
   getKeyAt(index: number): Buffer {
@@ -379,51 +416,49 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     return child;
   }
 
-  async moveLastChildTo(_separatorKey: Buffer, nextNode: BlockInternalNode): Promise<Buffer> {
+  moveLastChildTo(_separatorKey: Buffer, nextNode: BlockInternalNode): Promise<Buffer> {
     const child = this.children.pop();
     if (!child) {
       throw new Error('Internal node has no child to move.');
     }
+    this.currentSize -= 4 + 2 + child.key.length;
     nextNode.prependChild(child.blockNumber, child.key);
     this.dirty = true;
-    await this.flush();
-    await nextNode.flush();
-    return this.children[this.children.length - 1].key;
+    return Promise.resolve(this.children[this.children.length - 1].key);
   }
 
-  async moveFirstChildTo(previousNode: BlockInternalNode, _separatorKey: Buffer): Promise<Buffer> {
+  moveFirstChildTo(previousNode: BlockInternalNode, _separatorKey: Buffer): Promise<Buffer> {
     if (this.children.length === 0) {
       throw new Error('Internal node has no child to move.');
     }
     const child = this.children.shift()!;
+    this.currentSize -= 4 + 2 + child.key.length;
     previousNode.appendChild(child.blockNumber, child.key);
     this.dirty = true;
-    await this.flush();
-    await previousNode.flush();
-    return this.children[this.children.length - 1]?.key ?? previousNode.children[previousNode.children.length - 1].key;
+    return Promise.resolve(
+      this.children[this.children.length - 1]?.key ?? previousNode.children[previousNode.children.length - 1].key,
+    );
   }
 
   canMergeWithNext(_key: Buffer, nextNode: BlockLeafNode | BlockInternalNode): boolean {
     if (!(nextNode instanceof BlockInternalNode)) {
       return false;
     }
-    const combinedSize =
-      this.calculateSize(this.children) + this.calculateSize(nextNode.children) - INTERNAL_HEADER_SIZE;
     // FreeBlockFile reserves 1 byte for block type
-    return combinedSize <= this.blockSize - 1;
+    return this.currentSize + nextNode.currentSize - INTERNAL_HEADER_SIZE <= this.blockSize - 1;
   }
 
   async mergeWithNext(_key: Buffer, nextNode: BlockLeafNode | BlockInternalNode): Promise<void> {
     if (!(nextNode instanceof BlockInternalNode)) {
       throw new Error('Cannot merge internal node with non-internal node');
     }
+    this.currentSize += nextNode.currentSize - INTERNAL_HEADER_SIZE;
     this.children.push(...nextNode.children);
     // Copy the loaded children cache from the merged node
     for (const [blockNum, child] of nextNode.childrenLoaded) {
       this.childrenLoaded.set(blockNum, child);
     }
     this.dirty = true;
-    await this.flush();
     // Invalidate the merged node from cache before freeing its block
     this.onNodeFreed?.(nextNode.blockNumber);
     await this.file.freeBlock(nextNode.blockNumber);
@@ -449,6 +484,14 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       newChildEntries.push({ blockNumber: blockNum, key: newKeys[i] });
       this.childrenLoaded.set(blockNum, child);
     }
+    let sizeChange = 0;
+    for (let i = startIndex; i < startIndex + count && i < this.children.length; i++) {
+      sizeChange -= 4 + 2 + this.children[i].key.length;
+    }
+    for (const entry of newChildEntries) {
+      sizeChange += 4 + 2 + entry.key.length;
+    }
+    this.currentSize += sizeChange;
     this.children.splice(startIndex, count, ...newChildEntries);
     this.dirty = true;
   }
@@ -459,16 +502,21 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
     }
 
     if (!this.needsSplit()) {
-      await this.flush();
       return this.describe();
     }
 
     const midpoint = Math.ceil(this.children.length / 2);
     const rightChildren = this.children.splice(midpoint);
 
+    // Compute sizes for both halves
+    let rightSize = INTERNAL_HEADER_SIZE;
+    for (const c of rightChildren) rightSize += 4 + 2 + c.key.length;
+    this.currentSize -= rightSize - INTERNAL_HEADER_SIZE;
+
     // Allocate new node for right half
     const rightNode = await this.allocateInternalNode();
     rightNode.children = rightChildren;
+    rightNode.currentSize = rightSize;
     rightNode.dirty = true;
 
     // Copy loaded children to right node
@@ -481,10 +529,6 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
 
     this.dirty = true;
 
-    // Write both nodes
-    await this.flush();
-    await rightNode.flush();
-
     return {
       nodes: [this, rightNode],
       keys: [this.children[this.children.length - 1].key, rightChildren[rightChildren.length - 1].key],
@@ -493,7 +537,7 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
 
   private needsSplit(): boolean {
     // FreeBlockFile reserves 1 byte for block type
-    return this.calculateSize(this.children) > this.blockSize - 1;
+    return this.currentSize > this.blockSize - 1;
   }
 
   private calculateSize(children: BlockChild[]): number {
@@ -525,29 +569,14 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
   }
 
   private prependChild(blockNumber: number, key: Buffer): void {
+    this.currentSize += 4 + 2 + key.length;
     this.children.unshift({ blockNumber, key });
     this.dirty = true;
   }
 
   private appendChild(blockNumber: number, key: Buffer): void {
+    this.currentSize += 4 + 2 + key.length;
     this.children.push({ blockNumber, key });
     this.dirty = true;
-  }
-
-  private createAccess(): ChildAccess<Buffer, Buffer, BlockLeafNode, BlockInternalNode> {
-    return {
-      node: this,
-      getChildCount: () => this.children.length,
-      getChildAt: (index: number) => this.getChildAt(index),
-      getKeyAt: (index: number) => this.getKeyAt(index),
-      replaceChildren: (
-        start: number,
-        count: number,
-        replacementKeys: Buffer[],
-        replacementChildren: (BlockLeafNode | BlockInternalNode)[],
-      ) => this.replaceChildren(start, count, replacementChildren, replacementKeys),
-      splitIfNeeded: () => this.splitIfNeeded(),
-      describe: () => this.describe(),
-    };
   }
 }

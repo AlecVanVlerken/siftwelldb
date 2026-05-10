@@ -41,30 +41,27 @@ export class NodeStorageImpl<K, V> implements NodeStorage<K, V, LeafNodeImpl<K, 
     return this.maxKeySize;
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async createTree(): Promise<LeafNodeImpl<K, V>> {
-    return new LeafNodeImpl(this.compareKeys, this.maxLeafEntries);
+  createTree(): Promise<LeafNodeImpl<K, V>> {
+    return Promise.resolve(new LeafNodeImpl(this.compareKeys, this.maxLeafEntries));
   }
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async allocateInternalNode(
+  allocateInternalNode(
     nodes: (LeafNodeImpl<K, V> | InternalNodeImpl<K, V>)[],
     keys: K[],
   ): Promise<InternalNodeImpl<K, V>> {
-    const node = new InternalNodeImpl(this.compareKeys, this.maxChildren);
+    const node = new InternalNodeImpl<K, V>(this.compareKeys, this.maxChildren);
     node.setChildren(nodes, keys);
-    return node;
+    return Promise.resolve(node);
   }
 
   /**
    * For in-memory storage, finalizeRoot is a no-op.
    * Returns the root unchanged.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async finalizeRoot(
+  finalizeRoot(
     root: LeafNodeImpl<K, V> | InternalNodeImpl<K, V>,
   ): Promise<LeafNodeImpl<K, V> | InternalNodeImpl<K, V>> {
-    return root;
+    return Promise.resolve(root);
   }
 }
 
@@ -102,6 +99,9 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   ) {
     this.compareKeys = options.compareKeys ?? ((a, b) => Buffer.compare(a, b));
     this.blockSize = file._getBlockSize();
+    // Register pre-commit hook so flushDirtyNodes() runs whenever file.commit() is called,
+    // including in tests that invoke file.commit() directly (not via DbmsBack.commit()).
+    file.addPreCommitHook(() => this.flushDirtyNodes());
   }
 
   getMaxKeySize(): number {
@@ -145,10 +145,9 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    * For block storage with dynamic root, finalizeRoot is a no-op.
    * The root can be at any block - the caller tracks the root block number.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async finalizeRoot(root: BlockLeafNode | BlockInternalNode): Promise<BlockLeafNode | BlockInternalNode> {
+  finalizeRoot(root: BlockLeafNode | BlockInternalNode): Promise<BlockLeafNode | BlockInternalNode> {
     this.currentRoot = root;
-    return root;
+    return Promise.resolve(root);
   }
 
   /**
@@ -180,10 +179,10 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     let node: BlockLeafNode | BlockInternalNode;
     if (nodeType === BLOCK_NODE_TYPE_LEAF) {
       node = this.createLeafNode(blockNumber);
-      await node.load();
+      await node.load(rawBuffer); // reuse already-read buffer, avoids a second readBlock
     } else if (nodeType === BLOCK_NODE_TYPE_INTERNAL) {
       node = this.createInternalNode(blockNumber);
-      await node.load();
+      await node.load(rawBuffer);
     } else {
       throw new Error(`Unknown node type: ${nodeType}`);
     }
@@ -225,5 +224,16 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    */
   private invalidateNode(blockNumber: number): void {
     this.nodeCache.delete(blockNumber);
+  }
+
+  /**
+   * Flush all dirty B+tree nodes into the FBF dirty-block cache.
+   * Must be called before FreeBlockFile.commit() so every in-memory mutation
+   * is serialised to the dirty-block map before the WAL write begins.
+   */
+  async flushDirtyNodes(): Promise<void> {
+    for (const node of this.nodeCache.values()) {
+      await node.flush();
+    }
   }
 }
