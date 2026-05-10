@@ -147,6 +147,60 @@ export class DbmsBack {
   }
 
   /**
+   * Retrieves a list of all collection names in the database.
+   * @returns A Promise that resolves to an array of collection names.
+   */
+  getCollections(): Promise<string[]> {
+    const keys = Object.keys(this.metaCache).filter((k) => !k.startsWith('__'));
+    return Promise.resolve(keys);
+  }
+
+  /**
+   * Deletes an entire collection from the database.
+   * Removes from metaCache and cleans up HNSW if present.
+   * @param collection - The name of the collection to delete.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async deleteCollection(collection: string): Promise<void> {
+    if (!(collection in this.metaCache)) {
+      throw new Error(`Collection "${collection}" does not exist`);
+    }
+
+    // Remove from metaCache
+    delete this.metaCache[collection];
+
+    // Remove from HNSW metadata
+    const hnswMetaRaw = this.metaCache[HNSW_META_KEY];
+    if (hnswMetaRaw && typeof hnswMetaRaw === 'object' && !Array.isArray(hnswMetaRaw)) {
+      const hnswMeta = hnswMetaRaw as Record<string, unknown>;
+      if (collection in hnswMeta) {
+        delete hnswMeta[collection];
+        // If no more HNSW indexes, remove the key entirely
+        if (Object.keys(hnswMeta).length === 0) {
+          delete this.metaCache[HNSW_META_KEY];
+        }
+      }
+    }
+
+    // Clear caches related to this collection
+    for (const key of this.storageCache.keys()) {
+      if (key.startsWith(`${collection}:`)) {
+        this.storageCache.delete(key);
+      }
+    }
+    for (const key of this.treeCache.keys()) {
+      if (key.startsWith(`${collection}:`)) {
+        this.treeCache.delete(key);
+      }
+    }
+    this.hnswIndexCache.delete(collection);
+
+    // Note: blocks (B+ tree, HNSW nodes, records) are NOT explicitly freed here
+    // in this simplified implementation, but their roots are removed from meta,
+    // so they are effectively lost/collectible if a compactor is ever added.
+  }
+
+  /**
    * Closes the database backend.
    * @returns A Promise that resolves when the database backend is closed.
    */

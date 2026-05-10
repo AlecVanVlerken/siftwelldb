@@ -1,7 +1,7 @@
 import type { ChildCursor, InternalNode } from './interfaces.mts';
 import { NodeBaseImpl, type NodeDescriptor } from './nodebase.mjs';
 import { ChildCursorImpl, type ChildAccess } from './childcursor.mjs';
-import { BlockLeafNode, type LeafNodeImpl } from './leafnode.mjs';
+import type { BlockLeafNode, LeafNodeImpl } from './leafnode.mjs';
 import type { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 
 type BlockInternalDescriptor = NodeDescriptor<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
