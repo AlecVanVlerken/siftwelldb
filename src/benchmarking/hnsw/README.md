@@ -13,7 +13,18 @@ Commits still happen so the persisted index stays valid, but commit time is not 
 - `plot_complexity.py` turns the SIFT complexity JSON into the four requested graphs.
 - `plot_recall.py` overlays the recall curves so structured and unstructured datasets can be compared directly.
 
-## Dataset layout
+## Dataset setup
+
+There is no separate dataset import step for these benchmarks. The benchmark code reads Texmex `.fvecs` and `.ivecs` files directly from disk via `src/benchmarking/hnsw/texmex.mts`, and each benchmark run rebuilds its own HNSW index from the `*_base.fvecs` files.
+
+Setup steps:
+
+1. Download and extract the SIFT1M and/or GIST1M datasets in Texmex format.
+2. Place the extracted files under these folders:
+   - `src/benchmarking/hnsw/datasets/sift/`
+   - `src/benchmarking/hnsw/datasets/gist/`
+
+3. Keep the default filenames below, or override them with environment variables.
 
 Expected folders:
 
@@ -29,7 +40,9 @@ Expected files:
 - `gist_query.fvecs`
 - `gist_groundtruth.ivecs`
 
-The benchmark code uses Texmex `.fvecs` and `.ivecs` files directly.
+Optional files such as `sift_learn.fvecs` and `gist_learn.fvecs` may live next to the required files after extraction, but the current benchmarks do not read them.
+
+If you keep the datasets outside the repo, point the benchmarks at them with `HNSW_SIFT_DIR` and `HNSW_GIST_DIR`. You can also override individual filenames with `HNSW_SIFT_BASE_FILE`, `HNSW_SIFT_QUERY_FILE`, `HNSW_SIFT_GT_FILE`, `HNSW_GIST_BASE_FILE`, `HNSW_GIST_QUERY_FILE`, and `HNSW_GIST_GT_FILE`.
 
 ## Run the benchmarks
 
@@ -81,6 +94,7 @@ Generated images are written to `src/benchmarking/hnsw/results/images/`.
 
 - `HNSW_BENCH_STORAGE=real|mock` selects the persistence backend. Default is `real`.
 - `HNSW_KEEP_DB=true` keeps the generated database files under `results/db/` after the run.
+- `HNSW_SIFT_DIR`, `HNSW_GIST_DIR`, and the `HNSW_*_{BASE,QUERY,GT}_FILE` overrides let you load datasets from another folder or with different filenames.
 - `HNSW_SIFT_LIMIT`, `HNSW_GIST_LIMIT`, `HNSW_RANDOM_COUNT` cap the build size for smaller dry runs.
 - `HNSW_RECALL_QUERY_LIMIT` caps SIFT and GIST query count for faster sweeps.
 - `HNSW_RECALL_EF_SEARCH_VALUES=8,16,32,64,128,200` overrides the sweep values.
