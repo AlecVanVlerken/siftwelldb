@@ -7,6 +7,7 @@ This folder contains the long-running HNSW benchmarks that exercise the wrapper 
 - `complexity.spec.mts` builds an `HNSWIndex` on SIFT1M and records checkpointed insert and search latency against database size.
 - `simpledbms_complexity.spec.mts` runs the same SIFT1M complexity experiment through `SimpleDbms`, so record-store, B+ tree, and HNSW overhead are all included.
 - `recall.spec.mts` measures recall on SIFT1M, GIST1M, and 1M random 128D vectors.
+- `insert_compare.spec.mts` compares the current Rust-backed `HNSWIndex` against the last TypeScript HNSW algorithm on the first 100k SIFT vectors, using the same dataset, storage, and HNSW parameters for both runs. It records only insert timings during the main loop; there are no intermediate commits inside the timed section.
 
 Commits still happen so the persisted index stays valid, but commit time is not included in the reported insert timings.
 
@@ -64,6 +65,12 @@ Recall benchmarks:
 NODE_OPTIONS="--max-old-space-size=8192" npx vitest run src/benchmarking/hnsw/recall.spec.mts --reporter=verbose
 ```
 
+Rust vs legacy TypeScript insert comparison on the first 100k SIFT vectors:
+
+```powershell
+NODE_OPTIONS="--max-old-space-size=8192" npx vitest run src/benchmarking/hnsw/insert_compare.spec.mts --reporter=verbose
+```
+
 Run a single recall experiment:
 
 ```powershell
@@ -74,11 +81,14 @@ NODE_OPTIONS="--max-old-space-size=8192" npx vitest run src/benchmarking/hnsw/re
 
 The benchmark prints elapsed time and ETA while it is running.
 
+For the insert comparison benchmark, ETA is printed separately for the Rust run and the legacy TypeScript run, so you can track how long the slow TS pass still has to go.
+
 ## Plot the graphs
 
 ```powershell
 python src/benchmarking/hnsw/plot_complexity.py
 python src/benchmarking/hnsw/plot_recall.py
+python src/benchmarking/hnsw/plot_insert_compare.py
 ```
 
 To plot the SimpleDbms complexity result, point the complexity plotter at the alternate JSON file:
@@ -96,6 +106,8 @@ Generated images are written to `src/benchmarking/hnsw/results/images/`.
 - `HNSW_KEEP_DB=true` keeps the generated database files under `results/db/` after the run.
 - `HNSW_SIFT_DIR`, `HNSW_GIST_DIR`, and the `HNSW_*_{BASE,QUERY,GT}_FILE` overrides let you load datasets from another folder or with different filenames.
 - `HNSW_SIFT_LIMIT`, `HNSW_GIST_LIMIT`, `HNSW_RANDOM_COUNT` cap the build size for smaller dry runs.
+- `HNSW_COMPARE_INSERT_LIMIT` caps the Rust-vs-TypeScript insert comparison size. Default is `100000`.
+- `HNSW_COMPARE_CHECKPOINT_INTERVAL` controls how often the insert comparison records a point and refreshes ETA output. Default is `1000`.
 - `HNSW_RECALL_QUERY_LIMIT` caps SIFT and GIST query count for faster sweeps.
 - `HNSW_RECALL_EF_SEARCH_VALUES=8,16,32,64,128,200` overrides the sweep values.
 - `HNSW_COMMIT_INTERVAL`, `HNSW_M`, `HNSW_EF_CONSTRUCTION`, and `HNSW_EF_SEARCH` tune the index configuration. `HNSW_COMMIT_INTERVAL` still affects when persistence happens, but not the reported insert timing.
