@@ -83,7 +83,8 @@ RULES:
 8. If a question involves multiple collections, use JOIN when relationships are defined.
 9. If the question is ambiguous, prefer the simplest valid query.
 10. Always include the relevant fields in SELECT so the answer is understandable.
-11. IMPORTANT: If the user references a previous question (e.g. "break that down by city", "same but for Sales", "now filter those"), use the conversation history to understand what they mean and generate the appropriate new query.`;
+11. IMPORTANT: If the user references a previous question (e.g. "break that down by city", "same but for Sales", "now filter those"), use the conversation history to understand what they mean and generate the appropriate new query.
+12. DERIVED FIELDS: Fields marked as [DERIVED] are virtual computed fields. Use them by their exact name in SELECT and GROUP BY just like regular fields — do NOT expand or replace them with their expression.`;
 }
 
 function extractQuery(raw: string): string {

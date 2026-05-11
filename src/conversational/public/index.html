@@ -137,6 +137,64 @@ tbody td.editable input { position: absolute; inset: 0; padding: 10px 14px; bord
 .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .thinking { display: flex; align-items: center; gap: 8px; color: var(--text-muted); font-size: 13px; padding: 8px 0; }
+
+/* ═══ Anomaly Callout ═══ */
+.chat-anomaly { margin-top: 10px; padding: 8px 12px; background: #fffbeb; border: 1px solid #fcd34d; border-left: 3px solid #f59e0b; border-radius: var(--radius); font-size: 12.5px; color: #92400e; display: flex; align-items: flex-start; gap: 7px; }
+.chat-anomaly::before { content: '⚠'; flex-shrink: 0; }
+
+/* ═══ Did-You-Mean ═══ */
+.dym-section { margin-top: 10px; }
+.dym-label { font-size: 11.5px; color: var(--text-muted); margin-bottom: 6px; font-weight: 500; }
+.dym-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 12px; margin: 0 5px 5px 0; border-radius: 99px; background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; font-size: 12.5px; font-weight: 500; cursor: pointer; transition: all .15s; }
+.dym-chip:hover { background: #16a34a; color: #fff; border-color: #16a34a; }
+.dym-chip::before { content: '↪'; font-size: 11px; }
+
+/* ═══ History Panel ═══ */
+.history-panel { position: absolute; right: 0; top: 0; bottom: 0; width: 270px; background: var(--surface); border-left: 1px solid var(--border); box-shadow: -4px 0 16px rgba(0,0,0,.09); z-index: 20; display: flex; flex-direction: column; transform: translateX(100%); transition: transform .22s ease; }
+.history-panel.open { transform: translateX(0); }
+.history-header { padding: 14px 16px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+.history-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+.history-item { padding: 10px 16px; cursor: pointer; border-bottom: 1px solid var(--border-light); transition: background .1s; }
+.history-item:hover { background: var(--border-light); }
+.history-item:last-child { border-bottom: none; }
+.history-q { font-size: 12.5px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-a { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-empty { padding: 32px 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+.btn-history { background: none; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px; color: var(--text-secondary); display: flex; align-items: center; justify-content: center; transition: all .15s; cursor: pointer; }
+.btn-history:hover { background: var(--border-light); color: var(--text); border-color: var(--text-muted); }
+.btn-history.active { background: var(--primary-light); color: var(--primary); border-color: var(--primary); }
+
+/* ═══ Quick-Start Card ═══ */
+.quickstart { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 20px 24px; margin: 0 28px 16px; box-shadow: var(--shadow); }
+.quickstart h3 { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px; color: var(--text-muted); margin-bottom: 16px; }
+.quickstart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.quickstart-cat { display: flex; flex-direction: column; gap: 7px; }
+.quickstart-cat-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--text-secondary); margin-bottom: 2px; }
+.quickstart-cat .chip { text-align: left; border-radius: var(--radius); padding: 6px 12px; font-size: 12.5px; }
+
+/* ═══ Typed Suggestion Chips ═══ */
+.suggestion-row { display: flex; gap: 7px; flex-wrap: wrap; padding: 6px 0 10px 44px; }
+.chip-typed { padding: 5px 11px; border-radius: 99px; font-size: 12px; font-weight: 500; border: none; cursor: pointer; transition: all .15s; display: inline-flex; align-items: center; gap: 6px; line-height: 1.3; }
+.chip-type-label { font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .4px; opacity: .65; flex-shrink: 0; }
+.chip-drill   { background: #e0e7ff; color: #4338ca; }
+.chip-drill:hover   { background: #6366f1; color: #fff; }
+.chip-compare { background: #f3e8ff; color: #6d28d9; }
+.chip-compare:hover { background: #8b5cf6; color: #fff; }
+.chip-filter  { background: #fef3c7; color: #92400e; }
+.chip-filter:hover  { background: #f59e0b; color: #fff; }
+.chip-explore { background: #d1fae5; color: #065f46; }
+.chip-explore:hover { background: #10b981; color: #fff; }
+.chip-typed.chip-muted { opacity: 0.3; pointer-events: none; }
+@keyframes chipIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+.chip-typed { animation: chipIn .18s ease both; }
+
+/* ═══ Interpretation Badge ═══ */
+.interp-detail { margin-top: 7px; font-size: 12px; }
+.interp-detail summary { cursor: pointer; color: var(--text-muted); user-select: none; list-style: none; display: inline-flex; align-items: center; gap: 5px; }
+.interp-detail summary::-webkit-details-marker { display: none; }
+.interp-detail summary::before { content: 'ℹ'; font-style: normal; }
+.interp-detail[open] summary { color: var(--primary); }
+.interp-detail p { margin-top: 5px; padding: 6px 10px; background: var(--border-light); border-radius: var(--radius); color: var(--text-secondary); font-style: italic; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -184,7 +242,18 @@ tbody td.editable input { position: absolute; inset: 0; padding: 10px 14px; bord
       </div>
 
       <!-- ── Chat Tab ── -->
-      <div id="tab-chat" class="tab">
+      <div id="tab-chat" class="tab" style="position:relative">
+        <!-- History panel (slides in from right) -->
+        <div class="history-panel" id="history-panel">
+          <div class="history-header">
+            Recent Questions
+            <button class="btn-icon" id="history-close" title="Close">&times;</button>
+          </div>
+          <div class="history-list" id="history-list">
+            <div class="history-empty">No questions asked yet.</div>
+          </div>
+        </div>
+
         <div class="chat-messages" id="chat-messages">
           <div class="chat-msg assistant">
             <div class="avatar">AI</div>
@@ -193,17 +262,39 @@ tbody td.editable input { position: absolute; inset: 0; padding: 10px 14px; bord
             </div>
           </div>
         </div>
-        <div class="chat-suggestions" id="chat-suggestions">
-          <button class="chip">What is the average salary?</button>
-          <button class="chip">Show employee count by department as a chart</button>
-          <button class="chip">Average salary by gender</button>
-          <button class="chip">Top 5 highest paid employees</button>
-          <button class="chip">How many seniors vs juniors?</button>
-          <button class="chip">Show salary distribution by seniority level</button>
+        <div id="chat-quickstart">
+          <div class="quickstart">
+            <h3>Try asking…</h3>
+            <div class="quickstart-grid">
+              <div class="quickstart-cat">
+                <div class="quickstart-cat-label">Overview</div>
+                <button class="chip qs-chip">How many employees do we have?</button>
+                <button class="chip qs-chip">What is the gender split?</button>
+              </div>
+              <div class="quickstart-cat">
+                <div class="quickstart-cat-label">Compensation</div>
+                <button class="chip qs-chip">Average salary by department</button>
+                <button class="chip qs-chip">Top 5 highest paid employees</button>
+              </div>
+              <div class="quickstart-cat">
+                <div class="quickstart-cat-label">Demographics</div>
+                <button class="chip qs-chip">Headcount by seniority level</button>
+                <button class="chip qs-chip">Break down headcount by salary tier</button>
+              </div>
+              <div class="quickstart-cat">
+                <div class="quickstart-cat-label">Location</div>
+                <button class="chip qs-chip">Employees by city</button>
+                <button class="chip qs-chip">Which city has the highest average salary?</button>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="chat-input-area">
           <button class="btn btn-ghost" id="chat-new" title="New conversation">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+          </button>
+          <button class="btn-history" id="history-toggle" title="Recent questions">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
           </button>
           <input type="text" id="chat-input" placeholder="Ask a question about your data..." autocomplete="off">
           <button class="btn btn-primary" id="chat-send">Send</button>
@@ -260,6 +351,7 @@ let currentCollection = '';
 let currentRows = [];
 let currentSchema = [];
 let chartInstances = [];
+let historyEntries = []; // { question, summary }
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // API helpers
@@ -458,7 +550,12 @@ function addAssistantMsg(response) {
     inner = `<div class="chat-error">${esc(response.error)}</div>`;
     if (response.query) inner += `<div class="chat-query">${esc(response.query)}</div>`;
   } else {
-    if (response.query) inner += `<div class="chat-query">${esc(response.query)}</div>`;
+    if (response.query) {
+      inner += `<div class="chat-query">${esc(response.query)}</div>`;
+      if (response.interpretation) {
+        inner += `<details class="interp-detail"><summary>Interpreted as</summary><p>${esc(response.interpretation)}</p></details>`;
+      }
+    }
     if (response.data && response.data.length > 0) {
       inner += buildResultTable(response.data);
       const chartSpec = response.chart;
@@ -479,10 +576,45 @@ function addAssistantMsg(response) {
       }
     }
     if (response.summary) inner += `<div class="chat-summary">${esc(response.summary)}</div>`;
+
+    // Did-you-mean chips (shown when 0 results)
+    if (response.didYouMean && response.didYouMean.length > 0) {
+      inner += `<div class="dym-section"><div class="dym-label">Did you mean?</div>`;
+      response.didYouMean.forEach(s => {
+        inner += `<button class="dym-chip" onclick="(function(t){document.getElementById('chat-input').value=t;sendChat();})(${JSON.stringify(s)})">${esc(s)}</button>`;
+      });
+      inner += `</div>`;
+    }
+
+    // Anomaly callout
+    if (response.anomaly) {
+      inner += `<div class="chat-anomaly">${esc(response.anomaly)}</div>`;
+    }
   }
 
   el.innerHTML = `<div class="avatar">AI</div><div class="chat-bubble">${inner}</div>`;
   chatMessages.appendChild(el);
+
+  // Append typed suggestion chips inline after the bubble
+  if (response.suggestions && response.suggestions.length > 0) {
+    const LABELS = { drill: 'Drill ↓', compare: 'Compare ↔', filter: 'Filter ▼', explore: 'Explore →' };
+    const row = document.createElement('div');
+    row.className = 'suggestion-row';
+    response.suggestions.forEach((s, i) => {
+      const btn = document.createElement('button');
+      btn.className = `chip-typed chip-${s.type}`;
+      btn.style.animationDelay = `${i * 60}ms`;
+      btn.innerHTML = `<span class="chip-type-label">${esc(LABELS[s.type] || s.type)}</span>${esc(s.text)}`;
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.chip-typed').forEach(c => c.classList.add('chip-muted'));
+        chatInput.value = s.text;
+        sendChat();
+      });
+      row.appendChild(btn);
+    });
+    chatMessages.appendChild(row);
+  }
+
   scrollChat();
 }
 
@@ -672,7 +804,9 @@ async function sendChat() {
   const q = chatInput.value.trim();
   if (!q) return;
   chatInput.value = '';
-  document.getElementById('chat-suggestions').style.display = 'none';
+  document.getElementById('chat-quickstart').style.display = 'none';
+  // Mute all existing suggestion chips so only fresh ones after this answer are active
+  document.querySelectorAll('.chip-typed').forEach(c => c.classList.add('chip-muted'));
   addUserMsg(q);
   const thinkEl = addThinking();
   try {
@@ -689,6 +823,10 @@ async function sendChat() {
     conversationHistory.push({ role: 'assistant', text: assistantText });
     while (conversationHistory.length > 20) conversationHistory.shift();
     saveHistory();
+    // Track in history panel
+    historyEntries.unshift({ question: q, summary: result.summary || result.error || '' });
+    if (historyEntries.length > 50) historyEntries.pop();
+    renderHistoryPanel();
   } catch (e) {
     thinkEl.remove();
     addAssistantMsg({ error: e.message, query: '', data: [], summary: '', chart: null });
@@ -703,7 +841,7 @@ function resetChat() {
       <div class="avatar">AI</div>
       <div class="chat-bubble">Hi! Ask me anything about your data. I'll generate a query, run it, and show you the results — including charts when useful.</div>
     </div>`;
-  document.getElementById('chat-suggestions').style.display = 'flex';
+  document.getElementById('chat-quickstart').style.display = 'block';
   chartInstances.forEach(c => c.destroy());
   chartInstances = [];
 }
@@ -711,8 +849,9 @@ function resetChat() {
 document.getElementById('chat-send').addEventListener('click', sendChat);
 document.getElementById('chat-new').addEventListener('click', resetChat);
 chatInput.addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
-document.querySelectorAll('.chip').forEach(ch => {
-  ch.addEventListener('click', () => { chatInput.value = ch.textContent; sendChat(); });
+document.getElementById('chat-quickstart').addEventListener('click', e => {
+  const btn = e.target.closest('.qs-chip');
+  if (btn) { chatInput.value = btn.textContent.trim(); sendChat(); }
 });
 function scrollChat() { chatMessages.scrollTop = chatMessages.scrollHeight; }
 
@@ -810,6 +949,47 @@ function esc(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// History Panel
+// ═══════════════════════════════════════════════════════════════════════════════
+function renderHistoryPanel() {
+  const list = document.getElementById('history-list');
+  if (!historyEntries.length) {
+    list.innerHTML = '<div class="history-empty">No questions asked yet.</div>';
+    return;
+  }
+  list.innerHTML = historyEntries.map((e, i) =>
+    `<div class="history-item" data-idx="${i}">
+      <div class="history-q">${esc(e.question)}</div>
+      <div class="history-a">${esc(e.summary)}</div>
+    </div>`
+  ).join('');
+  list.querySelectorAll('.history-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const q = historyEntries[parseInt(item.dataset.idx)].question;
+      document.getElementById('chat-input').value = q;
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelector('[data-tab="chat"]').classList.add('active');
+      document.getElementById('tab-chat').classList.add('active');
+      document.getElementById('topbar-title').textContent = 'Chat';
+      document.getElementById('chat-input').focus();
+    });
+  });
+}
+
+const historyPanel = document.getElementById('history-panel');
+const historyToggle = document.getElementById('history-toggle');
+
+historyToggle.addEventListener('click', () => {
+  const isOpen = historyPanel.classList.toggle('open');
+  historyToggle.classList.toggle('active', isOpen);
+});
+document.getElementById('history-close').addEventListener('click', () => {
+  historyPanel.classList.remove('open');
+  historyToggle.classList.remove('active');
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Init

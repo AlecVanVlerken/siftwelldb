@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import type { SimpleDbms } from '../dbms/simpledbms.mjs';
 import type { FieldValue } from '../dbms/document.mjs';
+import type { LLMProvider } from './llmProvider.mjs';
 
 export type FieldType = 'string' | 'number' | 'boolean';
 
@@ -12,6 +13,16 @@ export type FieldDefinition = {
   label: string;
   description?: string;
   synonyms?: string[];
+  /**
+   * JavaScript ternary expression evaluated at query time to compute this field's value
+   * from the base document fields. E.g. "salary < 60000 ? 'Low' : salary < 90000 ? 'Mid' : 'High'"
+   * Derived fields are not stored in documents — they are computed on-the-fly.
+   */
+  derived?: string;
+  /** When true, excluded from the LLM schema prompt (use for internal/join keys). */
+  hidden?: boolean;
+  /** Free-form tags injected into the schema prompt to improve LLM discoverability. */
+  tags?: string[];
 };
 
 export type MeasureDefinition = {
@@ -113,12 +124,16 @@ export function modelToSchemaPrompt(model: SemanticModel): string {
       : `Collection "${explore.collection}" (${explore.label})`;
     parts.push(header);
 
-    const fieldDescs = explore.fields.map((f) => {
-      let desc = `  - ${f.name} (${f.type}, label: "${f.label}")`;
-      if (f.description) desc += ` — ${f.description}`;
-      if (f.synonyms && f.synonyms.length > 0) desc += ` [synonyms: ${f.synonyms.join(', ')}]`;
-      return desc;
-    });
+    const fieldDescs = explore.fields
+      .filter((f) => !f.hidden)
+      .map((f) => {
+        let desc = `  - ${f.name} (${f.type}, label: "${f.label}")`;
+        if (f.derived) desc += ` [DERIVED — computed as: ${f.derived}]`;
+        if (f.description) desc += ` — ${f.description}`;
+        if (f.synonyms && f.synonyms.length > 0) desc += ` [synonyms: ${f.synonyms.join(', ')}]`;
+        if (f.tags && f.tags.length > 0) desc += ` [tags: ${f.tags.join(', ')}]`;
+        return desc;
+      });
     parts.push('  Fields:');
     parts.push(...fieldDescs);
 
@@ -248,4 +263,223 @@ function humanize(name: string): string {
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/[_-]/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// ── LLM-powered model enrichment ─────────────────────────────────────────────
+
+type FieldStats = {
+  sampleRows: Record<string, FieldValue>[];
+  /** All distinct values for string fields (capped at 30 to limit prompt size). */
+  distinctStringValues: Record<string, string[]>;
+  /** min / max / avg for numeric fields, computed over all rows. */
+  numericStats: Record<string, { min: number; max: number; avg: number }>;
+  rowCount: number;
+};
+
+async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: FieldDefinition[]): Promise<FieldStats> {
+  const stringFieldNames = new Set(fields.filter((f) => f.type === 'string' && !f.derived).map((f) => f.name));
+  const numericFieldNames = new Set(fields.filter((f) => f.type === 'number' && !f.derived).map((f) => f.name));
+
+  const sampleRows: Record<string, FieldValue>[] = [];
+  const distinctSets: Record<string, Set<string>> = {};
+  const numAccum: Record<string, { sum: number; min: number; max: number; count: number }> = {};
+
+  for (const n of stringFieldNames) distinctSets[n] = new Set();
+  for (const n of numericFieldNames) numAccum[n] = { sum: 0, min: Infinity, max: -Infinity, count: 0 };
+
+  let rowCount = 0;
+  try {
+    const cursor = dbms.cursor(collection, 'id', undefined);
+    for await (const json of cursor) {
+      const doc = JSON.parse(json) as Record<string, FieldValue>;
+      if (sampleRows.length < 10) sampleRows.push(doc);
+      rowCount++;
+      for (const n of stringFieldNames) {
+        const v = doc[n];
+        if (typeof v === 'string' && distinctSets[n].size < 30) distinctSets[n].add(v);
+      }
+      for (const n of numericFieldNames) {
+        const v = doc[n];
+        if (typeof v === 'number') {
+          const a = numAccum[n];
+          a.sum += v; a.min = Math.min(a.min, v); a.max = Math.max(a.max, v); a.count++;
+        }
+      }
+    }
+  } catch { /* empty collection or no id index */ }
+
+  const distinctStringValues: Record<string, string[]> = {};
+  for (const [k, s] of Object.entries(distinctSets)) distinctStringValues[k] = [...s].sort();
+
+  const numericStats: Record<string, { min: number; max: number; avg: number }> = {};
+  for (const [k, a] of Object.entries(numAccum)) {
+    if (a.count > 0) numericStats[k] = { min: a.min, max: a.max, avg: Math.round(a.sum / a.count) };
+  }
+
+  return { sampleRows, distinctStringValues, numericStats, rowCount };
+}
+
+function buildEnrichmentPrompt(model: SemanticModel, stats: Record<string, FieldStats>): string {
+  let schemaDesc = '';
+  for (const explore of model.explores) {
+    const s = stats[explore.collection];
+    schemaDesc += `\n=== Collection: "${explore.collection}" (${s.rowCount} rows) ===\nFields:\n`;
+    for (const f of explore.fields) {
+      if (f.derived) continue;
+      schemaDesc += `  - ${f.name} (${f.type})\n`;
+      const sv = s.distinctStringValues[f.name];
+      if (sv?.length) schemaDesc += `    Distinct values (${sv.length}): ${sv.join(', ')}\n`;
+      const ns = s.numericStats[f.name];
+      if (ns) schemaDesc += `    Range: min=${ns.min}, max=${ns.max}, avg=${ns.avg}\n`;
+    }
+    schemaDesc += `\nSample rows:\n${JSON.stringify(s.sampleRows.slice(0, 5), null, 2)}\n`;
+  }
+
+  const multiCollectionNote =
+    model.explores.length > 1
+      ? `\nMultiple collections are present. If you see strong evidence that a field in one collection ` +
+        `references records in another (matching names, values that appear as IDs elsewhere), ` +
+        `you MAY suggest JOIN relationships in the "joins" array. ` +
+        `Only suggest a join when you are very confident. A wrong join breaks queries. ` +
+        `NOTE: FK detection is inherently heuristic — when in doubt, omit it.`
+      : '';
+
+  return `You are enriching a semantic model for a conversational analytics system.
+
+Current model (needs enrichment):
+${JSON.stringify(model, null, 2)}
+
+Schema and data statistics:
+${schemaDesc}${multiCollectionNote}
+
+Return an enriched version of the model JSON following these rules:
+1. Keep all existing field names exactly — do NOT rename them.
+2. Add a meaningful "description" to each field and to the collection itself.
+3. Add "synonyms" arrays for fields that have common business aliases.
+4. Set "hidden": true for ID/internal fields not useful for analytics.
+5. You MAY add new "derived" fields (JS ternary expressions) if the data distribution clearly suggests useful groupings. E.g. if salary ranges 37500–142500 a salary_tier makes sense. Each derived field needs: name, type, label, description, derived (JS expression), synonyms.
+6. Do NOT remove any existing fields or measures.
+7. You MAY add useful measures beyond the auto-generated ones (e.g. headcount measure using COUNT(*)).
+8. Output ONLY the enriched model JSON — no explanation, no markdown fences.`;
+}
+
+/**
+ * Merge the LLM's enriched model onto the original, applying only additive/safe changes.
+ * Never removes existing fields, measures, or explores.
+ * Only adds derived fields (not arbitrary new base fields the DB doesn't have).
+ */
+function mergeEnrichedModel(original: SemanticModel, llmOutput: string): SemanticModel {
+  let text = llmOutput.trim();
+  const fence = text.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?\s*```$/i);
+  if (fence) text = fence[1].trim();
+
+  let enriched: SemanticModel;
+  try {
+    enriched = JSON.parse(text) as SemanticModel;
+  } catch {
+    console.warn('[enrichModel] LLM returned invalid JSON, keeping original model');
+    return original;
+  }
+
+  const allOriginalCollections = new Set(original.explores.map((e) => e.collection));
+
+  for (const origExplore of original.explores) {
+    const enrichedExplore = enriched.explores?.find((e) => e.collection === origExplore.collection);
+    if (!enrichedExplore) continue;
+
+    if (typeof enrichedExplore.description === 'string') origExplore.description = enrichedExplore.description;
+
+    // Update existing fields (description, synonyms, hidden, tags only)
+    for (const origField of origExplore.fields) {
+      const ef = enrichedExplore.fields?.find((f) => f.name === origField.name);
+      if (!ef) continue;
+      if (typeof ef.description === 'string') origField.description = ef.description;
+      if (Array.isArray(ef.synonyms) && ef.synonyms.length > 0) origField.synonyms = ef.synonyms as string[];
+      if (ef.hidden === true) origField.hidden = true;
+      if (Array.isArray(ef.tags) && ef.tags.length > 0) origField.tags = ef.tags as string[];
+    }
+
+    // Add new derived fields (only derived — never add raw DB fields the LLM invented)
+    for (const ef of enrichedExplore.fields ?? []) {
+      if (!ef.derived) continue;
+      if (origExplore.fields.some((f) => f.name === ef.name)) continue;
+      if (!ef.name || !ef.type || !ef.label) continue;
+      if (!['string', 'number', 'boolean'].includes(ef.type)) continue;
+      origExplore.fields.push(ef);
+    }
+
+    // Add new measures
+    origExplore.measures = origExplore.measures ?? [];
+    for (const em of enrichedExplore.measures ?? []) {
+      if (origExplore.measures.some((m) => m.name === em.name)) continue;
+      if (!em.name || !em.aggregation || !em.field || !em.label) continue;
+      const validAggs = new Set(['COUNT', 'SUM', 'AVG', 'MIN', 'MAX']);
+      if (!validAggs.has(em.aggregation)) continue;
+      origExplore.measures.push(em);
+    }
+
+    // Add suggested joins — only when target collection exists in this model
+    if (Array.isArray(enrichedExplore.joins)) {
+      origExplore.joins = origExplore.joins ?? [];
+      for (const ej of enrichedExplore.joins) {
+        if (!allOriginalCollections.has(ej.collection)) continue; // target must exist
+        if (origExplore.joins.some((j) => j.collection === ej.collection)) continue;
+        if (!ej.leftField || !ej.rightField) continue;
+        origExplore.joins.push(ej);
+        console.log(`[enrichModel] Auto-detected FK: ${origExplore.collection}.${ej.leftField} → ${ej.collection}.${ej.rightField}`);
+      }
+    }
+  }
+
+  return original;
+}
+
+/**
+ * LLM-powered model enrichment.
+ *
+ * Collects field statistics (distinct string values, numeric ranges, sample rows)
+ * for every collection, then asks the LLM to enrich the model with descriptions,
+ * synonyms, sensible derived fields, and — when multiple collections are present —
+ * suggested FK join relationships.
+ *
+ * The merge step is strictly additive: existing fields/measures are never removed,
+ * and only derived fields (not invented base fields) can be added by the LLM.
+ *
+ * NOTE on FK detection: requires 2+ collections to activate. The current demo has
+ * one collection, so the FK detection path is inactive. When multiple collections
+ * exist, the LLM suggests relationships; the merge validates both collections exist
+ * before writing any join. Flawless detection is impossible by nature — treat
+ * suggested joins as hints that may need manual verification.
+ */
+export async function enrichModelWithLLM(model: SemanticModel, dbms: SimpleDbms, llm: LLMProvider): Promise<SemanticModel> {
+  const stats: Record<string, FieldStats> = {};
+  for (const explore of model.explores) {
+    stats[explore.collection] = await collectFieldStats(dbms, explore.collection, explore.fields);
+  }
+
+  const prompt = buildEnrichmentPrompt(model, stats);
+  const systemPrompt =
+    'You are a data modeling expert. Enrich the given semantic model JSON using the provided schema and data statistics. Output ONLY valid JSON matching the exact SemanticModel structure.';
+
+  try {
+    const response = await llm.generate(systemPrompt, prompt);
+    return mergeEnrichedModel(model, response.text);
+  } catch (err) {
+    console.warn('[enrichModel] LLM enrichment failed, using unenriched model:', err instanceof Error ? err.message : err);
+    return model;
+  }
+}
+
+/**
+ * Returns a map of derived-field-name → JS expression for a given collection.
+ * Used by the ConversationalEngine to enrich rows at query time.
+ */
+export function getDerivedFields(model: SemanticModel, collection: string): Map<string, string> {
+  const explore = model.explores.find((e) => e.collection === collection);
+  if (!explore) return new Map();
+  const map = new Map<string, string>();
+  for (const f of explore.fields) {
+    if (f.derived) map.set(f.name, f.derived);
+  }
+  return map;
 }

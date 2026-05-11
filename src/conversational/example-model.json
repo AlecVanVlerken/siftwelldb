@@ -3,13 +3,14 @@
     {
       "collection": "employees",
       "label": "Employee Records",
-      "description": "Employee information including salary and department data",
+      "description": "Employee records including salary, department, seniority, gender, age, city, and tenure",
       "fields": [
         {
           "name": "id",
           "type": "string",
           "label": "Employee ID",
-          "description": "Unique identifier for each employee"
+          "description": "Unique identifier for each employee",
+          "hidden": true
         },
         {
           "name": "name",
@@ -19,18 +20,33 @@
           "synonyms": ["employee", "person", "worker"]
         },
         {
+          "name": "gender",
+          "type": "string",
+          "label": "Gender",
+          "description": "Employee's gender — values are 'M' or 'F'",
+          "synonyms": ["sex"]
+        },
+        {
           "name": "department",
           "type": "string",
           "label": "Department",
-          "description": "The department the employee works in",
+          "description": "Department the employee belongs to (Engineering, Marketing, Sales, HR, Finance, Operations, Support, Legal)",
           "synonyms": ["dept", "team", "division"]
+        },
+        {
+          "name": "seniority",
+          "type": "string",
+          "label": "Seniority Level",
+          "description": "Career level: Junior, Mid, Senior, Lead, or Principal",
+          "synonyms": ["level", "rank", "experience", "career level"]
         },
         {
           "name": "salary",
           "type": "number",
           "label": "Annual Salary",
           "description": "Gross annual salary in EUR",
-          "synonyms": ["pay", "wage", "compensation", "income", "earnings"]
+          "synonyms": ["pay", "wage", "compensation", "income", "earnings"],
+          "tags": ["compensation", "finance"]
         },
         {
           "name": "age",
@@ -42,31 +58,56 @@
           "name": "city",
           "type": "string",
           "label": "City",
-          "description": "City where the employee is based",
-          "synonyms": ["location", "office"]
+          "description": "City where the employee is based (Leuven, Gent, Antwerpen, Brussel, Brugge, Mechelen, Hasselt, Namur)",
+          "synonyms": ["location", "office", "site"]
+        },
+        {
+          "name": "yearsAtCompany",
+          "type": "number",
+          "label": "Years at Company",
+          "description": "Number of full years the employee has been with the company",
+          "synonyms": ["tenure", "years employed", "seniority years"]
+        },
+        {
+          "name": "salary_tier",
+          "type": "string",
+          "label": "Salary Tier",
+          "description": "Salary bracket — Low (< €60k), Mid (€60k–€90k), or High (> €90k)",
+          "derived": "salary < 60000 ? 'Low' : salary < 90000 ? 'Mid' : 'High'",
+          "synonyms": ["salary bracket", "pay tier", "salary range", "salary band", "compensation tier"],
+          "tags": ["compensation", "derived"]
+        },
+        {
+          "name": "age_group",
+          "type": "string",
+          "label": "Age Group",
+          "description": "Age decade bracket — 20s, 30s, 40s, or 50s+",
+          "derived": "age < 30 ? '20s' : age < 40 ? '30s' : age < 50 ? '40s' : '50s+'",
+          "synonyms": ["age bracket", "age range", "age band", "generation"],
+          "tags": ["demographics", "derived"]
         }
       ],
       "measures": [
-        {
-          "name": "average_salary",
-          "label": "Average Salary",
-          "aggregation": "AVG",
-          "field": "salary",
-          "description": "Mean salary across employees"
-        },
-        {
-          "name": "total_salary",
-          "label": "Total Salary",
-          "aggregation": "SUM",
-          "field": "salary",
-          "description": "Sum of all salaries"
-        },
         {
           "name": "headcount",
           "label": "Headcount",
           "aggregation": "COUNT",
           "field": "*",
           "description": "Number of employees"
+        },
+        {
+          "name": "average_salary",
+          "label": "Average Salary",
+          "aggregation": "AVG",
+          "field": "salary",
+          "description": "Mean gross annual salary in EUR"
+        },
+        {
+          "name": "total_salary",
+          "label": "Total Salary Cost",
+          "aggregation": "SUM",
+          "field": "salary",
+          "description": "Sum of all gross annual salaries in EUR"
         },
         {
           "name": "max_salary",
@@ -79,6 +120,19 @@
           "label": "Lowest Salary",
           "aggregation": "MIN",
           "field": "salary"
+        },
+        {
+          "name": "avg_age",
+          "label": "Average Age",
+          "aggregation": "AVG",
+          "field": "age"
+        },
+        {
+          "name": "avg_tenure",
+          "label": "Average Tenure",
+          "aggregation": "AVG",
+          "field": "yearsAtCompany",
+          "description": "Average years employees have been with the company"
         }
       ]
     }

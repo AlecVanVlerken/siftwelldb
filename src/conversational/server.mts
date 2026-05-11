@@ -20,6 +20,7 @@ import { GeminiProvider } from './llmProvider.mjs';
 import { ConversationalEngine } from './conversationalEngine.mjs';
 import {
   generateSemanticModel,
+  enrichModelWithLLM,
   loadSemanticModel,
   parseSemanticModel,
   type SemanticModel,
@@ -93,28 +94,6 @@ function rebuildEngine() {
   engine = new ConversationalEngine({ dbms: db, llmProvider: llm, semanticModel });
 }
 
-function enrichModel(model: SemanticModel) {
-  const empExplore = model.explores.find((e) => e.collection === 'employees');
-  if (!empExplore) return;
-  empExplore.description = 'Employee records including salary, department, seniority, gender, and location data';
-  const enrichments: Record<string, { description?: string; synonyms?: string[] }> = {
-    salary: { description: 'Gross annual salary in EUR', synonyms: ['pay', 'wage', 'compensation', 'income', 'earnings'] },
-    department: { description: 'Department the employee belongs to', synonyms: ['dept', 'team', 'division'] },
-    name: { description: "Employee's full name", synonyms: ['employee', 'person', 'worker'] },
-    city: { description: 'City where the employee is based', synonyms: ['location', 'office'] },
-    age: { description: "Employee's age in years" },
-    gender: { description: "Employee's gender (M or F)", synonyms: ['sex'] },
-    seniority: { description: 'Seniority level: Junior, Mid, Senior, Lead, or Principal', synonyms: ['level', 'rank', 'experience'] },
-    yearsAtCompany: { description: 'Number of years employed at the company', synonyms: ['tenure', 'years employed'] },
-  };
-  for (const f of empExplore.fields) {
-    const e = enrichments[f.name];
-    if (e) {
-      if (e.description) f.description = e.description;
-      if (e.synonyms) f.synonyms = e.synonyms;
-    }
-  }
-}
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
@@ -215,7 +194,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     // ── POST /api/model/generate ───────────────────────────────────────────
     if (p === '/api/model/generate' && method === 'POST') {
       semanticModel = await generateSemanticModel(db);
-      enrichModel(semanticModel);
+      semanticModel = await enrichModelWithLLM(semanticModel, db, new GeminiProvider(apiKey));
       fs.writeFileSync(MODEL_PATH, JSON.stringify(semanticModel, null, 2));
       rebuildEngine();
       return json(res, semanticModel);
@@ -274,10 +253,11 @@ async function main() {
     semanticModel = loadSemanticModel(MODEL_PATH);
     console.log('Loaded semantic model from disk.');
   } else {
+    console.log('Auto-generating semantic model with LLM enrichment...');
     semanticModel = await generateSemanticModel(db);
-    enrichModel(semanticModel);
+    semanticModel = await enrichModelWithLLM(semanticModel, db, new GeminiProvider(apiKey));
     fs.writeFileSync(MODEL_PATH, JSON.stringify(semanticModel, null, 2));
-    console.log('Auto-generated semantic model.');
+    console.log('Auto-generated and LLM-enriched semantic model.');
   }
 
   rebuildEngine();
