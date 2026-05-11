@@ -18,7 +18,8 @@ testdb
 demo-db/
 src/benchmarking/results/
 src/benchmarking/hnsw/results/
-src/benchmarking/hnsw/large-dataset/results/
+src/benchmarking/hnsw/datasets/gist/
+src/benchmarking/hnsw/datasets/sift/
 
 *.tsbuildinfo
 
