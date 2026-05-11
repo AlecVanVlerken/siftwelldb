@@ -25,7 +25,6 @@
  *  • Flat Vec<f32> storage — cache-friendly, no pointer chasing
  */
 
-import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import os from 'os';

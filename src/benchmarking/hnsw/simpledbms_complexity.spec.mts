@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { describe, it } from 'vitest';
 
 import { RealFile, type File } from '../../core/file.mjs';
-import { MockFile } from '../../core/mockfile.mjs';
 import { SimpleDbms, type HnswConfig } from '../../dbms/simpledbms.mjs';
 import {
   cleanupStorage,
@@ -73,7 +72,7 @@ describe('SimpleDbms complexity benchmark', () => {
       const insertCount = Math.min(INSERT_LIMIT, baseInfo.count);
       const queries = await loadFvecs(QUERY_FILE, SEARCH_QUERY_COUNT);
 
-      if (queries.dim != baseInfo.dim) {
+      if (queries.dim !== baseInfo.dim) {
         throw new Error(`Dimension mismatch between SIFT base (${baseInfo.dim}) and queries (${queries.dim}).`);
       }
 
@@ -105,11 +104,11 @@ describe('SimpleDbms complexity benchmark', () => {
         efConstruction: EF_CONSTRUCTION,
         efSearch: EF_SEARCH,
         maxStoredLevel: MAX_STORED_LEVEL,
-        embeddingFn: async (text: string) => {
+        embeddingFn: (text: string) => {
           const vector = queryVectorMap.get(text);
-          if (vector !== undefined) return vector;
-          if (text === pendingDocKey && pendingDocVector !== null) return pendingDocVector;
-          throw new Error(`No benchmark embedding available for key: ${text}`);
+          if (vector !== undefined) return Promise.resolve(vector);
+          if (text === pendingDocKey && pendingDocVector !== null) return Promise.resolve(pendingDocVector);
+          return Promise.reject(new Error(`No benchmark embedding available for key: ${text}`));
         },
       };
 
@@ -149,14 +148,14 @@ describe('SimpleDbms complexity benchmark', () => {
             pendingDocKey = null;
             pendingDocVector = null;
 
-            if (insertOrdinal % COMMIT_INTERVAL == 0) {
+            if (insertOrdinal % COMMIT_INTERVAL === 0) {
               await db.commit();
             }
 
-            const isCheckpoint = insertOrdinal % CHECKPOINT_INTERVAL == 0 || insertOrdinal == insertCount;
+            const isCheckpoint = insertOrdinal % CHECKPOINT_INTERVAL === 0 || insertOrdinal === insertCount;
             if (!isCheckpoint) return;
 
-            if (insertOrdinal % COMMIT_INTERVAL != 0) {
+            if (insertOrdinal % COMMIT_INTERVAL !== 0) {
               await db.commit();
             }
 
