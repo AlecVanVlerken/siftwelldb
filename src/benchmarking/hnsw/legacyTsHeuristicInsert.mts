@@ -70,7 +70,7 @@ export class LegacyTsHeuristicInsert {
     return { entryPoint: newEntryPoint, maxLevel: newMaxLevel };
   }
 
-  async randomLevel(maxStoredLevel: number): Promise<number> {
+  randomLevel(maxStoredLevel: number): number {
     const level = Math.floor(-Math.log(Math.random()) * this.mL);
     return Math.min(level, maxStoredLevel);
   }
