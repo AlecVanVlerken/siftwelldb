@@ -36,6 +36,11 @@
               <span>Database grootte</span>
               <strong id="database-size-value">-</strong>
             </div>
+            <label class="dropdown-toggle">
+              <input type="checkbox" id="incremental-compaction-toggle" disabled />
+              <span>Automatisch compacten</span>
+            </label>
+            <div id="incremental-compaction-status" class="dropdown-note">Uitgeschakeld</div>
             <button id="vacuum-db-btn" disabled class="dropdown-item">Database compacten</button>
             <button id="reset-db-btn" disabled class="dropdown-item dropdown-item--danger">DB Resetten</button>
             <button id="disconnect-btn" disabled class="dropdown-item">Verbinding verbreken</button>

@@ -28,6 +28,8 @@ const modalCloseBtns = document.querySelectorAll('.close-btn');
 const resetDbBtn = document.getElementById('reset-db-btn') as HTMLButtonElement | null;
 const vacuumDbBtn = document.getElementById('vacuum-db-btn') as HTMLButtonElement | null;
 const databaseSizeValue = document.getElementById('database-size-value');
+const incrementalCompactionToggle = document.getElementById('incremental-compaction-toggle') as HTMLInputElement | null;
+const incrementalCompactionStatus = document.getElementById('incremental-compaction-status');
 const maintenanceModal = document.getElementById('maintenance-modal');
 const maintenanceTitle = document.getElementById('maintenance-title');
 const maintenanceStatus = document.getElementById('maintenance-status');
@@ -42,6 +44,41 @@ const tabCollections = document.getElementById('tab-collections') as HTMLButtonE
 const tabLab = document.getElementById('tab-lab') as HTMLButtonElement | null;
 const contentPanel = document.getElementById('content');
 const labPanel = document.getElementById('lab-panel');
+
+type DatabaseSizeInfo = {
+  dataFileBytes: number;
+  logFileBytes: number;
+  totalBytes: number;
+  activeDataBytes?: number;
+  freeDataBytes?: number;
+  amplification?: number;
+  totalBlocks?: number;
+  usedBlocks?: number;
+  freeBlocks?: number;
+  freeTailBlocks?: number;
+};
+
+type IncrementalCompactionInfo = {
+  enabled: boolean;
+  queued: boolean;
+  running: boolean;
+  intervalMs: number;
+  maxAmplification: number | null;
+  lastRunAt: string | null;
+  lastDurationMs: number | null;
+  lastError: string | null;
+  lastResult: IncrementalCompactionResultInfo | null;
+};
+
+type IncrementalCompactionResultInfo = {
+  didWork?: boolean;
+  blocked?: boolean;
+  reachedTarget?: boolean;
+  relocatedDocuments?: number;
+  relocatedBtreeNodes?: number;
+  relocatedHnswUnits?: number;
+  reclaimedTailBlocks?: number;
+};
 
 // Semantic search
 const semanticSearchInput = document.getElementById('semantic-search-input') as HTMLInputElement;
@@ -163,6 +200,7 @@ function onConnected(filepath: string) {
   disconnectBtn.disabled = false;
   if (resetDbBtn) resetDbBtn.disabled = false;
   if (vacuumDbBtn) vacuumDbBtn.disabled = false;
+  if (incrementalCompactionToggle) incrementalCompactionToggle.disabled = false;
   if (newCollectionBtn) newCollectionBtn.disabled = false;
   if (headerMenuBtn) headerMenuBtn.disabled = false;
   connectModal.classList.add('hidden');
@@ -176,6 +214,8 @@ async function disconnect() {
     disconnectBtn.disabled = true;
     if (resetDbBtn) resetDbBtn.disabled = true;
     if (vacuumDbBtn) vacuumDbBtn.disabled = true;
+    renderIncrementalCompaction(null);
+    renderDatabaseSize(null);
     if (newCollectionBtn) newCollectionBtn.disabled = true;
     if (headerMenuBtn) headerMenuBtn.disabled = true;
     collectionList.innerHTML = '';
@@ -238,17 +278,201 @@ async function updateDatabaseStatus(): Promise<void> {
   if (!databaseSizeValue || !connectionStatus.classList.contains('connected')) return;
   try {
     const data = await apiCall('/api/database/status');
-    const size = data['size'] as { dataFileBytes?: number; logFileBytes?: number; totalBytes?: number } | null;
-    if (!size) {
-      databaseSizeValue.textContent = '-';
-      databaseSizeValue.removeAttribute('title');
-      return;
-    }
-    const totalBytes = size.totalBytes ?? (size.dataFileBytes ?? 0) + (size.logFileBytes ?? 0);
-    databaseSizeValue.textContent = formatSize(totalBytes);
-    databaseSizeValue.title = `Datafile: ${formatSize(size.dataFileBytes ?? 0)}\nLogfile: ${formatSize(size.logFileBytes ?? 0)}`;
+    const size = readSizeInfo(data['size']);
+    renderDatabaseSize(size);
+    renderIncrementalCompaction(readIncrementalCompactionInfo(data['incrementalCompaction']), size);
   } catch (error) {
     console.error('Failed to load database status:', error);
+    renderDatabaseSize(null);
+    renderIncrementalCompaction(null);
+  }
+}
+
+function readSizeInfo(value: unknown): DatabaseSizeInfo | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const dataFileBytes = record['dataFileBytes'];
+  const logFileBytes = record['logFileBytes'];
+  const totalBytes = record['totalBytes'];
+  const activeDataBytes = record['activeDataBytes'];
+  const freeDataBytes = record['freeDataBytes'];
+  const amplification = record['amplification'];
+  const totalBlocks = record['totalBlocks'];
+  const usedBlocks = record['usedBlocks'];
+  const freeBlocks = record['freeBlocks'];
+  const freeTailBlocks = record['freeTailBlocks'];
+
+  if (typeof dataFileBytes !== 'number' || typeof logFileBytes !== 'number' || typeof totalBytes !== 'number') {
+    return null;
+  }
+
+  return {
+    dataFileBytes,
+    logFileBytes,
+    totalBytes,
+    activeDataBytes: typeof activeDataBytes === 'number' ? activeDataBytes : undefined,
+    freeDataBytes: typeof freeDataBytes === 'number' ? freeDataBytes : undefined,
+    amplification: typeof amplification === 'number' ? amplification : undefined,
+    totalBlocks: typeof totalBlocks === 'number' ? totalBlocks : undefined,
+    usedBlocks: typeof usedBlocks === 'number' ? usedBlocks : undefined,
+    freeBlocks: typeof freeBlocks === 'number' ? freeBlocks : undefined,
+    freeTailBlocks: typeof freeTailBlocks === 'number' ? freeTailBlocks : undefined,
+  };
+}
+
+function renderDatabaseSize(size: DatabaseSizeInfo | null): void {
+  if (!databaseSizeValue) return;
+  if (!size) {
+    databaseSizeValue.textContent = '-';
+    databaseSizeValue.removeAttribute('title');
+    return;
+  }
+
+  if (size.activeDataBytes !== undefined && size.freeDataBytes !== undefined) {
+    databaseSizeValue.textContent = `${formatSize(size.dataFileBytes)} bestand / ${formatSize(size.activeDataBytes)} actief`;
+    const details = [
+      `Datafile: ${formatSize(size.dataFileBytes)}`,
+      `Logfile: ${formatSize(size.logFileBytes)}`,
+      `Actieve blokken: ${formatSize(size.activeDataBytes)}`,
+      `Vrije blokken: ${formatSize(size.freeDataBytes)}`,
+    ];
+    if (size.amplification !== undefined) details.push(`Amplificatie: ${size.amplification.toFixed(2)}x`);
+    if (size.totalBlocks !== undefined && size.usedBlocks !== undefined && size.freeBlocks !== undefined) {
+      details.push(
+        `Blokken: ${size.usedBlocks.toString()} gebruikt / ${size.freeBlocks.toString()} vrij / ${size.totalBlocks.toString()} totaal`,
+      );
+    }
+    if (size.freeTailBlocks !== undefined) details.push(`Vrije staartblokken: ${size.freeTailBlocks.toString()}`);
+    databaseSizeValue.title = details.join('\n');
+    return;
+  }
+
+  databaseSizeValue.textContent = formatSize(size.totalBytes);
+  databaseSizeValue.title = `Datafile: ${formatSize(size.dataFileBytes)}\nLogfile: ${formatSize(size.logFileBytes)}`;
+}
+
+function readIncrementalCompactionInfo(value: unknown): IncrementalCompactionInfo | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const enabled = record['enabled'];
+  const queued = record['queued'];
+  const running = record['running'];
+  const intervalMs = record['intervalMs'];
+  const policy = record['policy'];
+  const lastRunAt = record['lastRunAt'];
+  const lastDurationMs = record['lastDurationMs'];
+  const lastError = record['lastError'];
+  const lastResult = readIncrementalCompactionResultInfo(record['lastResult']);
+  const maxAmplification =
+    policy && typeof policy === 'object' && typeof (policy as Record<string, unknown>)['maxAmplification'] === 'number'
+      ? ((policy as Record<string, unknown>)['maxAmplification'] as number)
+      : null;
+
+  if (
+    typeof enabled !== 'boolean' ||
+    typeof queued !== 'boolean' ||
+    typeof running !== 'boolean' ||
+    typeof intervalMs !== 'number'
+  ) {
+    return null;
+  }
+
+  return {
+    enabled,
+    queued,
+    running,
+    intervalMs,
+    maxAmplification,
+    lastRunAt: typeof lastRunAt === 'string' ? lastRunAt : null,
+    lastDurationMs: typeof lastDurationMs === 'number' ? lastDurationMs : null,
+    lastError: typeof lastError === 'string' ? lastError : null,
+    lastResult,
+  };
+}
+
+function readIncrementalCompactionResultInfo(value: unknown): IncrementalCompactionResultInfo | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  return {
+    didWork: typeof record['didWork'] === 'boolean' ? record['didWork'] : undefined,
+    blocked: typeof record['blocked'] === 'boolean' ? record['blocked'] : undefined,
+    reachedTarget: typeof record['reachedTarget'] === 'boolean' ? record['reachedTarget'] : undefined,
+    relocatedDocuments: typeof record['relocatedDocuments'] === 'number' ? record['relocatedDocuments'] : undefined,
+    relocatedBtreeNodes: typeof record['relocatedBtreeNodes'] === 'number' ? record['relocatedBtreeNodes'] : undefined,
+    relocatedHnswUnits: typeof record['relocatedHnswUnits'] === 'number' ? record['relocatedHnswUnits'] : undefined,
+    reclaimedTailBlocks: typeof record['reclaimedTailBlocks'] === 'number' ? record['reclaimedTailBlocks'] : undefined,
+  };
+}
+
+function renderIncrementalCompaction(
+  info: IncrementalCompactionInfo | null,
+  size: DatabaseSizeInfo | null = null,
+): void {
+  const connected = connectionStatus.classList.contains('connected');
+  if (incrementalCompactionToggle) {
+    incrementalCompactionToggle.checked = info?.enabled ?? false;
+    incrementalCompactionToggle.disabled = !connected;
+  }
+  if (!incrementalCompactionStatus) return;
+
+  if (!info?.enabled) {
+    incrementalCompactionStatus.textContent = 'Uitgeschakeld. Gebruik handmatige full vacuum wanneer nodig.';
+    return;
+  }
+  if (info.lastError) {
+    incrementalCompactionStatus.textContent = `Fout: ${info.lastError}`;
+    return;
+  }
+  if (info.running) {
+    incrementalCompactionStatus.textContent = 'Actief: kleine compaction-stap wordt uitgevoerd.';
+    return;
+  }
+  if (info.queued) {
+    incrementalCompactionStatus.textContent = 'In wachtrij: compaction wacht op databasegebruik.';
+    return;
+  }
+  if (
+    size?.amplification !== undefined &&
+    info.maxAmplification !== null &&
+    size.amplification <= info.maxAmplification
+  ) {
+    const free =
+      size.freeBlocks !== undefined
+        ? ` ${size.freeBlocks.toString()} vrije blokken, ${size.freeTailBlocks ?? 0} vrije staartblokken.`
+        : '';
+    incrementalCompactionStatus.textContent =
+      `Ingeschakeld. Geen compaction nodig: ${size.amplification.toFixed(2)}x <= ${info.maxAmplification.toFixed(2)}x.` +
+      free;
+    return;
+  }
+  if (info.lastRunAt) {
+    const duration = info.lastDurationMs !== null ? ` (${info.lastDurationMs} ms)` : '';
+    const result = info.lastResult;
+    const work =
+      result !== null
+        ? ` Docs: ${(result.relocatedDocuments ?? 0).toString()}, B-tree: ${(result.relocatedBtreeNodes ?? 0).toString()}, HNSW: ${(result.relocatedHnswUnits ?? 0).toString()}, trim: ${(result.reclaimedTailBlocks ?? 0).toString()}.`
+        : '';
+    const blocked = result?.blocked ? ' Geen veilige verdere stap gevonden; full vacuum kan nodig zijn.' : '';
+    incrementalCompactionStatus.textContent =
+      `Ingeschakeld. Laatste stap: ${new Date(info.lastRunAt).toLocaleTimeString()}${duration}.` + work + blocked;
+    return;
+  }
+
+  incrementalCompactionStatus.textContent = 'Ingeschakeld. Kleine stappen worden automatisch gepland.';
+}
+
+async function setIncrementalCompactionEnabled(enabled: boolean): Promise<void> {
+  if (!incrementalCompactionToggle) return;
+  incrementalCompactionToggle.disabled = true;
+  try {
+    const data = await apiCall('/api/database/incremental-compaction/settings', 'POST', { enabled });
+    renderIncrementalCompaction(readIncrementalCompactionInfo(data['incrementalCompaction']));
+    await updateDatabaseStatus();
+  } catch (error) {
+    alert('Automatische compaction aanpassen mislukt: ' + (error as Error).message);
+    await updateDatabaseStatus();
+  } finally {
+    incrementalCompactionToggle.disabled = !connectionStatus.classList.contains('connected');
   }
 }
 
@@ -257,6 +481,9 @@ function setMaintenance(active: boolean, statusText = '', titleText = 'Database 
   if (maintenanceTitle) maintenanceTitle.textContent = titleText;
   if (maintenanceStatus && statusText) maintenanceStatus.textContent = statusText;
   if (vacuumDbBtn) vacuumDbBtn.disabled = active || !connectionStatus.classList.contains('connected');
+  if (incrementalCompactionToggle) {
+    incrementalCompactionToggle.disabled = active || !connectionStatus.classList.contains('connected');
+  }
   connectConfirmBtn.disabled = active;
   createNewBtn.disabled = active;
 }
@@ -637,6 +864,14 @@ if (resetDbBtn) {
     void resetDb();
   });
 }
+if (vacuumDbBtn) {
+  vacuumDbBtn.addEventListener('click', () => void compactDatabase());
+}
+if (incrementalCompactionToggle) {
+  incrementalCompactionToggle.addEventListener('change', () => {
+    void setIncrementalCompactionEnabled(incrementalCompactionToggle.checked);
+  });
+}
 
 tabCollections?.addEventListener('click', () => switchTab('collections'));
 tabLab?.addEventListener('click', () => switchTab('lab'));
@@ -733,10 +968,6 @@ if (newCollectionInput) {
   });
 }
 
-if (vacuumDbBtn) {
-  vacuumDbBtn.addEventListener('click', () => void compactDatabase());
-}
-
 // Document view
 docViewBack.addEventListener('click', closeDocView);
 docViewEdit.addEventListener('click', enterEditMode);
@@ -757,9 +988,9 @@ modalCloseBtns.forEach((btn) => {
   });
 });
 
+window.setInterval(() => {
+  if (connectionStatus.classList.contains('connected')) void updateDatabaseStatus();
+}, 5_000);
+
 // Show connect modal on startup
 connectModal.classList.remove('hidden');
-
-setInterval(() => {
-  if (connectionStatus.classList.contains('connected')) void updateDatabaseStatus();
-}, 5000);

@@ -1,0 +1,4 @@
+scenario,phase,beforeBlocks,afterBlocks,beforeAmplification,afterAmplification,stepsTaken,shrunkBlocks,timeTakenMs
+long-run-idle-maintenance,1,103,77,1.6613,1.2419,5,26,17.216
+long-run-idle-maintenance,2,152,138,1.3694,1.2432,3,14,14.554
+long-run-idle-maintenance,3,203,199,1.2688,1.2437,1,4,5.079

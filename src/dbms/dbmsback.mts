@@ -1,7 +1,7 @@
 // author: Thomas Dumon
 // date: 2025-12-07
 
-import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
+import { FreeBlockFile, type FreeBlockFileStats } from '../freeblockfile/freeblockfile.mjs';
 import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
 import { allocateBlock } from '../freeblockfile/freelist.mjs';
@@ -16,7 +16,7 @@ import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
 import type { BlockLeafNode } from '../btree/leafnode.mjs';
 import type { BlockInternalNode } from '../btree/internalnode.mjs';
-import { HNSWIndex } from '../hnsw/hnswIndex.mjs';
+import { HNSWIndex, type HnswGraphStructureNode, type HnswGraphStructureSnapshot } from '../hnsw/hnswIndex.mjs';
 import { HNSWGraphStorage } from '../hnsw/hnswGraphStorage.mjs';
 import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
 import {
@@ -26,6 +26,11 @@ import {
   type FieldCompressionOverrides,
 } from './compression.mjs';
 import {
+  runIncrementalCompactionUntilTarget as runIncrementalCompactionCycleForSource,
+  runIncrementalCompactionStep as runIncrementalCompactionStepForSource,
+  vacuumCompactInto as runVacuumCompactInto,
+} from '../compaction/compaction.mjs';
+import {
   compressionSampleFromValue,
   recommendCompression,
   type CompressionRecommendation,
@@ -33,8 +38,15 @@ import {
   type CompressionSample,
   type CompressionStorageEstimate,
 } from './compression-advisor.mjs';
-import { vacuumCompactInto as runVacuumCompactInto } from '../compaction/compaction.mjs';
 import type { VacuumProgress } from '../compaction/compaction.mjs';
+import type {
+  HnswRelocationTarget,
+  IncrementalCompactionPolicy,
+  IncrementalCompactionResult,
+  DocumentRelocationResult,
+  RelocationOptions,
+  RelocationTarget,
+} from '../compaction/incrementaltypes.mjs';
 
 /**
  * Optional configuration block that enables per-collection HNSW semantic
@@ -186,47 +198,84 @@ export class DbmsBack {
 
   /**
    * Deletes an entire collection from the database.
-   * Removes from metaCache and cleans up HNSW if present.
+   * Frees records, B+ tree nodes, and HNSW storage owned by the collection,
+   * then removes collection metadata.
    * @param collection - The name of the collection to delete.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
   async deleteCollection(collection: string): Promise<void> {
-    if (!(collection in this.metaCache)) {
+    if (!this.hasCollectionMeta(collection)) {
       throw new Error(`Collection "${collection}" does not exist`);
     }
 
-    // Remove from metaCache
-    delete this.metaCache[collection];
+    const collectionMeta = { ...this.getCollectionMeta(collection) };
 
-    // Remove from HNSW metadata
-    const hnswMetaRaw = this.metaCache[HNSW_META_KEY];
-    if (hnswMetaRaw && typeof hnswMetaRaw === 'object' && !Array.isArray(hnswMetaRaw)) {
-      const hnswMeta = hnswMetaRaw as Record<string, unknown>;
-      if (collection in hnswMeta) {
-        delete hnswMeta[collection];
-        // If no more HNSW indexes, remove the key entirely
-        if (Object.keys(hnswMeta).length === 0) {
-          delete this.metaCache[HNSW_META_KEY];
-        }
+    const hnswMeta = this.getExistingHnswMeta();
+    if (hnswMeta && collection in hnswMeta) {
+      if (!this.hnswConfig) {
+        throw new Error(`Cannot fully delete HNSW-backed collection "${collection}" without hnswConfig`);
+      }
+
+      const hnswIdx = await this.getOrCreateHnswIndex(collection);
+      await hnswIdx.dropStorage();
+      delete hnswMeta[collection];
+      if (Object.keys(hnswMeta).length === 0) {
+        delete this.metaCache[HNSW_META_KEY];
       }
     }
 
-    // Clear caches related to this collection
-    for (const key of this.storageCache.keys()) {
+    const recordPointers = new Set<number>();
+    const idMeta = collectionMeta['id'];
+    if (idMeta) {
+      const [rootBlock, vorm] = idMeta;
+      const idTree = await this.getOrCreateTree(collection, 'id', vorm, rootBlock);
+      for await (const [, pointerBuffer] of idTree.iterate()) {
+        recordPointers.add(pointerBuffer.readUInt32BE(0));
+      }
+    }
+
+    for (const pointer of recordPointers) {
+      await this.recordStore.deleteRecord(pointer);
+    }
+
+    const btreeBlocks = new Set<number>();
+    for (const [field, [rootBlock, vorm]] of Object.entries(collectionMeta)) {
+      const storage = this.getOrCreateStorage(collection, field, vorm);
+      const locations = await storage.listNodeBlocks(rootBlock);
+      for (const location of locations) {
+        btreeBlocks.add(location.blockNumber);
+      }
+    }
+
+    for (const blockNumber of [...btreeBlocks].sort((a, b) => b - a)) {
+      await this.freeblockFile.freeBlock(blockNumber);
+    }
+
+    delete this.metaCache[collection];
+
+    const compressionMetaRaw = this.metaCache[COMPRESSION_META_KEY];
+    if (compressionMetaRaw && typeof compressionMetaRaw === 'object' && !Array.isArray(compressionMetaRaw)) {
+      delete (compressionMetaRaw as Record<string, unknown>)[collection];
+      if (Object.keys(compressionMetaRaw as Record<string, unknown>).length === 0) {
+        delete this.metaCache[COMPRESSION_META_KEY];
+      }
+    }
+
+    this.clearCollectionCaches(collection);
+  }
+
+  private clearCollectionCaches(collection: string): void {
+    for (const [key, storage] of [...this.storageCache.entries()]) {
       if (key.startsWith(`${collection}:`)) {
+        storage.dispose();
         this.storageCache.delete(key);
       }
     }
-    for (const key of this.treeCache.keys()) {
+    for (const key of [...this.treeCache.keys()]) {
       if (key.startsWith(`${collection}:`)) {
         this.treeCache.delete(key);
       }
     }
     this.hnswIndexCache.delete(collection);
-
-    // Note: blocks (B+ tree, HNSW nodes, records) are NOT explicitly freed here
-    // in this simplified implementation, but their roots are removed from meta,
-    // so they are effectively lost/collectible if a compactor is ever added.
   }
 
   /**
@@ -304,6 +353,14 @@ export class DbmsBack {
     const created: Record<string, [number, string]> = {};
     this.metaCache[HNSW_META_KEY] = created;
     return created;
+  }
+
+  private getExistingHnswMeta(): Record<string, [number, string]> | null {
+    const raw = this.metaCache[HNSW_META_KEY];
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      return raw as Record<string, [number, string]>;
+    }
+    return null;
   }
 
   private getCompressionMeta(): Record<string, FieldCompressionDefaults> {
@@ -729,10 +786,387 @@ export class DbmsBack {
       await this.hnswIndexCache.get(collection)!.delete(documentPointer);
     }
 
-    // Free the record blocks from the record store
+    // Free the record blocks from the record store. HNSW deletion rebuilds its
+    // graph without the old document pointer before the pointer can be reused.
     await this.recordStore.deleteRecord(documentPointer);
 
     // Note: metaWriteJSON is called in commit() to batch writes
+  }
+
+  /**
+   * Relocate one live logical document to a fresh RecordStore chain.
+   *
+   * This is the first structure-aware primitive used by incremental
+   * compaction. The logical document stays unchanged, while every DBMS-level
+   * pointer to its record chain is updated from the old block id to the new
+   * block id before the old chain is freed.
+   *
+   * @param collection - Collection containing the document.
+   * @param id - Logical document id.
+   */
+  async relocateDocument(
+    collection: string,
+    id: string | number,
+    options: RelocationOptions = {},
+  ): Promise<DocumentRelocationResult> {
+    const {
+      collectionMeta,
+      pointer: oldPointer,
+      idTree,
+      idBuffer,
+      idMetaData,
+    } = await this.findDocumentPointer(collection, id);
+
+    const document = await this.recordStore.readRecord(oldPointer);
+    if (!document) {
+      throw new Error('Document not found in record store');
+    }
+
+    const encodedDocument = await this.recordStore.readRecordEncoded(oldPointer);
+    if (!encodedDocument) {
+      throw new Error('Encoded document not found in record store');
+    }
+
+    const newPointer =
+      options.maxBlockExclusive === undefined
+        ? await this.recordStore.writeRecordEncoded(encodedDocument)
+        : await this.recordStore.writeRecordEncodedBelow(encodedDocument, {
+            maxBlockExclusive: options.maxBlockExclusive,
+          });
+    if (newPointer === null) {
+      return {
+        oldBlockNumber: oldPointer,
+        newBlockNumber: oldPointer,
+        relocated: false,
+      };
+    }
+    const newPointerBuffer = this.recordPointerBuffer(newPointer);
+
+    if (!(await idTree.update(idBuffer, newPointerBuffer))) {
+      throw new Error('Failed to update id index during document relocation');
+    }
+    idMetaData[0] = idTree.getRoot().getBlockNumber();
+
+    for (const key of document.getIterableKeys()) {
+      if (!(key in collectionMeta)) {
+        throw new Error('Key should exist in meta, but does not');
+      }
+      const keyMetaData = collectionMeta[key];
+      const keyRoot = keyMetaData[0];
+      const keyVorm = keyMetaData[1];
+      const keyValue = document.getFields()[key];
+      const keyTree = await this.getOrCreateTree(collection, key, keyVorm, keyRoot);
+      const keyBuffer = this.secondaryIndexKeyBuffer(keyVorm, keyValue, id);
+      if (!(await keyTree.update(keyBuffer, newPointerBuffer))) {
+        throw new Error(`Failed to update secondary index "${key}" during document relocation`);
+      }
+      keyMetaData[0] = keyTree.getRoot().getBlockNumber();
+    }
+
+    await this.relocateHnswDocumentPointer(collection, oldPointer, newPointer);
+    await this.recordStore.deleteRecord(oldPointer);
+
+    return {
+      oldBlockNumber: oldPointer,
+      newBlockNumber: newPointer,
+      relocated: options.maxBlockExclusive === undefined ? newPointer !== oldPointer : newPointer < oldPointer,
+    };
+  }
+
+  /**
+   * Relocate one B+ tree node belonging to a collection index.
+   *
+   * DbmsBack validates collection/index metadata and keeps the cached tree root
+   * in sync, while BlockNodeStorage owns the structure-specific relocation.
+   *
+   * @param collection - Collection containing the index.
+   * @param field - Indexed field name, including "id".
+   * @param blockNumber - Existing B+ tree node block to relocate.
+   * @returns The fresh block number containing the relocated node.
+   */
+  async relocateBtreeNode(
+    collection: string,
+    field: string,
+    blockNumber: number,
+    options: RelocationOptions = {},
+  ): Promise<number> {
+    if (!this.hasCollectionMeta(collection)) {
+      throw new Error('Collection does not exist');
+    }
+
+    const collectionMeta = this.getCollectionMeta(collection);
+    const fieldMeta = collectionMeta[field];
+    if (!fieldMeta) {
+      throw new Error(`B+ tree index "${field}" does not exist`);
+    }
+
+    const [rootBlock, vorm] = fieldMeta;
+    const storage = this.getOrCreateStorage(collection, field, vorm);
+    const result = await storage.relocateNode(rootBlock, blockNumber, options);
+    fieldMeta[0] = result.newRootBlock;
+    this.treeCache.delete(`${collection}:${field}`);
+    return result.newBlockNumber;
+  }
+
+  async listHnswRelocationTargets(collection: string): Promise<HnswRelocationTarget[]> {
+    if (!this.hnswConfig) {
+      throw new Error('Cannot inspect HNSW relocation targets without hnswConfig');
+    }
+
+    const hnswMeta = this.getExistingHnswMeta();
+    if (!hnswMeta || !(collection in hnswMeta)) {
+      return [];
+    }
+
+    const hnswIdx = await this.getOrCreateHnswIndex(collection);
+    const [metaBlock] = hnswMeta[collection];
+    const targets: HnswRelocationTarget[] = [
+      {
+        collection,
+        kind: 'hnsw-meta',
+        blockNumber: metaBlock,
+      },
+    ];
+    targets.push(
+      ...(await hnswIdx.listRelocationTargets()).map((target) => ({
+        collection,
+        kind: target.kind,
+        nodeId: target.nodeId,
+        blockNumber: target.blockNumber,
+      })),
+    );
+    return targets;
+  }
+
+  async inspectHnswGraphStructure(collection: string): Promise<HnswGraphStructureNode[]> {
+    return (await this.inspectHnswGraphStructureSnapshot(collection)).nodes;
+  }
+
+  async inspectHnswGraphStructureSnapshot(collection: string): Promise<HnswGraphStructureSnapshot> {
+    if (!this.hnswConfig) {
+      throw new Error('Cannot inspect HNSW graph structure without hnswConfig');
+    }
+
+    const hnswMeta = this.getExistingHnswMeta();
+    if (!hnswMeta || !(collection in hnswMeta)) {
+      throw new Error('HNSW index does not exist for collection');
+    }
+
+    return await (await this.getOrCreateHnswIndex(collection)).inspectGraphStructureSnapshot();
+  }
+
+  async relocateHnswUnit(target: HnswRelocationTarget): Promise<boolean> {
+    if (!this.hnswConfig) {
+      throw new Error('Cannot relocate HNSW unit without hnswConfig');
+    }
+
+    const hnswMeta = this.getExistingHnswMeta();
+    if (!hnswMeta || !(target.collection in hnswMeta)) {
+      throw new Error('HNSW index does not exist for collection');
+    }
+
+    const hnswIdx = await this.getOrCreateHnswIndex(target.collection);
+    if (target.kind === 'hnsw-meta') {
+      const [oldBlockNumber, vorm] = hnswMeta[target.collection];
+      const newBlockNumber = await hnswIdx.relocateMetadata({ maxBlockExclusive: target.maxBlockExclusive });
+      if (newBlockNumber === null) return false;
+      hnswMeta[target.collection] = [newBlockNumber, vorm];
+      return target.maxBlockExclusive === undefined
+        ? newBlockNumber !== oldBlockNumber
+        : newBlockNumber < oldBlockNumber;
+    }
+
+    const nodeId = await this.resolveHnswRelocationNodeId(target);
+    if (target.kind === 'hnsw-graph') {
+      const newNodeId = await hnswIdx.relocateGraphNode(nodeId, { maxBlockExclusive: target.maxBlockExclusive });
+      const newBlockNumber = Math.floor(newNodeId / 4294967296);
+      return (
+        target.maxBlockExclusive === undefined ||
+        target.blockNumber === undefined ||
+        newBlockNumber < target.blockNumber
+      );
+    }
+
+    const newPtr = await hnswIdx.relocateVectorForNode(nodeId, { maxBlockExclusive: target.maxBlockExclusive });
+    return (
+      target.maxBlockExclusive === undefined || target.blockNumber === undefined || newPtr.pageId < target.blockNumber
+    );
+  }
+
+  async trimFreeTail(): Promise<number> {
+    await this.commit();
+    const result = await this.freeblockFile.trimFreeTail();
+    return result.removedBlocks;
+  }
+
+  async getCompactionStorageStats(): Promise<FreeBlockFileStats> {
+    return await this.freeblockFile.getStats();
+  }
+
+  async runIncrementalCompactionStep(policy?: IncrementalCompactionPolicy): Promise<IncrementalCompactionResult> {
+    return await runIncrementalCompactionStepForSource(this, policy);
+  }
+
+  async compactIfNeeded(policy?: IncrementalCompactionPolicy): Promise<IncrementalCompactionResult | null> {
+    const result = await runIncrementalCompactionCycleForSource(this, policy);
+    return result.didWork || result.blocked === true ? result : null;
+  }
+
+  async listRecordRelocationTargets(limit = 16): Promise<RelocationTarget[]> {
+    const targets: RelocationTarget[] = [];
+
+    for (const collection of await this.getCollections()) {
+      if (!this.hasCollectionMeta(collection)) continue;
+      const collectionMeta = this.getCollectionMeta(collection);
+      const idMeta = collectionMeta['id'];
+      if (!idMeta) continue;
+
+      const [root, vorm] = idMeta;
+      const idTree = await this.getOrCreateTree(collection, 'id', vorm, root);
+      for await (const [, pointerBuffer] of idTree.iterate()) {
+        const blockNumber = pointerBuffer.readUInt32BE(0);
+        const document = await this.recordStore.readRecord(blockNumber);
+        if (!document) continue;
+        const chain = await this.recordStore.readRecordBlockChain(blockNumber);
+        targets.push({
+          kind: 'record',
+          collection,
+          documentId: document.getId(),
+          blockNumber: Math.max(...chain),
+        });
+      }
+    }
+
+    return targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0)).slice(0, Math.max(0, limit));
+  }
+
+  async listBtreeRelocationTargets(limit = 16): Promise<RelocationTarget[]> {
+    const targets: RelocationTarget[] = [];
+
+    for (const [collection, collectionMeta] of Object.entries(this.getVacuumCollectionMetaSnapshot())) {
+      for (const [field, [rootBlock, vorm]] of Object.entries(collectionMeta)) {
+        const storage = this.getOrCreateStorage(collection, field, vorm);
+        const locations = await storage.listNodeBlocks(rootBlock);
+        for (const location of locations) {
+          targets.push({
+            kind: location.kind,
+            collection,
+            field,
+            blockNumber: location.blockNumber,
+          });
+        }
+      }
+    }
+
+    return targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0)).slice(0, Math.max(0, limit));
+  }
+
+  async listHnswRelocationCandidateTargets(limit = 16): Promise<RelocationTarget[]> {
+    if (!this.hnswConfig) {
+      return [];
+    }
+
+    const hnswMeta = this.getExistingHnswMeta();
+    if (!hnswMeta) {
+      return [];
+    }
+
+    const targets: RelocationTarget[] = [];
+    for (const collection of Object.keys(hnswMeta)) {
+      for (const target of await this.listHnswRelocationTargets(collection)) {
+        targets.push({
+          kind: target.kind,
+          collection,
+          blockNumber: target.blockNumber,
+          nodeId: target.nodeId,
+        });
+      }
+    }
+
+    return targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0)).slice(0, Math.max(0, limit));
+  }
+
+  private async resolveHnswRelocationNodeId(target: HnswRelocationTarget): Promise<number> {
+    if (target.kind === 'hnsw-meta') {
+      throw new Error('HNSW metadata relocation does not use a node id');
+    }
+    if (target.nodeId !== undefined) {
+      return target.nodeId;
+    }
+    if (target.blockNumber === undefined) {
+      throw new Error('HNSW relocation target requires nodeId or blockNumber');
+    }
+
+    const candidates = await this.listHnswRelocationTargets(target.collection);
+    const match = candidates.find(
+      (candidate) => candidate.kind === target.kind && candidate.blockNumber === target.blockNumber,
+    );
+    if (!match || match.nodeId === undefined) {
+      throw new Error(`No ${target.kind} unit found at block ${target.blockNumber}`);
+    }
+    return match.nodeId;
+  }
+
+  private async findDocumentPointer(
+    collection: string,
+    id: string | number,
+  ): Promise<{
+    collectionMeta: Record<string, [number, string]>;
+    pointer: number;
+    idTree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
+    idBuffer: Buffer;
+    idMetaData: [number, string];
+  }> {
+    if (!this.hasCollectionMeta(collection)) {
+      throw new Error('Collection does not exist');
+    }
+    const collectionMeta = this.getCollectionMeta(collection);
+    if (!('id' in collectionMeta)) {
+      throw new Error('No document with given id exists');
+    }
+
+    const idMetaData = collectionMeta['id'];
+    const root = idMetaData[0];
+    const vorm = idMetaData[1];
+    const idBuffer = toBuffer(vorm, id);
+    const idTree = await this.getOrCreateTree(collection, 'id', vorm, root);
+    const pointerBuffer = await idTree.get(idBuffer);
+    if (!pointerBuffer) {
+      throw new Error('Document not found');
+    }
+
+    return {
+      collectionMeta,
+      pointer: pointerBuffer.readUInt32BE(0),
+      idTree,
+      idBuffer,
+      idMetaData,
+    };
+  }
+
+  private recordPointerBuffer(pointer: number): Buffer {
+    const valueBuffer = Buffer.alloc(4);
+    valueBuffer.writeUInt32BE(pointer, 0);
+    return valueBuffer;
+  }
+
+  private secondaryIndexKeyBuffer(vorm: string, value: FieldValue, id: string | number): Buffer {
+    const convertedValue: string | number | Buffer = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+    return toBuffer(vorm, convertedValue, id);
+  }
+
+  private async relocateHnswDocumentPointer(collection: string, oldPointer: number, newPointer: number): Promise<void> {
+    const hnswMeta = this.getExistingHnswMeta();
+    if (!hnswMeta || !(collection in hnswMeta)) return;
+    if (!this.hnswConfig) {
+      throw new Error('Cannot relocate HNSW-backed document without hnswConfig');
+    }
+
+    const hnswIdx = await this.getOrCreateHnswIndex(collection);
+    if (!hnswIdx.hasDocument(oldPointer)) return;
+    if (!(await hnswIdx.relabelDocument(oldPointer, newPointer))) {
+      throw new Error('Failed to relabel HNSW document pointer during document relocation');
+    }
   }
 
   /**
@@ -1104,6 +1538,16 @@ export class DbmsBack {
         await this.freeblockFile.freeBlock(blockIdToFree);
       }
     }
+
+    for (let i = 0; i < amountOfBlocks; i++) {
+      const oldBlockId = metaBlockIds[i];
+      const lowerBlockId = await this.freeblockFile.allocateBlockBelow(oldBlockId);
+      if (lowerBlockId !== null) {
+        metaBlockIds[i] = lowerBlockId;
+        await this.freeblockFile.freeBlock(oldBlockId);
+      }
+    }
+
     // write data to blocks
     for (let i = 0; i < amountOfBlocks; i++) {
       const start = i * dataPerBlock;

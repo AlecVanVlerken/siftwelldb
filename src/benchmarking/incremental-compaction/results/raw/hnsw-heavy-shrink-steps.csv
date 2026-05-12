@@ -1,0 +1,7 @@
+scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
+hnsw-heavy-shrink,1,true,7.810,65,45,20,1.4444,266240,4,16384,4,0,0,4,4,0,0,4
+hnsw-heavy-shrink,2,true,4.282,64,46,18,1.3913,262144,1,20480,1,0,3,1,5,0,3,5
+hnsw-heavy-shrink,3,true,4.384,62,45,17,1.3778,253952,2,28672,1,0,3,2,6,0,6,7
+hnsw-heavy-shrink,4,true,3.617,58,45,13,1.2889,237568,4,45056,4,0,0,4,10,0,6,11
+hnsw-heavy-shrink,5,true,1.969,57,45,12,1.2667,233472,1,49152,1,0,0,1,11,0,6,12
+hnsw-heavy-shrink,6,false,0.773,57,45,12,1.2667,233472,0,49152,0,0,0,0,11,0,6,12

@@ -15,6 +15,7 @@ export interface NodeStorage<
    * The caller is responsible for tracking the root block number.
    */
   finalizeRoot(root: LeafNodeType | InternalNodeType): Promise<LeafNodeType | InternalNodeType>;
+  releaseRoot?(root: LeafNodeType | InternalNodeType): Promise<void>;
 }
 
 export interface NodeBase<

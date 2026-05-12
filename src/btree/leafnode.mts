@@ -189,6 +189,11 @@ const LEAF_HEADER_SIZE = 9;
 
 type BlockEntry = { key: Buffer; value: Buffer };
 
+export type BlockLeafNodeSnapshot = {
+  entries: BlockEntry[];
+  nextLeafBlock: number;
+};
+
 /**
  * Block-based leaf node that stores data in a FreeBlockFile.
  */
@@ -235,6 +240,38 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
 
   getBlockNumber(): number {
     return this.blockNumber;
+  }
+
+  getNextLeafBlockNumber(): number {
+    return this.nextLeafBlock;
+  }
+
+  setNextLeafBlockNumber(blockNumber: number): void {
+    if (this.nextLeafBlock === blockNumber) {
+      return;
+    }
+    this.nextLeafBlock = blockNumber;
+    this.dirty = true;
+  }
+
+  exportSnapshot(): BlockLeafNodeSnapshot {
+    return {
+      entries: this.entries.map((entry) => ({
+        key: Buffer.from(entry.key),
+        value: Buffer.from(entry.value),
+      })),
+      nextLeafBlock: this.nextLeafBlock,
+    };
+  }
+
+  initFromSnapshot(snapshot: BlockLeafNodeSnapshot): void {
+    this.entries = snapshot.entries.map((entry) => ({
+      key: Buffer.from(entry.key),
+      value: Buffer.from(entry.value),
+    }));
+    this.nextLeafBlock = snapshot.nextLeafBlock;
+    this.currentSize = this.calculateSize(this.entries);
+    this.dirty = true;
   }
 
   /**

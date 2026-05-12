@@ -236,7 +236,9 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
 
   private async rebuildRoot(descriptor: NodeDescriptor<K, V, L, I>): Promise<void> {
     if (descriptor.nodes.length === 0) {
+      const oldRoot = this.root;
       this.root = await this.storage.createTree();
+      await this.storage.releaseRoot?.(oldRoot);
       this.root = (await this.storage.finalizeRoot(this.root)) as L;
       return;
     }

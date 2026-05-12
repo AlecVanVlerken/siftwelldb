@@ -16,6 +16,7 @@ import { type CompressionAlgorithm } from '../dbms/compression.mjs';
 import { isImageField } from '../dbms/document.mjs';
 import { generateWikiArticles } from '../dbms/lab-fixtures/wiki.mjs';
 import { RealFile } from '../core/file.mjs';
+import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../compaction/compaction.mjs';
 import { fetchPageCursor } from '../largedatasets/pagination.mjs';
 import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
 
@@ -68,27 +69,6 @@ type LabRecommendationBundle = {
   forcedGzipBytesSaved: number | null;
 };
 
-export type DatabaseSizeInfo = {
-  dataFileBytes: number;
-  logFileBytes: number;
-  totalBytes: number;
-};
-
-export type DatabaseStatus = {
-  connected: boolean;
-  filepath: string | null;
-  busyOperation: string | null;
-  size: DatabaseSizeInfo | null;
-};
-
-export type VacuumSummary = {
-  filepath: string;
-  before: DatabaseSizeInfo;
-  after: DatabaseSizeInfo;
-  bytesSaved: number;
-  durationMs: number;
-};
-
 /**
  * Delete a file if it exists (ignores the error if not found).
  *
@@ -124,6 +104,47 @@ async function sizeOrZero(filePath: string): Promise<number> {
   }
 }
 
+export type DatabaseSizeInfo = {
+  dataFileBytes: number;
+  logFileBytes: number;
+  totalBytes: number;
+  activeDataBytes?: number;
+  freeDataBytes?: number;
+  amplification?: number;
+  totalBlocks?: number;
+  usedBlocks?: number;
+  freeBlocks?: number;
+  freeTailBlocks?: number;
+};
+
+export type DatabaseStatus = {
+  connected: boolean;
+  filepath: string | null;
+  busyOperation: string | null;
+  size: DatabaseSizeInfo | null;
+  incrementalCompaction: IncrementalCompactionStatus;
+};
+
+export type IncrementalCompactionStatus = {
+  enabled: boolean;
+  queued: boolean;
+  running: boolean;
+  intervalMs: number;
+  policy: IncrementalCompactionPolicy;
+  lastRunAt: string | null;
+  lastDurationMs: number | null;
+  lastError: string | null;
+  lastResult: IncrementalCompactionResult | null;
+};
+
+export type VacuumSummary = {
+  filepath: string;
+  before: DatabaseSizeInfo;
+  after: DatabaseSizeInfo;
+  bytesSaved: number;
+  durationMs: number;
+};
+
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
@@ -150,6 +171,23 @@ export class DatabaseService {
   private currentFilepath: string | null = null;
   private operationChain: Promise<void> = Promise.resolve();
   private currentOperation: string | null = null;
+  private incrementalCompactionEnabled = false;
+  private incrementalCompactionQueued = false;
+  private incrementalCompactionActive = false;
+  private incrementalCompactionTimer: ReturnType<typeof setInterval> | null = null;
+  private incrementalCompactionLastRunAt: Date | null = null;
+  private incrementalCompactionLastDurationMs: number | null = null;
+  private incrementalCompactionLastError: string | null = null;
+  private incrementalCompactionLastResult: IncrementalCompactionResult | null = null;
+
+  private readonly incrementalCompactionIntervalMs = 5_000;
+  private readonly incrementalCompactionPolicy: IncrementalCompactionPolicy = {
+    maxAmplification: 1.6,
+    softAmplification: 1.45,
+    targetBatchDocuments: 4,
+    targetBatchUnits: 2,
+    maxStepsPerRun: 4,
+  };
 
   // HNSW semantic search config
   private hnswConfigPromise: Promise<HnswConfig> | null = null;
@@ -253,11 +291,13 @@ export class DatabaseService {
       if (fileExists) {
         this.dbms = await SimpleDbms.open(dataFile, logFile, hnswConfig);
         this.currentFilepath = filepath;
+        this.onDatabaseOpened();
         return 'Connected to existing database';
       } else {
         this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
         await this.dbms.commit();
         this.currentFilepath = filepath;
+        this.onDatabaseOpened();
         return 'Created new database';
       }
     });
@@ -280,6 +320,7 @@ export class DatabaseService {
       this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
       await this.dbms.commit();
       this.currentFilepath = filepath;
+      this.onDatabaseOpened();
       return 'Created new database';
     });
   }
@@ -309,6 +350,7 @@ export class DatabaseService {
       this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
       await this.dbms.commit();
       this.currentFilepath = filepath;
+      this.onDatabaseOpened();
     });
   }
 
@@ -319,7 +361,23 @@ export class DatabaseService {
       filepath: this.currentFilepath,
       busyOperation: this.busyOperation,
       size: this.currentFilepath ? await this.databaseSizeInfo(this.currentFilepath) : null,
+      incrementalCompaction: this.getIncrementalCompactionStatus(),
     };
+  }
+
+  setIncrementalCompactionEnabled(enabled: boolean): IncrementalCompactionStatus {
+    this.incrementalCompactionEnabled = enabled;
+    this.incrementalCompactionLastError = null;
+
+    if (enabled) {
+      this.startIncrementalCompactionTimer();
+      this.scheduleIncrementalCompaction();
+    } else {
+      this.incrementalCompactionQueued = false;
+      this.stopIncrementalCompactionTimer();
+    }
+
+    return this.getIncrementalCompactionStatus();
   }
 
   /**
@@ -370,6 +428,7 @@ export class DatabaseService {
         const hnswConfig = await this.getHnswConfig();
         this.dbms = await SimpleDbms.open(new RealFile(filepath), new RealFile(logPath), hnswConfig);
         this.currentFilepath = filepath;
+        this.onDatabaseOpened();
 
         const after = await this.databaseSizeInfo(filepath);
         return {
@@ -405,8 +464,12 @@ export class DatabaseService {
 
   /** Delete an entire collection. */
   async deleteCollection(collection: string): Promise<void> {
-    this.ensureConnected();
-    await this.dbms!.deleteCollection(collection);
+    await this.runExclusive('delete-collection', async () => {
+      this.ensureConnected();
+      await this.dbms!.deleteCollection(collection);
+      await this.dbms!.commit();
+    });
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
   listCompressionProfiles(): CompressionProfileSummary[] {
@@ -427,27 +490,33 @@ export class DatabaseService {
    * Rebuild the deterministic Wikipedia-style Compression Lab collection.
    */
   async seedWikiLab(options: { count?: number } = {}): Promise<{ collection: string; inserted: number }> {
-    this.ensureConnected();
-
     const collection = 'wiki_lab';
-    try {
-      await this.dbms!.deleteCollection(collection);
-    } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes('does not exist')) {
-        throw error;
+    let inserted = 0;
+
+    await this.runExclusive('seed-wiki-lab', async () => {
+      this.ensureConnected();
+
+      try {
+        await this.dbms!.deleteCollection(collection);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('does not exist')) {
+          throw error;
+        }
       }
-    }
 
-    const articles = generateWikiArticles({ count: options.count });
-    for (const article of articles) {
-      await this.dbms!.insertDocumentObject(collection, article, {
-        skipSemanticIndex: true,
-        indexPredicate: (field) => field === 'title',
-      });
-    }
-    await this.dbms!.commit();
+      const articles = generateWikiArticles({ count: options.count });
+      for (const article of articles) {
+        await this.dbms!.insertDocumentObject(collection, article, {
+          skipSemanticIndex: true,
+          indexPredicate: (field) => field === 'title',
+        });
+      }
+      await this.dbms!.commit();
+      inserted = articles.length;
+    });
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
 
-    return { collection, inserted: articles.length };
+    return { collection, inserted };
   }
 
   /**
@@ -589,12 +658,15 @@ export class DatabaseService {
     document: unknown,
     compression?: import('../dbms/compression.mts').FieldCompressionOverrides,
   ): Promise<void> {
-    this.ensureConnected();
-    await this.dbms!.insertDocumentObject(collection, document, {
-      compression,
-      indexPredicate: collection === 'wiki_lab' ? (field) => field === 'title' : undefined,
+    await this.runExclusive('insert-document', async () => {
+      this.ensureConnected();
+      await this.dbms!.insertDocumentObject(collection, document, {
+        compression,
+        indexPredicate: collection === 'wiki_lab' ? (field) => field === 'title' : undefined,
+      });
+      await this.dbms!.commit();
     });
-    await this.dbms!.commit();
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
   /** Retrieve a specific document by its ID. */
@@ -605,16 +677,22 @@ export class DatabaseService {
 
   /** Delete a document from a collection. */
   async deleteDocument(collection: string, id: string): Promise<void> {
-    this.ensureConnected();
-    await this.dbms!.deleteDocumentById(collection, id);
-    await this.dbms!.commit();
+    await this.runExclusive('delete-document', async () => {
+      this.ensureConnected();
+      await this.dbms!.deleteDocumentById(collection, id);
+      await this.dbms!.commit();
+    });
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
   /** Edit a single field in a document by ID. */
   async editDocument(collection: string, id: string, field: string, value: unknown): Promise<void> {
-    this.ensureConnected();
-    await this.dbms!.editDocument(collection, id, field, value as Parameters<SimpleDbms['editDocument']>[3]);
-    await this.dbms!.commit();
+    await this.runExclusive('edit-document', async () => {
+      this.ensureConnected();
+      await this.dbms!.editDocument(collection, id, field, value as Parameters<SimpleDbms['editDocument']>[3]);
+      await this.dbms!.commit();
+    });
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
   /** Semantic text-to-text or text-to-image search */
@@ -768,6 +846,72 @@ export class DatabaseService {
     if (!this.dbms) throw new Error('No database connected');
   }
 
+  private getIncrementalCompactionStatus(): IncrementalCompactionStatus {
+    return {
+      enabled: this.incrementalCompactionEnabled,
+      queued: this.incrementalCompactionQueued,
+      running: this.incrementalCompactionActive || this.currentOperation === 'incremental-compaction',
+      intervalMs: this.incrementalCompactionIntervalMs,
+      policy: this.incrementalCompactionPolicy,
+      lastRunAt: this.incrementalCompactionLastRunAt?.toISOString() ?? null,
+      lastDurationMs: this.incrementalCompactionLastDurationMs,
+      lastError: this.incrementalCompactionLastError,
+      lastResult: this.incrementalCompactionLastResult,
+    };
+  }
+
+  private onDatabaseOpened(): void {
+    if (!this.incrementalCompactionEnabled) return;
+    this.startIncrementalCompactionTimer();
+    this.scheduleIncrementalCompaction();
+  }
+
+  private startIncrementalCompactionTimer(): void {
+    if (this.incrementalCompactionTimer) return;
+
+    this.incrementalCompactionTimer = setInterval(() => {
+      this.scheduleIncrementalCompaction();
+    }, this.incrementalCompactionIntervalMs);
+    this.incrementalCompactionTimer.unref?.();
+  }
+
+  private stopIncrementalCompactionTimer(): void {
+    if (!this.incrementalCompactionTimer) return;
+    clearInterval(this.incrementalCompactionTimer);
+    this.incrementalCompactionTimer = null;
+  }
+
+  private scheduleIncrementalCompaction(): void {
+    if (!this.incrementalCompactionEnabled) return;
+    if (!this.isConnected) return;
+    if (this.incrementalCompactionQueued || this.incrementalCompactionActive) return;
+
+    this.incrementalCompactionQueued = true;
+    void this.runExclusive('incremental-compaction', async () => {
+      this.incrementalCompactionQueued = false;
+      if (!this.incrementalCompactionEnabled || !this.dbms) return;
+
+      this.incrementalCompactionActive = true;
+      const start = Date.now();
+      try {
+        const result = await this.dbms.compactIfNeeded(this.incrementalCompactionPolicy);
+        if (result !== null) {
+          this.incrementalCompactionLastRunAt = new Date();
+          this.incrementalCompactionLastDurationMs = Date.now() - start;
+          this.incrementalCompactionLastResult = result;
+        }
+        this.incrementalCompactionLastError = null;
+      } finally {
+        this.incrementalCompactionActive = false;
+      }
+    }).catch((error: unknown) => {
+      this.incrementalCompactionQueued = false;
+      this.incrementalCompactionActive = false;
+      this.incrementalCompactionLastError = String(error);
+      console.error('Incremental compaction failed:', error);
+    });
+  }
+
   private async runExclusive<T>(operation: string, task: () => Promise<T>): Promise<T> {
     const previous = this.operationChain.catch(() => undefined);
     let release: () => void = () => {};
@@ -793,11 +937,26 @@ export class DatabaseService {
   private async databaseSizeInfo(filepath: string): Promise<DatabaseSizeInfo> {
     const dataFileBytes = await sizeOrZero(filepath);
     const logFileBytes = await sizeOrZero(this.logFilepath(filepath));
-    return {
+    const info: DatabaseSizeInfo = {
       dataFileBytes,
       logFileBytes,
       totalBytes: dataFileBytes + logFileBytes,
     };
+
+    if (this.dbms) {
+      const stats = await this.dbms.getCompactionStorageStats().catch(() => null);
+      if (stats) {
+        info.activeDataBytes = stats.usedBlocks * stats.blockSize;
+        info.freeDataBytes = stats.freeBlocks * stats.blockSize;
+        info.amplification = stats.usedBlocks > 0 ? stats.totalBlocks / stats.usedBlocks : 1;
+        info.totalBlocks = stats.totalBlocks;
+        info.usedBlocks = stats.usedBlocks;
+        info.freeBlocks = stats.freeBlocks;
+        info.freeTailBlocks = stats.freeTailBlocks;
+      }
+    }
+
+    return info;
   }
 
   private async closeInternal(): Promise<void> {
@@ -806,5 +965,8 @@ export class DatabaseService {
       this.dbms = null;
       this.currentFilepath = null;
     }
+    this.incrementalCompactionQueued = false;
+    this.incrementalCompactionActive = false;
+    this.stopIncrementalCompactionTimer();
   }
 }
