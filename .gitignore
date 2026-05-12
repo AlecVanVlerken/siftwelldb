@@ -12,6 +12,7 @@ Thumbs.db
 # vim swap files
 *.swp
 *.data
+*.db
 *.log
 
 testdb
