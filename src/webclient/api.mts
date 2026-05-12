@@ -255,6 +255,18 @@ export class ApiRouter {
         return;
       }
 
+      if (method === 'POST' && pathname === '/api/database/incremental-compaction/settings') {
+        const body = await parseBody(req);
+        const enabled = body['enabled'];
+        if (typeof enabled !== 'boolean') {
+          sendError(res, 400, 'Missing boolean enabled');
+          return;
+        }
+        const incrementalCompaction = this.db.setIncrementalCompactionEnabled(enabled);
+        sendJSON(res, 200, { message: 'Incremental compaction settings updated', incrementalCompaction });
+        return;
+      }
+
       // DELETE /api/collections/:collection
       const collectionDeleteMatch = pathname.match(/^\/api\/collections\/([^/]+)$/);
       if (method === 'DELETE' && collectionDeleteMatch) {

@@ -77,6 +77,24 @@ export type BlockNodeStorageOptions = {
   compareKeys?: (a: Buffer, b: Buffer) => number;
 };
 
+export type BlockNodeKind = 'btree-leaf' | 'btree-internal';
+
+export type BlockNodeRelocationResult = {
+  kind: BlockNodeKind;
+  oldBlockNumber: number;
+  newBlockNumber: number;
+  newRootBlock: number;
+};
+
+export type BlockNodeRelocationOptions = {
+  maxBlockExclusive?: number;
+};
+
+export type BlockNodeLocation = {
+  kind: BlockNodeKind;
+  blockNumber: number;
+};
+
 /**
  * Block-based node storage implementation.
  * Stores B+ tree nodes in a FreeBlockFile with dynamic root.
@@ -89,6 +107,7 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
 
   private readonly blockSize: number;
   private currentRoot: BlockLeafNode | BlockInternalNode | null = null;
+  private readonly preCommitHook: () => Promise<void>;
 
   // Cache for loaded nodes to avoid repeated disk reads
   private readonly nodeCache: Map<number, BlockLeafNode | BlockInternalNode> = new Map();
@@ -99,9 +118,10 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   ) {
     this.compareKeys = options.compareKeys ?? ((a, b) => Buffer.compare(a, b));
     this.blockSize = file._getBlockSize();
+    this.preCommitHook = () => this.flushDirtyNodes();
     // Register pre-commit hook so flushDirtyNodes() runs whenever file.commit() is called,
     // including in tests that invoke file.commit() directly (not via DbmsBack.commit()).
-    file.addPreCommitHook(() => this.flushDirtyNodes());
+    file.addPreCommitHook(this.preCommitHook);
   }
 
   getMaxKeySize(): number {
@@ -150,6 +170,15 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     return Promise.resolve(root);
   }
 
+  async releaseRoot(root: BlockLeafNode | BlockInternalNode): Promise<void> {
+    const blockNumber = root.getBlockNumber();
+    this.invalidateNode(blockNumber);
+    if (this.currentRoot?.getBlockNumber() === blockNumber) {
+      this.currentRoot = null;
+    }
+    await this.file.freeBlock(blockNumber);
+  }
+
   /**
    * Allocate a new leaf node.
    */
@@ -160,6 +189,69 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     // Cache the newly allocated node
     this.nodeCache.set(blockNumber, node);
     return node;
+  }
+
+  /**
+   * Relocate one live B+ tree node to a fresh block.
+   *
+   * This deliberately uses root-based reference discovery instead of persistent
+   * parent pointers. Parent pointers would be a broader on-disk format change;
+   * this primitive keeps Stage 3 targeted and format-compatible.
+   */
+  async relocateNode(
+    rootBlock: number,
+    blockNumber: number,
+    options: BlockNodeRelocationOptions = {},
+  ): Promise<BlockNodeRelocationResult> {
+    await this.openTree(rootBlock);
+    const oldNode = await this.loadNode(blockNumber);
+    const kind: BlockNodeKind = oldNode.isLeaf ? 'btree-leaf' : 'btree-internal';
+    const newNode = oldNode.isLeaf
+      ? await this.copyLeafToFreshBlock(oldNode, options)
+      : await this.copyInternalToFreshBlock(oldNode, options);
+    const newBlockNumber = newNode.getBlockNumber();
+    let newRootBlock = rootBlock;
+
+    if (rootBlock === blockNumber) {
+      newRootBlock = newBlockNumber;
+      this.currentRoot = newNode;
+    } else {
+      const parent = await this.findParentNode(rootBlock, blockNumber);
+      if (!parent) {
+        throw new Error(`Could not find B+ tree parent for block ${blockNumber}`);
+      }
+      if (!parent.replaceChildBlockNumber(blockNumber, newBlockNumber, newNode)) {
+        throw new Error(`Failed to update B+ tree parent for block ${blockNumber}`);
+      }
+    }
+
+    if (oldNode.isLeaf) {
+      const previousLeaf = await this.findLeafPointingTo(rootBlock, blockNumber);
+      if (previousLeaf) {
+        previousLeaf.setNextLeafBlockNumber(newBlockNumber);
+      }
+    }
+
+    this.invalidateNode(blockNumber);
+    await this.file.freeBlock(blockNumber);
+
+    return {
+      kind,
+      oldBlockNumber: blockNumber,
+      newBlockNumber,
+      newRootBlock,
+    };
+  }
+
+  /**
+   * List reachable node blocks from a root. This is intentionally small and is
+   * useful both for relocation tests and future incremental target selection.
+   */
+  async listNodeBlocks(rootBlock: number): Promise<BlockNodeLocation[]> {
+    const root = await this.loadNode(rootBlock);
+    const result: BlockNodeLocation[] = [];
+    await this.collectNodeBlocks(root, result);
+    return result;
   }
 
   /**
@@ -226,6 +318,109 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     this.nodeCache.delete(blockNumber);
   }
 
+  private async copyLeafToFreshBlock(
+    source: BlockLeafNode,
+    options: BlockNodeRelocationOptions,
+  ): Promise<BlockLeafNode> {
+    const node =
+      options.maxBlockExclusive === undefined
+        ? await this.allocateLeafNode()
+        : await this.allocateLeafNodeBelow(options.maxBlockExclusive);
+    node.initFromSnapshot(source.exportSnapshot());
+    return node;
+  }
+
+  private async copyInternalToFreshBlock(
+    source: BlockInternalNode,
+    options: BlockNodeRelocationOptions,
+  ): Promise<BlockInternalNode> {
+    const blockNumber =
+      options.maxBlockExclusive === undefined
+        ? await this.file.allocateBlock()
+        : await this.allocateBlockBelow(options.maxBlockExclusive);
+    const node = this.createInternalNode(blockNumber);
+    node.initFromSnapshot(source.exportSnapshot());
+    this.nodeCache.set(blockNumber, node);
+    return node;
+  }
+
+  private async allocateLeafNodeBelow(maxBlockExclusive: number): Promise<BlockLeafNode> {
+    const blockNumber = await this.allocateBlockBelow(maxBlockExclusive);
+    const node = this.createLeafNode(blockNumber);
+    await node.initEmpty();
+    this.nodeCache.set(blockNumber, node);
+    return node;
+  }
+
+  private async allocateBlockBelow(maxBlockExclusive: number): Promise<number> {
+    const blockNumber = await this.file.allocateBlockBelow(maxBlockExclusive);
+    if (blockNumber === null) {
+      throw new Error(`No free B+ tree relocation block below ${maxBlockExclusive.toString()}`);
+    }
+    return blockNumber;
+  }
+
+  private async findParentNode(rootBlock: number, targetBlock: number): Promise<BlockInternalNode | null> {
+    const root = await this.loadNode(rootBlock);
+    return await this.findParentNodeInSubtree(root, targetBlock);
+  }
+
+  private async findParentNodeInSubtree(
+    node: BlockLeafNode | BlockInternalNode,
+    targetBlock: number,
+  ): Promise<BlockInternalNode | null> {
+    if (node.isLeaf) {
+      return null;
+    }
+
+    if (node.getChildBlockNumbers().includes(targetBlock)) {
+      return node;
+    }
+
+    for (const childBlock of node.getChildBlockNumbers()) {
+      const child = await this.loadNode(childBlock);
+      const found = await this.findParentNodeInSubtree(child, targetBlock);
+      if (found) {
+        return found;
+      }
+    }
+
+    return null;
+  }
+
+  private async findLeafPointingTo(rootBlock: number, targetBlock: number): Promise<BlockLeafNode | null> {
+    const root = await this.loadNode(rootBlock);
+    const leaves: BlockLeafNode[] = [];
+    await this.collectLeaves(root, leaves);
+    return leaves.find((leaf) => leaf.getNextLeafBlockNumber() === targetBlock) ?? null;
+  }
+
+  private async collectNodeBlocks(node: BlockLeafNode | BlockInternalNode, result: BlockNodeLocation[]): Promise<void> {
+    result.push({
+      kind: node.isLeaf ? 'btree-leaf' : 'btree-internal',
+      blockNumber: node.getBlockNumber(),
+    });
+
+    if (node.isLeaf) {
+      return;
+    }
+
+    for (const childBlock of node.getChildBlockNumbers()) {
+      await this.collectNodeBlocks(await this.loadNode(childBlock), result);
+    }
+  }
+
+  private async collectLeaves(node: BlockLeafNode | BlockInternalNode, result: BlockLeafNode[]): Promise<void> {
+    if (node.isLeaf) {
+      result.push(node);
+      return;
+    }
+
+    for (const childBlock of node.getChildBlockNumbers()) {
+      await this.collectLeaves(await this.loadNode(childBlock), result);
+    }
+  }
+
   /**
    * Flush all dirty B+tree nodes into the FBF dirty-block cache.
    * Must be called before FreeBlockFile.commit() so every in-memory mutation
@@ -235,5 +430,11 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     for (const node of this.nodeCache.values()) {
       await node.flush();
     }
+  }
+
+  dispose(): void {
+    this.nodeCache.clear();
+    this.currentRoot = null;
+    this.file.removePreCommitHook(this.preCommitHook);
   }
 }

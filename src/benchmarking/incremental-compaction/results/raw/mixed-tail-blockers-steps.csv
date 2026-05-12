@@ -1,0 +1,8 @@
+scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
+mixed-tail-blockers,1,true,10.424,171,108,63,1.5833,700416,8,32768,4,0,0,8,4,0,0,8
+mixed-tail-blockers,2,true,10.003,171,109,62,1.5688,700416,0,32768,0,0,4,0,4,0,4,8
+mixed-tail-blockers,3,true,8.463,164,108,56,1.5185,671744,7,61440,3,0,1,7,7,0,5,15
+mixed-tail-blockers,4,true,6.332,156,108,48,1.4444,638976,8,94208,4,0,0,8,11,0,5,23
+mixed-tail-blockers,5,true,7.999,148,108,40,1.3704,606208,8,126976,4,0,0,8,15,0,5,31
+mixed-tail-blockers,6,true,5.593,140,108,32,1.2963,573440,8,159744,4,0,0,8,19,0,5,39
+mixed-tail-blockers,7,true,5.122,134,108,26,1.2407,548864,6,184320,3,0,0,6,22,0,5,45

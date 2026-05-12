@@ -128,6 +128,50 @@ export async function allocateBlock(fbf: FreeBlockFile): Promise<number> {
 }
 
 /**
+ * Allocates existing free blocks below a compaction boundary.
+ *
+ * Normal writes should keep using allocateBlock(). This compaction-specific
+ * path only reuses free blocks that already live below maxBlockExclusive, so
+ * relocated units can move downward and eventually create a free tail.
+ *
+ * Returns null when there are not enough free blocks below the boundary.
+ */
+export async function allocateBlocksBelow(
+  fbf: FreeBlockFile,
+  maxBlockExclusive: number,
+  count: number,
+): Promise<number[] | null> {
+  fbf._ensureOpen();
+  if (!Number.isInteger(maxBlockExclusive) || maxBlockExclusive <= 1) return null;
+  if (!Number.isInteger(count) || count < 0) {
+    throw new Error(`Invalid allocation count: ${count.toString()}`);
+  }
+  if (count === 0) return [];
+
+  const blockCount = getBlockCount(fbf);
+  const boundary = Math.min(maxBlockExclusive, blockCount);
+  if (boundary <= 1) return null;
+
+  const selected = await selectFreeBlocksBelow(fbf, boundary, count, blockCount);
+  if (selected.length < count) return null;
+
+  await rewriteFreeListWithout(fbf, new Set(selected), blockCount);
+
+  for (const blockNumber of selected) {
+    const block = await readFreeBlock(fbf, blockNumber);
+    setBlockType(block, layout.BlockType.Data);
+    fbf._setDirtyBlock(blockNumber, block);
+  }
+
+  return selected;
+}
+
+export async function allocateBlockBelow(fbf: FreeBlockFile, maxBlockExclusive: number): Promise<number | null> {
+  const blocks = await allocateBlocksBelow(fbf, maxBlockExclusive, 1);
+  return blocks?.[0] ?? null;
+}
+
+/**
  * Frees a Data block and adds it to the free-list.
  */
 export async function freeBlock(fbf: FreeBlockFile, blockNumber: number): Promise<void> {
@@ -192,4 +236,84 @@ export async function getFreeBlockCount(fbf: FreeBlockFile): Promise<number> {
   }
 
   return count;
+}
+
+async function selectFreeBlocksBelow(
+  fbf: FreeBlockFile,
+  boundary: number,
+  count: number,
+  blockCount: number,
+): Promise<number[]> {
+  const selected: number[] = [];
+  let current = await getFirstFreeBlock(fbf);
+  let steps = 0;
+
+  while (current !== 0 && selected.length < count) {
+    validateFreeListPointer(current, steps++, blockCount);
+    const block = await readFreeBlock(fbf, current);
+    const next = block.readUInt32LE(layout.FREE_NEXT_OFFSET);
+    if (next === current) {
+      throw new Error(`Corrupt free list: self-referential free block at ${current.toString()}`);
+    }
+    if (current < boundary) {
+      selected.push(current);
+    }
+    current = next;
+  }
+
+  return selected;
+}
+
+async function rewriteFreeListWithout(
+  fbf: FreeBlockFile,
+  removedBlocks: Set<number>,
+  blockCount: number,
+): Promise<void> {
+  const keptBlocks: number[] = [];
+  let current = await getFirstFreeBlock(fbf);
+  let steps = 0;
+
+  while (current !== 0) {
+    validateFreeListPointer(current, steps++, blockCount);
+    const block = await readFreeBlock(fbf, current);
+    const next = block.readUInt32LE(layout.FREE_NEXT_OFFSET);
+    if (next === current) {
+      throw new Error(`Corrupt free list: self-referential free block at ${current.toString()}`);
+    }
+    if (!removedBlocks.has(current)) {
+      keptBlocks.push(current);
+      fbf._setDirtyBlock(current, block);
+    }
+    current = next;
+  }
+
+  await setFirstFreeBlock(fbf, keptBlocks[0] ?? 0);
+
+  for (let i = 0; i < keptBlocks.length; i++) {
+    const blockNumber = keptBlocks[i];
+    const block = fbf._getDirtyBlock(blockNumber) ?? (await readFreeBlock(fbf, blockNumber));
+    block.writeUInt32LE(keptBlocks[i + 1] ?? 0, layout.FREE_NEXT_OFFSET);
+    fbf._setDirtyBlock(blockNumber, block);
+  }
+}
+
+async function readFreeBlock(fbf: FreeBlockFile, blockNumber: number): Promise<Buffer> {
+  let block = fbf._getDirtyBlock(blockNumber);
+  if (!block) {
+    block = await fbf.readBlock(blockNumber);
+  }
+  const type = getBlockType(block);
+  if (type !== layout.BlockType.Free) {
+    throw new Error(`Corrupt free list: block ${blockNumber.toString()} has type ${type}, expected Free`);
+  }
+  return block;
+}
+
+function validateFreeListPointer(current: number, steps: number, blockCount: number): void {
+  if (steps >= blockCount) {
+    throw new Error('Corrupt free list: cycle detected');
+  }
+  if (current >= blockCount) {
+    throw new Error(`Corrupt free list: free block ${current.toString()} >= block count ${blockCount.toString()}`);
+  }
 }

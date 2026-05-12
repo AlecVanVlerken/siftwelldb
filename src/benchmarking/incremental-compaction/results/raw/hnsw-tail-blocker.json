@@ -1,0 +1,54 @@
+{
+  "scenario": "hnsw-tail-blocker",
+  "status": "plateau-no-safe-progress",
+  "before": {
+    "totalBlocks": 58,
+    "usedBlocks": 40,
+    "freeBlocks": 18,
+    "amplification": 1.45,
+    "fileBytes": 237568
+  },
+  "after": {
+    "totalBlocks": 58,
+    "usedBlocks": 41,
+    "freeBlocks": 17,
+    "amplification": 1.4146341463414633,
+    "fileBytes": 237568
+  },
+  "shrunkBlocks": 0,
+  "shrunkBytes": 0,
+  "stepsTaken": 1,
+  "timeTakenMs": 1.1801000000000386,
+  "relocatedDocuments": 0,
+  "relocatedBtreeNodes": 0,
+  "relocatedHnswUnits": 1,
+  "reclaimedTailBlocks": 0,
+  "history": [
+    {
+      "scenario": "hnsw-tail-blocker",
+      "step": 1,
+      "didWork": true,
+      "timeMs": 1.169300000000021,
+      "cumulativeShrunkBytes": 0,
+      "relocatedDocuments": 0,
+      "relocatedBtreeNodes": 0,
+      "relocatedHnswUnits": 1,
+      "reclaimedTailBlocks": 0,
+      "totalBlocks": 58,
+      "usedBlocks": 41,
+      "freeBlocks": 17,
+      "amplification": 1.4146341463414633,
+      "fileBytes": 237568
+    }
+  ],
+  "cumulativeRecordsBeforeFirstShrink": 0,
+  "cumulativeBtreeBeforeFirstShrink": 0,
+  "cumulativeHnswBeforeFirstShrink": 0,
+  "tailReclaimEvents": 0,
+  "didRecordsMatter": false,
+  "didBtreeMatter": false,
+  "didHnswMatter": true,
+  "recordsLikelyEnabledFirstShrink": false,
+  "btreeLikelyEnabledFirstShrink": false,
+  "hnswLikelyEnabledFirstShrink": false
+}

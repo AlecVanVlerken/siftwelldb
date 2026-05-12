@@ -1,0 +1,59 @@
+{
+  "scenario": "fragmented-but-already-healthy",
+  "status": "no-op",
+  "before": {
+    "totalBlocks": 56,
+    "usedBlocks": 48,
+    "freeBlocks": 8,
+    "amplification": 1.1666666666666667,
+    "fileBytes": 229376
+  },
+  "after": {
+    "totalBlocks": 56,
+    "usedBlocks": 48,
+    "freeBlocks": 8,
+    "amplification": 1.1666666666666667,
+    "fileBytes": 229376
+  },
+  "shrunkBlocks": 0,
+  "shrunkBytes": 0,
+  "stepsTaken": 1,
+  "timeTakenMs": 0.0702000000001135,
+  "relocatedDocuments": 0,
+  "relocatedBtreeNodes": 0,
+  "relocatedHnswUnits": 0,
+  "reclaimedTailBlocks": 0,
+  "history": [
+    {
+      "scenario": "fragmented-but-already-healthy",
+      "step": 1,
+      "didWork": false,
+      "timeMs": 0.035499999999956344,
+      "shrunkBlocksThisStep": 0,
+      "cumulativeShrunkBytes": 0,
+      "stepRelocatedDocuments": 0,
+      "stepRelocatedBtreeNodes": 0,
+      "stepRelocatedHnswUnits": 0,
+      "stepReclaimedTailBlocks": 0,
+      "relocatedDocuments": 0,
+      "relocatedBtreeNodes": 0,
+      "relocatedHnswUnits": 0,
+      "reclaimedTailBlocks": 0,
+      "totalBlocks": 56,
+      "usedBlocks": 48,
+      "freeBlocks": 8,
+      "amplification": 1.1666666666666667,
+      "fileBytes": 229376
+    }
+  ],
+  "cumulativeRecordsBeforeFirstShrink": 0,
+  "cumulativeBtreeBeforeFirstShrink": 0,
+  "cumulativeHnswBeforeFirstShrink": 0,
+  "tailReclaimEvents": 0,
+  "didRecordsMatter": false,
+  "didBtreeMatter": false,
+  "didHnswMatter": false,
+  "recordsLikelyEnabledFirstShrink": false,
+  "btreeLikelyEnabledFirstShrink": false,
+  "hnswLikelyEnabledFirstShrink": false
+}

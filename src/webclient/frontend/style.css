@@ -489,6 +489,51 @@ th.col-actions {
   display: none;
 }
 
+.dropdown-status {
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: #fafbfc;
+}
+
+.dropdown-status span,
+.dropdown-status strong {
+  display: block;
+}
+
+.dropdown-status span {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  margin-bottom: 0.15rem;
+}
+
+.dropdown-status strong {
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.dropdown-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.6rem 1rem 0.35rem;
+  font-size: 0.875rem;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.dropdown-toggle input {
+  margin: 0;
+}
+
+.dropdown-note {
+  padding: 0 1rem 0.65rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
 .dropdown-item {
   display: block;
   width: 100%;

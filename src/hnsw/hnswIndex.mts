@@ -3,7 +3,7 @@
 
 import { VectorHeapFile, type VectorPointer } from './vectorHeapFile.mjs';
 import { HNSWNode, type NodeId } from './hnswNode.mjs';
-import { HNSWGraphStorage } from './hnswGraphStorage.mjs';
+import { decodeNodeId, HNSWGraphStorage } from './hnswGraphStorage.mjs';
 import { HnswIndexNative } from './hnswNative.mjs';
 
 export type DistanceFn = (a: Float32Array, b: Float32Array) => number;
@@ -23,6 +23,29 @@ export type HNSWParams = {
   efConstruction: number;
   efSearch: number;
   distanceFn?: DistanceFn;
+};
+
+export type HnswUnitLocation = {
+  kind: 'hnsw-graph' | 'hnsw-vector';
+  nodeId: NodeId;
+  blockNumber: number;
+};
+
+export type HnswGraphStructureNode = {
+  nodeId: NodeId;
+  docId: number;
+  level: number;
+  vectorPageId: number;
+  vectorSlotId: number;
+  vector: number[];
+  deleted: boolean;
+  neighbors: NodeId[][];
+};
+
+export type HnswGraphStructureSnapshot = {
+  entryPoint: NodeId | null;
+  currentMaxLevel: number;
+  nodes: HnswGraphStructureNode[];
 };
 
 /**
@@ -53,19 +76,20 @@ export type HNSWParams = {
  * the O(M × maxLevel) modified nodes are written back to FBF.
  */
 export class HNSWIndex {
-  private readonly rustIdx: HnswIndexNative;
+  private rustIdx: HnswIndexNative;
+
+  private readonly M: number;
+  private readonly efConstruction: number;
+  private readonly efSearch: number;
 
   /**
-   * In-memory reverse index: docId → NodeId.
-   * Rebuilt from disk on `open()` by scanning graph storage.
-   * Updated incrementally by `insert()` and `delete()`.
+   * In-memory reverse index for live nodes: docId -> NodeId.
+   * Rebuilt from disk on open() by scanning graph storage.
+   * Updated incrementally by insert(), delete(), and relocation helpers.
    */
   private readonly docIdIndex = new Map<number, NodeId>();
 
-  /**
-   * Cache of docId → VectorPointer so we can free vectors on delete
-   * without a FBF round-trip.
-   */
+  /** Cache of docId -> VectorPointer so deletes can free vector slots. */
   private readonly vectorPtrCache = new Map<number, VectorPointer>();
 
   // Private constructor — use the static factory methods.
@@ -76,6 +100,9 @@ export class HNSWIndex {
     efConstruction: number,
     efSearch: number,
   ) {
+    this.M = M;
+    this.efConstruction = efConstruction;
+    this.efSearch = efSearch;
     this.rustIdx = new HnswIndexNative(vectorHeap.dimension, M, efConstruction, efSearch);
   }
 
@@ -114,13 +141,13 @@ export class HNSWIndex {
    * Insert a vector associated with `docId` into the index.
    * Throws if `docId` is already present.
    */
-  async insert(docId: number, vector: Float32Array): Promise<void> {
+  async insert(docId: number, vector: Float32Array, options: { maxBlockExclusive?: number } = {}): Promise<void> {
     if (this.docIdIndex.has(docId)) {
       throw new Error(`HNSWIndex: docId ${docId} already exists. Use delete() first to replace it.`);
     }
 
     // 1. Persist the raw vector — data before index (crash-consistency rule).
-    const vectorPtr = await this.vectorHeap.insert(vector);
+    const vectorPtr = await this.vectorHeap.insert(vector, options);
 
     // 2. Run Rust graph computation (synchronous, fast).
     this.rustIdx.insert(docId, vector);
@@ -140,7 +167,7 @@ export class HNSWIndex {
       neighbors: newNeighbors,
       deleted: false,
     });
-    await this.graphStorage.insertNode(newNode); // sets newNode.nodeId
+    await this.graphStorage.insertNode(newNode, options); // sets newNode.nodeId
     this.graphStorage.incrementLevel(newLevel);
     this.docIdIndex.set(docId, newNode.nodeId);
     this.vectorPtrCache.set(docId, vectorPtr);
@@ -177,52 +204,161 @@ export class HNSWIndex {
   }
 
   /**
-   * Soft-delete the node associated with `docId` from the index.
-   * If `docId` is not in the index this is a no-op.
+   * Return whether a document id is currently present in this HNSW index.
+   *
+   * DbmsBack uses this during RecordStore relocation to preserve existing HNSW
+   * membership without accidentally indexing documents that were not indexed
+   * before relocation.
+   */
+  hasDocument(docId: number): boolean {
+    return this.docIdIndex.has(docId);
+  }
+
+  /**
+   * Rename the physical document pointer associated with an existing HNSW node.
+   *
+   * RecordStore relocation changes the document's physical record pointer, but
+   * must not delete and reinsert the HNSW entry because that can perturb graph
+   * topology and semantic result ordering. This updates the persisted doc id in
+   * place, then reloads the native index from the unchanged persisted graph.
+   */
+  async relabelDocument(oldDocId: number, newDocId: number): Promise<boolean> {
+    if (oldDocId === newDocId) return this.docIdIndex.has(oldDocId);
+
+    const nodeId = this.docIdIndex.get(oldDocId);
+    if (nodeId === undefined) return false;
+    if (this.docIdIndex.has(newDocId)) {
+      throw new Error(`HNSWIndex: docId ${newDocId} already exists.`);
+    }
+
+    const node = await this.getLiveNodeForDocument(oldDocId, nodeId);
+    if (node === undefined) return false;
+
+    node.docId = newDocId;
+    await this.graphStorage.saveNode(node);
+    await this.pruneNodesWithMissingVectors();
+    await this.reloadNativeFromFBF();
+    return true;
+  }
+
+  getNodeIdForDocument(docId: number): NodeId | undefined {
+    return this.docIdIndex.get(docId);
+  }
+
+  async inspectGraphStructure(): Promise<HnswGraphStructureNode[]> {
+    return (await this.inspectGraphStructureSnapshot()).nodes;
+  }
+
+  async inspectGraphStructureSnapshot(): Promise<HnswGraphStructureSnapshot> {
+    const nodes: HnswGraphStructureNode[] = [];
+    for await (const node of this.graphStorage.scanNodes()) {
+      const vector = await this.vectorHeap.get(node.vectorPtr);
+      nodes.push({
+        nodeId: node.nodeId,
+        docId: node.docId,
+        level: node.level,
+        vectorPageId: node.vectorPtr.pageId,
+        vectorSlotId: node.vectorPtr.slotId,
+        vector: Array.from(vector),
+        deleted: node.deleted,
+        neighbors: node.neighbors.map((layer) => [...layer].sort((a, b) => a - b)),
+      });
+    }
+    return {
+      entryPoint: this.graphStorage.entryPoint,
+      currentMaxLevel: this.graphStorage.currentMaxLevel,
+      nodes: nodes.sort((a, b) => a.nodeId - b.nodeId),
+    };
+  }
+
+  async listRelocationTargets(): Promise<HnswUnitLocation[]> {
+    const targets: HnswUnitLocation[] = [];
+
+    for await (const node of this.graphStorage.scanNodes()) {
+      if (node.deleted) continue;
+      targets.push({
+        kind: 'hnsw-graph',
+        nodeId: node.nodeId,
+        blockNumber: decodeNodeId(node.nodeId).pageId,
+      });
+      targets.push({
+        kind: 'hnsw-vector',
+        nodeId: node.nodeId,
+        blockNumber: node.vectorPtr.pageId,
+      });
+    }
+
+    return targets;
+  }
+
+  async relocateGraphNode(nodeId: NodeId, options: { maxBlockExclusive?: number } = {}): Promise<NodeId> {
+    const result = await this.graphStorage.relocateNode(nodeId, options);
+    await this.pruneNodesWithMissingVectors();
+    await this.reloadNativeFromFBF();
+    return result.newNodeId;
+  }
+
+  async relocateVectorForNode(nodeId: NodeId, options: { maxBlockExclusive?: number } = {}): Promise<VectorPointer> {
+    const node = await this.graphStorage.getNode(nodeId);
+    if (node.deleted) throw new Error('Cannot relocate vector for deleted HNSW node');
+
+    const newPtr = await this.vectorHeap.relocate(node.vectorPtr, options);
+    node.vectorPtr = newPtr;
+    await this.graphStorage.saveNode(node);
+    this.vectorPtrCache.set(node.docId, newPtr);
+    await this.pruneNodesWithMissingVectors();
+    await this.reloadNativeFromFBF();
+    return newPtr;
+  }
+
+  async relocateMetadata(options: { maxBlockExclusive?: number } = {}): Promise<number | null> {
+    return await this.graphStorage.relocateMetadata(options);
+  }
+
+  /**
+   * Release all graph, vector, and metadata blocks owned by this collection-local
+   * HNSW index. Used when a whole collection is dropped.
+   */
+  async dropStorage(): Promise<void> {
+    const nodes: HNSWNode[] = [];
+
+    if (this.graphStorage.entryPoint !== null) {
+      for await (const node of this.graphStorage.scanNodes()) {
+        nodes.push(node);
+      }
+    }
+
+    for (const node of nodes) {
+      await this.vectorHeap.delete(node.vectorPtr);
+    }
+
+    for (const node of nodes) {
+      await this.graphStorage.hardDeleteNode(node.nodeId);
+    }
+
+    this.docIdIndex.clear();
+    this.vectorPtrCache.clear();
+    this.graphStorage.resetHistogram();
+    this.graphStorage.setEntryPoint(null);
+    this.graphStorage.setCurrentMaxLevel(0);
+    await this.graphStorage.freeMetadataBlock();
+
+    this.rustIdx.close();
+    this.rustIdx = new HnswIndexNative(this.vectorHeap.dimension, this.M, this.efConstruction, this.efSearch);
+  }
+
+  /**
+   * Remove the node associated with `docId` from the index.
+   *
+   * Native deletion can leave a graph whose persisted live subset is poorly
+   * connected after reopen. To avoid retaining deleted routing nodes, deletion
+   * rebuilds this collection-local HNSW graph from the remaining live vectors
+   * and frees the removed graph/vector storage immediately.
    */
   async delete(docId: number): Promise<void> {
     const nodeId = this.docIdIndex.get(docId);
     if (nodeId === undefined) return;
-
-    // 1. Get the level before deleting from Rust (needed for histogram).
-    const level = this.rustIdx.getLevel(docId);
-
-    // 2. Free the vector storage slot.
-    const vectorPtr = this.vectorPtrCache.get(docId);
-    if (vectorPtr !== undefined) {
-      await this.vectorHeap.delete(vectorPtr);
-    } else {
-      const node = await this.graphStorage.getNode(nodeId);
-      await this.vectorHeap.delete(node.vectorPtr);
-    }
-
-    // 3. Update histogram before removing from Rust.
-    if (level >= 0) this.graphStorage.decrementLevel(level);
-
-    // 4. Run Rust delete (removes back-links from all neighbors).
-    this.rustIdx.delete(docId);
-    const dirtyDocIds = this.rustIdx.takeDirtyNodes();
-
-    // 5. Hard-delete the node slot from FBF (frees the allocated slot).
-    await this.graphStorage.hardDeleteNode(nodeId);
-    this.docIdIndex.delete(docId);
-    this.vectorPtrCache.delete(docId);
-
-    // 6. Update neighbor lists in FBF for all nodes whose connections changed.
-    for (const dirtyDocId of dirtyDocIds) {
-      const nbNodeId = this.docIdIndex.get(dirtyDocId);
-      if (nbNodeId === undefined) continue;
-      const p = this.graphStorage.updateNodeNeighbors(nbNodeId, dirtyDocId, this.rustIdx, this.docIdIndex);
-      if (p !== undefined) await p;
-    }
-
-    // 7. Update graph-level metadata.
-    const newEntryDocId = this.rustIdx.getEntryDocId();
-    const newEntryNodeId = newEntryDocId !== null ? (this.docIdIndex.get(newEntryDocId) ?? null) : null;
-    const correctMaxLevel = newEntryNodeId !== null ? this.graphStorage.computedMaxLevel() : 0;
-    this.graphStorage.setEntryPoint(newEntryNodeId);
-    this.graphStorage.setCurrentMaxLevel(correctMaxLevel);
-    await this.graphStorage.saveMetadata();
+    await this.rebuildWithoutDocument(docId);
   }
 
   // ** persistence API for standalone use (not needed when using through DbmsBack) **
@@ -251,7 +387,7 @@ export class HNSWIndex {
   /**
    * Build the `NodeId[][]` neighbor list for `docId` at all layers up to
    * `level`, reading the current neighbor doc_ids from Rust and converting
-   * them to FBF NodeIds via `docIdIndex`.
+   * them to FBF NodeIds via the persisted docId → NodeId map.
    */
   private buildNeighborList(docId: number, level: number): NodeId[][] {
     // ONE FFI call: [nodeLevel, count0, nb0..., count1, nb1..., ...]
@@ -273,6 +409,198 @@ export class HNSWIndex {
     return neighbors;
   }
 
+  private async reloadNativeFromFBF(): Promise<void> {
+    this.rustIdx.close();
+    this.rustIdx = new HnswIndexNative(this.vectorHeap.dimension, this.M, this.efConstruction, this.efSearch);
+    await this.loadFromFBF();
+  }
+
+  private async rebuildWithoutDocument(docIdToRemove: number): Promise<void> {
+    const retained: Array<{ docId: number; vector: Float32Array; level: number; neighborDocIds: number[][] }> = [];
+    const existingNodes: HNSWNode[] = [];
+    const liveVectors = new Map<number, Float32Array>();
+
+    for await (const node of this.graphStorage.scanNodes()) {
+      existingNodes.push(node);
+      if (node.deleted || node.docId === docIdToRemove) continue;
+      liveVectors.set(node.docId, await this.vectorHeap.get(node.vectorPtr));
+    }
+
+    if (!existingNodes.some((node) => !node.deleted && node.docId === docIdToRemove)) {
+      return;
+    }
+
+    this.rustIdx.delete(docIdToRemove);
+    this.rustIdx.takeDirtyNodes();
+    const entryDocId = this.rustIdx.getEntryDocId();
+
+    for (const [docId, vector] of [...liveVectors.entries()].sort((a, b) => a[0] - b[0])) {
+      const level = Math.min(this.rustIdx.getLevel(docId), this.graphStorage.maxStoredLevel);
+      if (level < 0) continue;
+      retained.push({
+        docId,
+        vector,
+        level,
+        neighborDocIds: this.getNativeNeighborDocIds(docId, level, docIdToRemove),
+      });
+    }
+
+    for (const node of existingNodes) {
+      await this.vectorHeap.delete(node.vectorPtr);
+    }
+
+    for (const node of existingNodes) {
+      await this.graphStorage.hardDeleteNode(node.nodeId);
+    }
+
+    this.docIdIndex.clear();
+    this.vectorPtrCache.clear();
+    this.graphStorage.resetHistogram();
+    this.graphStorage.setEntryPoint(null);
+    this.graphStorage.setCurrentMaxLevel(0);
+    await this.graphStorage.saveMetadata();
+    this.rustIdx.close();
+    this.rustIdx = new HnswIndexNative(this.vectorHeap.dimension, this.M, this.efConstruction, this.efSearch);
+
+    const docIdToNodeId = new Map<number, NodeId>();
+    for (const entry of retained) {
+      const vectorPtr = await this.vectorHeap.insert(entry.vector);
+      const node = new HNSWNode({
+        nodeId: 0,
+        docId: entry.docId,
+        level: entry.level,
+        vectorPtr,
+        neighbors: Array.from({ length: entry.level + 1 }, () => []),
+        deleted: false,
+      });
+      await this.graphStorage.insertNode(node);
+      this.graphStorage.incrementLevel(entry.level);
+      docIdToNodeId.set(entry.docId, node.nodeId);
+      this.docIdIndex.set(entry.docId, node.nodeId);
+      this.vectorPtrCache.set(entry.docId, vectorPtr);
+    }
+
+    const nodeByDocId = new Map<number, HNSWNode>();
+    for (const entry of retained) {
+      const nodeId = docIdToNodeId.get(entry.docId);
+      if (nodeId === undefined) continue;
+      const node = await this.graphStorage.getNode(nodeId);
+      node.neighbors = entry.neighborDocIds.map((layer) =>
+        layer.map((neighborDocId) => docIdToNodeId.get(neighborDocId)).filter((id): id is NodeId => id !== undefined),
+      );
+      nodeByDocId.set(entry.docId, node);
+    }
+
+    for (let i = 1; i < retained.length; i++) {
+      const previous = nodeByDocId.get(retained[i - 1].docId);
+      const current = nodeByDocId.get(retained[i].docId);
+      if (previous === undefined || current === undefined) continue;
+      this.prependLayerZeroNeighbor(previous, current.nodeId);
+      this.prependLayerZeroNeighbor(current, previous.nodeId);
+    }
+
+    for (const node of nodeByDocId.values()) {
+      await this.graphStorage.saveNode(node);
+    }
+
+    const newEntryPoint = entryDocId !== null ? (docIdToNodeId.get(entryDocId) ?? null) : null;
+    this.graphStorage.setEntryPoint(newEntryPoint);
+    this.graphStorage.setCurrentMaxLevel(newEntryPoint === null ? 0 : this.graphStorage.computedMaxLevel());
+    await this.graphStorage.saveMetadata();
+    await this.reloadNativeFromFBF();
+  }
+
+  private prependLayerZeroNeighbor(node: HNSWNode, neighbor: NodeId): void {
+    const current = node.neighbors[0] ?? [];
+    if (current.includes(neighbor)) return;
+    node.neighbors[0] = [neighbor, ...current].slice(0, this.M * 2);
+  }
+
+  private getNativeNeighborDocIds(docId: number, level: number, removedDocId: number): number[][] {
+    const allNb = this.rustIdx.getAllNeighbors(docId);
+    const neighbors: number[][] = [];
+    let pos = 1;
+    for (let layer = 0; layer <= level; layer++) {
+      const layerNeighbors: number[] = [];
+      if (pos < allNb.length) {
+        const count = allNb[pos++];
+        for (let i = 0; i < count; i++) {
+          const neighborDocId = allNb[pos + i];
+          if (neighborDocId !== removedDocId && this.docIdIndex.has(neighborDocId)) {
+            layerNeighbors.push(neighborDocId);
+          }
+        }
+        pos += count;
+      }
+      neighbors.push(layerNeighbors);
+    }
+    return neighbors;
+  }
+
+  private async getLiveNodeForDocument(docId: number, cachedNodeId: NodeId): Promise<HNSWNode | undefined> {
+    try {
+      const cached = await this.graphStorage.getNode(cachedNodeId);
+      if (!cached.deleted && cached.docId === docId) {
+        return cached;
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('slot is not occupied')) {
+        throw error;
+      }
+    }
+
+    for await (const node of this.graphStorage.scanNodes()) {
+      if (!node.deleted && node.docId === docId) {
+        this.docIdIndex.set(docId, node.nodeId);
+        return node;
+      }
+    }
+
+    this.docIdIndex.delete(docId);
+    return undefined;
+  }
+
+  private async pruneNodesWithMissingVectors(): Promise<void> {
+    const invalidNodeIds: NodeId[] = [];
+
+    for await (const node of this.graphStorage.scanNodes()) {
+      if (node.deleted) continue;
+      try {
+        await this.vectorHeap.get(node.vectorPtr);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('is not occupied')) {
+          throw error;
+        }
+        invalidNodeIds.push(node.nodeId);
+      }
+    }
+
+    if (invalidNodeIds.length === 0) return;
+
+    const invalid = new Set(invalidNodeIds);
+    for await (const node of this.graphStorage.scanNodes()) {
+      if (invalid.has(node.nodeId)) continue;
+      let changed = false;
+      node.neighbors = node.neighbors.map((layer) => {
+        const filtered = layer.filter((neighbor) => !invalid.has(neighbor));
+        if (filtered.length !== layer.length) changed = true;
+        return filtered;
+      });
+      if (changed) await this.graphStorage.saveNode(node);
+    }
+
+    if (this.graphStorage.entryPoint !== null && invalid.has(this.graphStorage.entryPoint)) {
+      this.graphStorage.setEntryPoint(null);
+    }
+
+    for (const nodeId of invalidNodeIds) {
+      await this.graphStorage.hardDeleteNode(nodeId);
+    }
+
+    this.graphStorage.setCurrentMaxLevel(this.graphStorage.computedMaxLevel());
+    await this.graphStorage.saveMetadata();
+  }
+
   /**
    * Bulk-load all persisted nodes from FBF into the Rust index.
    * Two logical passes over the stored nodes:
@@ -288,12 +616,9 @@ export class HNSWIndex {
     const allNodes: HNSWNode[] = [];
     const nodeIdToDocId = new Map<NodeId, number>();
 
-    // Pass 1: import node data into Rust.
+    // Pass 1: import live node data into Rust.
     for await (const node of this.graphStorage.scanNodes()) {
-      // Skip deleted nodes — their vector slots are freed and their back-links
-      // have been removed by softDelete, so they carry no useful graph state.
       if (node.deleted) continue;
-
       const vector = await this.vectorHeap.get(node.vectorPtr);
       this.rustIdx.importNode(node.docId, node.level, vector, false);
       nodeIdToDocId.set(node.nodeId, node.docId);

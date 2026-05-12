@@ -4,7 +4,7 @@ import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { MockFile } from '../core/mockfile.mjs';
 import { VectorSerializer } from './vectorSerializer.mjs';
 import { VectorHeapFile } from './vectorHeapFile.mjs';
-import { HNSWGraphStorage, encodeNodeId } from './hnswGraphStorage.mjs';
+import { HNSWGraphStorage, decodeNodeId, encodeNodeId } from './hnswGraphStorage.mjs';
 import { HNSWNode } from './hnswNode.mjs';
 import { HNSWIndex } from './hnswIndex.mjs';
 
@@ -359,6 +359,15 @@ describe('HNSWGraphStorage', () => {
     const firstId = await legacyGs.insertNode(first);
     const second = makeNode({ docId: 20, neighbors: [[firstId]] });
     await legacyGs.insertNode(second);
+
+    const { pageId, slotId } = decodeNodeId(second.nodeId);
+    const { pageId: firstPageId, slotId: firstSlotId } = decodeNodeId(firstId);
+    const legacySlotsPerPage = Math.floor(((BLOCK_SIZE - 4) * 8) / (legacyNodeSize * 8 + 1));
+    const legacyPageDataOffset = 3 + Math.ceil(legacySlotsPerPage / 8);
+    const rawPage = await fbf.readBlock(pageId);
+    const storedNeighborOffset = 1 + legacyPageDataOffset + slotId * legacyNodeSize + 13;
+    expect(rawPage.readUInt32LE(storedNeighborOffset)).toBe(firstSlotId);
+    expect(rawPage.readUInt32LE(storedNeighborOffset + 4)).toBe(firstPageId);
 
     const loaded = await legacyGs.getNode(second.nodeId);
     expect(loaded.neighbors[0]).toEqual([firstId]);
@@ -742,6 +751,35 @@ describe('HNSWIndex', () => {
     const results = await index2.search(vec(0, 0), 5);
     expect(results).not.toContain(1);
     expect(results).toContain(2);
+  });
+
+  it('deleting routing nodes preserves search breadth after reopen', async () => {
+    for (let i = 0; i < 16; i++) {
+      await index.insert(i, vec(i, 0));
+    }
+
+    const snapshot = await index.inspectGraphStructureSnapshot();
+    const entryNode = snapshot.nodes.find((node) => node.nodeId === snapshot.entryPoint);
+    expect(entryNode).toBeDefined();
+
+    const deleted = new Set<number>([entryNode!.docId, 3, 7]);
+    for (const docId of deleted) {
+      await index.delete(docId);
+    }
+
+    const beforeReopen = await index.search(vec(8, 0), 10);
+    expect(beforeReopen.length).toBeGreaterThan(1);
+    for (const docId of deleted) {
+      expect(beforeReopen).not.toContain(docId);
+    }
+
+    await index.commit();
+    const reopened = await reopenIndex(graphFbf, vectorFbf);
+    const afterReopen = await reopened.search(vec(8, 0), 10);
+    expect(afterReopen.length).toBeGreaterThan(1);
+    for (const docId of deleted) {
+      expect(afterReopen).not.toContain(docId);
+    }
   });
 
   it('multiple commits accumulate correctly', async () => {

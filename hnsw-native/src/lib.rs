@@ -61,7 +61,7 @@ pub extern "C" fn hnsw_search(
 }
 
 /// Soft-delete the node associated with `doc_id`.
-/// After return, call `hnsw_take_dirty_nodes` to get modified neighbors.
+/// The node remains allocated in the graph; only the live-doc mapping changes.
 /// Returns 1 if found and deleted, 0 otherwise.
 #[no_mangle]
 pub extern "C" fn hnsw_delete(handle: *mut HnswHandle, doc_id: u32) -> u32 {

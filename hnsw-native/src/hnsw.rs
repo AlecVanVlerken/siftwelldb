@@ -72,6 +72,7 @@ pub struct HnswCore {
     vectors:   Vec<f32>,
     nodes:     Vec<Node>,
     doc_to_node: FxHashMap<u32, u32>,
+    all_doc_to_node: FxHashMap<u32, u32>,
 
     entry_point: Option<u32>,
     max_level:   usize,
@@ -95,6 +96,7 @@ impl HnswCore {
             vectors: Vec::new(),
             nodes:   Vec::new(),
             doc_to_node: FxHashMap::default(),
+            all_doc_to_node: FxHashMap::default(),
             entry_point: None,
             max_level:   0,
             dirty_doc_ids: Vec::new(),
@@ -127,6 +129,7 @@ impl HnswCore {
             neighbors: vec![vec![]; level + 1],
         });
         self.doc_to_node.insert(doc_id, node_id);
+        self.all_doc_to_node.insert(doc_id, node_id);
         // New node is always dirty.
         self.dirty_doc_ids.push(doc_id);
 
@@ -203,29 +206,14 @@ impl HnswCore {
     }
 
     /// Soft-delete the node associated with `doc_id`.
-    /// After this call `dirty_doc_ids` contains the doc_ids of all neighbors
-    /// whose back-links were removed.
+    ///
+    /// The node stays allocated and keeps its neighbour lists intact. The live
+    /// doc_id map is updated so search results and future deletes no longer
+    /// target this entry, but no graph rewiring or storage reclamation occurs.
     /// Returns `true` if the entry existed.
     pub fn delete(&mut self, doc_id: u32) -> bool {
         self.dirty_doc_ids.clear();
         let Some(&node_id) = self.doc_to_node.get(&doc_id) else { return false; };
-        let node_level = self.nodes[node_id as usize].level;
-
-        // Remove back-links from every neighbor at every layer.
-        for layer in 0..=node_level {
-            let neighbors = self.nodes[node_id as usize].neighbors.get(layer)
-                .cloned()
-                .unwrap_or_default();
-            for nb in neighbors {
-                if let Some(nb_neighbors) = self.nodes[nb as usize].neighbors.get_mut(layer) {
-                    nb_neighbors.retain(|&id| id != node_id);
-                    let nb_doc = self.nodes[nb as usize].doc_id;
-                    if !self.dirty_doc_ids.contains(&nb_doc) {
-                        self.dirty_doc_ids.push(nb_doc);
-                    }
-                }
-            }
-        }
 
         self.nodes[node_id as usize].deleted = true;
         self.doc_to_node.remove(&doc_id);
@@ -344,6 +332,7 @@ impl HnswCore {
             deleted,
             neighbors: vec![vec![]; level + 1],
         });
+        self.all_doc_to_node.insert(doc_id, node_id);
         if !deleted {
             self.doc_to_node.insert(doc_id, node_id);
         }
@@ -353,11 +342,11 @@ impl HnswCore {
     /// doc_ids.  Called after `import_node` to restore persisted connections.
     /// The `neighbor_doc_ids` slice must contain valid live doc_ids.
     pub fn import_set_neighbors(&mut self, doc_id: u32, layer: usize, neighbor_doc_ids: &[u32]) {
-        let Some(&idx) = self.doc_to_node.get(&doc_id) else { return; };
+        let Some(&idx) = self.all_doc_to_node.get(&doc_id) else { return; };
         if layer >= self.nodes[idx as usize].neighbors.len() { return; }
         // Convert neighbor doc_ids → internal node indices.
         let nb_indices: Vec<u32> = neighbor_doc_ids.iter()
-            .filter_map(|&d| self.doc_to_node.get(&d).copied())
+            .filter_map(|&d| self.all_doc_to_node.get(&d).copied())
             .collect();
         self.nodes[idx as usize].neighbors[layer] = nb_indices;
     }
@@ -384,9 +373,6 @@ impl HnswCore {
                 None    => break,
             };
             for (i, &nb) in neighbors.iter().enumerate() {
-                let node = &self.nodes[nb as usize];
-                if node.deleted { continue; }
-
                 // Prefetch next neighbor's vector.
                 if i + 1 < neighbors.len() {
                     let next_nb = neighbors[i + 1] as usize;
@@ -402,6 +388,8 @@ impl HnswCore {
                     }
                 }
 
+                // Allow greedy descent through deleted nodes — they are valid
+                // routing waypoints even after soft-deletion.
                 let d = l2_squared(self.vec(nb), query);
                 if d < best_dist {
                     best_dist = d;
@@ -426,7 +414,10 @@ impl HnswCore {
         let mut visited:    FxHashSet<u32>      = FxHashSet::with_capacity_and_hasher(ef * 4, Default::default());
 
         candidates.push(MinDist(Dist(entry_dist, entry)));
-        w.push(MaxDist(Dist(entry_dist, entry)));
+        // Only add the entry to the result window if it is live.
+        if !self.nodes[entry as usize].deleted {
+            w.push(MaxDist(Dist(entry_dist, entry)));
+        }
         visited.insert(entry);
 
         while let Some(MinDist(c)) = candidates.pop() {
@@ -441,8 +432,6 @@ impl HnswCore {
 
             for (i, &nb) in neighbors.iter().enumerate() {
                 if !visited.insert(nb) { continue; }
-                let node = &self.nodes[nb as usize];
-                if node.deleted { continue; }
 
                 // Prefetch the vector of the next neighbor to hide L3 latency.
                 // The vector store is large enough to cause cache misses at high N;
@@ -466,9 +455,14 @@ impl HnswCore {
                 let f_cur = w.peek().map_or(f32::INFINITY, |m| m.0.0);
 
                 if d < f_cur || w.len() < ef {
+                    // Always enqueue in `candidates` so we can route *through*
+                    // deleted nodes and reach their live neighbours.
                     candidates.push(MinDist(Dist(d, nb)));
-                    w.push(MaxDist(Dist(d, nb)));
-                    if w.len() > ef { w.pop(); }
+                    // Only live nodes enter the result window `w`.
+                    if !self.nodes[nb as usize].deleted {
+                        w.push(MaxDist(Dist(d, nb)));
+                        if w.len() > ef { w.pop(); }
+                    }
                 }
             }
         }
@@ -492,7 +486,7 @@ impl HnswCore {
 
         for c in &sorted {
             if result.len() >= m_max { break; }
-            if self.nodes[c.1 as usize].deleted { continue; }
+            // Deleted nodes are retained as potential routing hops; not skipped here.
 
             let c_vec   = self.vec(c.1);
             let dist_qc = c.0;
@@ -523,8 +517,9 @@ impl HnswCore {
         let nb_vec_owned: Vec<f32> = self.vec(nb).to_vec();
         let current_nb: Vec<u32>  = self.nodes[nb as usize].neighbors[layer].clone();
 
+        // Keep deleted nodes in the candidate set so they can remain as
+        // routing bridges in the neighbour list after pruning.
         let candidates: Vec<Dist> = current_nb.iter()
-            .filter(|&&id| !self.nodes[id as usize].deleted)
             .map(|&id| Dist(l2_squared(&nb_vec_owned, self.vec(id)), id))
             .collect();
 
