@@ -1,0 +1,5 @@
+scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
+btree-tail-clear-sequence,1,true,1.003,88,25,63,3.5200,22528,1,256,0,1,0,1,0,1,0,1
+btree-tail-clear-sequence,2,true,0.931,87,25,62,3.4800,22272,1,512,0,1,0,1,0,2,0,2
+btree-tail-clear-sequence,3,true,0.776,86,25,61,3.4400,22016,1,768,0,1,0,1,0,3,0,3
+btree-tail-clear-sequence,4,true,0.490,85,25,60,3.4000,21760,1,1024,0,1,0,1,0,4,0,4

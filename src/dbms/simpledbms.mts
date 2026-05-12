@@ -136,7 +136,11 @@ import { documentToJSON, parseRawDocument, type Document, type FieldValue } from
 import { JSONtoDocument } from './document.mjs';
 import { type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
 import { type EncodedDocument } from './recordstore.mjs';
-import type { VacuumProgress } from '../compaction/compaction.mjs';
+import type {
+  IncrementalCompactionPolicy,
+  IncrementalCompactionResult,
+  VacuumProgress,
+} from '../compaction/compaction.mjs';
 
 /**
  * SimpleDbms class
@@ -330,6 +334,18 @@ export class SimpleDbms {
    */
   async commit(): Promise<void> {
     await this.dbmsback.commit();
+  }
+
+  async runIncrementalCompactionStep(policy?: IncrementalCompactionPolicy): Promise<IncrementalCompactionResult> {
+    return await this.dbmsback.runIncrementalCompactionStep(policy);
+  }
+
+  async compactIfNeeded(policy?: IncrementalCompactionPolicy): Promise<IncrementalCompactionResult | null> {
+    return await this.dbmsback.compactIfNeeded(policy);
+  }
+
+  async getCompactionStorageStats() {
+    return await this.dbmsback.getCompactionStorageStats();
   }
 
   /**

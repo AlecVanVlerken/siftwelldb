@@ -1,0 +1,2 @@
+scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
+hnsw-tail-blocker,1,true,1.169,58,41,17,1.4146,237568,0,0,0,0,0,0,0,0,1,0

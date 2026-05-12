@@ -15,6 +15,10 @@ export type RecordWriteOptions = {
   compressionOverrides?: FieldCompressionOverrides;
 };
 
+export type RecordRelocationWriteOptions = {
+  maxBlockExclusive?: number;
+};
+
 export type EncodedFieldEntry = {
   key: string;
   valueType: 'string' | 'number' | 'boolean' | 'buffer';
@@ -91,7 +95,31 @@ export class RecordStore {
    */
   async writeRecord(doc: Document, options?: RecordWriteOptions): Promise<number> {
     const data = this.serializeDocument(doc, options);
+    const blockNumber = await this.writeSerializedRecord(data);
+    if (blockNumber === null) {
+      throw new Error('RecordStore.writeRecord could not allocate record blocks');
+    }
+    return blockNumber;
+  }
 
+  async writeRecordEncoded(doc: EncodedDocument): Promise<number> {
+    const data = this.serializeEncodedDocument(doc);
+    const blockNumber = await this.writeSerializedRecord(data);
+    if (blockNumber === null) {
+      throw new Error('RecordStore.writeRecordEncoded could not allocate record blocks');
+    }
+    return blockNumber;
+  }
+
+  async writeRecordEncodedBelow(
+    doc: EncodedDocument,
+    options: RecordRelocationWriteOptions,
+  ): Promise<number | null> {
+    const data = this.serializeEncodedDocument(doc);
+    return await this.writeSerializedRecord(data, options);
+  }
+
+  private async writeSerializedRecord(data: Buffer, options: RecordRelocationWriteOptions = {}): Promise<number | null> {
     // Block size minus block type byte and next block pointer
     const maxDataPerBlock = this.blockSize - RecordStore.DATA_OFFSET;
 
@@ -105,10 +133,13 @@ export class RecordStore {
     }
 
     // allocate blocks for all chunks (in reversed order for linking)
-    const blockIDs: number[] = [];
-    for (const chunk of chunks) {
-      void chunk;
-      blockIDs.push(await this.freeBlockFile.allocateBlock());
+    const blockIDs =
+      options.maxBlockExclusive === undefined
+        ? await this.allocateRecordBlocks(chunks.length)
+        : await this.freeBlockFile.allocateBlocksBelow(options.maxBlockExclusive, chunks.length);
+
+    if (blockIDs === null) {
+      return null;
     }
 
     // write each chunk to its block with next block pointer
@@ -132,6 +163,14 @@ export class RecordStore {
 
     // return the first block ID (head of the chain)
     return blockIDs[0];
+  }
+
+  private async allocateRecordBlocks(count: number): Promise<number[]> {
+    const blockIDs: number[] = [];
+    for (let i = 0; i < count; i++) {
+      blockIDs.push(await this.freeBlockFile.allocateBlock());
+    }
+    return blockIDs;
   }
 
   /**
@@ -180,24 +219,26 @@ export class RecordStore {
    * @throws {Error} If any block cannot be freed
    */
   async deleteRecord(blockID: number): Promise<void> {
-    const blocksToFree: number[] = [];
-    let currentBlockID = blockID;
-
-    // Collect all block IDs in the chain
-    while (currentBlockID !== 0) {
-      blocksToFree.push(currentBlockID);
-
-      // Read the block to get the next pointer
-      const blockData = await this.freeBlockFile.readBlock(currentBlockID);
-      const nextBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
-
-      currentBlockID = nextBlockID;
-    }
+    const blocksToFree = await this.readRecordBlockChain(blockID);
 
     // Free all blocks
     for (const blockToFree of blocksToFree) {
       await this.freeBlockFile.freeBlock(blockToFree);
     }
+  }
+
+  async readRecordBlockChain(blockID: number): Promise<number[]> {
+    const blocks: number[] = [];
+    let currentBlockID = blockID;
+
+    while (currentBlockID !== 0) {
+      blocks.push(currentBlockID);
+
+      const blockData = await this.freeBlockFile.readBlock(currentBlockID);
+      currentBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
+    }
+
+    return blocks;
   }
 
   private serializeDocument(doc: Document, options?: RecordWriteOptions): Buffer {
@@ -210,6 +251,22 @@ export class RecordStore {
       id: doc.getId(),
       iterableEntries,
       nonIterableEntries,
+    };
+
+    const jsonBuffer = Buffer.from(JSON.stringify(payload), 'utf-8');
+    const lengthBuffer = Buffer.alloc(4);
+    lengthBuffer.writeUInt32BE(jsonBuffer.length, 0);
+
+    return Buffer.concat([lengthBuffer, jsonBuffer]);
+  }
+
+  private serializeEncodedDocument(doc: EncodedDocument): Buffer {
+    const payload: StoredDocumentV2 = {
+      version: 2,
+      collection: doc.collection,
+      id: doc.id,
+      iterableEntries: doc.iterableEntries,
+      nonIterableEntries: doc.nonIterableEntries,
     };
 
     const jsonBuffer = Buffer.from(JSON.stringify(payload), 'utf-8');

@@ -19,10 +19,24 @@
 import { type AtomicFile } from '../atomic/atomicfile.mjs';
 
 import { readBlock, writeBlock } from './io.mjs';
-import { allocateBlock, freeBlock, getFreeBlockCount } from './freelist.mjs';
+import { allocateBlock, allocateBlockBelow, allocateBlocksBelow, freeBlock, getFreeBlockCount } from './freelist.mjs';
 import { getRootBlock, setRootBlock, getClientArea, writeClientArea } from './header.mjs';
 import { commit } from './commit.mjs';
 import * as layout from './layout.mjs';
+
+export type TailTrimResult = {
+  removedBlocks: number;
+  newBlockCount: number;
+};
+
+export type FreeBlockFileStats = {
+  blockSize: number;
+  fileSizeBytes: number;
+  totalBlocks: number;
+  freeBlocks: number;
+  usedBlocks: number;
+  freeTailBlocks: number;
+};
 
 export class FreeBlockFile {
   private file: AtomicFile;
@@ -223,6 +237,13 @@ export class FreeBlockFile {
     this._preCommitHooks.push(hook);
   }
 
+  removePreCommitHook(hook: () => Promise<void>): void {
+    const index = this._preCommitHooks.indexOf(hook);
+    if (index >= 0) {
+      this._preCommitHooks.splice(index, 1);
+    }
+  }
+
   async commit(): Promise<void> {
     for (const hook of this._preCommitHooks) {
       await hook();
@@ -297,6 +318,14 @@ export class FreeBlockFile {
     return await allocateBlock(this);
   }
 
+  async allocateBlockBelow(maxBlockExclusive: number): Promise<number | null> {
+    return await allocateBlockBelow(this, maxBlockExclusive);
+  }
+
+  async allocateBlocksBelow(maxBlockExclusive: number, count: number): Promise<number[] | null> {
+    return await allocateBlocksBelow(this, maxBlockExclusive, count);
+  }
+
   /**
    * Frees a data block by prepending it to the free list.
    *
@@ -317,6 +346,80 @@ export class FreeBlockFile {
    */
   async freeBlock(blockNumber: number): Promise<void> {
     await freeBlock(this, blockNumber);
+  }
+
+  async getStats(): Promise<FreeBlockFileStats> {
+    this._ensureOpen();
+    const totalBlocks = Math.max(this.cachedPhysicalBlockCount, this.highestDirtyBlock + 1);
+    const header = await this.readHeaderBlock();
+    const freeBlocks = await this.countFreeListBlocks(totalBlocks, header);
+    const freeTailBlocks = await this.countFreeTailBlocks(totalBlocks);
+
+    return {
+      blockSize: this.blockSize,
+      fileSizeBytes: totalBlocks * this.blockSize,
+      totalBlocks,
+      freeBlocks,
+      usedBlocks: totalBlocks - freeBlocks,
+      freeTailBlocks,
+    };
+  }
+
+  /**
+   * Physically trim a suffix that consists only of free blocks.
+   *
+   * Tail trimming is intentionally only allowed when the dirty-block cache is
+   * clean. Commit pending changes first, then call this method; it will update
+   * the free-list to exclude removed blocks, commit that metadata update, and
+   * then truncate the underlying file.
+   */
+  async trimFreeTail(): Promise<TailTrimResult> {
+    this._ensureOpen();
+    if (this.dirtyBlocks.size !== 0) {
+      throw new Error('Cannot trim free tail while dirty blocks are pending; commit first.');
+    }
+
+    const stats = await this.file.stat();
+    if (stats.size % this.blockSize !== 0) {
+      throw new Error(`Corrupt file: size ${stats.size} is not a multiple of block size ${this.blockSize}`);
+    }
+    const blockCount = Math.floor(stats.size / this.blockSize);
+    this.cachedPhysicalBlockCount = blockCount;
+
+    if (blockCount <= 1) {
+      return { removedBlocks: 0, newBlockCount: blockCount };
+    }
+
+    let newBlockCount = blockCount;
+    for (let blockNumber = blockCount - 1; blockNumber > 0; blockNumber--) {
+      const block = await this.readBlock(blockNumber);
+      const type = block.readUInt8(layout.FREE_TYPE_OFFSET) as layout.BlockType;
+      if (type !== layout.BlockType.Free) {
+        break;
+      }
+      newBlockCount = blockNumber;
+    }
+
+    const removedBlocks = blockCount - newBlockCount;
+    if (removedBlocks === 0) {
+      return { removedBlocks: 0, newBlockCount: blockCount };
+    }
+
+    const header = await this.readHeaderBlock();
+    const root = header.readUInt32LE(layout.HEADER_ROOT_OFFSET);
+    if (root >= newBlockCount) {
+      throw new Error(`Corrupt header: root=${root} would be trimmed`);
+    }
+
+    const keptFreeBlocks = await this.collectFreeListBlocksBelow(newBlockCount, blockCount, header);
+    this.rewriteFreeList(keptFreeBlocks, header);
+
+    await commit(this);
+    await this.file.truncate(newBlockCount * this.blockSize);
+    await this.file.sync();
+    this.cachedPhysicalBlockCount = newBlockCount;
+
+    return { removedBlocks, newBlockCount };
   }
 
   // -------- Internal helpers (not for external use) --------
@@ -363,6 +466,113 @@ export class FreeBlockFile {
 
   _ensureOpen(): void {
     if (!this.isOpen) throw new Error('File not open');
+  }
+
+  private async readHeaderBlock(): Promise<Buffer> {
+    const header = Buffer.alloc(this.blockSize);
+    await this.file.read(header, { position: 0 });
+    const type = header.readUInt8(layout.HEADER_TYPE_OFFSET) as layout.BlockType;
+    if (type !== layout.BlockType.Header) {
+      throw new Error(`Corrupt header: expected ${layout.BlockType.Header}, got ${type}`);
+    }
+    return header;
+  }
+
+  private async countFreeTailBlocks(totalBlocks: number): Promise<number> {
+    let count = 0;
+
+    for (let blockNumber = totalBlocks - 1; blockNumber > 0; blockNumber--) {
+      const block = await this.readBlock(blockNumber);
+      const type = block.readUInt8(layout.FREE_TYPE_OFFSET) as layout.BlockType;
+      if (type !== layout.BlockType.Free) {
+        break;
+      }
+      count++;
+    }
+
+    return count;
+  }
+
+  private async countFreeListBlocks(blockCount: number, header: Buffer): Promise<number> {
+    let count = 0;
+    let current = header.readUInt32LE(layout.HEADER_FIRST_FREE_OFFSET);
+    let steps = 0;
+
+    while (current !== 0) {
+      if (steps++ >= blockCount) {
+        throw new Error('Corrupt free list: cycle detected');
+      }
+      if (current >= blockCount) {
+        throw new Error(`Corrupt free list: free block ${current.toString()} >= block count ${blockCount}`);
+      }
+
+      const block = await this.readBlock(current);
+      const type = block.readUInt8(layout.FREE_TYPE_OFFSET) as layout.BlockType;
+      if (type !== layout.BlockType.Free) {
+        throw new Error(`Corrupt free list: block ${current.toString()} has type ${type}, expected Free`);
+      }
+
+      count++;
+      const next = block.readUInt32LE(layout.FREE_NEXT_OFFSET);
+      if (next === current) {
+        throw new Error(`Corrupt free list: self-referential free block at ${current.toString()}`);
+      }
+      current = next;
+    }
+
+    return count;
+  }
+
+  private async collectFreeListBlocksBelow(
+    newBlockCount: number,
+    oldBlockCount: number,
+    header: Buffer,
+  ): Promise<number[]> {
+    const keptFreeBlocks: number[] = [];
+    let current = header.readUInt32LE(layout.HEADER_FIRST_FREE_OFFSET);
+    let steps = 0;
+
+    while (current !== 0) {
+      if (steps++ >= oldBlockCount) {
+        throw new Error('Corrupt free list: cycle detected');
+      }
+      if (current >= oldBlockCount) {
+        throw new Error(`Corrupt free list: free block ${current.toString()} >= block count ${oldBlockCount}`);
+      }
+
+      const block = await this.readBlock(current);
+      const type = block.readUInt8(layout.FREE_TYPE_OFFSET) as layout.BlockType;
+      if (type !== layout.BlockType.Free) {
+        throw new Error(`Corrupt free list: block ${current.toString()} has type ${type}, expected Free`);
+      }
+
+      const next = block.readUInt32LE(layout.FREE_NEXT_OFFSET);
+      if (next === current) {
+        throw new Error(`Corrupt free list: self-referential free block at ${current.toString()}`);
+      }
+      if (current < newBlockCount) {
+        keptFreeBlocks.push(current);
+        this._setDirtyBlock(current, block);
+      }
+      current = next;
+    }
+
+    return keptFreeBlocks;
+  }
+
+  private rewriteFreeList(keptFreeBlocks: number[], header: Buffer): void {
+    header.writeUInt32LE(keptFreeBlocks[0] ?? 0, layout.HEADER_FIRST_FREE_OFFSET);
+    this._setDirtyBlock(0, header);
+
+    for (let i = 0; i < keptFreeBlocks.length; i++) {
+      const blockNumber = keptFreeBlocks[i];
+      const block = this.dirtyBlocks.get(blockNumber);
+      if (!block) {
+        throw new Error(`Missing free block ${blockNumber.toString()} while rebuilding free list`);
+      }
+      block.writeUInt32LE(keptFreeBlocks[i + 1] ?? 0, layout.FREE_NEXT_OFFSET);
+      this._setDirtyBlock(blockNumber, block);
+    }
   }
 
   /**
