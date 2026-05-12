@@ -131,10 +131,24 @@ import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
  *   HNSW vectors together via the WAL.
  */
 export type { HnswConfig };
+export type {
+  CompressionRecommendation,
+  CompressionRecommendationItem,
+  CompressionRecommendationRequest,
+  CompressionStorageEstimate,
+  CompressionRecommendationWeights,
+} from './compression-advisor.mjs';
+export type { CompressionProfileSummary } from './compression-benchmarks.mjs';
 import { type File } from '../core/file.mjs';
-import { documentToJSON, type Document, type FieldValue } from './document.mjs';
+import { documentToJSON, parseRawDocument, type Document, type FieldValue, type IndexPredicate } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
 import { type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
+import {
+  listAvailableCompressionProfiles,
+  type CompressionRecommendation,
+  type CompressionRecommendationRequest,
+} from './compression-advisor.mjs';
+import { type CompressionProfileSummary } from './compression-benchmarks.mjs';
 import { type EncodedDocument } from './recordstore.mjs';
 
 /**
@@ -195,6 +209,23 @@ export class SimpleDbms {
   }
 
   /**
+   * Retrieves a list of all collection names in the database.
+   * @returns A Promise that resolves to an array of collection names.
+   */
+  async getCollections(): Promise<string[]> {
+    return this.dbmsback.getCollections();
+  }
+
+  /**
+   * Deletes a collection from the database and commits the change.
+   * @param collection - The name of the collection to delete.
+   */
+  async deleteCollection(collection: string): Promise<void> {
+    await this.dbmsback.deleteCollection(collection);
+    await this.dbmsback.commit();
+  }
+
+  /**
    * Closes the database management system.
    * @returns A Promise that resolves when the database is closed.
    */
@@ -219,10 +250,31 @@ export class SimpleDbms {
   async insertDocument(
     collection: string,
     documentJSON: string,
-    options?: { compression?: FieldCompressionOverrides },
+    options?: { compression?: FieldCompressionOverrides; skipSemanticIndex?: boolean },
   ): Promise<void> {
     const documentObj = JSONtoDocument(documentJSON, collection);
-    return this.dbmsback.insertDocument(documentObj, options?.compression);
+    return this.dbmsback.insertDocument(documentObj, options?.compression, {
+      skipSemanticIndex: options?.skipSemanticIndex,
+    });
+  }
+
+  /**
+   * Insert a document from a pre-parsed object (avoids JSONtoDocument regex issues).
+   * Use this when the document is already a JS object (e.g. from the web API).
+   */
+  async insertDocumentObject(
+    collection: string,
+    document: unknown,
+    options?: {
+      compression?: FieldCompressionOverrides;
+      skipSemanticIndex?: boolean;
+      indexPredicate?: IndexPredicate;
+    },
+  ): Promise<void> {
+    const documentObj = parseRawDocument(collection, document, options?.indexPredicate);
+    return this.dbmsback.insertDocument(documentObj, options?.compression, {
+      skipSemanticIndex: options?.skipSemanticIndex,
+    });
   }
 
   /**
@@ -241,6 +293,18 @@ export class SimpleDbms {
 
   setFieldCompressionDefaults(collection: string, defaults: FieldCompressionDefaults): void {
     this.dbmsback.setFieldCompressionDefaults(collection, defaults);
+  }
+
+  getFieldCompressionDefaults(collection: string): FieldCompressionDefaults {
+    return this.dbmsback.getFieldCompressionDefaults(collection);
+  }
+
+  listCompressionProfiles(): CompressionProfileSummary[] {
+    return listAvailableCompressionProfiles();
+  }
+
+  async recommendCompression(request: CompressionRecommendationRequest): Promise<CompressionRecommendation> {
+    return this.dbmsback.recommendCompression(request);
   }
 
   /**
