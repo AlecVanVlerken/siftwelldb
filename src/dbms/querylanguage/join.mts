@@ -4,9 +4,7 @@
 
 import type { SimpleDbms } from '../simpledbms.mjs';
 import { type FieldValue } from '../document.mjs';
-import type { JoinClause, ParsedSelect, QueryResultRow } from './ast.mjs';
-import { evaluateWhere } from './expressions.mjs';
-import { project } from './projection.mjs';
+import type { JoinClause, ParsedSelect } from './ast.mjs';
 
 /**
  * Load an entire collection into memory as parsed JSON rows.
@@ -43,7 +41,7 @@ function mergeDocuments(
   rightDoc: Record<string, FieldValue> | null,
   leftColl: string,
   rightColl: string,
-  type: string,
+  type: 'INNER' | 'NATURAL' | 'CROSS',
   mergeFields: string[],
 ): Record<string, FieldValue> {
   const merged: Record<string, FieldValue> = {};
@@ -94,16 +92,18 @@ function mergeDocuments(
 
 /**
  * Merge two collections according to a single JOIN clause. Returns the
- * unfiltered, unprojected cross product (or filtered cross product, for
- * INNER / NATURAL joins).
+ * unfiltered, unprojected merged rows.
  *
- * Three resolution modes:
+ * The join type is taken from `join.type` — the parser is responsible
+ * for picking it. No more silent NATURAL / CROSS inference here:
  *
- *   1. **INNER** (`ON left = right`): hash the right side on the join key,
- *      probe per left row. O(L + R) build, O(L) probe.
- *   2. **NATURAL** (no `ON`, but overlapping field names): the first
- *      overlapping field becomes the join key, same algorithm.
- *   3. **FULL** (no `ON`, no overlap): true Cartesian product, O(L · R).
+ *   - `INNER`: hash the right side on `join.rightField`, probe per left
+ *     row with `join.leftField`. O(L + R) build, O(L) probe.
+ *   - `NATURAL`: discover the overlapping field names between the two
+ *     sides at runtime; the first overlap is the join key. If there's
+ *     no overlap, throws — `NATURAL JOIN` with no shared columns is
+ *     never what the user meant.
+ *   - `CROSS`: true Cartesian product, O(L · R).
  *
  * WHERE filtering and projection are deliberately **not** applied here —
  * with chained joins those have to wait until every collection has been
@@ -116,75 +116,56 @@ export function mergeJoinedDocs(
   leftCollName: string,
   rightCollName: string,
 ): Record<string, FieldValue>[] {
-  const leftKeys = leftDocs.length > 0 ? Object.keys(leftDocs[0]) : [];
-  const rightKeys = rightDocs.length > 0 ? Object.keys(rightDocs[0]) : [];
-  const overlapping = leftKeys.filter((k) => rightKeys.includes(k));
-
-  let effectiveJoinType: 'INNER' | 'NATURAL' | 'FULL' = 'INNER';
-  let leftKey: string | undefined;
-  let rightKey: string | undefined;
-  let mergeFields: string[] = [];
-
-  if (join.leftField && join.rightField) {
-    effectiveJoinType = 'INNER';
-    leftKey = join.leftField.split('.').pop()!;
-    rightKey = join.rightField.split('.').pop()!;
-    mergeFields = [leftKey, rightKey];
-  } else if (overlapping.length > 0) {
-    effectiveJoinType = 'NATURAL';
-    mergeFields = overlapping;
-    leftKey = overlapping[0];
-    rightKey = overlapping[0];
-  } else {
-    effectiveJoinType = 'FULL';
-  }
-
-  const results: Record<string, FieldValue>[] = [];
-
-  if (effectiveJoinType === 'FULL' && !leftKey) {
+  if (join.type === 'CROSS') {
+    const results: Record<string, FieldValue>[] = [];
     for (const leftDoc of leftDocs) {
       for (const rightDoc of rightDocs) {
-        results.push(mergeDocuments(leftDoc, rightDoc, leftCollName, rightCollName, 'FULL', []));
+        results.push(mergeDocuments(leftDoc, rightDoc, leftCollName, rightCollName, 'CROSS', []));
       }
     }
     return results;
   }
 
+  let leftKey: string;
+  let rightKey: string;
+  let mergeFields: string[];
+
+  if (join.type === 'NATURAL') {
+    const leftKeys = leftDocs.length > 0 ? Object.keys(leftDocs[0]) : [];
+    const rightKeys = rightDocs.length > 0 ? Object.keys(rightDocs[0]) : [];
+    const overlapping = leftKeys.filter((k) => rightKeys.includes(k));
+    if (overlapping.length === 0) {
+      throw new Error(
+        `NATURAL JOIN ${rightCollName}: no overlapping field names between "${leftCollName}" and "${rightCollName}"`,
+      );
+    }
+    leftKey = overlapping[0];
+    rightKey = overlapping[0];
+    mergeFields = overlapping;
+  } else {
+    leftKey = join.leftField.split('.').pop()!;
+    rightKey = join.rightField.split('.').pop()!;
+    mergeFields = [leftKey, rightKey];
+  }
+
+  const results: Record<string, FieldValue>[] = [];
   const rightMap = new Map<FieldValue, Record<string, FieldValue>[]>();
   for (const doc of rightDocs) {
-    const val = doc[rightKey!];
+    const val = doc[rightKey];
     const bucket = rightMap.get(val) ?? [];
     bucket.push(doc);
     rightMap.set(val, bucket);
   }
 
   for (const leftDoc of leftDocs) {
-    const matches = rightMap.get(leftDoc[leftKey!]) ?? [];
+    const matches = rightMap.get(leftDoc[leftKey]) ?? [];
     for (const rightDoc of matches) {
       results.push(
-        mergeDocuments(leftDoc, rightDoc, leftCollName, rightCollName, effectiveJoinType, mergeFields),
+        mergeDocuments(leftDoc, rightDoc, leftCollName, rightCollName, join.type, mergeFields),
       );
     }
   }
   return results;
-}
-
-/**
- * Legacy single-join helper: merge, filter, project in one pass.
- * Retained because the executor's `executeWithPreloadedRows()` public
- * API still calls it for the single-join case (callers preload the
- * left side and want the full pipeline run for them).
- */
-export function applyJoin(
-  leftDocs: Record<string, FieldValue>[],
-  rightDocs: Record<string, FieldValue>[],
-  parsed: ParsedSelect,
-): QueryResultRow[] {
-  const join = parsed.joins?.[0];
-  if (!join) return [];
-  const merged = mergeJoinedDocs(leftDocs, rightDocs, join, parsed.collection, join.collection);
-  const filtered = parsed.where ? merged.filter((doc) => evaluateWhere(doc, parsed.where!)) : merged;
-  return filtered.map((row) => project(row, parsed.fields));
 }
 
 /**

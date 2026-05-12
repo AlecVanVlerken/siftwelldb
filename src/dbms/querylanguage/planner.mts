@@ -1,55 +1,77 @@
 // author: Frederik Caeyman & Matisse De Gauquier
 //
-// Tiny "planner" that picks the cursor key + start hint for a SELECT.
+// Tiny "planner" that decides how a SELECT should iterate the
+// underlying collection.
 //
-// Despite every indexable field carrying its own B+ tree, in practice
-// the secondary-index cursor isn't usable for partial-key seeks (the
-// keys are `(field, id)` composites — a single `field` buffer doesn't
-// align with the leaf layout). For now we only specialise the one case
-// that *does* work and matters in real workloads: a top-level
-// `WHERE id = '...'` point lookup. Everything else falls back to a
-// full scan of the `id` index with a WHERE filter applied row-by-row.
+// Two specialisations land short-circuit scans:
 //
-// Keeping this module small and honest is intentional — earlier
-// versions tried to seek on any field and silently did nothing.
+//   1. `WHERE id = X`  → use the `id` index as a direct point lookup.
+//   2. `WHERE f = X`   → if `f` is indexed, seek the secondary index;
+//                        early-terminate once the field value changes.
+//                        Falls back to a full scan at execution time if
+//                        the field has no index (the planner is schema-
+//                        agnostic; the executor verifies).
+//
+// Everything else (range predicates, OR, NOT, IN, BETWEEN, JOINs, …)
+// fall back to a full scan over the `id` index with the WHERE filter
+// applied row-by-row. This is correctness-preserving; the speed-up is
+// gravy.
 
 import { type FieldValue } from '../document.mjs';
 import type { WhereExpression } from './ast.mjs';
 
-export type CursorPlan = {
-  /** Index to iterate. Always `'id'` until we get real secondary-index seeks. */
-  iterableKey: 'id';
-  /** Start hint for the cursor, or `undefined` to scan from the beginning. */
-  startValue: string | number | undefined;
-};
+export type CursorPlan =
+  | {
+      /** Full scan over the `id` index. WHERE applied per row. */
+      kind: 'fullScan';
+    }
+  | {
+      /** Point lookup by primary key. Stops after the first matching row. */
+      kind: 'idEquality';
+      value: string | number;
+    }
+  | {
+      /**
+       * Secondary-index equality seek. Executor will fall back to a
+       * full scan if the field turns out not to be indexed.
+       */
+      kind: 'fieldEquality';
+      field: string;
+      value: string | number | boolean;
+    };
 
 /**
  * Walk the top-level AND-chain of a WHERE expression looking for an
- * `id = <literal>` comparison.  Returns the literal if one is found,
+ * `<field> = <literal>` comparison.  Returns the comparison if found,
  * otherwise `undefined`. We refuse to peek through `OR` because the
- * other branch could match rows with different ids — using the id
- * as a cursor start there would skip valid matches.
+ * other branch could match rows with different values — seeking there
+ * would skip valid matches.
  */
-function findIdEquality(where: WhereExpression | undefined): FieldValue | undefined {
+function findFieldEquality(
+  where: WhereExpression | undefined,
+): { field: string; value: FieldValue } | undefined {
   if (!where) return undefined;
-  if (where.type === 'comparison') {
-    if (where.field === 'id' && where.operator === '=') return where.value;
-    return undefined;
+  if (where.type === 'comparison' && where.operator === '=') {
+    return { field: where.field, value: where.value };
   }
-  // Only AND can preserve the id constraint across both sides; bail on
-  // any other shape (OR, NOT, IS NULL, IN, BETWEEN) so we don't skip
-  // valid matches by mis-seeking.
   if (where.type !== 'logical' || where.operator === 'OR') return undefined;
-  return findIdEquality(where.left) ?? findIdEquality(where.right);
+  return findFieldEquality(where.left) ?? findFieldEquality(where.right);
 }
 
 export function planCursor(where: WhereExpression | undefined): CursorPlan {
-  const idVal = findIdEquality(where);
-  if (idVal === undefined) return { iterableKey: 'id', startValue: undefined };
+  const eq = findFieldEquality(where);
+  if (!eq) return { kind: 'fullScan' };
 
-  if (typeof idVal === 'boolean') return { iterableKey: 'id', startValue: idVal ? 1 : 0 };
-  if (typeof idVal === 'string' || typeof idVal === 'number') {
-    return { iterableKey: 'id', startValue: idVal };
+  if (eq.field === 'id') {
+    if (typeof eq.value === 'boolean') return { kind: 'idEquality', value: eq.value ? 1 : 0 };
+    if (typeof eq.value === 'string' || typeof eq.value === 'number') {
+      return { kind: 'idEquality', value: eq.value };
+    }
+    return { kind: 'idEquality', value: String(eq.value) };
   }
-  return { iterableKey: 'id', startValue: String(idVal) };
+
+  if (typeof eq.value === 'string' || typeof eq.value === 'number' || typeof eq.value === 'boolean') {
+    return { kind: 'fieldEquality', field: eq.field, value: eq.value };
+  }
+  return { kind: 'fullScan' };
 }

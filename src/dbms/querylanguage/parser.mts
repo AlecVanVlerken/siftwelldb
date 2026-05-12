@@ -31,6 +31,7 @@ import type {
   NotExpression,
   OrderByClause,
   ParsedQuery,
+  ParsedSelect,
   SortDirection,
   UpdateAssignment,
   WhereExpression,
@@ -43,6 +44,28 @@ import { likeToRegex, parseValue } from './expressions.mjs';
 
 export function parse(query: string): ParsedQuery {
   const normalized = query.trim().replace(/;$/, '').trim();
+
+  // ── UNION / UNION ALL ────────────────────────────────────────────────────
+  //
+  // Split the top-level statement on `UNION [ALL]` at depth-0 parens. If
+  // more than one branch comes out, build a ParsedUnion; otherwise fall
+  // through to the single-statement parsers.
+  //
+  // We pick the union mode from the first separator: mixing UNION and
+  // UNION ALL in one statement isn't supported (standard SQL accepts it
+  // but the semantics are ambiguous without precedence rules).
+  const unionParts = splitTopLevelUnion(normalized);
+  if (unionParts.parts.length > 1) {
+    const branches: ParsedSelect[] = [];
+    for (const part of unionParts.parts) {
+      const sub = parse(part.trim());
+      if (sub.kind !== 'select') {
+        throw new Error(`UNION branches must be SELECT statements, got ${sub.kind}`);
+      }
+      branches.push(sub);
+    }
+    return { kind: 'union', all: unionParts.all, branches };
+  }
 
   // ── INSERT ───────────────────────────────────────────────────────────────
   const insertMatch = normalized.match(/^insert\s+into\s+([A-Za-z_][A-Za-z0-9_]*)\s+values\s+(.+)$/i);
@@ -154,6 +177,59 @@ export function parse(query: string): ParsedQuery {
 }
 
 /**
+ * Split a statement on `UNION` or `UNION ALL` at depth-0 parens. The
+ * mode comes from the *first* separator — mixing the two in one
+ * statement is rejected at parse time.
+ *
+ * Returns `parts: [full]` when no UNION is present, so the caller can
+ * fall through to its single-statement path.
+ */
+function splitTopLevelUnion(src: string): { parts: string[]; all: boolean } {
+  const parts: string[] = [];
+  let lastEnd = 0;
+  let depth = 0;
+  let quote: string | null = null;
+  let all: boolean | undefined;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      if (ch === quote && src[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      continue;
+    }
+    if (ch === ')') {
+      depth--;
+      continue;
+    }
+    if (depth !== 0) continue;
+
+    const isBoundary = i === 0 || /\s/.test(src[i - 1]);
+    if (!isBoundary) continue;
+
+    const m = src.slice(i).match(/^union(?:\s+all)?\b/i);
+    if (!m) continue;
+    const mode = /all/i.test(m[0]);
+    if (all === undefined) all = mode;
+    else if (all !== mode) {
+      throw new Error('Mixing UNION and UNION ALL in one statement is not supported');
+    }
+    parts.push(src.slice(lastEnd, i));
+    lastEnd = i + m[0].length;
+    i = lastEnd - 1;
+  }
+  if (parts.length === 0) return { parts: [src], all: false };
+  parts.push(src.slice(lastEnd));
+  return { parts, all: all ?? false };
+}
+
+/**
  * Locations of each clause keyword at depth-0 parens. The string is
  * scanned once; quoted strings and parenthesised subqueries are
  * traversed as opaque regions so they can contain any keyword without
@@ -237,27 +313,61 @@ function splitSelectTail(src: string): TailClauses {
 }
 
 /**
- * Peel zero or more `JOIN <collection> [ON <left> = <right>]` clauses
- * off the front of the remainder of a SELECT statement.
+ * Peel zero or more JOIN clauses off the front of the remainder of a
+ * SELECT statement. Recognises three explicit forms:
  *
- * Stops at the first reserved tail keyword (`WHERE` / `GROUP BY` / etc.)
- * or at end-of-string.
+ *   - `[INNER] JOIN <coll> ON <l> = <r>`
+ *   - `NATURAL JOIN <coll>`
+ *   - `CROSS JOIN <coll>`
+ *
+ * Stops at the first reserved tail keyword (`WHERE` / `GROUP BY` /
+ * etc.) or at end-of-string. Anything that *looks* like a JOIN clause
+ * but doesn't fit one of the three patterns — most importantly a bare
+ * `JOIN <coll>` with no `ON` — throws, so the user gets a clear error
+ * instead of a silent Cartesian or auto-NATURAL.
  */
 function peelJoins(src: string): { joins: JoinClause[]; tail: string } {
   const joins: JoinClause[] = [];
   let s = src.trimStart();
   while (true) {
-    const m = s.match(
-      /^join\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+on\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*))?(.*)$/is,
+    // Refuse unsupported outer-join keywords explicitly so users
+    // don't get a cryptic "Invalid query syntax" later.
+    const outerMatch = s.match(/^(left|right|full)\s+(?:outer\s+)?join\b/i);
+    if (outerMatch) {
+      throw new Error(
+        `${outerMatch[1].toUpperCase()} JOIN is not supported — only INNER, NATURAL, and CROSS joins are implemented`,
+      );
+    }
+    // `NATURAL JOIN <coll>` — no ON, fields are matched by name.
+    const natural = s.match(/^natural\s+join\s+([A-Za-z_][A-Za-z0-9_]*)(.*)$/is);
+    if (natural) {
+      const [, coll, rest] = natural;
+      joins.push({ type: 'NATURAL', collection: coll, leftField: '', rightField: '' });
+      s = rest.trimStart();
+      continue;
+    }
+    // `CROSS JOIN <coll>` — explicit Cartesian product.
+    const cross = s.match(/^cross\s+join\s+([A-Za-z_][A-Za-z0-9_]*)(.*)$/is);
+    if (cross) {
+      const [, coll, rest] = cross;
+      joins.push({ type: 'CROSS', collection: coll, leftField: '', rightField: '' });
+      s = rest.trimStart();
+      continue;
+    }
+    // `[INNER] JOIN <coll> ON <left> = <right>`. The ON clause is
+    // required here — a bare `JOIN x` is an error rather than a silent
+    // NATURAL or CROSS.
+    const inner = s.match(
+      /^(?:inner\s+)?join\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s+on\s+([A-Za-z_][A-Za-z0-9_.]*)\s*=\s*([A-Za-z_][A-Za-z0-9_.]*))?(.*)$/is,
     );
-    if (!m) break;
-    const [, joinColl, leftField, rightField, rest] = m;
-    joins.push({
-      type: 'INNER',
-      collection: joinColl,
-      leftField: leftField ?? '',
-      rightField: rightField ?? '',
-    });
+    if (!inner) break;
+    const [, coll, leftField, rightField, rest] = inner;
+    if (!leftField || !rightField) {
+      throw new Error(
+        `JOIN ${coll} is missing an "ON <left> = <right>" clause — use NATURAL JOIN or CROSS JOIN to match without one`,
+      );
+    }
+    joins.push({ type: 'INNER', collection: coll, leftField, rightField });
     s = rest.trimStart();
   }
   return { joins, tail: s };
@@ -395,8 +505,11 @@ function extractAggregates(selectPart: string): AggregateExpression[] {
 
 /**
  * Single token emitted by the WHERE/HAVING tokenizer. `start`/`end` are
- * byte offsets into the original source string — used by the subquery
- * path to slice out a parenthesised SELECT verbatim and re-parse it.
+ * byte offsets into the original source string. `subquery` is the
+ * special case: when the tokenizer sees `( SELECT ... )` it consumes
+ * the entire parenthesised region as one opaque token rather than
+ * trying to tokenise its contents — that would fail on the subquery's
+ * own SQL keywords (LIMIT, ORDER BY, ...).
  */
 type Token =
   | { kind: 'and'; start: number; end: number }
@@ -409,6 +522,7 @@ type Token =
   | { kind: 'op'; value: ComparisonOperator; start: number; end: number }
   | { kind: 'keyword'; value: 'IS' | 'NULL' | 'IN' | 'BETWEEN'; start: number; end: number }
   | { kind: 'literal'; value: FieldValue; start: number; end: number }
+  | { kind: 'subquery'; value: string; start: number; end: number }
   | { kind: 'eof'; start: number; end: number };
 
 function tokenize(src: string): Token[] {
@@ -422,6 +536,35 @@ function tokenize(src: string): Token[] {
     }
     const start = i;
     if (ch === '(') {
+      // Peek past whitespace to see whether this is a `(SELECT ...)`
+      // subquery. If so, scan paren-balanced text and emit a single
+      // `subquery` token so the WHERE tokenizer doesn't have to deal
+      // with the subquery's own SQL keywords (LIMIT, ORDER BY, etc.).
+      let p = i + 1;
+      while (p < src.length && /\s/.test(src[p])) p++;
+      if (src.slice(p, p + 6).toUpperCase() === 'SELECT' && /\s|\(|$/.test(src[p + 6] ?? '')) {
+        let depth = 1;
+        let j = i + 1;
+        let q: string | null = null;
+        while (j < src.length && depth > 0) {
+          const c = src[j];
+          if (q) {
+            if (c === q && src[j - 1] !== '\\') q = null;
+          } else if (c === "'" || c === '"') {
+            q = c;
+          } else if (c === '(') {
+            depth++;
+          } else if (c === ')') {
+            depth--;
+            if (depth === 0) break;
+          }
+          j++;
+        }
+        if (depth !== 0) throw new Error(`Unterminated subquery starting at "${src.slice(i, i + 20)}"`);
+        out.push({ kind: 'subquery', value: src.slice(i + 1, j).trim(), start, end: j + 1 });
+        i = j + 1;
+        continue;
+      }
       out.push({ kind: 'lparen', start, end: start + 1 });
       i++;
       continue;
@@ -633,15 +776,20 @@ function parseIsNull(stream: TokenStream, field: string): IsNullExpression {
 
 function parseIn(stream: TokenStream, field: string, negated: boolean): InExpression {
   stream.next();
-  stream.consume('lparen');
-  const lookahead = stream.peek();
-  // Subquery: `IN (SELECT ...)`. We slice the original source between the
-  // already-consumed `(` and its matching `)`, recursively parse it, and
-  // store the resulting ParsedSelect verbatim. Execution materialises the
-  // subquery's first column into a Set at runtime.
-  if (lookahead.kind === 'ident' && lookahead.value.toUpperCase() === 'SELECT') {
-    return parseInSubquery(stream, field, negated);
+  // Subquery: the tokenizer hands us one opaque `subquery` token that
+  // already contains the inner SELECT text — much simpler than walking
+  // the token stream for a matching `)`.
+  if (stream.peek().kind === 'subquery') {
+    const subTok = stream.next();
+    if (subTok.kind !== 'subquery') throw new Error('unreachable');
+    const sub = parse(subTok.value);
+    if (sub.kind !== 'select') {
+      throw new Error(`Subquery for "${field} IN (...)" must be a SELECT, got ${sub.kind}`);
+    }
+    return { type: 'in', field, negated, values: sub };
   }
+
+  stream.consume('lparen');
   const values: FieldValue[] = [];
   while (true) {
     const tok = stream.next();
@@ -662,42 +810,6 @@ function parseIn(stream: TokenStream, field: string, negated: boolean): InExpres
     throw new Error(`Empty IN list for "${field}"`);
   }
   return { type: 'in', field, negated, values };
-}
-
-/**
- * Slice the subquery source between the already-consumed `(` and its
- * matching `)`, recursively parse it as a SELECT, and emit an
- * InExpression whose `values` is the ParsedSelect.
- */
-function parseInSubquery(stream: TokenStream, field: string, negated: boolean): InExpression {
-  // `(` was already consumed; the first character inside the subquery
-  // is the start offset of the next token.
-  const innerStart = stream.peek().start;
-  let depth = 1;
-  let innerEnd = -1;
-  while (true) {
-    const tok = stream.next();
-    if (tok.kind === 'eof') {
-      throw new Error(`Unterminated subquery for "${field} IN (...)"`);
-    }
-    if (tok.kind === 'lparen') {
-      depth++;
-      continue;
-    }
-    if (tok.kind === 'rparen') {
-      depth--;
-      if (depth === 0) {
-        innerEnd = tok.start;
-        break;
-      }
-    }
-  }
-  const subSrc = stream.source.slice(innerStart, innerEnd).trim();
-  const sub = parse(subSrc);
-  if (sub.kind !== 'select') {
-    throw new Error(`Subquery for "${field} IN (...)" must be a SELECT, got ${sub.kind}`);
-  }
-  return { type: 'in', field, negated, values: sub };
 }
 
 function parseBetween(stream: TokenStream, field: string, negated: boolean): BetweenExpression {

@@ -47,11 +47,15 @@ export function parseValue(raw: string): FieldValue {
 /**
  * Three-way comparator used both by ORDER BY and by `>`/`<`/`>=`/`<=`.
  *
- * Numbers compare numerically, strings via `localeCompare`, booleans by
- * 0/1. Mixed types fall back to a stringified comparison so the engine
- * never silently returns 0 for unrelated values. Complex objects throw —
- * indexable fields are always scalar so this should never trigger in
- * a healthy query.
+ * Strings compare by Unicode code point (`<` / `>`) rather than
+ * `localeCompare` so results are **deterministic** across operating
+ * systems, ICU versions, and runtime locales — a query run in a Dutch
+ * locale produces the same row order as one run in en_US.
+ *
+ * Numbers compare numerically, booleans by 0/1. Mixed types fall back
+ * to a stringified compare so the engine never silently returns 0 for
+ * unrelated values. Complex objects throw — indexable fields are always
+ * scalar so this should never trigger in a healthy query.
  */
 export function compareValues(a: unknown, b: unknown): number {
   if (a === null && b === null) return 0;
@@ -60,7 +64,7 @@ export function compareValues(a: unknown, b: unknown): number {
   if (b === null || b === undefined) return 1;
 
   if (typeof a === 'number' && typeof b === 'number') return a - b;
-  if (typeof a === 'string' && typeof b === 'string') return a.localeCompare(b);
+  if (typeof a === 'string' && typeof b === 'string') return compareStringsByCodePoint(a, b);
   if (typeof a === 'boolean' && typeof b === 'boolean') return (a ? 1 : 0) - (b ? 1 : 0);
 
   if ((typeof a === 'object' && a !== null) || (typeof b === 'object' && b !== null)) {
@@ -78,7 +82,29 @@ export function compareValues(a: unknown, b: unknown): number {
     }
     return String(v);
   };
-  return toComparableString(a).localeCompare(toComparableString(b));
+  return compareStringsByCodePoint(toComparableString(a), toComparableString(b));
+}
+
+/**
+ * Deterministic string comparison: -1 / 0 / 1 based on code-point order.
+ *
+ * Avoids `String.prototype.localeCompare` (locale-dependent, slow) and
+ * `<` / `>` (which work on code units, not code points, so surrogate
+ * pairs sort wrong). For ASCII this is identical to `<` / `>`.
+ */
+function compareStringsByCodePoint(a: string, b: string): number {
+  const ai = a[Symbol.iterator]();
+  const bi = b[Symbol.iterator]();
+  while (true) {
+    const an = ai.next();
+    const bn = bi.next();
+    if (an.done && bn.done) return 0;
+    if (an.done) return -1;
+    if (bn.done) return 1;
+    const ac = an.value.codePointAt(0)!;
+    const bc = bn.value.codePointAt(0)!;
+    if (ac !== bc) return ac - bc;
+  }
 }
 
 function evaluateComparison(doc: Record<string, unknown>, expr: ComparisonExpression): boolean {

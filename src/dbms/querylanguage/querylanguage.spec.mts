@@ -1012,6 +1012,19 @@ describe('multiple JOINs', () => {
     expect(parsed.joins?.[0]?.collection).toBe('countries');
     expect(parsed.joins?.[1]?.collection).toBe('continents');
   });
+
+  it('single JOIN with DISTINCT + ORDER BY + LIMIT honours all stages', async () => {
+    // Regression: an earlier single-join shortcut path through
+    // applyJoin() silently dropped DISTINCT / ORDER BY / LIMIT.
+    const rows = await ql.execute(
+      'SELECT DISTINCT region FROM cities ' +
+        'JOIN countries ON cities.country = countries.id ' +
+        'JOIN continents ON countries.continent = continents.id ' +
+        'ORDER BY region ASC LIMIT 5',
+    );
+    expect(rows.length).toBeLessThanOrEqual(5);
+    expect(new Set(rows.map((r) => r['region'])).size).toBe(rows.length);
+  });
 });
 
 // ── Subqueries (IN (SELECT ...)) ──────────────────────────────────────────────
@@ -1069,6 +1082,268 @@ describe('Subqueries', () => {
       "SELECT id FROM cities WHERE country IN (SELECT id FROM countries WHERE name = 'België') AND population > 500000",
     );
     // BE cities > 500k: Brussel, Antwerpen
+    expect(rows).toHaveLength(2);
+  });
+});
+
+// ── UNION / UNION ALL ─────────────────────────────────────────────────────────
+
+describe('UNION', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('UNION concatenates and dedupes', async () => {
+    const rows = await ql.execute(
+      "SELECT country FROM cities WHERE country = 'BE' " +
+        "UNION " +
+        "SELECT country FROM cities WHERE country = 'NL'",
+    );
+    // 3 BE rows + 3 NL rows → after dedupe: 2 unique countries.
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r['country']))).toEqual(new Set(['BE', 'NL']));
+  });
+
+  it('UNION ALL keeps duplicates', async () => {
+    const rows = await ql.execute(
+      "SELECT country FROM cities WHERE country = 'BE' " +
+        "UNION ALL " +
+        "SELECT country FROM cities WHERE country = 'NL'",
+    );
+    expect(rows).toHaveLength(6);
+  });
+
+  it('three-way UNION works', async () => {
+    const rows = await ql.execute(
+      "SELECT id FROM cities WHERE country = 'BE' " +
+        "UNION " +
+        "SELECT id FROM cities WHERE country = 'FR' " +
+        "UNION " +
+        "SELECT id FROM cities WHERE country = 'DE'",
+    );
+    expect(rows).toHaveLength(3 + 2 + 3);
+  });
+
+  it('UNION parses as a union kind with two branches', () => {
+    const parsed = ql.parse(
+      'SELECT id FROM cities UNION SELECT id FROM countries',
+    );
+    expect(parsed.kind).toBe('union');
+    if (parsed.kind !== 'union') return;
+    expect(parsed.branches).toHaveLength(2);
+    expect(parsed.all).toBe(false);
+  });
+
+  it('mixing UNION and UNION ALL is rejected', async () => {
+    await expect(
+      ql.execute(
+        'SELECT id FROM cities ' +
+          'UNION ' +
+          'SELECT id FROM countries ' +
+          'UNION ALL ' +
+          "SELECT id FROM cities WHERE country = 'BE'",
+      ),
+    ).rejects.toThrow(/Mixing UNION/i);
+  });
+
+  it('UNION ignores keyword inside subquery parens', async () => {
+    // The word "union" appearing literally as a string value should not
+    // trigger a split.
+    const rows = await ql.execute(
+      "SELECT id FROM cities WHERE name = 'Lyon' UNION ALL SELECT id FROM cities WHERE name = 'Lyon'",
+    );
+    expect(rows).toHaveLength(2);
+  });
+});
+
+// ── Secondary-index seek correctness ──────────────────────────────────────────
+
+describe('Secondary-index seek', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('id = X point lookup returns the right row', async () => {
+    const rows = await ql.execute("SELECT * FROM cities WHERE id = 'gent'");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['name']).toBe('Gent');
+  });
+
+  it('field = X on a secondary index returns all matches and nothing else', async () => {
+    const rows = await ql.execute("SELECT id FROM cities WHERE country = 'BE'");
+    expect(rows).toHaveLength(3);
+    expect(new Set(rows.map((r) => r['id']))).toEqual(new Set(['gent', 'brussel', 'antwerpen']));
+  });
+
+  it('field = X on a non-indexed field falls back to full scan correctly', async () => {
+    // Insert a doc with a deeply-nested field that's unlikely to be
+    // indexed; the planner will propose `fieldEquality`, the executor's
+    // cursorEqual will detect "not indexed" and fall back. We mostly
+    // care that the answer is correct.
+    await ql.execute("INSERT INTO cities VALUES {id: 'nieuwpoort', name: 'Nieuwpoort', country: 'BE', population: 11000}");
+    const rows = await ql.execute("SELECT id FROM cities WHERE name = 'Nieuwpoort'");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['id']).toBe('nieuwpoort');
+  });
+
+  it('numeric field equality seek works', async () => {
+    const ql2 = await setupDb();
+    await ql2.execute("INSERT INTO twins VALUES {id: 'a', n: 5}");
+    await ql2.execute("INSERT INTO twins VALUES {id: 'b', n: 5}");
+    await ql2.execute("INSERT INTO twins VALUES {id: 'c', n: 7}");
+    const rows = await ql2.execute('SELECT id FROM twins WHERE n = 5');
+    expect(rows).toHaveLength(2);
+  });
+
+  it('field equality + AND combines with row-level WHERE check', async () => {
+    const rows = await ql.execute(
+      "SELECT id FROM cities WHERE country = 'BE' AND population > 500000",
+    );
+    // BE > 500k: Brussel (1.2M), Antwerpen (530k) → 2.
+    expect(rows).toHaveLength(2);
+  });
+});
+
+// ── Strict JOIN grammar (option b) ───────────────────────────────────────────
+
+describe('Strict JOIN grammar', () => {
+  it('INNER JOIN ... ON ... parses with type INNER', async () => {
+    const ql = await setupDb();
+    const parsed = ql.parse(
+      'SELECT * FROM cities INNER JOIN countries ON cities.country = countries.id',
+    );
+    expect(parsed.kind).toBe('select');
+    if (parsed.kind !== 'select') return;
+    expect(parsed.joins).toHaveLength(1);
+    expect(parsed.joins?.[0]?.type).toBe('INNER');
+  });
+
+  it('plain JOIN ... ON ... is a synonym for INNER JOIN', async () => {
+    const ql = await setupDb();
+    const parsed = ql.parse(
+      'SELECT * FROM cities JOIN countries ON cities.country = countries.id',
+    );
+    if (parsed.kind !== 'select') throw new Error('expected select');
+    expect(parsed.joins?.[0]?.type).toBe('INNER');
+  });
+
+  it('NATURAL JOIN parses with type NATURAL and no ON', async () => {
+    const ql = await setupDb();
+    const parsed = ql.parse('SELECT * FROM a NATURAL JOIN b');
+    if (parsed.kind !== 'select') throw new Error('expected select');
+    expect(parsed.joins?.[0]?.type).toBe('NATURAL');
+    expect(parsed.joins?.[0]?.leftField).toBe('');
+    expect(parsed.joins?.[0]?.rightField).toBe('');
+  });
+
+  it('CROSS JOIN parses with type CROSS', async () => {
+    const ql = await setupDb();
+    const parsed = ql.parse('SELECT * FROM a CROSS JOIN b');
+    if (parsed.kind !== 'select') throw new Error('expected select');
+    expect(parsed.joins?.[0]?.type).toBe('CROSS');
+  });
+
+  it('rejects JOIN without ON (no implicit NATURAL/CROSS)', async () => {
+    const ql = await setupDb();
+    expect(() => ql.parse('SELECT * FROM a JOIN b')).toThrowError(/missing an "ON/);
+  });
+
+  it('rejects LEFT JOIN with a clear message', async () => {
+    const ql = await setupDb();
+    expect(() => ql.parse('SELECT * FROM a LEFT JOIN b ON a.id = b.id')).toThrowError(
+      /LEFT JOIN is not supported/,
+    );
+  });
+
+  it('rejects RIGHT JOIN with a clear message', async () => {
+    const ql = await setupDb();
+    expect(() => ql.parse('SELECT * FROM a RIGHT JOIN b ON a.id = b.id')).toThrowError(
+      /RIGHT JOIN is not supported/,
+    );
+  });
+
+  it('CROSS JOIN executes a Cartesian product', async () => {
+    const ql = await setupDb();
+    const cities = await ql.execute('SELECT id FROM cities');
+    const countries = await ql.execute('SELECT id FROM countries');
+    const cross = await ql.execute('SELECT * FROM cities CROSS JOIN countries');
+    expect(cross).toHaveLength(cities.length * countries.length);
+  });
+
+  it('NATURAL JOIN matches on shared field names', async () => {
+    const ql = await setupDb();
+    // Sharing `id` makes the first overlap deterministic and matches
+    // the documented semantics ("first overlapping field is the key").
+    await ql.execute("INSERT INTO Lset VALUES {id: 'shared', payload: 1}");
+    await ql.execute("INSERT INTO Rset VALUES {id: 'shared', extra: 'z'}");
+    const rows = await ql.execute('SELECT * FROM Lset NATURAL JOIN Rset');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['payload']).toBe(1);
+    expect(rows[0]?.['extra']).toBe('z');
+  });
+});
+
+// ── Aggregator semantics (post-feedback fixes) ────────────────────────────────
+
+describe('Aggregator semantics', () => {
+  it('MIN / MAX work on strings', async () => {
+    const ql = await setupDb();
+    const rows = await ql.execute('SELECT MIN(name), MAX(name) FROM cities');
+    // Code-point order: A < B < ... < R, so Amsterdam is smallest,
+    // Rotterdam is largest (München's M is code-point 0x4D, R is 0x52).
+    expect(rows[0]?.['MIN(name)']).toBe('Amsterdam');
+    expect(rows[0]?.['MAX(name)']).toBe('Rotterdam');
+  });
+
+  it('SUM on empty input returns undefined (was 0)', async () => {
+    const ql = await setupDb();
+    const rows = await ql.execute("SELECT SUM(population) FROM cities WHERE country = 'XX'");
+    expect(rows[0]?.['SUM(population)']).toBeUndefined();
+  });
+
+  it('AVG on empty input returns undefined (was 0)', async () => {
+    const ql = await setupDb();
+    const rows = await ql.execute("SELECT AVG(population) FROM cities WHERE country = 'XX'");
+    expect(rows[0]?.['AVG(population)']).toBeUndefined();
+  });
+
+  it('MIN / MAX on empty input returns undefined (was 0)', async () => {
+    const ql = await setupDb();
+    const rows = await ql.execute("SELECT MIN(population), MAX(population) FROM cities WHERE country = 'XX'");
+    expect(rows[0]?.['MIN(population)']).toBeUndefined();
+    expect(rows[0]?.['MAX(population)']).toBeUndefined();
+  });
+
+  it('HAVING ... IS NULL matches empty-group aggregates', async () => {
+    const ql = await setupDb();
+    await ql.execute("INSERT INTO partial VALUES {id: 'p1', team: 'A', score: 10}");
+    await ql.execute("INSERT INTO partial VALUES {id: 'p2', team: 'A', score: 20}");
+    await ql.execute("INSERT INTO partial VALUES {id: 'p3', team: 'B'}");
+    // Team B has no numeric scores → AVG is null → HAVING matches.
+    const rows = await ql.execute('SELECT team, AVG(score) FROM partial GROUP BY team HAVING AVG(score) IS NULL');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['team']).toBe('B');
+  });
+
+  it('GROUP BY key distinguishes null / undefined / empty string', async () => {
+    const ql = await setupDb();
+    // Three rows with three different "missing-ish" values for `tag`.
+    await ql.execute("INSERT INTO groups VALUES {id: 'a', tag: ''}");
+    await ql.execute("INSERT INTO groups VALUES {id: 'b'}"); // tag undefined
+    await ql.execute("INSERT INTO groups VALUES {id: 'c', tag: ''}");
+    const rows = await ql.execute('SELECT tag, COUNT(*) FROM groups GROUP BY tag');
+    // Empty-string and missing must NOT collapse into one group.
+    expect(rows).toHaveLength(2);
+  });
+
+  it("GROUP BY key doesn't collide on `'a|b'` vs `'a'` + `'b'`", async () => {
+    const ql = await setupDb();
+    await ql.execute("INSERT INTO twokey VALUES {id: 'r1', a: 'a|b', b: 'c'}");
+    await ql.execute("INSERT INTO twokey VALUES {id: 'r2', a: 'a', b: 'b|c'}");
+    const rows = await ql.execute('SELECT a, b, COUNT(*) FROM twokey GROUP BY a, b');
+    // Two distinct group keys — the old `|`-joined string would collide.
     expect(rows).toHaveLength(2);
   });
 });

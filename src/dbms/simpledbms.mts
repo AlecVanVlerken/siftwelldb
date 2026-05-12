@@ -360,6 +360,84 @@ export class SimpleDbms {
   }
 
   /**
+   * Seek the secondary index on `field` to `value` and yield matching
+   * documents — stopping as soon as the cursor crosses past entries
+   * whose `field` differs.
+   *
+   * This is the index-aware version of a `WHERE field = X` scan:
+   *
+   *   - Field **is** indexed → B+ tree seek to the matching leaf,
+   *     yield each doc, stop when the field value changes. Best case
+   *     O(log N + matches).
+   *   - Field is **not** indexed → falls back to a full scan over the
+   *     `id` index. Caller doesn't need to discriminate.
+   *
+   * The fallback path makes this method safe to call from a planner
+   * that doesn't know which fields carry an index.
+   */
+  cursorEqual(collection: string, field: string, value: string | number | boolean): AsyncIterable<string> {
+    const dbmsback = this.dbmsback;
+    const indexed = (() => {
+      try {
+        return dbmsback.describeCollection(collection).some((f) => f.name === field);
+      } catch {
+        return false;
+      }
+    })();
+
+    if (!indexed || field === 'id') {
+      // For `id` equality the existing single-key cursor is already a
+      // direct seek; we keep the same wrapper so callers can treat
+      // both paths identically (they both stop after one doc here).
+      const startValue = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+      const inner = this.dbmsback.cursor(collection, 'id', startValue);
+      return {
+        async *[Symbol.asyncIterator]() {
+          const cursor = await inner;
+          for await (const document of cursor) {
+            const json = documentToJSON(document);
+            try {
+              const parsed = JSON.parse(json) as Record<string, unknown>;
+              if (parsed[field] === value) yield json;
+              else if (field === 'id') return;
+            } catch {
+              yield json;
+            }
+          }
+        },
+      };
+    }
+
+    // Indexed field: prefix-seek the secondary tree, stop on first
+    // mismatching value. `cursor()` accepts the bare value as a prefix
+    // for composite keys (see toBuffer in dbmsback.mts).
+    const startValue = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+    const backendCursorPromise = this.dbmsback.cursor(collection, field, startValue);
+    return {
+      async *[Symbol.asyncIterator]() {
+        const cursor = await backendCursorPromise;
+        for await (const document of cursor) {
+          const json = documentToJSON(document);
+          try {
+            const parsed = JSON.parse(json) as Record<string, unknown>;
+            if (parsed[field] === value) {
+              yield json;
+            } else {
+              // First key past the matching prefix — done.
+              return;
+            }
+          } catch {
+            // Best effort: if a doc can't be parsed, yield it and let
+            // the caller decide. Stops the seek there.
+            yield json;
+            return;
+          }
+        }
+      },
+    };
+  }
+
+  /**
    * Commits all changes to the database.
    * @returns A Promise that resolves when the commit is complete.
    */

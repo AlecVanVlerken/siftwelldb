@@ -14,7 +14,7 @@ import type {
 } from './ast.mjs';
 import { compareValues, evaluateWhere } from './expressions.mjs';
 import { executeGroupBy } from './aggregator.mjs';
-import { applyJoin, executeJoinChain, loadCollection } from './join.mjs';
+import { executeJoinChain, loadCollection } from './join.mjs';
 import { project } from './projection.mjs';
 import { planCursor } from './planner.mjs';
 import { parse } from './parser.mjs';
@@ -103,16 +103,12 @@ export async function executeWithPreloadedRows(
   parsed: ParsedSelect,
 ): Promise<QueryResultRow[]> {
   if (parsed.joins && parsed.joins.length > 0) {
-    if (parsed.joins.length === 1) {
-      // Single-join, single-shot: keep using the bundled
-      // merge+filter+project helper.
-      const rightDocs = await loadCollection(dbms, parsed.joins[0].collection);
-      return applyJoin(preloadedRows as Record<string, FieldValue>[], rightDocs, parsed);
-    }
-    // Chained joins: fold every join's right side into the running
-    // result, then re-enter the standard in-memory pipeline so WHERE,
-    // GROUP BY, projection, DISTINCT, ORDER BY, LIMIT, and OFFSET all
-    // apply uniformly.
+    // Single or chained joins go through the same path: fold every
+    // right side into the running result, then run the in-memory
+    // pipeline (WHERE → GROUP BY → project → DISTINCT → ORDER BY →
+    // OFFSET/LIMIT). A previous single-join shortcut silently dropped
+    // DISTINCT / ORDER BY / LIMIT / OFFSET — fixed by unifying the
+    // code path.
     const merged = await executeJoinChain(dbms, parsed, preloadedRows as Record<string, FieldValue>[]);
     return executeOnRows(merged as QueryResultRow[], parsed);
   }
@@ -194,6 +190,15 @@ async function materializeAllSubqueries(dbms: SimpleDbms, parsed: ParsedSelect |
 }
 
 export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Promise<QueryResultRow[]> {
+  if (parsed.kind === 'union') {
+    const merged: QueryResultRow[] = [];
+    for (const branch of parsed.branches) {
+      const rows = await executeParsed(dbms, branch);
+      for (const row of rows) merged.push(row);
+    }
+    return parsed.all ? merged : dedupeRows(merged);
+  }
+
   if (parsed.kind === 'insert') {
     await dbms.insertDocument(parsed.collection, parsed.body);
     // Mutating ops return one `{id}` row per affected document so that
@@ -255,7 +260,7 @@ export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Prom
   }
 
   const plan = planCursor(parsed.where);
-  const cursor = dbms.cursor(parsed.collection, plan.iterableKey, plan.startValue);
+  const cursor = openPlannedCursor(dbms, parsed.collection, plan);
 
   const collected: QueryResultRow[] = [];
   for await (const jsonDoc of cursor) {
@@ -266,6 +271,29 @@ export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Prom
   }
 
   return finalize(collected, parsed);
+}
+
+/**
+ * Open the cursor described by a {@link CursorPlan}. The planner picks
+ * the shape; here is where it lands on the actual back-end call.
+ */
+function openPlannedCursor(
+  dbms: SimpleDbms,
+  collection: string,
+  plan: ReturnType<typeof planCursor>,
+): AsyncIterable<string> {
+  switch (plan.kind) {
+    case 'fullScan':
+      return dbms.cursor(collection, 'id', undefined);
+    case 'idEquality':
+      // The B+ tree iterate-from-key keeps yielding past the matching
+      // row — we still rely on the WHERE filter to discard everything
+      // after the first hit. (Could be tightened with cursorEqual on
+      // `id` if it becomes a hot path.)
+      return dbms.cursor(collection, 'id', plan.value);
+    case 'fieldEquality':
+      return dbms.cursorEqual(collection, plan.field, plan.value);
+  }
 }
 
 /**

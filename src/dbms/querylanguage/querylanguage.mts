@@ -7,9 +7,9 @@
 //   parser.mts       — `parse()` and the WHERE/HAVING expression parser
 //   expressions.mts  — value parsing, WHERE evaluation, `LIKE`
 //   aggregator.mts   — GROUP BY + aggregate compute
-//   join.mts         — INNER / NATURAL / FULL join paths
+//   join.mts         — INNER / NATURAL / CROSS join paths
 //   projection.mts   — SELECT-list projection (with AS aliases)
-//   planner.mts      — narrow `id = X` cursor specialisation
+//   planner.mts      — field-equality + id-equality cursor specialisation
 //   executor.mts     — pipelines that tie everything together
 //
 // This file is intentionally thin: it owns the class shape and the public
@@ -18,21 +18,30 @@
 //
 // Extended SQL-like surface:
 //   SELECT [DISTINCT] <fields|*> FROM <collection>
-//     [JOIN <collection> ON <left> = <right>]
+//     [<join-clause> ...]                 -- zero or more, chain by repeating
 //     [WHERE <conditions>]
 //     [GROUP BY <fields>]
 //     [HAVING <aggregate conditions>]
 //     [ORDER BY <field> [ASC|DESC], ...]
 //     [LIMIT n]
 //     [OFFSET k]
+//   <select> UNION [ALL] <select>         -- concatenate result sets
 //   INSERT INTO <collection> VALUES {id: '...', field: ...}
 //   UPDATE <collection> SET f1 = v1 [, f2 = v2, ...] [WHERE <conditions>]
 //   DELETE FROM <collection> [WHERE <conditions>]
+//
+// <join-clause> ::=
+//     [INNER] JOIN <collection> ON <left> = <right>
+//   | NATURAL JOIN <collection>
+//   | CROSS JOIN <collection>
+//   (LEFT / RIGHT / FULL OUTER joins are intentionally not supported.
+//    A bare `JOIN x` with no ON is a syntax error.)
 //
 // WHERE/HAVING:
 //   - Comparisons:  =, !=, >, >=, <, <=, LIKE, NOT LIKE
 //   - Null check:   field IS NULL, field IS NOT NULL
 //   - Set test:     field IN (v1, v2, ...), field NOT IN (v1, ...)
+//   - Subquery:     field IN (SELECT ... FROM ...)
 //   - Range test:   field BETWEEN low AND high, field NOT BETWEEN low AND high
 //   - Negation:     NOT (expr)
 //   - Logical:      AND, OR
@@ -40,6 +49,8 @@
 //
 // GROUP BY aggregates: COUNT(*), COUNT(field), SUM, AVG, MIN, MAX —
 //   each may take `DISTINCT field` to dedupe before aggregating.
+//   SUM / AVG / MIN / MAX return `null` (rendered as undefined column)
+//   when the input set has no values, matching standard SQL.
 // SELECT aliases:      `expr AS alias`  (also recognised in ORDER BY / HAVING)
 
 import { SimpleDbms } from '../simpledbms.mjs';
@@ -54,6 +65,7 @@ export type {
   ParsedInsert,
   ParsedUpdate,
   ParsedDelete,
+  ParsedUnion,
   UpdateAssignment,
 } from './ast.mjs';
 export type {
