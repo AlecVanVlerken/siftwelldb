@@ -1425,8 +1425,8 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
   describe('delete removes document from semantic index', () => {
     it('deleted document does not appear in search results', async () => {
       /**
-       * Deleting a document must remove it from the HNSW graph (soft-delete +
-       * graph re-wiring).  Subsequent semanticSearch calls must not return it.
+       * Deleting a document must remove it from the HNSW graph so subsequent
+       * semanticSearch calls do not return it.
        */
       await db.insertDocument('news', JSON.stringify({ id: 'n1', headline: 'Big news today' }));
       await db.insertDocument('news', JSON.stringify({ id: 'n2', headline: 'Small local news' }));

@@ -592,7 +592,8 @@ export class DbmsBack {
       await this.hnswIndexCache.get(collection)!.delete(documentPointer);
     }
 
-    // Free the record blocks from the record store
+    // Free the record blocks from the record store. HNSW deletion rebuilds its
+    // graph without the old document pointer before the pointer can be reused.
     await this.recordStore.deleteRecord(documentPointer);
 
     // Note: metaWriteJSON is called in commit() to batch writes

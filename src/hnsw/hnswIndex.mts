@@ -83,9 +83,9 @@ export class HNSWIndex {
   private readonly efSearch: number;
 
   /**
-   * In-memory reverse index: docId → NodeId.
-   * Rebuilt from disk on `open()` by scanning graph storage.
-   * Updated incrementally by `insert()` and `delete()`.
+   * In-memory reverse index for live nodes: docId -> NodeId.
+   * Rebuilt from disk on open() by scanning graph storage.
+   * Updated incrementally by insert(), delete(), and relocation helpers.
    */
   private readonly docIdIndex = new Map<number, NodeId>();
 
@@ -387,7 +387,7 @@ export class HNSWIndex {
   /**
    * Build the `NodeId[][]` neighbor list for `docId` at all layers up to
    * `level`, reading the current neighbor doc_ids from Rust and converting
-   * them to FBF NodeIds via `docIdIndex`.
+   * them to FBF NodeIds via the persisted docId → NodeId map.
    */
   private buildNeighborList(docId: number, level: number): NodeId[][] {
     // ONE FFI call: [nodeLevel, count0, nb0..., count1, nb1..., ...]
@@ -616,7 +616,7 @@ export class HNSWIndex {
     const allNodes: HNSWNode[] = [];
     const nodeIdToDocId = new Map<NodeId, number>();
 
-    // Pass 1: import node data into Rust.
+    // Pass 1: import live node data into Rust.
     for await (const node of this.graphStorage.scanNodes()) {
       if (node.deleted) continue;
       const vector = await this.vectorHeap.get(node.vectorPtr);
