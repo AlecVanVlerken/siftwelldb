@@ -2,12 +2,10 @@
 
 import type { LLMProvider, ChatMessage } from './llmProvider.mjs';
 import type { SemanticModel } from './semanticModel.mjs';
-import { getDerivedFields } from './semanticModel.mjs';
 import type { QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
 import { QueryLanguage } from '../dbms/querylanguage/querylanguage.mjs';
 import { QueryGenerator } from './queryGenerator.mjs';
 import { SimpleDbms } from '../dbms/simpledbms.mjs';
-import type { FieldValue } from '../dbms/document.mjs';
 
 export type ChartSpec = {
   type: 'bar' | 'line' | 'pie' | 'doughnut' | 'none';
@@ -48,30 +46,6 @@ export type ConversationalEngineConfig = {
 
 const MAX_HISTORY = 20;
 
-// ── Local mirror types for the (unexported) QL internal AST ──────────────────
-// These structurally match the private ParsedSelect / WhereExpression types in
-// querylanguage.mts. The cast `parsed as unknown as LSelect` is safe at runtime.
-
-type LWhereExpr =
-  | { type: 'comparison'; field: string; operator: string; value: FieldValue }
-  | { type: 'logical'; operator: string; left: LWhereExpr; right: LWhereExpr };
-
-type LAgg = { func: string; field: string; alias: string };
-type LGroupBy = { fields: string[]; aggregates: LAgg[] };
-type LOrderBy = { field: string; direction: 'ASC' | 'DESC' };
-
-type LSelect = {
-  kind: 'select';
-  fields: '*' | string[];
-  collection: string;
-  where?: LWhereExpr;
-  groupBy?: LGroupBy;
-  having?: LWhereExpr;
-  orderBy?: LOrderBy[];
-  limit?: number;
-  offset?: number;
-};
-
 /**
  * Top-level orchestrator with conversation memory.
  *
@@ -84,14 +58,12 @@ export class ConversationalEngine {
   private queryLanguage: QueryLanguage;
   private queryGenerator: QueryGenerator;
   private llmProvider: LLMProvider;
-  private semanticModel: SemanticModel;
   private history: ChatMessage[] = [];
 
   constructor(config: ConversationalEngineConfig) {
     this.queryLanguage = new QueryLanguage(config.dbms);
     this.queryGenerator = new QueryGenerator(config.llmProvider, config.semanticModel, this.queryLanguage);
     this.llmProvider = config.llmProvider;
-    this.semanticModel = config.semanticModel;
   }
 
   /**
@@ -125,16 +97,9 @@ export class ConversationalEngine {
       return { question, query, data: [], summary: '', chart: null, error: errMsg };
     }
 
-    // ── Step 3: execute (with derived-field support if needed) ───────────
+    // ── Step 3: execute ──────────────────────────────────────────────────
     try {
-      const sel = generated.parsed as unknown as LSelect;
-      const derivedFields = getDerivedFields(this.semanticModel, sel.collection);
-
-      if (derivedFields.size > 0 && this.queryReferencesDerived(query, derivedFields)) {
-        data = await this.executeWithDerived(sel, derivedFields);
-      } else {
-        data = await this.queryLanguage.execute(query);
-      }
+      data = await this.queryLanguage.execute(query);
     } catch (err) {
       const errMsg = `Query execution failed: ${err instanceof Error ? err.message : String(err)}`;
       this.pushHistory(history, question, errMsg);
@@ -185,60 +150,6 @@ export class ConversationalEngine {
     while (history.length > MAX_HISTORY) history.shift();
     if (history === this.history) return;
     this.history = [...history];
-  }
-
-  // ── Derived field execution ───────────────────────────────────────────────
-
-  /** Returns true if the query string contains any derived field name as a word. */
-  private queryReferencesDerived(queryStr: string, derivedFields: Map<string, string>): boolean {
-    for (const name of derivedFields.keys()) {
-      if (new RegExp(`\\b${name}\\b`, 'i').test(queryStr)) return true;
-    }
-    return false;
-  }
-
-  /**
-   * Executes a SELECT query that references derived (computed) fields.
-   *
-   * Because the QL executor works on raw document fields, derived fields
-   * can't be passed through it directly. Instead we:
-   *   1. Fetch all base rows from the collection
-   *   2. Compute derived field values for each row using JavaScript
-   *   3. Apply WHERE / GROUP BY / SELECT / ORDER BY / LIMIT in JavaScript
-   */
-  private async executeWithDerived(parsed: LSelect, derivedFields: Map<string, string>): Promise<QueryResultRow[]> {
-    // 1. Fetch all raw rows
-    const rawRows = await this.queryLanguage.execute(`SELECT * FROM ${parsed.collection}`);
-
-    // 2. Enrich with derived field values
-    const rows = rawRows.map((row) => {
-      const enriched: QueryResultRow = { ...row };
-      for (const [name, expr] of derivedFields) {
-        enriched[name] = evalDerivedExpr(expr, row as Record<string, FieldValue>);
-      }
-      return enriched;
-    });
-
-    // 3. Apply WHERE
-    let results = parsed.where ? rows.filter((r) => evalWhere(r as Record<string, FieldValue>, parsed.where!)) : rows;
-
-    // 4. Apply GROUP BY + HAVING
-    if (parsed.groupBy) {
-      results = applyGroupBy(results, parsed.groupBy, parsed.having);
-    }
-
-    // 5. Apply SELECT projection
-    results = applyProjection(results, parsed.fields, parsed.groupBy);
-
-    // 6. Apply ORDER BY
-    if (parsed.orderBy && parsed.orderBy.length > 0) {
-      results = applyOrderBy(results, parsed.orderBy);
-    }
-
-    // 7. Apply LIMIT / OFFSET
-    const offset = parsed.offset ?? 0;
-    const limit = parsed.limit ?? Infinity;
-    return results.slice(offset, offset === 0 && limit === Infinity ? undefined : offset + limit);
   }
 
   // ── Insight generation ────────────────────────────────────────────────────
@@ -348,20 +259,25 @@ Chart guidelines:
       const interpretation = typeof parsed.interpretation === 'string' ? parsed.interpretation : undefined;
 
       let chart: ChartSpec = null;
-      if (parsed.chart && typeof parsed.chart === 'object' && parsed.chart.type && parsed.chart.type !== 'none') {
+      if (parsed.chart && typeof parsed.chart === 'object') {
         const c = parsed.chart as Record<string, unknown>;
         const validTypes = new Set(['bar', 'line', 'pie', 'doughnut']);
-        if (validTypes.has(c.type as string) && cols.includes(c.xColumn as string) && Array.isArray(c.yColumns)) {
-          const validY = (c.yColumns as string[]).filter((y: string) => cols.includes(y));
+        if (
+          validTypes.has(c['type'] as string) &&
+          c['type'] !== 'none' &&
+          cols.includes(c['xColumn'] as string) &&
+          Array.isArray(c['yColumns'])
+        ) {
+          const validY = (c['yColumns'] as string[]).filter((y: string) => cols.includes(y));
           if (validY.length > 0) {
             chart = {
-              type: c.type as NonNullable<ChartSpec>['type'],
-              title: (c.title as string) || '',
-              xColumn: c.xColumn as string,
+              type: c['type'] as NonNullable<ChartSpec>['type'],
+              title: (c['title'] as string) || '',
+              xColumn: c['xColumn'] as string,
               yColumns: validY,
             };
-            if (typeof c.seriesColumn === 'string' && cols.includes(c.seriesColumn)) {
-              chart.seriesColumn = c.seriesColumn;
+            if (typeof c['seriesColumn'] === 'string' && cols.includes(c['seriesColumn'])) {
+              chart.seriesColumn = c['seriesColumn'];
             }
           }
         }
@@ -374,9 +290,9 @@ Chart guidelines:
               (s): s is { type: string; text: string } =>
                 typeof s === 'object' &&
                 s !== null &&
-                typeof (s as Record<string, unknown>).type === 'string' &&
-                typeof (s as Record<string, unknown>).text === 'string' &&
-                validSuggestionTypes.has((s as Record<string, unknown>).type as string),
+                typeof (s as Record<string, unknown>)['type'] === 'string' &&
+                typeof (s as Record<string, unknown>)['text'] === 'string' &&
+                validSuggestionTypes.has((s as Record<string, unknown>)['type'] as string),
             )
             .map((s) => ({ type: s.type as Suggestion['type'], text: s.text }))
         : [];
@@ -391,104 +307,3 @@ Chart guidelines:
   }
 }
 
-// ── Derived field helpers (module-level, pure functions) ──────────────────────
-
-/**
- * Evaluates a JavaScript expression against a document row.
- * Expressions use the document's field names as variables
- * (e.g. "salary < 60000 ? 'Low' : salary < 90000 ? 'Mid' : 'High'").
- *
- * Expressions come from the server-side model JSON — not from user input.
- */
-function evalDerivedExpr(expr: string, row: Record<string, FieldValue>): FieldValue {
-  try {
-    const keys = Object.keys(row);
-    const vals = Object.values(row);
-    // eslint-disable-next-line no-new-func
-    const fn = new Function(...keys, `"use strict"; return (${expr});`) as (...args: FieldValue[]) => FieldValue;
-    return fn(...vals);
-  } catch {
-    return '';
-  }
-}
-
-function evalWhere(row: Record<string, FieldValue>, expr: LWhereExpr): boolean {
-  if (expr.type === 'logical') {
-    const l = evalWhere(row, expr.left);
-    const r = evalWhere(row, expr.right);
-    return expr.operator.toUpperCase() === 'AND' ? l && r : l || r;
-  }
-  const v = row[expr.field];
-  const t = expr.value;
-  switch (expr.operator) {
-    case '=': return v === t;
-    case '!=': return v !== t;
-    case '>': return typeof v === 'number' && typeof t === 'number' && v > t;
-    case '>=': return typeof v === 'number' && typeof t === 'number' && v >= t;
-    case '<': return typeof v === 'number' && typeof t === 'number' && v < t;
-    case '<=': return typeof v === 'number' && typeof t === 'number' && v <= t;
-    default: return false;
-  }
-}
-
-function applyGroupBy(rows: QueryResultRow[], groupBy: LGroupBy, having?: LWhereExpr): QueryResultRow[] {
-  const groups = new Map<string, QueryResultRow[]>();
-  for (const row of rows) {
-    const key = groupBy.fields.map((f) => String(row[f] ?? '')).join('\x00');
-    const bucket = groups.get(key) ?? [];
-    bucket.push(row);
-    groups.set(key, bucket);
-  }
-
-  const results: QueryResultRow[] = [];
-  for (const groupRows of groups.values()) {
-    const out: QueryResultRow = {};
-    for (const f of groupBy.fields) out[f] = groupRows[0][f];
-    for (const agg of groupBy.aggregates) out[agg.alias] = computeAgg(groupRows, agg);
-    if (having && !evalWhere(out as Record<string, FieldValue>, having)) continue;
-    results.push(out);
-  }
-  return results;
-}
-
-function computeAgg(rows: QueryResultRow[], agg: LAgg): number {
-  const nums = () => rows.map((r) => r[agg.field]).filter((v): v is number => typeof v === 'number');
-  switch (agg.func.toUpperCase()) {
-    case 'COUNT': return rows.length;
-    case 'SUM': return rows.reduce((s, r) => s + (typeof r[agg.field] === 'number' ? (r[agg.field] as number) : 0), 0);
-    case 'AVG': {
-      const n = nums(); return n.length > 0 ? n.reduce((a, b) => a + b, 0) / n.length : 0;
-    }
-    case 'MIN': { const n = nums(); return n.length > 0 ? Math.min(...n) : 0; }
-    case 'MAX': { const n = nums(); return n.length > 0 ? Math.max(...n) : 0; }
-    default: return 0;
-  }
-}
-
-function applyProjection(rows: QueryResultRow[], fields: '*' | string[], groupBy?: LGroupBy): QueryResultRow[] {
-  if (fields === '*') return rows;
-  const aggAliases = new Set<string>(groupBy?.aggregates.map((a) => a.alias) ?? []);
-  return rows.map((row) => {
-    const out: QueryResultRow = {};
-    for (const f of fields) {
-      if (f in row || aggAliases.has(f)) out[f] = row[f];
-    }
-    return out;
-  });
-}
-
-function applyOrderBy(rows: QueryResultRow[], orderBy: LOrderBy[]): QueryResultRow[] {
-  return [...rows].sort((a, b) => {
-    for (const { field, direction } of orderBy) {
-      const av = a[field], bv = b[field];
-      let cmp = 0;
-      if (av === undefined && bv === undefined) cmp = 0;
-      else if (av === undefined) cmp = 1;
-      else if (bv === undefined) cmp = -1;
-      else if (typeof av === 'number' && typeof bv === 'number') cmp = av - bv;
-      else cmp = String(av) < String(bv) ? -1 : String(av) > String(bv) ? 1 : 0;
-      if (cmp !== 0) return direction === 'DESC' ? -cmp : cmp;
-    }
-    return 0;
-  });
-}

@@ -53,7 +53,7 @@ function seededRandom(seed: number): () => number {
 
 export function generateEmployees(count = 200): Employee[] {
   const rand = seededRandom(42);
-  const pick = <T>(arr: T[]): T => arr[Math.floor(rand() * arr.length)];
+  const pick = <T,>(arr: T[]): T => arr[Math.floor(rand() * arr.length)];
   const between = (lo: number, hi: number) => Math.round(lo + rand() * (hi - lo));
 
   const baseSalary: Record<string, number> = {

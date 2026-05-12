@@ -2,7 +2,13 @@
 // @date 2026-03-31
 
 import * as http from 'node:http';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseService } from './service.mjs';
+import type { ConversationalService } from './conversational-service.mjs';
+
+const ENV_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../.env');
 
 type JsonBody = Record<string, unknown>;
 
@@ -64,7 +70,10 @@ function sendError(res: http.ServerResponse, statusCode: number, message: string
  * @author Alexandre-Gatien Bienfet
  */
 export class ApiRouter {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly conv?: ConversationalService,
+  ) {}
 
   /**
    * Handle an incoming API request.
@@ -89,6 +98,39 @@ export class ApiRouter {
         return;
       }
 
+      // GET /api/status — always available, even when disconnected
+      if (method === 'GET' && pathname === '/api/status') {
+        sendJSON(res, 200, { connected: this.db.isConnected, filepath: this.db.filepath });
+        return;
+      }
+
+      // GET /api/settings — returns whether key is configured (never the key itself)
+      if (method === 'GET' && pathname === '/api/settings') {
+        sendJSON(res, 200, { geminiKeySet: this.conv?.llmAvailable ?? false });
+        return;
+      }
+
+      // POST /api/settings/gemini-key — saves key to .env and updates runtime
+      if (method === 'POST' && pathname === '/api/settings/gemini-key') {
+        const body = await parseBody(req);
+        const key = body['key'];
+        if (typeof key !== 'string' || !key.trim()) {
+          sendError(res, 400, 'Missing key');
+          return;
+        }
+        // Persist to .env (create or update GEMINI_API_KEY line)
+        let envContent = '';
+        try { envContent = await fs.readFile(ENV_PATH, 'utf-8'); } catch { /* file may not exist */ }
+        const lines = envContent.split('\n').filter(Boolean);
+        const idx = lines.findIndex((l) => l.trim().startsWith('GEMINI_API_KEY='));
+        if (idx >= 0) lines[idx] = `GEMINI_API_KEY=${key.trim()}`;
+        else lines.push(`GEMINI_API_KEY=${key.trim()}`);
+        await fs.writeFile(ENV_PATH, lines.join('\n') + '\n', 'utf-8');
+        if (this.conv) this.conv.setApiKey(key.trim());
+        sendJSON(res, 200, { message: 'Key saved' });
+        return;
+      }
+
       if (method === 'POST' && pathname === '/api/connect') {
         const body = await parseBody(req);
         const filepath = body['filepath'];
@@ -97,6 +139,7 @@ export class ApiRouter {
           return;
         }
         const message = await this.db.connect(filepath);
+        if (this.conv) await this.conv.onConnect(filepath, this.db.rawDbms);
         sendJSON(res, 200, { message, filepath });
         return;
       }
@@ -109,6 +152,7 @@ export class ApiRouter {
           return;
         }
         const message = await this.db.create(filepath);
+        if (this.conv) await this.conv.onConnect(filepath, this.db.rawDbms);
         sendJSON(res, 200, { message, filepath });
         return;
       }
@@ -119,6 +163,7 @@ export class ApiRouter {
           return;
         }
         await this.db.disconnect();
+        if (this.conv) this.conv.onDisconnect();
         sendJSON(res, 200, { message: 'Disconnected' });
         return;
       }
@@ -248,9 +293,33 @@ export class ApiRouter {
         return;
       }
 
+      // POST /api/query — execute a SQL-like statement (SELECT / INSERT / DELETE)
+      if (method === 'POST' && pathname === '/api/query') {
+        const body = await parseBody(req);
+        const sql = body['sql'];
+        if (typeof sql !== 'string' || !sql.trim()) {
+          sendError(res, 400, 'Missing "sql" in request body');
+          return;
+        }
+        try {
+          const result = await this.db.query(sql);
+          sendJSON(res, 200, {
+            rows: result.rows as unknown as Record<string, unknown>[],
+            rowCount: result.rowCount,
+            kind: result.kind,
+            elapsedMs: result.elapsedMs,
+          });
+        } catch (err) {
+          sendError(res, 400, err instanceof Error ? err.message : String(err));
+        }
+        return;
+      }
+
       // POST /api/debug/reset
       if (method === 'POST' && pathname === '/api/debug/reset') {
+        const fp = this.db.filepath;
         await this.db.reset();
+        if (this.conv && fp) await this.conv.onConnect(fp, this.db.rawDbms);
         sendJSON(res, 200, { message: 'Database reset' });
         return;
       }
@@ -433,6 +502,79 @@ export class ApiRouter {
         }
         await this.db.editDocument(collection, id, field, value);
         sendJSON(res, 200, { message: 'Document edited' });
+        return;
+      }
+
+      // ── Conversational routes ──────────────────────────────
+      // All under /api/conversational/
+
+      if (pathname.startsWith('/api/conversational/')) {
+        if (!this.conv) {
+          sendError(res, 503, 'Conversational features are not available');
+          return;
+        }
+
+        // GET /api/conversational/model
+        if (method === 'GET' && pathname === '/api/conversational/model') {
+          sendJSON(res, 200, {
+            model: this.conv.getModel(),
+            llmAvailable: this.conv.llmAvailable,
+          });
+          return;
+        }
+
+        // GET /api/conversational/model/collection/:name
+        const collModelMatch = pathname.match(/^\/api\/conversational\/model\/collection\/([^/]+)$/);
+        if (method === 'GET' && collModelMatch) {
+          const collection = decodeURIComponent(collModelMatch[1]);
+          sendJSON(res, 200, { hasModel: this.conv.hasExploreForCollection(collection) });
+          return;
+        }
+
+        // POST /api/conversational/model/generate
+        if (method === 'POST' && pathname === '/api/conversational/model/generate') {
+          if (!this.conv.llmAvailable) {
+            sendError(res, 400, 'GEMINI_API_KEY is not set — cannot generate model');
+            return;
+          }
+          const model = await this.conv.generateModel();
+          sendJSON(res, 200, { model });
+          return;
+        }
+
+        // PUT /api/conversational/model
+        if (method === 'PUT' && pathname === '/api/conversational/model') {
+          const body = await parseBody(req);
+          const json = body['model'];
+          if (typeof json !== 'string' || !json) {
+            sendError(res, 400, 'Missing "model" string in request body');
+            return;
+          }
+          const model = await this.conv.saveModel(json);
+          sendJSON(res, 200, { model });
+          return;
+        }
+
+        // POST /api/conversational/ask
+        if (method === 'POST' && pathname === '/api/conversational/ask') {
+          const body = await parseBody(req);
+          const question = body['question'];
+          if (typeof question !== 'string' || !question.trim()) {
+            sendError(res, 400, 'Missing "question" in request body');
+            return;
+          }
+          const history = Array.isArray(body['history'])
+            ? (body['history'] as { role: string; text: string }[]).map((m) => ({
+                role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
+                text: String(m.text),
+              }))
+            : [];
+          const response = await this.conv.ask(question, history);
+          sendJSON(res, 200, response as unknown as Record<string, unknown>);
+          return;
+        }
+
+        sendError(res, 404, 'Conversational API endpoint not found');
         return;
       }
 

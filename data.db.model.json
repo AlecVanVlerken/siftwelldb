@@ -1,0 +1,178 @@
+{
+  "explores": [
+    {
+      "collection": "employees",
+      "label": "Employees",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "label": "Id",
+          "description": "Unique identifier for each employee.",
+          "hidden": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "label": "Name",
+          "description": "The full name of the employee.",
+          "synonyms": [
+            "employee name",
+            "staff name",
+            "person's name"
+          ]
+        },
+        {
+          "name": "gender",
+          "type": "string",
+          "label": "Gender",
+          "description": "The gender of the employee."
+        },
+        {
+          "name": "department",
+          "type": "string",
+          "label": "Department",
+          "description": "The department or division the employee belongs to.",
+          "synonyms": [
+            "team",
+            "unit",
+            "business unit"
+          ]
+        },
+        {
+          "name": "seniority",
+          "type": "string",
+          "label": "Seniority",
+          "description": "The level of experience, rank, or job grade of the employee within the company.",
+          "synonyms": [
+            "job level",
+            "grade",
+            "rank",
+            "experience level"
+          ]
+        },
+        {
+          "name": "salary",
+          "type": "number",
+          "label": "Salary",
+          "description": "The annual gross salary of the employee.",
+          "synonyms": [
+            "compensation",
+            "pay",
+            "annual pay",
+            "wage"
+          ]
+        },
+        {
+          "name": "age",
+          "type": "number",
+          "label": "Age",
+          "description": "The age of the employee in years."
+        },
+        {
+          "name": "city",
+          "type": "string",
+          "label": "City",
+          "description": "The city where the employee is primarily based or works from.",
+          "synonyms": [
+            "location",
+            "work city",
+            "office location"
+          ]
+        },
+        {
+          "name": "yearsAtCompany",
+          "type": "number",
+          "label": "Years At Company",
+          "description": "The total number of years the employee has been working for the company.",
+          "synonyms": [
+            "tenure",
+            "years of service",
+            "service years"
+          ]
+        }
+      ],
+      "measures": [
+        {
+          "name": "avg_salary",
+          "label": "Avg Salary",
+          "aggregation": "AVG",
+          "field": "salary"
+        },
+        {
+          "name": "sum_salary",
+          "label": "Sum Salary",
+          "aggregation": "SUM",
+          "field": "salary"
+        },
+        {
+          "name": "min_salary",
+          "label": "Min Salary",
+          "aggregation": "MIN",
+          "field": "salary"
+        },
+        {
+          "name": "max_salary",
+          "label": "Max Salary",
+          "aggregation": "MAX",
+          "field": "salary"
+        },
+        {
+          "name": "avg_age",
+          "label": "Avg Age",
+          "aggregation": "AVG",
+          "field": "age"
+        },
+        {
+          "name": "sum_age",
+          "label": "Sum Age",
+          "aggregation": "SUM",
+          "field": "age"
+        },
+        {
+          "name": "min_age",
+          "label": "Min Age",
+          "aggregation": "MIN",
+          "field": "age"
+        },
+        {
+          "name": "max_age",
+          "label": "Max Age",
+          "aggregation": "MAX",
+          "field": "age"
+        },
+        {
+          "name": "avg_yearsAtCompany",
+          "label": "Avg Years At Company",
+          "aggregation": "AVG",
+          "field": "yearsAtCompany"
+        },
+        {
+          "name": "sum_yearsAtCompany",
+          "label": "Sum Years At Company",
+          "aggregation": "SUM",
+          "field": "yearsAtCompany"
+        },
+        {
+          "name": "min_yearsAtCompany",
+          "label": "Min Years At Company",
+          "aggregation": "MIN",
+          "field": "yearsAtCompany"
+        },
+        {
+          "name": "max_yearsAtCompany",
+          "label": "Max Years At Company",
+          "aggregation": "MAX",
+          "field": "yearsAtCompany"
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "aggregation": "COUNT",
+          "field": "*"
+        }
+      ],
+      "description": "Detailed information about employees within the organization, including their personal details, job role, and compensation."
+    }
+  ]
+}

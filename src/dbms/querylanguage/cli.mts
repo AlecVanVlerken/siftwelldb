@@ -35,12 +35,32 @@ function printHelp() {
   console.log(`Usage: node cli.mjs [--data path] [--log path] "<QUERY>"
 
 Supported queries:
-  SELECT <fields|*> FROM <collection> [WHERE field = value]
+  SELECT <fields|*> [AS alias, ...] FROM <collection>
+    [JOIN <collection> ON <left> = <right>]
+    [WHERE <conditions>]
+    [GROUP BY <fields>]
+    [HAVING <aggregate conditions>]
+    [ORDER BY <field> [ASC|DESC], ...]
+    [LIMIT n]
+    [OFFSET k]
   INSERT INTO <collection> VALUES {id: '...', field: ...}
+  DELETE FROM <collection> [WHERE <conditions>]
+
+WHERE / HAVING:
+  - Comparisons:  =, !=, >, >=, <, <=, LIKE, NOT LIKE
+  - Logical:      AND, OR, with parentheses for precedence
+  - Values:       quoted strings, numbers, booleans (true/false)
+
+Aggregates (with or without GROUP BY):
+  COUNT(*), SUM(field), AVG(field), MIN(field), MAX(field)
 
 Examples:
   node cli.mjs "SELECT * FROM cities"
   node cli.mjs --data my.db --log my.log "SELECT name FROM users WHERE age = 18"
+  node cli.mjs "SELECT country, COUNT(*) AS n FROM cities GROUP BY country ORDER BY n DESC"
+  node cli.mjs "SELECT * FROM cities WHERE (country = 'BE' OR country = 'NL') AND population > 500000"
+  node cli.mjs "SELECT name FROM cities WHERE name LIKE 'A%'"
+  node cli.mjs "DELETE FROM cities WHERE id = 'gent'"
   node cli.mjs --data my.db --log my.log "INSERT INTO cities VALUES {id: 'Antwerp', population: 530000}"`);
 }
 

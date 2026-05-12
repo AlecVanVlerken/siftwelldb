@@ -19,6 +19,7 @@ import { RealFile } from '../core/file.mjs';
 import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../compaction/compaction.mjs';
 import { fetchPageCursor } from '../largedatasets/pagination.mjs';
 import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
+import { QueryLanguage, type QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
 
 export type LabPolicyKey = 'none-uniform' | 'gzip-uniform' | 'zstd-uniform' | 'gzip-everything' | 'advisor-mix';
 
@@ -67,6 +68,13 @@ type LabRecommendationBundle = {
   field: string;
   recommendation: CompressionRecommendation;
   forcedGzipBytesSaved: number | null;
+};
+
+export type QueryExecutionResult = {
+  rows: QueryResultRow[];
+  rowCount: number;
+  kind: 'select' | 'insert' | 'update' | 'delete';
+  elapsedMs: number;
 };
 
 /**
@@ -189,8 +197,9 @@ export class DatabaseService {
     maxStepsPerRun: 4,
   };
 
-  // HNSW semantic search config
+  // HNSW semantic search config — loaded lazily on first semanticSearch call.
   private hnswConfigPromise: Promise<HnswConfig> | null = null;
+  private hnswLoaded = false;
 
   private getHnswConfig(): Promise<HnswConfig> {
     if (!this.hnswConfigPromise) {
@@ -695,16 +704,61 @@ export class DatabaseService {
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
-  /** Semantic text-to-text or text-to-image search */
+  /**
+   * Execute a SQL-like statement through the embedded query language.
+   *
+   * Supports SELECT, INSERT, UPDATE, and DELETE. For mutating statements
+   * the result rows are `{id}` per affected document so `rowCount` is
+   * meaningful. The database is committed once at the end so a single
+   * statement either fully lands on disk or doesn't.
+   */
+  async query(sql: string): Promise<QueryExecutionResult> {
+    this.ensureConnected();
+    const ql = new QueryLanguage(this.dbms!);
+    const parsed = ql.parse(sql);
+    const start = Date.now();
+    const rows = await ql.execute(sql);
+    const elapsedMs = Date.now() - start;
+    if (parsed.kind === 'insert' || parsed.kind === 'update' || parsed.kind === 'delete') {
+      await this.dbms!.commit();
+    }
+    return { rows, rowCount: rows.length, kind: parsed.kind, elapsedMs };
+  }
+
+  /** Semantic text-to-text search. Lazily loads CLIP models on first call. */
   async semanticSearch(collection: string, query: string, limit: number): Promise<string[]> {
     this.ensureConnected();
+    await this.ensureHnsw();
     return this.dbms!.semanticSearch(collection, query, limit);
   }
 
-  /** Semantic image-to-image search */
+  /** Semantic image-to-image search. Lazily loads CLIP models on first call. */
   async semanticImageSearch(collection: string, queryImage: Buffer, limit: number): Promise<string[]> {
     this.ensureConnected();
+    await this.ensureHnsw();
     return this.dbms!.semanticImageSearch(collection, queryImage, limit);
+  }
+
+  /**
+   * Ensures CLIP models are loaded and the DB is open with HNSW enabled.
+   * Reopens the database with the full HnswConfig on the first semantic search call.
+   */
+  private async ensureHnsw(): Promise<void> {
+    if (this.hnswLoaded) return;
+    const filepath = this.currentFilepath!;
+    const hnswConfig = await this.getHnswConfig();
+    // Reopen with HNSW — close current handle first, then reopen.
+    await this.dbms!.close();
+    const dataFile = new RealFile(filepath);
+    const logFile = new RealFile(`${filepath}.log`);
+    this.dbms = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+    this.hnswLoaded = true;
+  }
+
+  /** Returns the underlying SimpleDbms instance (throws if not connected). */
+  get rawDbms(): SimpleDbms {
+    this.ensureConnected();
+    return this.dbms!;
   }
 
   // ── Internal helpers ─────────────────────────────────────────
@@ -964,6 +1018,7 @@ export class DatabaseService {
       await this.dbms.close();
       this.dbms = null;
       this.currentFilepath = null;
+      this.hnswLoaded = false;
     }
     this.incrementalCompactionQueued = false;
     this.incrementalCompactionActive = false;

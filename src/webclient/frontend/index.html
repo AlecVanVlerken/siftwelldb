@@ -1,160 +1,1630 @@
 <!doctype html>
-<html lang="nl">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SimpleDBMS Dashboard</title>
-    <link rel="stylesheet" href="style.css" />
-  </head>
-  <body>
-    <div id="app">
-      <header>
-        <h1>SimpleDBMS <span class="header-team">Team-03</span></h1>
-        <div id="connection-status">Disconnected</div>
-        <nav class="tab-nav" aria-label="Dashboard tabs">
-          <button id="tab-collections" class="tab-btn active" type="button">Collections</button>
-          <button id="tab-lab" class="tab-btn" type="button">Compression Lab</button>
-        </nav>
-        <div class="semantic-search-container">
-          <div class="semantic-search-toggle">
-            <button id="search-mode-text" class="search-mode-btn active" disabled>Tekst</button>
-            <button id="search-mode-image" class="search-mode-btn" disabled>Foto</button>
-            <button id="search-mode-word" class="search-mode-btn" disabled>Woord</button>
-          </div>
-          <div class="semantic-search-input-wrapper">
-            <input type="text" id="semantic-search-input" placeholder="Zoek op betekenis..." disabled />
-          </div>
-          <button id="semantic-search-btn" class="btn-primary" disabled>
-            <span class="search-icon">🔎</span>
-          </button>
-          <button id="semantic-search-clear-btn" class="btn-secondary hidden" disabled>✕</button>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SimpleDBMS · pgStudio</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+* { box-sizing:border-box; margin:0; padding:0; }
+:root {
+  --bg:#f1f4f8; --bg2:#fff; --bg3:#e9eef4; --bg4:#dde3ec;
+  --bd:#cbd3df; --bd2:#aebac9;
+  --t:#1f2937; --t2:#475569; --t3:#6b7589; --t4:#94a0b3;
+  --ac:#2c5aa0; --ac2:#3771c8; --acl:#e5edf8; --aclb:#c2d4ee;
+  --gr:#0a8f4e; --grb:#daf2e6; --rd:#c02929; --rdb:#fbe2e2; --am:#b06d00; --amb:#fdf3da; --pp:#6d4ab8;
+}
+body { font:13px/1.45 -apple-system,'Segoe UI','Helvetica Neue','Arial',sans-serif; background:var(--bg); color:var(--t); overflow:hidden; height:100vh; }
+button { font:inherit; color:inherit; background:none; border:none; cursor:pointer; }
+input, textarea, select { font:inherit; color:inherit; background:none; border:none; outline:none; }
+.mono { font-family:'Consolas','Monaco','Courier New',monospace; }
+.hidden { display:none !important; }
+
+.app { display:grid; grid-template-rows:42px 1fr 26px; height:100vh; }
+.app.disconnected { filter:blur(2px) saturate(.7); pointer-events:none; }
+
+/* ── Toolbar ───────────────────────────────────────────────── */
+.tb { background:var(--bg2); border-bottom:1px solid var(--bd); padding:0 12px; display:flex; align-items:center; gap:8px; }
+.tb .brand { display:flex; align-items:center; gap:8px; padding-right:12px; margin-right:6px; border-right:1px solid var(--bd); height:24px; font-weight:600; color:var(--ac); }
+.tb .brand .mk { width:22px; height:22px; background:var(--ac); color:#fff; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; }
+.tbtn { height:28px; padding:0 10px; display:inline-flex; align-items:center; gap:5px; font-size:12.5px; border-radius:4px; cursor:pointer; color:var(--t); }
+.tbtn:hover { background:var(--bg3); }
+.tbtn:disabled { opacity:.4; cursor:not-allowed; pointer-events:none; }
+.tbtn.pri { background:var(--ac); color:#fff; }
+.tbtn.pri:hover { background:var(--ac2); }
+.tbtn.dn { color:var(--rd); }
+.tbtn.dn:hover { background:var(--rdb); }
+.tbtn svg { width:13px; height:13px; }
+.tb-sep { width:1px; height:18px; background:var(--bd); margin:0 4px; }
+.tb .sp { flex:1; }
+.tb .conn-info { display:flex; gap:7px; align-items:center; padding:4px 10px; border-radius:99px; background:var(--bg3); font-size:11.5px; color:var(--t2); }
+.tb .conn-info .d { width:7px; height:7px; border-radius:50%; background:var(--t4); }
+.tb .conn-info.ok { background:var(--grb); color:var(--gr); }
+.tb .conn-info.ok .d { background:var(--gr); box-shadow:0 0 6px var(--gr); }
+.tb .conn-info strong { font-weight:600; }
+
+/* ── Body grid ─────────────────────────────────────────────── */
+.body { display:grid; grid-template-columns:280px 1fr; min-height:0; }
+
+/* ── Sidebar: Object Explorer ─────────────────────────────── */
+.sb { background:var(--bg2); border-right:1px solid var(--bd); display:flex; flex-direction:column; overflow:hidden; }
+.sbh { height:32px; padding:0 10px; display:flex; align-items:center; justify-content:space-between; background:var(--bg3); border-bottom:1px solid var(--bd); font-size:11.5px; flex-shrink:0; }
+.sbh .l { font-weight:600; color:var(--t2); }
+.sbh .acts { display:flex; gap:1px; }
+.sbh button { padding:3px 5px; color:var(--t3); border-radius:3px; }
+.sbh button:hover { color:var(--t); background:var(--bg4); }
+.sbh svg { width:12px; height:12px; }
+
+.search-row { padding:6px 8px; background:var(--bg2); border-bottom:1px solid var(--bd); display:flex; gap:4px; flex-shrink:0; }
+.search-row .w { flex:1; position:relative; }
+.search-row input { width:100%; height:24px; padding:0 8px 0 24px; border:1px solid var(--bd); border-radius:3px; font-size:11.5px; background:var(--bg2); }
+.search-row input:focus { border-color:var(--ac); }
+.search-row .si { position:absolute; left:7px; top:50%; transform:translateY(-50%); width:12px; height:12px; color:var(--t3); }
+
+.tree { flex:1; overflow:auto; font-size:12.5px; padding:4px 0; }
+.tree .empty { padding:20px 14px; color:var(--t3); font-size:12px; line-height:1.5; }
+.tn { width:100%; padding:3px 8px; display:flex; align-items:center; gap:5px; cursor:pointer; text-align:left; color:var(--t); position:relative; }
+.tn:hover { background:var(--bg3); }
+.tn.on { background:var(--aclb); }
+.tn .ch { width:11px; font-size:8.5px; color:var(--t3); display:inline-flex; justify-content:center; flex-shrink:0; }
+.tn .ic { width:14px; height:14px; flex-shrink:0; }
+.tn .ic svg { width:14px; height:14px; }
+.tn .ic.coll { color:var(--ac); }
+.tn .ic.db { color:var(--ac2); }
+.tn .ic.server { color:var(--gr); }
+.tn .ic.idx { color:var(--pp); }
+.tn .ic.field { color:var(--t3); }
+.tn .ic.measure { color:var(--am); }
+.tn .ic.join { color:var(--gr); }
+.tn .name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.tn .ct { margin-left:auto; font-size:11px; color:var(--t3); padding-left:6px; font-variant-numeric:tabular-nums; flex-shrink:0; }
+.tn.on .ct { color:var(--ac); }
+.tn .x { opacity:0; padding:1px 5px; color:var(--rd); font-size:11px; line-height:1; border-radius:3px; flex-shrink:0; margin-left:6px; }
+.tn:hover .x { opacity:1; }
+.tn .x:hover { background:var(--rdb); }
+
+/* ── Main: tabs + content ─────────────────────────────────── */
+.main { display:flex; flex-direction:column; overflow:hidden; min-width:0; background:var(--bg); }
+.obj-tabs { display:flex; background:var(--bg2); border-bottom:1px solid var(--bd); padding:0 8px; flex-shrink:0; min-height:35px; align-items:flex-end; }
+.ot { padding:7px 13px; font-size:12.5px; color:var(--t2); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; display:inline-flex; align-items:center; gap:6px; }
+.ot:hover { color:var(--t); background:var(--bg3); }
+.ot.on { color:var(--ac); border-color:var(--ac); background:var(--bg2); font-weight:500; }
+.ot:disabled { opacity:.4; cursor:not-allowed; pointer-events:none; }
+.ot .ic { width:13px; height:13px; }
+.ot .badge { font-size:10.5px; padding:0 6px; background:var(--bg3); border-radius:99px; color:var(--t3); font-family:'Consolas',monospace; font-variant-numeric:tabular-nums; }
+.ot.on .badge { background:var(--ac); color:#fff; }
+.obj-tabs .sp { flex:1; }
+.obj-tabs .meta { padding:0 8px 7px; display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--t3); }
+
+.cnt { flex:1; overflow:auto; }
+
+/* ── Overview tab ──────────────────────────────────────────── */
+.ov { padding:18px 22px; max-width:1100px; }
+.ov h1 { font-size:20px; font-weight:600; display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+.ov h1 .name { font-family:'Consolas',monospace; color:var(--ac); font-size:18px; }
+.ov h1 .ic { width:26px; height:26px; border-radius:5px; background:var(--bg2); display:flex; align-items:center; justify-content:center; color:var(--ac); border:1px solid var(--bd); }
+.ov h1 .ic svg { width:14px; height:14px; }
+.ov .ovsub { color:var(--t2); font-size:13px; margin-bottom:20px; }
+.ov .ovsub span { display:inline-block; margin-right:14px; }
+.ov .ovsub strong { color:var(--t); font-weight:500; }
+
+.kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-bottom:22px; }
+.kpi { background:var(--bg2); border:1px solid var(--bd); border-radius:5px; padding:11px 14px; }
+.kpi .l { font-size:10.5px; color:var(--t3); text-transform:uppercase; letter-spacing:.5px; font-weight:600; margin-bottom:5px; display:flex; align-items:center; gap:6px; }
+.kpi .l svg { width:12px; height:12px; color:var(--ac); }
+.kpi .v { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+.kpi .v small { font-size:13px; color:var(--t3); font-weight:400; margin-left:3px; }
+.kpi .d { font-size:11.5px; color:var(--t3); margin-top:2px; }
+.kpi .d.ok { color:var(--gr); }
+.kpi .d.warn { color:var(--am); }
+
+.psec { background:var(--bg2); border:1px solid var(--bd); border-radius:5px; margin-bottom:14px; overflow:hidden; }
+.psec h3 { padding:9px 13px; background:var(--bg3); border-bottom:1px solid var(--bd); font-size:12px; font-weight:600; color:var(--t2); display:flex; align-items:center; gap:8px; }
+.psec h3 .actions { margin-left:auto; display:flex; gap:5px; }
+.psec h3 svg { width:13px; height:13px; }
+.psec .pbody { padding:14px 16px; }
+.prow { display:grid; grid-template-columns:180px 1fr; padding:7px 16px; border-bottom:1px solid var(--bg3); font-size:12.5px; gap:14px; }
+.prow:last-child { border-bottom:none; }
+.prow .k { color:var(--t3); font-weight:500; }
+.prow .v { color:var(--t); font-family:'Consolas',monospace; font-size:12px; word-break:break-all; }
+.prow .v.id { color:var(--ac); }
+.prow .v.num { color:var(--am); }
+.prow .v.bool.t { color:var(--gr); }
+.prow .v.bool.f { color:var(--t3); }
+.prow .v.bool .pill { display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:99px; font-size:11.5px; font-weight:500; }
+.prow .v.bool.t .pill { background:var(--grb); color:var(--gr); }
+.prow .v.bool.f .pill { background:var(--bg3); color:var(--t3); }
+.prow .v.warn { color:var(--am); }
+
+.empty-state { padding:32px 22px; text-align:center; color:var(--t3); font-size:13px; }
+.empty-state .em { font-size:30px; opacity:.5; margin-bottom:8px; }
+.empty-state h4 { font-size:14px; font-weight:600; color:var(--t2); margin-bottom:4px; }
+.empty-state p { max-width:480px; margin:0 auto 12px; line-height:1.6; }
+
+/* ── Data tab ──────────────────────────────────────────────── */
+.dt-bar { padding:8px 12px; background:var(--bg2); border-bottom:1px solid var(--bd); display:flex; align-items:center; gap:8px; flex-shrink:0; flex-wrap:wrap; }
+.dt-search { flex:1; max-width:520px; min-width:240px; display:flex; gap:5px; align-items:center; }
+.dt-search .modes { display:inline-flex; background:var(--bg3); border:1px solid var(--bd); border-radius:3px; padding:1px; flex-shrink:0; }
+.dt-search .modes button { padding:3px 8px; font-size:11.5px; color:var(--t2); border-radius:2px; }
+.dt-search .modes button.on { background:var(--bg2); color:var(--ac); font-weight:500; box-shadow:0 0 0 1px var(--bd); }
+.dt-search .w { flex:1; position:relative; }
+.dt-search input { width:100%; height:26px; padding:0 28px 0 28px; border:1px solid var(--bd); border-radius:3px; font-size:12px; background:var(--bg2); }
+.dt-search input:focus { border-color:var(--ac); }
+.dt-search input:disabled { background:var(--bg3); color:var(--t4); }
+.dt-search .si { position:absolute; left:8px; top:50%; transform:translateY(-50%); width:12px; height:12px; color:var(--t3); }
+.dt-search .clear { position:absolute; right:6px; top:50%; transform:translateY(-50%); padding:2px 6px; color:var(--t3); font-size:11px; line-height:1; cursor:pointer; border-radius:2px; }
+.dt-search .clear:hover { background:var(--bg3); color:var(--rd); }
+.dt-meta { margin-left:auto; font-size:11.5px; color:var(--t3); display:flex; gap:10px; align-items:center; font-variant-numeric:tabular-nums; }
+.dt-meta strong { color:var(--t); font-weight:600; }
+.dt-meta .badge { padding:2px 8px; border-radius:99px; background:var(--acl); color:var(--ac); font-weight:500; }
+
+.tw { flex:1; overflow:auto; }
+table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospace; font-size:12px; }
+.dg th { padding:6px 12px; text-align:left; font-weight:600; font-size:11.5px; color:var(--t); background:var(--bg3); border-bottom:1px solid var(--bd); border-right:1px solid var(--bd); position:sticky; top:0; font-family:'Segoe UI',sans-serif; z-index:2; }
+.dg th:last-child { border-right:none; }
+.dg th .ti { display:flex; align-items:center; gap:5px; }
+.dg th .ic { font-family:'Consolas',monospace; font-size:9.5px; color:var(--pp); font-weight:600; padding:1px 4px; background:var(--bg2); border-radius:2px; border:1px solid var(--bd); }
+.dg td { padding:5px 12px; border-bottom:1px solid #e5e9f0; cursor:pointer; white-space:nowrap; color:var(--t); border-right:1px solid #e5e9f0; max-width:280px; overflow:hidden; text-overflow:ellipsis; }
+.dg td:last-child { border-right:none; }
+.dg tbody tr:hover td { background:var(--bg3); }
+.dg tbody tr.on td { background:var(--acl); color:var(--ac); }
+.dg .rn { width:42px; color:var(--t3); text-align:right; user-select:none; font-size:11px; background:var(--bg3); border-right:1px solid var(--bd) !important; }
+.dg .cn { text-align:right; color:var(--am); font-variant-numeric:tabular-nums; }
+.dg .ck { color:var(--ac); }
+.dg .cs { color:var(--t); }
+.dg .cb.t { color:var(--gr); }
+.dg .cb.f { color:var(--t3); }
+.dg .cnu { color:var(--rd); font-style:italic; }
+.dg .ci img { max-height:24px; vertical-align:middle; border-radius:2px; }
+
+.dg .loader, .dg .err {
+  padding:30px 12px; text-align:center; color:var(--t3); font-size:12.5px;
+}
+.dg .err { color:var(--rd); font-family:'Consolas',monospace; white-space:pre-wrap; max-width:760px; margin:0 auto; }
+
+/* Document detail drawer */
+.drawer { position:fixed; top:42px; bottom:26px; right:0; width:520px; background:var(--bg2); border-left:1px solid var(--bd); box-shadow:-8px 0 30px rgba(0,0,0,.08); transform:translateX(100%); transition:transform .18s; display:flex; flex-direction:column; z-index:30; }
+.drawer.on { transform:translateX(0); }
+.dr-head { padding:12px 16px; border-bottom:1px solid var(--bd); display:flex; align-items:center; gap:10px; flex-shrink:0; background:var(--bg3); }
+.dr-head .ttl { flex:1; font-family:'Consolas',monospace; font-size:13px; color:var(--ac); font-weight:600; }
+.dr-head .acts { display:flex; gap:4px; }
+.dr-head .acts button { padding:4px 9px; font-size:11.5px; color:var(--t2); border:1px solid var(--bd); border-radius:3px; background:var(--bg2); }
+.dr-head .acts button:hover { background:var(--bg3); }
+.dr-head .acts .del { color:var(--rd); }
+.dr-head .acts .del:hover { background:var(--rdb); }
+.dr-head .close { padding:5px; color:var(--t3); border-radius:3px; cursor:pointer; margin-left:4px; }
+.dr-head .close:hover { background:var(--bg2); }
+.dr-head .close svg { width:14px; height:14px; }
+.dr-body { flex:1; overflow:auto; padding:14px 16px; }
+.dr-stats { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+.dr-stat { background:var(--bg); border:1px solid var(--bd); border-radius:4px; padding:8px 11px; }
+.dr-stat .l { font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.4px; font-weight:600; }
+.dr-stat .v { font-size:15px; font-weight:600; font-variant-numeric:tabular-nums; margin-top:3px; }
+.dr-stat .v small { font-size:11px; color:var(--t3); font-weight:400; }
+.fld-row { display:grid; grid-template-columns:130px 1fr; gap:10px; padding:7px 0; border-bottom:1px solid var(--bg3); font-size:12.5px; align-items:start; }
+.fld-row .k { color:var(--t3); font-weight:500; font-family:'Consolas',monospace; }
+.fld-row .v { font-family:'Consolas',monospace; font-size:12px; word-break:break-word; line-height:1.5; }
+.fld-row .v.id { color:var(--ac); }
+.fld-row .v.num { color:var(--am); }
+.fld-row .v.bool { color:var(--pp); }
+.fld-row .v.nu { color:var(--rd); font-style:italic; }
+.fld-row .v.img img { max-width:260px; max-height:200px; border-radius:3px; border:1px solid var(--bd); }
+.fld-row.editing input, .fld-row.editing textarea {
+  border:1px solid var(--bd); padding:5px 8px; border-radius:3px; width:100%; font-family:'Consolas',monospace; font-size:12px; background:var(--bg2); resize:vertical; min-height:26px;
+}
+.fld-row.editing input:focus, .fld-row.editing textarea:focus { border-color:var(--ac); }
+
+/* ── Fields tab ────────────────────────────────────────────── */
+.flds { padding:14px 18px; max-width:1200px; }
+.flds .summary { padding:10px 14px; background:var(--acl); border:1px solid var(--aclb); border-radius:4px; font-size:12.5px; color:var(--ac); margin-bottom:14px; }
+.flds .summary strong { font-weight:600; }
+.fld-card { background:var(--bg2); border:1px solid var(--bd); border-radius:5px; margin-bottom:10px; overflow:hidden; }
+.fld-card .head { padding:9px 14px; display:grid; grid-template-columns:1fr 80px 110px 1fr; gap:14px; align-items:center; background:var(--bg3); border-bottom:1px solid var(--bd); }
+.fld-card .head .name { font-family:'Consolas',monospace; font-weight:600; font-size:13px; color:var(--ac); }
+.fld-card .head .ty { font-size:11px; padding:2px 8px; border-radius:99px; background:var(--bg2); color:var(--t2); text-align:center; font-family:'Consolas',monospace; border:1px solid var(--bd); justify-self:start; }
+.fld-card .head .ty.s { background:#fef3e6; color:var(--am); border-color:#f5d49e; }
+.fld-card .head .ty.n { background:var(--grb); color:var(--gr); border-color:#a8e0c2; }
+.fld-card .head .ty.b { background:#f0e8fb; color:var(--pp); border-color:#d6c5f0; }
+.fld-card .head .cov { display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--t3); }
+.fld-card .head .cov .bar { flex:1; height:6px; background:var(--bg2); border:1px solid var(--bd); border-radius:3px; overflow:hidden; }
+.fld-card .head .cov .bar .fill { height:100%; background:var(--ac); }
+.fld-card .head .sample { font-family:'Consolas',monospace; font-size:11.5px; color:var(--t3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fld-card .model-info { padding:11px 14px; background:var(--bg2); display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px 18px; font-size:12px; }
+.fld-card .model-info .row { color:var(--t2); }
+.fld-card .model-info .row .l { font-size:10px; text-transform:uppercase; letter-spacing:.4px; color:var(--t3); font-weight:600; margin-bottom:2px; }
+.fld-card .model-info .row .v { color:var(--t); }
+.fld-card .model-info .row .v.tags span { display:inline-block; padding:1.5px 7px; background:var(--bg3); border-radius:99px; font-size:10.5px; margin:2px 4px 0 0; color:var(--t2); }
+.fld-card .model-info .row .v.syn em { font-style:normal; padding:1px 6px; background:var(--acl); color:var(--ac); border-radius:99px; font-size:11px; margin-right:4px; }
+.fld-card .nomodel { padding:9px 14px; background:var(--bg2); font-size:11.5px; color:var(--t3); font-style:italic; }
+
+/* ── Model tab ─────────────────────────────────────────────── */
+.model-pane { display:grid; grid-template-rows:auto 1fr; height:100%; }
+.model-tools { padding:9px 14px; background:var(--bg3); border-bottom:1px solid var(--bd); display:flex; gap:6px; align-items:center; flex-shrink:0; flex-wrap:wrap; }
+.model-tools .meta { margin-left:auto; font-size:11.5px; color:var(--t3); }
+.model-tools .meta.ok { color:var(--gr); }
+.model-tools .meta.warn { color:var(--am); }
+.model-body { padding:14px 18px; overflow:auto; }
+.model-body .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; max-width:1280px; }
+@media (max-width:1100px) { .model-body .grid { grid-template-columns:1fr; } }
+.json-editor { background:var(--bg2); border:1px solid var(--bd); border-radius:5px; overflow:hidden; display:flex; flex-direction:column; height:520px; }
+.json-editor .head { padding:7px 12px; background:var(--bg3); border-bottom:1px solid var(--bd); display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--t2); font-weight:600; }
+.json-editor .head .ic svg { width:13px; height:13px; }
+.json-editor textarea { flex:1; padding:12px 14px; font-family:'Consolas',monospace; font-size:12px; line-height:1.55; color:var(--t); resize:none; }
+.json-editor .err { padding:6px 12px; background:var(--rdb); color:var(--rd); font-size:11.5px; font-family:'Consolas',monospace; border-top:1px solid var(--bd); }
+
+.model-table { background:var(--bg2); border:1px solid var(--bd); border-radius:5px; overflow:hidden; }
+.model-table .head { padding:9px 13px; background:var(--bg3); border-bottom:1px solid var(--bd); font-weight:600; color:var(--t2); font-size:12px; display:flex; gap:7px; align-items:center; }
+.model-table .head .ct { margin-left:auto; font-size:11px; color:var(--t3); font-family:'Consolas',monospace; }
+.model-table table { width:100%; border-collapse:collapse; font-size:12.5px; }
+.model-table th { padding:6px 11px; text-align:left; font-weight:600; font-size:11px; color:var(--t3); background:var(--bg); border-bottom:1px solid var(--bd); text-transform:uppercase; letter-spacing:.4px; }
+.model-table td { padding:6px 11px; border-bottom:1px solid var(--bg3); font-family:'Consolas',monospace; font-size:12px; }
+.model-table td .pp { color:var(--pp); }
+.model-table td .ac { color:var(--ac); }
+.model-table td .am { color:var(--am); }
+.model-table td .t3 { color:var(--t3); font-family:'Segoe UI',sans-serif; font-size:12px; }
+.model-table .empty { padding:18px; text-align:center; color:var(--t3); font-size:12px; }
+
+/* ── SQL tab ───────────────────────────────────────────────── */
+.sql-pane { display:grid; grid-template-rows:auto auto 1fr; height:100%; min-height:0; }
+.sql-tools { padding:7px 12px; background:var(--bg3); border-bottom:1px solid var(--bd); display:flex; gap:5px; align-items:center; flex-shrink:0; }
+.sql-tools .meta { margin-left:auto; font-size:11.5px; color:var(--t3); display:flex; gap:14px; align-items:center; font-variant-numeric:tabular-nums; }
+.sql-tools .meta strong { color:var(--t); }
+.sql-tools .meta .err-pill { padding:1px 8px; background:var(--rdb); color:var(--rd); border-radius:99px; font-weight:500; }
+.sql-tools .meta .ok-pill { padding:1px 8px; background:var(--grb); color:var(--gr); border-radius:99px; font-weight:500; }
+.sql-editor { background:var(--bg2); padding:12px 16px; font-family:'Consolas',monospace; font-size:13px; line-height:1.6; color:var(--t); border-bottom:1px solid var(--bd); min-height:180px; max-height:340px; overflow:auto; outline:none; white-space:pre-wrap; word-wrap:break-word; }
+.sql-editor:focus { background:#fafcfe; }
+.sql-editor:empty::before { content:'-- type a SELECT, INSERT or DELETE query, then press ⌘↩ to run\A-- syntax:\A--   SELECT <fields|*> FROM <collection> [WHERE ...] [GROUP BY ...] [ORDER BY ...] [LIMIT n]\A--   INSERT INTO <collection> VALUES {"id": "..."}\A--   DELETE FROM <collection> [WHERE ...]'; color:var(--t4); font-style:italic; white-space:pre; }
+
+.sql-results { overflow:auto; background:var(--bg2); border-top:1px solid var(--bd); }
+.sql-results .rhead { padding:6px 14px; display:flex; align-items:center; gap:10px; background:var(--bg3); border-bottom:1px solid var(--bd); position:sticky; top:0; font-size:11.5px; color:var(--t2); z-index:1; }
+.sql-results .rhead strong { color:var(--t); font-weight:600; }
+.sql-results .rhead .pill { padding:1.5px 8px; background:var(--bg2); border:1px solid var(--bd); border-radius:99px; font-family:'Consolas',monospace; font-size:11px; }
+.sql-results .err { padding:14px 16px; background:var(--rdb); color:var(--rd); font-family:'Consolas',monospace; font-size:12.5px; border-bottom:1px solid var(--bd); white-space:pre-wrap; }
+.sql-history { padding:8px 14px; background:var(--bg); border-top:1px solid var(--bd); font-size:11.5px; }
+.sql-history h4 { font-size:10.5px; font-weight:700; color:var(--t3); text-transform:uppercase; letter-spacing:.5px; margin-bottom:6px; }
+.sql-history .item { padding:5px 10px; margin-bottom:3px; background:var(--bg2); border:1px solid var(--bd); border-radius:3px; cursor:pointer; font-family:'Consolas',monospace; font-size:11.5px; display:flex; align-items:center; gap:8px; }
+.sql-history .item:hover { border-color:var(--ac); background:var(--bg3); }
+.sql-history .item .qq { flex:1; color:var(--t2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sql-history .item .when { color:var(--t4); font-size:10.5px; flex-shrink:0; }
+.sql-history .item .ok { color:var(--gr); }
+.sql-history .item .ko { color:var(--rd); }
+
+/* SQL keyword highlighting hint inside editor preview */
+.kw { color:var(--ac); font-weight:600; }
+.fnk { color:var(--pp); font-weight:500; }
+.strk { color:var(--gr); }
+.numk { color:var(--am); }
+.comk { color:var(--t3); font-style:italic; }
+
+/* ── AI tab ────────────────────────────────────────────────── */
+.ai-pane { display:grid; grid-template-rows:auto 1fr auto; height:100%; min-height:0; }
+.ai-head { padding:9px 14px; background:var(--bg3); border-bottom:1px solid var(--bd); display:flex; align-items:center; gap:10px; font-size:12.5px; flex-shrink:0; }
+.ai-head .ic { width:24px; height:24px; border-radius:4px; background:var(--ac); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:11px; }
+.ai-head .ttl strong { font-weight:600; }
+.ai-head .ttl .sub { color:var(--t3); font-size:11.5px; }
+.ai-head .meta { margin-left:auto; display:flex; gap:8px; }
+.ai-head .meta .pill { padding:2px 9px; background:var(--bg2); border:1px solid var(--bd); border-radius:99px; font-size:11px; }
+.ai-head .meta .pill.ok { background:var(--grb); color:var(--gr); border-color:#a8e0c2; }
+.ai-head .meta .pill.warn { background:var(--amb); color:var(--am); border-color:#f5d49e; }
+.ai-head .meta .pill.bad { background:var(--rdb); color:var(--rd); border-color:#f5b4b4; }
+
+.ai-body { padding:14px 18px; overflow:auto; }
+.ai-empty { text-align:center; padding:40px 20px; color:var(--t3); }
+.ai-empty .em { font-size:36px; opacity:.5; }
+.ai-empty h4 { color:var(--t2); margin-top:8px; font-size:14px; }
+.ai-empty p { max-width:560px; margin:6px auto 14px; font-size:13px; line-height:1.5; }
+.ai-empty .examples { display:flex; flex-direction:column; gap:6px; max-width:480px; margin:0 auto; }
+.ai-empty .examples button { padding:8px 14px; border:1px solid var(--bd); background:var(--bg2); border-radius:5px; font-size:12.5px; color:var(--t); text-align:left; cursor:pointer; font-family:'Consolas',monospace; }
+.ai-empty .examples button:hover { border-color:var(--ac); background:var(--acl); color:var(--ac); }
+
+.msg { display:flex; gap:11px; padding:11px 0; max-width:1000px; margin:0 auto; }
+.msg.u { justify-content:flex-end; }
+.msg .who { font-size:10.5px; color:var(--t3); font-weight:600; text-transform:uppercase; letter-spacing:.4px; min-width:42px; padding-top:2px; flex-shrink:0; }
+.msg.u .who { color:var(--ac); order:2; text-align:right; }
+.msg .bub { padding:11px 14px; border-radius:5px; font-size:13px; line-height:1.5; max-width:780px; }
+.msg.u .bub { background:var(--acl); color:var(--t); border:1px solid var(--aclb); }
+.msg.a .bub { background:var(--bg2); border:1px solid var(--bd); width:100%; }
+.msg.a .bub.err { background:var(--rdb); border-color:#f5b4b4; color:var(--rd); }
+.bub .q { font-family:'Consolas',monospace; font-size:12px; background:var(--bg); border:1px solid var(--bd); border-radius:3px; padding:8px 11px; color:var(--ac); margin-bottom:10px; position:relative; }
+.bub .q .qhead { display:flex; gap:6px; align-items:center; font-size:10.5px; color:var(--t3); text-transform:uppercase; letter-spacing:.4px; font-weight:600; margin-bottom:5px; font-family:'Segoe UI',sans-serif; }
+.bub .q .qhead .open-sql { margin-left:auto; padding:1px 7px; border-radius:3px; cursor:pointer; color:var(--ac); font-weight:500; }
+.bub .q .qhead .open-sql:hover { background:var(--acl); }
+.bub .q .qcode { font-family:'Consolas',monospace; font-size:12px; color:var(--t); white-space:pre-wrap; }
+.bub .in { font-size:11.5px; color:var(--t3); font-style:italic; margin-bottom:10px; }
+.bub .qt { font-family:'Consolas',monospace; font-size:12px; border-collapse:collapse; width:100%; margin-bottom:10px; border:1px solid var(--bd); }
+.bub .qt th { padding:5px 11px; background:var(--bg3); border-bottom:1px solid var(--bd); border-right:1px solid var(--bd); color:var(--t2); text-align:left; font-weight:600; font-size:11px; font-family:'Segoe UI',sans-serif; text-transform:uppercase; letter-spacing:.4px; }
+.bub .qt td { padding:4px 11px; border-bottom:1px solid #e5e9f0; border-right:1px solid #e5e9f0; }
+.bub .qt td.cn { text-align:right; color:var(--am); }
+.bub .qch { background:var(--bg2); border:1px solid var(--bd); border-radius:3px; padding:12px; margin-bottom:10px; height:240px; }
+.bub .sum { font-weight:500; margin-bottom:8px; }
+.bub .anom { background:var(--amb); border-left:3px solid var(--am); padding:7px 11px; font-size:12px; color:var(--am); margin-top:6px; }
+.bub .anom::before { content:'⚠ '; font-weight:700; }
+.bub .didyou { font-size:12px; color:var(--t2); margin-top:8px; }
+.bub .didyou strong { color:var(--t); display:block; margin-bottom:5px; font-weight:500; }
+.bub .didyou ul { margin:0 0 0 18px; }
+.bub .didyou li { padding:2px 0; cursor:pointer; color:var(--ac); }
+.bub .didyou li:hover { text-decoration:underline; }
+.bub .chips { display:flex; gap:5px; flex-wrap:wrap; margin-top:10px; padding-top:10px; border-top:1px solid var(--bd); }
+.bub .chip { padding:4px 10px; border-radius:3px; font-size:11.5px; cursor:pointer; display:inline-flex; gap:6px; background:var(--bg3); border:1px solid var(--bd); color:var(--t); align-items:center; }
+.bub .chip:hover { border-color:var(--ac); }
+.bub .chip .l { font-size:9.5px; font-weight:700; opacity:.7; text-transform:uppercase; letter-spacing:.4px; color:var(--ac); }
+.bub.thinking { color:var(--t3); font-style:italic; font-size:13px; }
+.bub.thinking::before { content:'⏳ '; }
+
+.ai-input { padding:11px 14px; background:var(--bg2); border-top:1px solid var(--bd); display:flex; gap:6px; flex-shrink:0; max-width:1000px; margin:0 auto; width:100%; box-sizing:border-box; }
+.ai-input input { flex:1; padding:7px 12px; border:1px solid var(--bd); border-radius:4px; font-size:13px; background:var(--bg2); }
+.ai-input input:focus { border-color:var(--ac); }
+.ai-input input:disabled { background:var(--bg3); color:var(--t4); cursor:not-allowed; }
+.ai-input button { padding:7px 18px; background:var(--ac); color:#fff; border-radius:4px; font-size:12.5px; font-weight:500; cursor:pointer; }
+.ai-input button:hover { background:var(--ac2); }
+.ai-input button:disabled { background:var(--bd2); cursor:not-allowed; }
+
+/* ── Status bar ────────────────────────────────────────────── */
+.foot { padding:0 0 0 8px; background:var(--bg3); border-top:1px solid var(--bd); display:flex; align-items:center; font-size:11px; color:var(--t3); gap:0; }
+.foot .si { padding:0 10px; height:100%; display:flex; align-items:center; gap:5px; border-right:1px solid var(--bd); }
+.foot .si:last-child { border-right:none; }
+.foot .si.ok { color:var(--gr); }
+.foot .si.bad { color:var(--rd); }
+.foot .si .d { width:6px; height:6px; border-radius:50%; background:currentColor; }
+.foot .sp { flex:1; border-right:1px solid var(--bd); }
+
+/* ── Modals ────────────────────────────────────────────────── */
+.modal-bg { position:fixed; inset:0; background:rgba(15,23,42,.45); backdrop-filter:blur(2px); z-index:100; display:flex; align-items:center; justify-content:center; padding:20px; }
+.modal-bg.hidden { display:none; }
+.modal-box { background:var(--bg2); border:1px solid var(--bd); border-radius:7px; box-shadow:0 30px 60px rgba(0,0,0,.18); width:100%; max-width:520px; max-height:90vh; display:flex; flex-direction:column; overflow:hidden; }
+.modal-box.wide { max-width:720px; }
+.modal-box.tall { max-height:90vh; }
+.modal-head { padding:14px 18px; border-bottom:1px solid var(--bd); display:flex; align-items:center; gap:10px; background:var(--bg3); }
+.modal-head .ic { width:28px; height:28px; border-radius:5px; background:var(--ac); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:13px; }
+.modal-head .ttl { flex:1; font-weight:600; font-size:14px; }
+.modal-head .ttl .sub { color:var(--t3); font-size:11.5px; font-weight:400; }
+.modal-head .close { padding:5px; color:var(--t3); border-radius:3px; cursor:pointer; }
+.modal-head .close:hover { background:var(--bg2); }
+.modal-head .close svg { width:14px; height:14px; }
+.modal-body { padding:18px; overflow:auto; }
+.modal-body p { color:var(--t2); font-size:13px; line-height:1.5; margin-bottom:14px; }
+.modal-body label { display:block; font-size:11.5px; color:var(--t3); margin-bottom:5px; text-transform:uppercase; letter-spacing:.4px; font-weight:600; }
+.modal-body input[type=text], .modal-body input[type=password], .modal-body textarea {
+  width:100%; padding:8px 11px; border:1px solid var(--bd); border-radius:4px; font-size:13px; background:var(--bg2); margin-bottom:14px;
+}
+.modal-body input:focus, .modal-body textarea:focus { border-color:var(--ac); }
+.modal-body textarea { font-family:'Consolas',monospace; font-size:12px; resize:vertical; min-height:140px; }
+.modal-body .err { padding:8px 11px; background:var(--rdb); color:var(--rd); border-radius:3px; font-size:12px; margin-bottom:10px; font-family:'Consolas',monospace; }
+.modal-body .ok { padding:8px 11px; background:var(--grb); color:var(--gr); border-radius:3px; font-size:12px; margin-bottom:10px; }
+.modal-foot { padding:12px 18px; border-top:1px solid var(--bd); display:flex; gap:8px; justify-content:flex-end; background:var(--bg3); }
+.modal-foot button { padding:6px 16px; border-radius:4px; font-size:12.5px; cursor:pointer; font-weight:500; border:1px solid transparent; }
+.modal-foot button.sec { background:var(--bg2); color:var(--t); border-color:var(--bd); }
+.modal-foot button.sec:hover { background:var(--bg3); }
+.modal-foot button.pri { background:var(--ac); color:#fff; }
+.modal-foot button.pri:hover { background:var(--ac2); }
+.modal-foot button.dn { background:var(--rd); color:#fff; }
+.modal-foot button.dn:hover { background:#a02323; }
+.modal-foot .left { margin-right:auto; font-size:11.5px; color:var(--t3); align-self:center; }
+
+/* Toasts */
+#toasts { position:fixed; bottom:30px; right:14px; display:flex; flex-direction:column-reverse; gap:6px; z-index:200; pointer-events:none; }
+.toast { padding:10px 14px 10px 12px; background:var(--bg2); border:1px solid var(--bd); border-left:3px solid var(--ac); border-radius:4px; box-shadow:0 6px 20px rgba(0,0,0,.1); font-size:12.5px; max-width:380px; pointer-events:auto; animation:slideIn .2s ease; }
+.toast.ok { border-left-color:var(--gr); }
+.toast.err { border-left-color:var(--rd); color:var(--rd); }
+.toast.warn { border-left-color:var(--am); }
+.toast strong { font-weight:600; display:block; margin-bottom:2px; }
+@keyframes slideIn { from { transform:translateX(20px); opacity:0; } to { transform:translateX(0); opacity:1; } }
+
+</style>
+</head>
+<body>
+<div class="app disconnected" id="app">
+  <header class="tb">
+    <div class="brand"><div class="mk">pg</div>SimpleDBMS · pgStudio</div>
+    <button class="tbtn" id="btn-refresh" title="Refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg>Refresh</button>
+    <button class="tbtn" id="btn-newcoll" title="New collection"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>New collection</button>
+    <div class="tb-sep"></div>
+    <button class="tbtn" id="btn-genmodel" title="Generate semantic model" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Generate model</button>
+    <div class="sp"></div>
+    <div class="conn-info" id="conn-info"><span class="d"></span><span id="conn-text">Disconnected</span></div>
+    <button class="tbtn" id="btn-settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+  </header>
+
+  <div class="body">
+    <aside class="sb">
+      <div class="sbh"><span class="l">Object Explorer</span><div class="acts"><button id="sb-refresh" title="Refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg></button></div></div>
+      <div class="search-row"><div class="w"><svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg><input id="sb-filter" placeholder="Filter collections..."/></div></div>
+      <div class="tree" id="tree"></div>
+    </aside>
+
+    <main class="main">
+      <div class="obj-tabs" id="otabs"></div>
+      <div class="cnt" id="cnt"></div>
+    </main>
+  </div>
+
+  <div class="foot">
+    <div class="si" id="ft-conn"><span class="d"></span><span id="ft-conntext">Disconnected</span></div>
+    <div class="si" id="ft-coll">—</div>
+    <div class="si" id="ft-rows">—</div>
+    <div class="sp"></div>
+    <div class="si" id="ft-gemini">Gemini: —</div>
+    <div class="si" id="ft-model">Model: —</div>
+    <div class="si">SimpleDBMS 1.0.1</div>
+  </div>
+</div>
+
+<!-- Document drawer -->
+<div class="drawer" id="drawer">
+  <div class="dr-head">
+    <div class="ttl" id="dr-title">—</div>
+    <div class="acts">
+      <button id="dr-edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M12 20h9M16.5 3.5l4 4L7 21H3v-4z"/></svg> Edit</button>
+      <button class="del" id="dr-del"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg> Delete</button>
+    </div>
+    <button class="close" id="dr-close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </div>
+  <div class="dr-body" id="dr-body"></div>
+</div>
+
+<!-- Connect modal -->
+<div class="modal-bg" id="modal-connect">
+  <div class="modal-box">
+    <div class="modal-head"><div class="ic">pg</div><div class="ttl">Open a database<div class="sub">Connect to an existing SimpleDBMS file, or create a new one.</div></div></div>
+    <div class="modal-body">
+      <label>Database file</label>
+      <input type="text" id="connect-filepath" placeholder="e.g. data.db" value="data.db" autocomplete="off"/>
+      <div class="err hidden" id="connect-err"></div>
+      <p style="margin-bottom:0;font-size:12px;">If the file exists it will be opened, otherwise <em>Create new</em> will initialize a fresh one.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="sec" id="connect-create">Create new</button>
+      <button class="pri" id="connect-open">Open</button>
+    </div>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div class="modal-bg hidden" id="modal-settings">
+  <div class="modal-box">
+    <div class="modal-head"><div class="ic">⚙</div><div class="ttl">Settings<div class="sub">Connection &amp; LLM configuration.</div></div><button class="close" data-close="modal-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="modal-body">
+      <label>Gemini API key</label>
+      <input type="password" id="set-gemini-key" placeholder="Paste GEMINI_API_KEY..." autocomplete="off"/>
+      <div class="err hidden" id="set-gemini-err"></div>
+      <div class="ok hidden" id="set-gemini-ok">Key saved. AI features are enabled.</div>
+      <p style="margin-bottom:6px;font-size:12px;">Stored to <code>.env</code> on the daemon host. Cleared whenever the daemon restarts unless persisted there.</p>
+
+      <div style="height:1px;background:var(--bd);margin:14px 0;"></div>
+
+      <label>Danger zone</label>
+      <p style="margin-bottom:8px;font-size:12px;">These actions cannot be undone.</p>
+      <div style="display:flex;gap:8px;">
+        <button class="modal-foot-btn sec" id="set-disconnect" style="padding:7px 14px;border:1px solid var(--bd);border-radius:4px;background:var(--bg2);">Disconnect</button>
+        <button class="modal-foot-btn dn" id="set-reset" style="padding:7px 14px;border:1px solid var(--rd);border-radius:4px;background:var(--rdb);color:var(--rd);">Reset database</button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="sec" data-close="modal-settings">Close</button>
+      <button class="pri" id="set-save-gemini">Save key</button>
+    </div>
+  </div>
+</div>
+
+<!-- New collection modal -->
+<div class="modal-bg hidden" id="modal-newcoll">
+  <div class="modal-box">
+    <div class="modal-head"><div class="ic">+</div><div class="ttl">New collection<div class="sub">A collection is created on first document insert.</div></div><button class="close" data-close="modal-newcoll"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="modal-body">
+      <label>Collection name</label>
+      <input type="text" id="newcoll-name" placeholder="e.g. customers" autocomplete="off"/>
+      <label>First document (JSON, must include an <code>id</code>)</label>
+      <textarea id="newcoll-doc" placeholder='{"id": "c_001", "name": "Acme Corp."}'>{"id": "c_001"}</textarea>
+      <div class="err hidden" id="newcoll-err"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="sec" data-close="modal-newcoll">Cancel</button>
+      <button class="pri" id="newcoll-create">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add document modal -->
+<div class="modal-bg hidden" id="modal-adddoc">
+  <div class="modal-box wide">
+    <div class="modal-head"><div class="ic">+</div><div class="ttl">Insert document<div class="sub" id="adddoc-sub">Into ...</div></div><button class="close" data-close="modal-adddoc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="modal-body">
+      <label>Document JSON (must include an <code>id</code>)</label>
+      <textarea id="adddoc-json" style="min-height:240px;"></textarea>
+      <div class="err hidden" id="adddoc-err"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="sec" data-close="modal-adddoc">Cancel</button>
+      <button class="pri" id="adddoc-save">Insert</button>
+    </div>
+  </div>
+</div>
+
+<!-- Confirm modal -->
+<div class="modal-bg hidden" id="modal-confirm">
+  <div class="modal-box" style="max-width:440px;">
+    <div class="modal-head"><div class="ic" style="background:var(--rd);">!</div><div class="ttl" id="confirm-title">Confirm</div></div>
+    <div class="modal-body"><p id="confirm-msg"></p></div>
+    <div class="modal-foot">
+      <button class="sec" data-close="modal-confirm">Cancel</button>
+      <button class="dn" id="confirm-ok">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+'use strict';
+
+// ─────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────
+const state = {
+  connected: false,
+  filepath: null,
+  geminiKeySet: false,
+  collections: [],            // string[]
+  countsByColl: {},           // { coll: number | '?' }
+  docsByColl: {},             // { coll: Document[] }
+  model: null,                // SemanticModel | null
+  selectedCol: null,
+  tab: 'overview',
+  chatHistory: [],            // [{role, text}]
+  sqlHistory: [],             // [{sql, ok, ts, rowCount, elapsedMs, error}]
+  selectedDoc: null,          // currently shown in drawer
+  selectedDocIndex: null,
+  searchMode: 'text',         // 'text' | 'image'
+  searchActive: false,        // when a semantic search is filtering the data table
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Tiny utilities
+// ─────────────────────────────────────────────────────────────────
+const $ = (s, root = document) => root.querySelector(s);
+const $$ = (s, root = document) => Array.from(root.querySelectorAll(s));
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+const fmtNum = (n) => typeof n === 'number' ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : String(n);
+const fmtSize = (b) => b == null ? '—' : b < 1024 ? `${b} B` : b < 1024 * 1024 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1024 / 1024).toFixed(2)} MB`;
+const docSize = (d) => new Blob([JSON.stringify(d)]).size;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function toast(msg, kind = '', title = '') {
+  const div = document.createElement('div');
+  div.className = 'toast ' + kind;
+  div.innerHTML = (title ? `<strong>${esc(title)}</strong>` : '') + esc(msg);
+  $('#toasts').appendChild(div);
+  setTimeout(() => div.remove(), 4000);
+}
+
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (opts.body && !(opts.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  const res = await fetch(path, { ...opts, headers });
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : {}; } catch { json = { error: text }; }
+  if (!res.ok) throw new Error(json && json.error ? json.error : `HTTP ${res.status}`);
+  return json;
+}
+
+function openModal(id) { $(`#${id}`).classList.remove('hidden'); }
+function closeModal(id) { $(`#${id}`).classList.add('hidden'); }
+$$('[data-close]').forEach((b) => b.addEventListener('click', () => closeModal(b.dataset.close)));
+
+function isImageField(k) { return /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(k) || /\.(jpe?g|png|gif|webp)$/i.test(k); }
+function detectType(v) {
+  if (v == null) return 'null';
+  if (typeof v === 'number') return 'number';
+  if (typeof v === 'boolean') return 'boolean';
+  if (Array.isArray(v)) return 'array';
+  if (typeof v === 'object') return 'object';
+  return 'string';
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Bootstrap
+// ─────────────────────────────────────────────────────────────────
+async function bootstrap() {
+  try {
+    const [status, settings] = await Promise.all([api('/api/status'), api('/api/settings')]);
+    state.connected = status.connected;
+    state.filepath = status.filepath;
+    state.geminiKeySet = settings.geminiKeySet;
+  } catch (e) {
+    toast('Could not reach daemon: ' + e.message, 'err');
+  }
+
+  updateConnState();
+  if (state.connected) {
+    closeModal('modal-connect');
+    await loadCollections();
+    await loadModel();
+    render();
+  } else {
+    openModal('modal-connect');
+  }
+}
+
+function updateConnState() {
+  const ci = $('#conn-info');
+  const ct = $('#conn-text');
+  const ftc = $('#ft-conn');
+  const ftct = $('#ft-conntext');
+  if (state.connected) {
+    ci.classList.add('ok');
+    ct.innerHTML = `<strong>${esc(state.filepath)}</strong>`;
+    ftc.classList.add('ok'); ftc.classList.remove('bad');
+    ftct.textContent = state.filepath || 'connected';
+    $('#app').classList.remove('disconnected');
+  } else {
+    ci.classList.remove('ok');
+    ct.textContent = 'Disconnected';
+    ftc.classList.remove('ok'); ftc.classList.add('bad');
+    ftct.textContent = 'Disconnected';
+    $('#app').classList.add('disconnected');
+  }
+  $('#ft-gemini').textContent = `Gemini: ${state.geminiKeySet ? 'configured' : 'not set'}`;
+  $('#ft-gemini').className = 'si ' + (state.geminiKeySet ? 'ok' : '');
+  const hasModel = state.model && state.model.explores && state.model.explores.length > 0;
+  $('#ft-model').textContent = `Model: ${hasModel ? `${state.model.explores.length} explore${state.model.explores.length > 1 ? 's' : ''}` : 'none'}`;
+  $('#ft-model').className = 'si ' + (hasModel ? 'ok' : '');
+  $('#btn-genmodel').disabled = !(state.connected && state.geminiKeySet);
+}
+
+async function loadCollections() {
+  try {
+    const { collections } = await api('/api/collections');
+    state.collections = collections || [];
+    // Pre-load counts in parallel — small ops on each collection.
+    await Promise.all(state.collections.map(async (c) => {
+      try {
+        const { documents } = await api(`/api/documents/${encodeURIComponent(c)}?limit=10000`);
+        state.countsByColl[c] = (documents || []).length;
+        state.docsByColl[c] = (documents || []).map((d) => JSON.parse(d));
+      } catch {
+        state.countsByColl[c] = '?';
+      }
+    }));
+  } catch (e) {
+    toast('Failed to load collections: ' + e.message, 'err');
+  }
+}
+
+async function loadModel() {
+  try {
+    const { model } = await api('/api/conversational/model');
+    state.model = model;
+  } catch {
+    state.model = null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Selection
+// ─────────────────────────────────────────────────────────────────
+function selectCollection(c) {
+  state.selectedCol = c;
+  state.tab = 'overview';
+  state.searchActive = false;
+  state.selectedDoc = null;
+  closeDrawer();
+  render();
+}
+function selectRoot() {
+  state.selectedCol = null;
+  state.tab = 'overview';
+  state.selectedDoc = null;
+  closeDrawer();
+  render();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Renderers
+// ─────────────────────────────────────────────────────────────────
+function render() {
+  renderTree();
+  renderTabs();
+  renderTab();
+  renderFooter();
+}
+
+function renderFooter() {
+  if (state.selectedCol) {
+    const docs = state.docsByColl[state.selectedCol] || [];
+    $('#ft-coll').textContent = state.selectedCol;
+    $('#ft-rows').textContent = `${docs.length} document${docs.length === 1 ? '' : 's'}`;
+  } else {
+    $('#ft-coll').textContent = '—';
+    $('#ft-rows').textContent = state.connected ? `${state.collections.length} collection${state.collections.length === 1 ? '' : 's'}` : '—';
+  }
+}
+
+function getExplore(c) {
+  if (!state.model || !state.model.explores) return null;
+  return state.model.explores.find((e) => e.collection === c) || null;
+}
+
+const ICONS = {
+  server: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
+  coll: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg>`,
+  field: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`,
+  measure: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
+  join: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M9 9l6 6"/></svg>`,
+  idx: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>`,
+};
+
+function renderTree() {
+  const filter = $('#sb-filter').value.trim().toLowerCase();
+  const colls = state.collections.filter((c) => !filter || c.toLowerCase().includes(filter));
+  if (!state.connected) {
+    $('#tree').innerHTML = `<div class="empty">Not connected. Use the connection dialog to open a database.</div>`;
+    return;
+  }
+  let h = `<button class="tn ${state.selectedCol === null ? 'on' : ''}" data-root="1" style="font-weight:600;padding-left:8px;"><span class="ch">▾</span><span class="ic db">${ICONS.server}</span><span class="name">${esc(state.filepath || '—')}</span><span class="ct">${state.collections.length}</span></button>`;
+  h += `<div class="tn" style="padding-left:22px;color:var(--t3);"><span class="ch">▾</span><span class="ic field">${ICONS.coll}</span><span class="name">Collections</span><span class="ct">${colls.length}</span></div>`;
+  if (colls.length === 0) {
+    h += `<div class="empty" style="padding-left:22px;">${filter ? 'No matches.' : 'No collections yet. Use “New collection” to create one.'}</div>`;
+  } else {
+    for (const c of colls) {
+      const isOn = state.selectedCol === c;
+      const count = state.countsByColl[c];
+      h += `<button class="tn ${isOn ? 'on' : ''}" data-c="${esc(c)}" style="padding-left:34px;">
+        <span class="ch">${isOn ? '▾' : '▸'}</span><span class="ic coll">${ICONS.coll}</span><span class="name">${esc(c)}</span><span class="ct">${count === undefined ? '…' : count}</span>
+        <span class="x" data-del="${esc(c)}" title="Drop collection">✕</span>
+      </button>`;
+      if (isOn) {
+        const explore = getExplore(c);
+        const docs = state.docsByColl[c] || [];
+        const fieldNames = docs.length ? Object.keys(docs[0]).filter((k) => !k.startsWith('_')) : [];
+        h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch">▾</span><span class="ic field">${ICONS.field}</span><span class="name">Fields</span><span class="ct">${fieldNames.length}</span></div>`;
+        for (const f of fieldNames) {
+          h += `<div class="tn" style="padding-left:66px;color:var(--t2);"><span class="ch"> </span><span class="ic field">${ICONS.field}</span><span class="name">${esc(f)}</span></div>`;
+        }
+        if (explore && explore.measures && explore.measures.length > 0) {
+          h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch">▾</span><span class="ic measure">${ICONS.measure}</span><span class="name">Measures</span><span class="ct">${explore.measures.length}</span></div>`;
+          for (const m of explore.measures) {
+            h += `<div class="tn" style="padding-left:66px;color:var(--t2);"><span class="ch"> </span><span class="ic measure">${ICONS.measure}</span><span class="name">${esc(m.aggregation)}(${esc(m.field)})</span></div>`;
+          }
+        }
+        if (explore && explore.joins && explore.joins.length > 0) {
+          h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch">▾</span><span class="ic join">${ICONS.join}</span><span class="name">Joins</span><span class="ct">${explore.joins.length}</span></div>`;
+          for (const j of explore.joins) {
+            h += `<div class="tn" style="padding-left:66px;color:var(--t2);"><span class="ch"> </span><span class="ic join">${ICONS.join}</span><span class="name">→ ${esc(j.collection)}</span></div>`;
+          }
+        }
+        h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch"> </span><span class="ic idx">${ICONS.idx}</span><span class="name">HNSW vector index</span></div>`;
+      }
+    }
+  }
+  $('#tree').innerHTML = h;
+  $$('#tree [data-root]').forEach((n) => n.addEventListener('click', selectRoot));
+  $$('#tree [data-c]').forEach((n) => n.addEventListener('click', (e) => {
+    if (e.target.closest('[data-del]')) return;
+    selectCollection(n.dataset.c);
+  }));
+  $$('#tree [data-del]').forEach((b) => b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    confirmAction(`Drop collection “${b.dataset.del}”?`, 'This permanently removes every document in it.', async () => {
+      try {
+        await api(`/api/collections/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
+        toast(`Dropped “${b.dataset.del}”`, 'ok');
+        if (state.selectedCol === b.dataset.del) state.selectedCol = null;
+        await loadCollections();
+        render();
+      } catch (err) { toast(err.message, 'err'); }
+    });
+  }));
+}
+
+function renderTabs() {
+  const otabs = $('#otabs');
+  const dis = !state.selectedCol;
+  const aiDisabled = !state.selectedCol || !state.geminiKeySet || !state.model;
+  otabs.innerHTML = `
+    <button class="ot ${state.tab === 'overview' ? 'on' : ''}" data-t="overview"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>Overview</button>
+    <button class="ot ${state.tab === 'data' ? 'on' : ''}" data-t="data" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span>Data${state.selectedCol ? `<span class="badge">${(state.docsByColl[state.selectedCol] || []).length}</span>` : ''}</button>
+    <button class="ot ${state.tab === 'fields' ? 'on' : ''}" data-t="fields" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>Fields</button>
+    <button class="ot ${state.tab === 'model' ? 'on' : ''}" data-t="model"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M9 9l6 6"/></svg></span>Model</button>
+    <button class="ot ${state.tab === 'sql' ? 'on' : ''}" data-t="sql"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>SQL</button>
+    <button class="ot ${state.tab === 'ai' ? 'on' : ''}" data-t="ai"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>AI Chat ${aiDisabled ? '<span class="badge" title="Requires connected db, Gemini key, and a saved model">!</span>' : ''}</button>
+    <div class="sp"></div>
+    <div class="meta">${state.selectedCol ? `Selected · <strong style="color:var(--ac)">${esc(state.selectedCol)}</strong>` : `Selected · <strong>${esc(state.filepath || '—')}</strong>`}</div>`;
+  $$('.ot[data-t]').forEach((b) => b.addEventListener('click', () => {
+    if (b.hasAttribute('disabled')) return;
+    state.tab = b.dataset.t;
+    renderTabs(); renderTab();
+  }));
+}
+
+function renderTab() {
+  if (!state.connected) { $('#cnt').innerHTML = ''; return; }
+  if (state.tab === 'overview') renderOverview();
+  else if (state.tab === 'data') renderData();
+  else if (state.tab === 'fields') renderFields();
+  else if (state.tab === 'model') renderModel();
+  else if (state.tab === 'sql') renderSql();
+  else if (state.tab === 'ai') renderAi();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Overview
+// ─────────────────────────────────────────────────────────────────
+function renderOverview() {
+  const c = state.selectedCol;
+  if (!c) {
+    const totalDocs = state.collections.reduce((s, x) => s + (typeof state.countsByColl[x] === 'number' ? state.countsByColl[x] : 0), 0);
+    const totalSize = state.collections.reduce((s, x) => s + (state.docsByColl[x] || []).reduce((a, d) => a + docSize(d), 0), 0);
+    $('#cnt').innerHTML = `<div class="ov">
+      <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(state.filepath || '—')}</span></h1>
+      <p class="ovsub"><span>📁 file <strong>${esc(state.filepath || '—')}</strong></span><span>📦 <strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span>📄 <strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>💾 ≈ <strong>${fmtSize(totalSize)}</strong> in-memory</span></p>
+      <div class="kpis">
+        <div class="kpi"><div class="l">Connection</div><div class="v" style="font-size:14px;font-family:Consolas,monospace;color:var(--gr);">● ${esc(state.filepath || '—')}</div><div class="d ok">Connected, ready for queries</div></div>
+        <div class="kpi"><div class="l">Gemini API key</div><div class="v" style="font-size:14px;color:${state.geminiKeySet ? 'var(--gr)' : 'var(--am)'};">${state.geminiKeySet ? 'Configured' : 'Not set'}</div><div class="d ${state.geminiKeySet ? 'ok' : 'warn'}">${state.geminiKeySet ? 'AI chat &amp; model generation available' : 'Open settings to add a key'}</div></div>
+        <div class="kpi"><div class="l">Semantic model</div><div class="v" style="font-size:14px;color:${state.model ? 'var(--gr)' : 'var(--am)'};">${state.model ? `${state.model.explores.length} explore${state.model.explores.length > 1 ? 's' : ''}` : 'None'}</div><div class="d ${state.model ? 'ok' : 'warn'}">${state.model ? 'Required for AI chat' : 'Generate one to enable AI chat'}</div></div>
+        <div class="kpi"><div class="l">Vector search</div><div class="v" style="font-size:14px;color:var(--ac);">HNSW (CLIP)</div><div class="d">Loaded lazily on first semantic search</div></div>
+      </div>
+      <div class="psec">
+        <h3>Collections</h3>
+        <div>${state.collections.length === 0 ? `<div class="empty-state"><div class="em">📦</div><h4>No collections yet</h4><p>Create your first collection — give it a name and an initial document.</p><button class="tbtn pri" onclick="openModal('modal-newcoll')">+ New collection</button></div>` :
+          state.collections.map((x) => {
+            const ex = getExplore(x);
+            const n = state.countsByColl[x];
+            return `<div class="prow" style="grid-template-columns:200px 80px 1fr;cursor:pointer;" onclick="selectCollection('${esc(x)}')"><div class="k" style="color:var(--ac);font-family:Consolas,monospace;">${esc(x)}</div><div class="v num" style="text-align:right;">${n === undefined ? '…' : n}</div><div class="v" style="font-family:Segoe UI;color:var(--t2)">${ex && ex.description ? esc(ex.description) : (ex ? esc(ex.label) : '<em style="color:var(--t4);font-style:normal;">No model definition</em>')}</div></div>`;
+          }).join('')}</div>
+      </div>
+    </div>`;
+    return;
+  }
+
+  const docs = state.docsByColl[c] || [];
+  const fields = docs.length ? Object.keys(docs[0]).filter((k) => !k.startsWith('_')) : [];
+  const totalSize = docs.reduce((s, d) => s + docSize(d), 0);
+  const explore = getExplore(c);
+
+  $('#cnt').innerHTML = `<div class="ov">
+    <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span><span class="name">${esc(state.filepath)}.${esc(c)}</span></h1>
+    <p class="ovsub"><span>📄 <strong>${docs.length}</strong> documents</span><span>🔑 <strong>${fields.length}</strong> field${fields.length === 1 ? '' : 's'}</span><span>💾 ≈ <strong>${fmtSize(totalSize)}</strong></span><span>${explore ? `<span style="color:var(--gr)">✓ has model</span>` : `<span style="color:var(--am)">⚠ no model</span>`}</span></p>
+    <div class="kpis">
+      <div class="kpi"><div class="l"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>Documents</div><div class="v">${docs.length}</div><div class="d">${docs.length > 0 ? `${fields.length} fields detected` : 'empty collection'}</div></div>
+      <div class="kpi"><div class="l">Total size</div><div class="v">${fmtSize(totalSize).replace(/^([\d.]+)\s*/, (_, n) => `${n} <small>`)}${fmtSize(totalSize).endsWith('B') ? '</small>' : '</small>'}</div><div class="d">avg ${fmtSize(docs.length ? totalSize / docs.length : 0)}/doc</div></div>
+      <div class="kpi"><div class="l">Semantic model</div><div class="v" style="font-size:14px;color:${explore ? 'var(--gr)' : 'var(--am)'}">${explore ? 'Defined' : 'Missing'}</div><div class="d ${explore ? 'ok' : 'warn'}">${explore ? `${explore.fields.length} field defs · ${(explore.measures || []).length} measures · ${(explore.joins || []).length} joins` : 'Generate from the toolbar'}</div></div>
+      <div class="kpi"><div class="l">Vector search</div><div class="v" style="font-size:14px;color:var(--ac);">Indexed</div><div class="d">HNSW · CLIP embeddings · loaded lazily</div></div>
+    </div>
+    <div class="psec"><h3>General</h3><div>
+      <div class="prow"><div class="k">Name</div><div class="v id">${esc(c)}</div></div>
+      <div class="prow"><div class="k">File</div><div class="v">${esc(state.filepath)}</div></div>
+      <div class="prow"><div class="k">Document count</div><div class="v num">${docs.length}</div></div>
+      <div class="prow"><div class="k">Field count (introspected)</div><div class="v num">${fields.length}</div></div>
+      <div class="prow"><div class="k">Has semantic model</div><div class="v bool ${explore ? 't' : 'f'}"><span class="pill">${explore ? '✓ yes' : '✗ no'}</span></div></div>
+      <div class="prow"><div class="k">Indexes</div><div class="v">HNSW (vector) · id (primary)</div></div>
+    </div></div>
+    ${explore ? `<div class="psec"><h3>From semantic model</h3><div>
+      <div class="prow"><div class="k">Label</div><div class="v" style="font-family:Segoe UI;color:var(--t)">${esc(explore.label)}</div></div>
+      ${explore.description ? `<div class="prow"><div class="k">Description</div><div class="v" style="font-family:Segoe UI;color:var(--t2);white-space:normal;">${esc(explore.description)}</div></div>` : ''}
+      <div class="prow"><div class="k">Defined fields</div><div class="v num">${explore.fields.length}</div></div>
+      <div class="prow"><div class="k">Defined measures</div><div class="v num">${(explore.measures || []).length}</div></div>
+      <div class="prow"><div class="k">Defined joins</div><div class="v num">${(explore.joins || []).length}</div></div>
+    </div></div>` : `<div class="psec"><h3>Semantic model</h3><div class="empty-state"><div class="em">🧠</div><h4>No semantic model yet</h4><p>The AI chat needs a semantic model to understand this collection. Generate one from the data (requires a Gemini API key), or write one manually in the <strong>Model</strong> tab.</p>${state.geminiKeySet ? `<button class="tbtn pri" onclick="generateModel()">Generate from data</button>` : `<button class="tbtn" onclick="openModal('modal-settings')">Configure Gemini key</button>`}</div></div>`}
+  </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Data
+// ─────────────────────────────────────────────────────────────────
+async function refreshDocs(c) {
+  try {
+    const { documents } = await api(`/api/documents/${encodeURIComponent(c)}?limit=10000`);
+    const parsed = (documents || []).map((d) => JSON.parse(d));
+    state.docsByColl[c] = parsed;
+    state.countsByColl[c] = parsed.length;
+  } catch (e) { toast('Reload failed: ' + e.message, 'err'); }
+}
+
+function renderData() {
+  const c = state.selectedCol;
+  const docs = state.docsByColl[c] || [];
+  const keys = docs.length ? Object.keys(docs[0]).filter((k) => !k.startsWith('_')) : [];
+  $('#cnt').innerHTML = `<div style="display:flex;flex-direction:column;height:100%;">
+    <div class="dt-bar">
+      <div class="dt-search">
+        <div class="modes">
+          <button class="${state.searchMode === 'text' ? 'on' : ''}" id="mode-text">Text</button>
+          <button class="${state.searchMode === 'image' ? 'on' : ''}" id="mode-image">Image</button>
         </div>
-        <div class="header-actions" style="position: relative">
-          <button id="header-menu-btn" class="menu-btn" disabled>⋮</button>
-          <div id="header-dropdown" class="dropdown hidden">
-            <div class="dropdown-status">
-              <span>Database grootte</span>
-              <strong id="database-size-value">-</strong>
+        <div class="w">
+          <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg>
+          <input id="sem-q" placeholder="${state.searchMode === 'text' ? 'Semantic search — ask in plain language…' : 'Click to upload an image…'}" ${state.searchMode === 'image' ? 'readonly' : ''}/>
+          ${state.searchActive ? `<button class="clear" id="sem-clear" title="Clear">✕</button>` : ''}
+        </div>
+      </div>
+      <input type="file" id="sem-image-file" accept="image/*" style="display:none"/>
+      <button class="tbtn pri" id="dt-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Add document</button>
+      <button class="tbtn" id="dt-refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg></button>
+      <div class="dt-meta">${state.searchActive ? `<span class="badge">filtered by similarity</span>` : ''}<span><strong>${docs.length}</strong> row${docs.length === 1 ? '' : 's'}</span></div>
+    </div>
+    <div class="tw" id="dg-host"></div>
+  </div>`;
+  renderDataGrid(docs, keys);
+  $('#dt-add').addEventListener('click', () => openAddDocModal(c));
+  $('#dt-refresh').addEventListener('click', async () => { state.searchActive = false; await refreshDocs(c); render(); });
+  $('#mode-text').addEventListener('click', () => { state.searchMode = 'text'; renderData(); });
+  $('#mode-image').addEventListener('click', () => { state.searchMode = 'image'; renderData(); $('#sem-image-file').click(); });
+  const semQ = $('#sem-q');
+  if (state.searchMode === 'image') {
+    semQ.addEventListener('click', () => $('#sem-image-file').click());
+  } else {
+    semQ.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSemanticSearch(c, semQ.value.trim()); });
+  }
+  $('#sem-image-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const b64 = String(reader.result).split(',')[1] || '';
+      semQ.value = file.name;
+      await doImageSearch(c, b64);
+    };
+    reader.readAsDataURL(file);
+  });
+  if (state.searchActive) {
+    $('#sem-clear')?.addEventListener('click', async () => { state.searchActive = false; await refreshDocs(c); render(); });
+  }
+}
+
+function renderDataGrid(docs, keys) {
+  if (docs.length === 0) {
+    $('#dg-host').innerHTML = `<div class="dg"><div class="loader">No documents.</div></div>`;
+    return;
+  }
+  // Build a union of keys across all docs so semantic search results render correctly
+  const unionKeys = Array.from(new Set(docs.flatMap((d) => Object.keys(d)))).filter((k) => !k.startsWith('_') && k !== 'body');
+  const sample = (k) => {
+    for (const d of docs) if (d[k] != null) return d[k];
+    return null;
+  };
+  const typeBadge = (v) => v == null ? 'A' : typeof v === 'number' ? 'N' : typeof v === 'boolean' ? 'B' : 'A';
+  $('#dg-host').innerHTML = `<table class="dg">
+    <thead><tr><th class="rn">#</th>${unionKeys.map((k) => `<th><div class="ti"><span class="ic">${k === 'id' ? 'PK' : typeBadge(sample(k))}</span>${esc(k)}</div></th>`).join('')}</tr></thead>
+    <tbody>${docs.map((d, i) => {
+      const isOn = state.selectedDoc && d.id === state.selectedDoc.id;
+      return `<tr data-i="${i}" data-id="${esc(d.id)}" ${isOn ? 'class="on"' : ''}><td class="rn">${i + 1}</td>${unionKeys.map((k) => {
+        const v = d[k];
+        if (v === undefined || v === null) return `<td class="cnu">[NULL]</td>`;
+        if (typeof v === 'number') return `<td class="cn">${fmtNum(v)}</td>`;
+        if (typeof v === 'boolean') return `<td class="cb ${v ? 't' : 'f'}">${v}</td>`;
+        if (k === 'id') return `<td class="ck">${esc(v)}</td>`;
+        if (isImageField(k) && typeof v === 'string' && v.startsWith('data:')) return `<td class="ci"><img src="${v}" alt=""></td>`;
+        return `<td class="cs">${esc(String(v))}</td>`;
+      }).join('')}</tr>`;
+    }).join('')}</tbody>
+  </table>`;
+  $$('.dg tbody tr').forEach((tr) => tr.addEventListener('click', () => openDrawer(docs[parseInt(tr.dataset.i, 10)], parseInt(tr.dataset.i, 10))));
+}
+
+async function doSemanticSearch(c, q) {
+  if (!q) { state.searchActive = false; await refreshDocs(c); render(); return; }
+  const host = $('#dg-host');
+  host.innerHTML = `<div class="dg"><div class="loader">Searching…</div></div>`;
+  try {
+    const { documents } = await api(`/api/documents/${encodeURIComponent(c)}/search?q=${encodeURIComponent(q)}&limit=50`);
+    const parsed = (documents || []).map((d) => JSON.parse(d));
+    state.docsByColl[c] = parsed;
+    state.searchActive = true;
+    render();
+  } catch (e) {
+    host.innerHTML = `<div class="dg"><div class="err">Semantic search failed:\n${esc(e.message)}</div></div>`;
+  }
+}
+async function doImageSearch(c, b64) {
+  const host = $('#dg-host');
+  host.innerHTML = `<div class="dg"><div class="loader">Searching by image…</div></div>`;
+  try {
+    const { documents } = await api(`/api/documents/${encodeURIComponent(c)}/search/image?limit=50`, { method: 'POST', body: { image: b64 } });
+    const parsed = (documents || []).map((d) => JSON.parse(d));
+    state.docsByColl[c] = parsed;
+    state.searchActive = true;
+    render();
+  } catch (e) {
+    host.innerHTML = `<div class="dg"><div class="err">Image search failed:\n${esc(e.message)}</div></div>`;
+  }
+}
+
+function openDrawer(doc, idx) {
+  state.selectedDoc = doc;
+  state.selectedDocIndex = idx;
+  renderDrawer();
+  $('#drawer').classList.add('on');
+  $$('.dg tbody tr').forEach((tr) => tr.classList.remove('on'));
+  $$(`.dg tbody tr[data-i="${idx}"]`).forEach((tr) => tr.classList.add('on'));
+}
+function closeDrawer() { $('#drawer').classList.remove('on'); state.selectedDoc = null; }
+$('#dr-close').addEventListener('click', closeDrawer);
+
+async function renderDrawer() {
+  const d = state.selectedDoc; if (!d) return;
+  $('#dr-title').textContent = String(d.id ?? '(no id)');
+  const c = state.selectedCol;
+  let meta = null;
+  try { meta = await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/metadata`); }
+  catch { meta = null; }
+  const keys = Object.keys(d).filter((k) => !k.startsWith('_'));
+  const compsText = meta && meta.compressions && Object.keys(meta.compressions).length > 0
+    ? Object.entries(meta.compressions).map(([k, v]) => `${esc(k)}: <em style="font-style:normal;color:var(--ac)">${esc(v)}</em>`).join(', ')
+    : '<em style="color:var(--t3);">none</em>';
+  $('#dr-body').innerHTML = `
+    <div class="dr-stats">
+      <div class="dr-stat"><div class="l">In-memory size</div><div class="v">${fmtSize(docSize(d))}</div></div>
+      <div class="dr-stat"><div class="l">Stored size</div><div class="v">${meta ? `${fmtSize(meta.storedSize)} <small>on disk</small>` : '<small>—</small>'}</div></div>
+    </div>
+    <div class="prow" style="grid-template-columns:130px 1fr;padding:7px 0;border:none;font-size:12px"><div class="k">Compression</div><div class="v" style="font-family:Consolas;color:var(--t2)">${compsText}</div></div>
+    <div style="margin-top:14px;font-size:10.5px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Fields</div>
+    ${keys.map((k) => {
+      const v = d[k];
+      let cls = 'cs', html;
+      if (v == null) { cls = 'nu'; html = '[NULL]'; }
+      else if (typeof v === 'number') { cls = 'num'; html = fmtNum(v); }
+      else if (typeof v === 'boolean') { cls = 'bool'; html = String(v); }
+      else if (k === 'id') { cls = 'id'; html = esc(v); }
+      else if (isImageField(k) && typeof v === 'string' && v.startsWith('data:')) { cls = 'img'; html = `<img src="${v}" alt="">`; }
+      else { html = `<span data-edit="${esc(k)}">${esc(String(v))}</span>`; }
+      return `<div class="fld-row" data-k="${esc(k)}"><div class="k">${esc(k)}</div><div class="v ${cls}">${html}</div></div>`;
+    }).join('')}
+  `;
+}
+
+$('#dr-edit').addEventListener('click', () => {
+  const d = state.selectedDoc; if (!d) return;
+  const c = state.selectedCol;
+  const keys = Object.keys(d).filter((k) => !k.startsWith('_') && k !== 'id');
+  let h = '';
+  for (const k of keys) {
+    const v = d[k];
+    h += `<div class="fld-row editing"><div class="k">${esc(k)}</div><div class="v"><input data-edit-k="${esc(k)}" value="${esc(typeof v === 'string' ? v : JSON.stringify(v))}"/></div></div>`;
+  }
+  $('#dr-body').innerHTML = `<div class="dr-stats"><div class="dr-stat" style="grid-column:1/-1;"><div class="l">Editing</div><div class="v" style="font-size:13px;font-family:Consolas;color:var(--ac);">${esc(d.id)}</div></div></div>${h}<div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;"><button class="tbtn sec" id="edit-cancel" style="border:1px solid var(--bd);background:var(--bg2);">Cancel</button><button class="tbtn pri" id="edit-save">Save</button></div>`;
+  $('#edit-cancel').addEventListener('click', () => renderDrawer());
+  $('#edit-save').addEventListener('click', async () => {
+    const inputs = $$('[data-edit-k]', $('#dr-body'));
+    const changes = [];
+    for (const inp of inputs) {
+      const field = inp.dataset.editK;
+      const raw = inp.value;
+      let val = raw;
+      // Coerce: try JSON parse for numbers/booleans/null/objects, else keep as string
+      try { val = JSON.parse(raw); } catch { /* keep string */ }
+      if (JSON.stringify(state.selectedDoc[field]) !== JSON.stringify(val)) {
+        changes.push({ field, value: val });
+      }
+    }
+    if (changes.length === 0) { toast('No changes.', 'warn'); renderDrawer(); return; }
+    try {
+      for (const ch of changes) {
+        await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/edit`, { method: 'POST', body: ch });
+      }
+      toast(`Updated ${changes.length} field${changes.length === 1 ? '' : 's'}`, 'ok');
+      await refreshDocs(c);
+      const refreshed = (state.docsByColl[c] || []).find((x) => String(x.id) === String(d.id));
+      if (refreshed) { state.selectedDoc = refreshed; renderDrawer(); }
+      renderData();
+    } catch (e) { toast('Edit failed: ' + e.message, 'err'); }
+  });
+});
+
+$('#dr-del').addEventListener('click', () => {
+  const d = state.selectedDoc; if (!d) return;
+  confirmAction(`Delete document “${d.id}”?`, 'This cannot be undone.', async () => {
+    try {
+      await api(`/api/documents/${encodeURIComponent(state.selectedCol)}/${encodeURIComponent(String(d.id))}`, { method: 'DELETE' });
+      toast('Document deleted', 'ok');
+      closeDrawer();
+      await refreshDocs(state.selectedCol);
+      render();
+    } catch (e) { toast('Delete failed: ' + e.message, 'err'); }
+  });
+});
+
+function openAddDocModal(c) {
+  $('#adddoc-sub').textContent = `Into ${c}`;
+  const example = `{\n  "id": "new_${Date.now().toString(36)}"\n}`;
+  $('#adddoc-json').value = example;
+  $('#adddoc-err').classList.add('hidden');
+  openModal('modal-adddoc');
+}
+$('#adddoc-save').addEventListener('click', async () => {
+  let doc;
+  try { doc = JSON.parse($('#adddoc-json').value); }
+  catch (e) { $('#adddoc-err').classList.remove('hidden'); $('#adddoc-err').textContent = 'Invalid JSON: ' + e.message; return; }
+  if (!doc || !doc.id) { $('#adddoc-err').classList.remove('hidden'); $('#adddoc-err').textContent = 'Document must have an "id" field.'; return; }
+  try {
+    await api(`/api/documents/${encodeURIComponent(state.selectedCol)}`, { method: 'POST', body: { document: doc } });
+    toast('Document inserted', 'ok');
+    closeModal('modal-adddoc');
+    await refreshDocs(state.selectedCol);
+    render();
+  } catch (e) {
+    $('#adddoc-err').classList.remove('hidden');
+    $('#adddoc-err').textContent = e.message;
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Fields
+// ─────────────────────────────────────────────────────────────────
+function renderFields() {
+  const c = state.selectedCol;
+  const docs = state.docsByColl[c] || [];
+  if (docs.length === 0) {
+    $('#cnt').innerHTML = `<div class="flds"><div class="empty-state"><div class="em">🔑</div><h4>No documents to introspect</h4><p>Add a document to see what fields exist and their types.</p></div></div>`;
+    return;
+  }
+  const explore = getExplore(c);
+  const explored = new Map((explore?.fields || []).map((f) => [f.name, f]));
+  const fieldKeys = Array.from(new Set(docs.flatMap((d) => Object.keys(d)))).filter((k) => !k.startsWith('_'));
+  $('#cnt').innerHTML = `<div class="flds">
+    <div class="summary">Detected <strong>${fieldKeys.length}</strong> field${fieldKeys.length === 1 ? '' : 's'} across <strong>${docs.length}</strong> document${docs.length === 1 ? '' : 's'}. ${explore ? `Of those, <strong>${explore.fields.length}</strong> ${explore.fields.length === 1 ? 'has' : 'have'} semantic-model definitions.` : 'No semantic model is defined — synonyms and labels won\'t appear here.'}</div>
+    ${fieldKeys.map((k) => {
+      const presentCount = docs.reduce((n, d) => n + (d[k] != null ? 1 : 0), 0);
+      const pct = (presentCount / docs.length) * 100;
+      const sample = docs.find((d) => d[k] != null)?.[k];
+      const t = detectType(sample);
+      const tCls = t === 'number' ? 'n' : t === 'boolean' ? 'b' : 's';
+      const m = explored.get(k);
+      const sampleStr = sample == null ? '—' : typeof sample === 'string' ? `"${sample.slice(0, 60)}"` : typeof sample === 'object' ? JSON.stringify(sample).slice(0, 60) : String(sample);
+      return `<div class="fld-card">
+        <div class="head">
+          <div class="name">${esc(k)}${k === 'id' ? ' <span style="font-size:10px;color:var(--pp);">PK</span>' : ''}</div>
+          <div class="ty ${tCls}">${t}</div>
+          <div class="cov"><div class="bar"><div class="fill" style="width:${pct.toFixed(0)}%"></div></div><span>${pct.toFixed(0)}%</span></div>
+          <div class="sample">${esc(sampleStr)}</div>
+        </div>
+        ${m ? `<div class="model-info">
+          <div class="row"><div class="l">Label</div><div class="v">${esc(m.label)}</div></div>
+          ${m.description ? `<div class="row"><div class="l">Description</div><div class="v">${esc(m.description)}</div></div>` : ''}
+          ${m.synonyms && m.synonyms.length ? `<div class="row"><div class="l">Synonyms</div><div class="v syn">${m.synonyms.map((s) => `<em>${esc(s)}</em>`).join(' ')}</div></div>` : ''}
+          ${m.tags && m.tags.length ? `<div class="row"><div class="l">Tags</div><div class="v tags">${m.tags.map((s) => `<span>${esc(s)}</span>`).join('')}</div></div>` : ''}
+          <div class="row"><div class="l">Hidden from LLM</div><div class="v">${m.hidden ? '<span style="color:var(--am)">yes</span>' : 'no'}</div></div>
+        </div>` : `<div class="nomodel">No semantic-model definition for this field.</div>`}
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Model
+// ─────────────────────────────────────────────────────────────────
+function renderModel() {
+  const explore = state.selectedCol ? getExplore(state.selectedCol) : null;
+  const jsonStr = state.model ? JSON.stringify(state.model, null, 2) : '';
+  const hasGemini = state.geminiKeySet;
+  $('#cnt').innerHTML = `<div class="model-pane">
+    <div class="model-tools">
+      <button class="tbtn pri" id="mdl-gen" ${hasGemini ? '' : 'disabled'} title="${hasGemini ? 'Generate model by introspecting the DB + Gemini' : 'Requires Gemini API key'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Generate from data</button>
+      <button class="tbtn" id="mdl-save"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/></svg>Save edits</button>
+      <button class="tbtn" id="mdl-reload">Reload from server</button>
+      <div class="meta ${state.model ? 'ok' : 'warn'}">${state.model ? `${state.model.explores.length} explore${state.model.explores.length === 1 ? '' : 's'} · ${state.model.explores.reduce((s, e) => s + e.fields.length, 0)} fields total` : 'No model loaded'}</div>
+    </div>
+    <div class="model-body">
+      <div class="grid">
+        <div class="json-editor">
+          <div class="head"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>Model JSON</div>
+          <textarea id="mdl-json" spellcheck="false" placeholder="{ &quot;explores&quot;: [ ... ] }">${esc(jsonStr)}</textarea>
+          <div class="err hidden" id="mdl-err"></div>
+        </div>
+        <div>
+          ${explore ? `
+            <div class="model-table" style="margin-bottom:10px;">
+              <div class="head">📐 Measures<span class="ct">${(explore.measures || []).length}</span></div>
+              ${(explore.measures || []).length > 0 ? `<table><thead><tr><th>Name</th><th>Aggregation</th><th>Field</th><th>Description</th></tr></thead><tbody>${explore.measures.map((m) => `<tr><td><span class="ac">${esc(m.name)}</span></td><td><span class="pp">${esc(m.aggregation)}</span></td><td><span class="am">${esc(m.field)}</span></td><td><span class="t3">${esc(m.description || '')}</span></td></tr>`).join('')}</tbody></table>` : `<div class="empty">No measures defined for ${esc(state.selectedCol)}.</div>`}
             </div>
-            <label class="dropdown-toggle">
-              <input type="checkbox" id="incremental-compaction-toggle" disabled />
-              <span>Automatisch compacten</span>
-            </label>
-            <div id="incremental-compaction-status" class="dropdown-note">Uitgeschakeld</div>
-            <button id="vacuum-db-btn" disabled class="dropdown-item">Database compacten</button>
-            <button id="reset-db-btn" disabled class="dropdown-item dropdown-item--danger">DB Resetten</button>
-            <button id="disconnect-btn" disabled class="dropdown-item">Verbinding verbreken</button>
-          </div>
-        </div>
-      </header>
-
-      <div class="layout">
-        <!--Sidebar -->
-        <aside id="sidebar">
-          <div class="sidebar-header">
-            <span>Collecties</span>
-            <button id="new-collection-btn" disabled class="btn-icon" title="Nieuwe collectie">+</button>
-          </div>
-          <ul id="collection-list"></ul>
-        </aside>
-
-        <!-- Main content -->
-        <main id="content">
-          <div id="toolbar">
-            <button id="add-doc-btn" disabled class="btn-primary">+ Toevoegen</button>
-            <input type="text" id="filter-input" placeholder="Zoeken..." disabled />
-            <button id="refresh-btn" disabled class="btn-secondary btn-icon-text">↻ Vernieuwen</button>
-          </div>
-
-          <div id="content-search-bar" class="hidden">
-            <input type="text" id="content-search-input" placeholder="Zoek woord in artikeltekst..." />
-            <button id="content-search-btn" class="btn-primary">Zoeken</button>
-            <button id="content-search-clear-btn" class="btn-secondary hidden">✕ Wissen</button>
-            <span id="content-search-info"></span>
-          </div>
-
-          <div id="table-wrapper">
-            <table id="data-table">
-              <thead></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-          <div id="load-more-bar" class="hidden">
-            <button id="load-more-btn" class="btn-secondary">Meer laden</button>
-            <span id="load-more-info"></span>
-          </div>
-        </main>
-        <section id="lab-panel" class="hidden"></section>
-      </div>
-    </div>
-
-    <!-- Connect Modal -->
-    <div id="connect-modal" class="modal">
-      <div class="modal-content">
-        <h2>Verbinding maken</h2>
-        <label for="db-filepath">Database pad</label>
-        <input type="text" id="db-filepath" placeholder="bijv. data.db" value="data.db" />
-        <div class="modal-actions">
-          <button id="connect-confirm-btn" class="btn-primary">Openen</button>
-          <button id="create-new-btn" class="btn-success">Nieuw aanmaken</button>
-        </div>
-        <p id="connect-error" class="error"></p>
-      </div>
-    </div>
-
-    <!-- New Collection Modal -->
-    <div id="new-collection-modal" class="modal hidden">
-      <div class="modal-content">
-        <span class="close-btn">✕</span>
-        <h2>Nieuwe collectie</h2>
-        <p class="hint">Geef een naam op. Je wordt daarna gevraagd om het eerste document toe te voegen.</p>
-        <label for="new-collection-name">Naam</label>
-        <input type="text" id="new-collection-name" placeholder="bijv. gebruikers" />
-        <button id="new-collection-confirm-btn" class="btn-primary">Aanmaken</button>
-        <p id="new-collection-error" class="error"></p>
-      </div>
-    </div>
-
-    <div id="maintenance-modal" class="modal hidden">
-      <div class="modal-content">
-        <h2 id="maintenance-title">Database compacteren</h2>
-        <p id="maintenance-status">Even geduld. De database is tijdelijk vergrendeld.</p>
-      </div>
-    </div>
-
-    <!-- Wikipedia-style Document View -->
-    <div id="doc-view" class="doc-view hidden">
-      <div class="doc-view-header">
-        <button id="doc-view-back" class="btn-secondary">← Terug</button>
-        <div class="doc-view-actions">
-          <button id="doc-view-edit" class="btn-primary">Bewerken</button>
-          <button id="doc-view-save" class="btn-success hidden">Opslaan</button>
-          <button id="doc-view-cancel" class="btn-secondary hidden">Annuleren</button>
-          <button id="doc-view-delete" class="btn-danger">Verwijderen</button>
-        </div>
-      </div>
-      <div class="doc-view-body">
-        <div class="doc-view-grid">
-          <article class="doc-article">
-            <h1 id="doc-view-title"></h1>
-            <div id="doc-view-fields" class="doc-fields-list"></div>
-            <div id="doc-view-content"></div>
-          </article>
-          <aside class="doc-sidebar">
-            <div id="doc-infobox" class="doc-infobox"></div>
-            <nav id="doc-toc" class="doc-toc">
-              <div class="doc-toc-header">
-                <span class="doc-toc-title">Inhoud</span>
-                <button id="doc-toc-toggle" class="doc-toc-toggle-btn">verbergen</button>
-              </div>
-              <div id="doc-toc-list" class="doc-toc-list"></div>
-            </nav>
-          </aside>
+            <div class="model-table">
+              <div class="head">🔗 Joins<span class="ct">${(explore.joins || []).length}</span></div>
+              ${(explore.joins || []).length > 0 ? `<table><thead><tr><th>To collection</th><th>Left field</th><th>Right field</th><th>Relationship</th></tr></thead><tbody>${explore.joins.map((j) => `<tr><td><span class="ac">${esc(j.collection)}</span></td><td><span class="am">${esc(j.leftField)}</span></td><td><span class="am">${esc(j.rightField)}</span></td><td><span class="t3">${esc(j.relationship)}</span></td></tr>`).join('')}</tbody></table>` : `<div class="empty">No joins defined for ${esc(state.selectedCol)}.</div>`}
+            </div>` : `
+            <div class="model-table"><div class="head">Pick a collection</div><div class="empty">${state.model ? 'Select a collection on the left to see its measures and joins.' : 'No model loaded — generate one or paste JSON on the left, then Save.'}</div></div>
+          `}
         </div>
       </div>
     </div>
+  </div>`;
+  $('#mdl-gen').addEventListener('click', generateModel);
+  $('#mdl-save').addEventListener('click', async () => {
+    const raw = $('#mdl-json').value;
+    try {
+      JSON.parse(raw);
+    } catch (e) { $('#mdl-err').classList.remove('hidden'); $('#mdl-err').textContent = 'Invalid JSON: ' + e.message; return; }
+    $('#mdl-err').classList.add('hidden');
+    try {
+      const { model } = await api('/api/conversational/model', { method: 'PUT', body: { model: raw } });
+      state.model = model;
+      toast('Model saved', 'ok');
+      render();
+    } catch (e) { $('#mdl-err').classList.remove('hidden'); $('#mdl-err').textContent = e.message; }
+  });
+  $('#mdl-reload').addEventListener('click', async () => { await loadModel(); toast('Model reloaded', 'ok'); render(); });
+}
 
-    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
-    <script type="module" src="app.js"></script>
-  </body>
+async function generateModel() {
+  if (!state.geminiKeySet) { toast('Set the Gemini API key first.', 'warn'); openModal('modal-settings'); return; }
+  toast('Generating model… this may take ~20s', '', 'Generating');
+  try {
+    const { model } = await api('/api/conversational/model/generate', { method: 'POST' });
+    state.model = model;
+    toast('Semantic model generated', 'ok');
+    render();
+  } catch (e) { toast('Generation failed: ' + e.message, 'err'); }
+}
+window.generateModel = generateModel;
+
+// ─────────────────────────────────────────────────────────────────
+// SQL
+// ─────────────────────────────────────────────────────────────────
+let pendingSql = '';
+
+function renderSql() {
+  const last = state.sqlHistory[0];
+  $('#cnt').innerHTML = `<div class="sql-pane">
+    <div class="sql-tools">
+      <button class="tbtn pri" id="sql-run"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>Run (⌘↩)</button>
+      <button class="tbtn" id="sql-clear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>Clear</button>
+      <button class="tbtn" id="sql-example">Example: SELECT</button>
+      ${state.selectedCol ? `<button class="tbtn" id="sql-prefill">SELECT * FROM ${esc(state.selectedCol)}</button>` : ''}
+      <div class="meta">
+        ${last ? last.ok
+          ? `<span><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'}</span><span class="ok-pill">${esc(last.kind)} · ${last.elapsedMs} ms</span>`
+          : `<span class="err-pill">error</span>`
+        : `<span style="color:var(--t4);font-style:italic;">no query run yet</span>`}
+      </div>
+    </div>
+    <div class="sql-editor" id="sql-edit" contenteditable="true" spellcheck="false">${pendingSql ? esc(pendingSql) : ''}</div>
+    <div class="sql-results" id="sql-out">${renderSqlOut(last)}${renderSqlHistory()}</div>
+  </div>`;
+  const editor = $('#sql-edit');
+  editor.addEventListener('input', () => { pendingSql = editor.innerText; });
+  editor.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); runSql(); }
+  });
+  $('#sql-run').addEventListener('click', runSql);
+  $('#sql-clear').addEventListener('click', () => { pendingSql = ''; editor.innerText = ''; });
+  $('#sql-example').addEventListener('click', () => { const ex = state.selectedCol ? `SELECT *\n  FROM ${state.selectedCol}\n LIMIT 25;` : 'SELECT *\n  FROM <collection>\n LIMIT 25;'; pendingSql = ex; editor.innerText = pendingSql; });
+  if (state.selectedCol) {
+    $('#sql-prefill').addEventListener('click', () => { pendingSql = `SELECT * FROM ${state.selectedCol} LIMIT 100;`; editor.innerText = pendingSql; });
+  }
+  if (pendingSql) editor.innerText = pendingSql;
+  $$('#sql-out .item').forEach((el) => el.addEventListener('click', () => {
+    pendingSql = el.dataset.sql; editor.innerText = pendingSql;
+  }));
+}
+
+async function runSql() {
+  const sql = pendingSql.trim();
+  if (!sql) { toast('Type a query first.', 'warn'); return; }
+  const isMutating = /^\s*(insert|delete)\b/i.test(sql);
+  if (isMutating) {
+    const kind = /^\s*insert/i.test(sql) ? 'INSERT' : 'DELETE';
+    await new Promise((resolve) => {
+      confirmAction(`Run a ${kind} statement?`, `${kind} statements modify the database. Continue?`, () => { runSqlNow(sql); resolve(); });
+    });
+    return;
+  }
+  await runSqlNow(sql);
+}
+async function runSqlNow(sql) {
+  try {
+    const result = await api('/api/query', { method: 'POST', body: { sql } });
+    state.sqlHistory.unshift({ sql, ok: true, ts: Date.now(), rowCount: result.rowCount, elapsedMs: result.elapsedMs, kind: result.kind, rows: result.rows });
+    state.sqlHistory = state.sqlHistory.slice(0, 10);
+    if (result.kind !== 'select') {
+      toast(`${result.kind.toUpperCase()} ok`, 'ok');
+      // Refresh affected collection if we can determine it
+      const m = sql.match(/(?:from|into)\s+([A-Za-z_][A-Za-z0-9_]*)/i);
+      if (m) await refreshDocs(m[1]);
+    }
+    renderSql();
+  } catch (e) {
+    state.sqlHistory.unshift({ sql, ok: false, ts: Date.now(), error: e.message });
+    state.sqlHistory = state.sqlHistory.slice(0, 10);
+    renderSql();
+  }
+}
+
+function renderSqlOut(last) {
+  if (!last) return '';
+  if (!last.ok) return `<div class="err">✗ ${esc(last.error)}</div>`;
+  if (last.kind !== 'select') return `<div class="rhead"><span class="ok-pill">${esc(last.kind)}</span><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} affected · ${last.elapsedMs} ms</div>`;
+  const rows = last.rows || [];
+  if (rows.length === 0) return `<div class="rhead"><strong>0</strong> rows · ${last.elapsedMs} ms</div><div style="padding:20px;text-align:center;color:var(--t3);font-size:12px;">No rows returned.</div>`;
+  const cols = Object.keys(rows[0]);
+  return `<div class="rhead"><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} · <span class="pill">${esc(last.kind)}</span> · <span class="pill">${last.elapsedMs} ms</span></div>
+  <table class="dg"><thead><tr><th class="rn">#</th>${cols.map((c) => `<th><div class="ti"><span class="ic">${typeof rows[0][c] === 'number' ? 'N' : 'A'}</span>${esc(c)}</div></th>`).join('')}</tr></thead>
+  <tbody>${rows.map((r, i) => `<tr><td class="rn">${i + 1}</td>${cols.map((c) => { const v = r[c]; if (v == null) return '<td class="cnu">[NULL]</td>'; if (typeof v === 'number') return `<td class="cn">${fmtNum(v)}</td>`; return `<td class="cs">${esc(String(v))}</td>`; }).join('')}</tr>`).join('')}</tbody></table>`;
+}
+function renderSqlHistory() {
+  if (state.sqlHistory.length <= 1) return '';
+  return `<div class="sql-history"><h4>History</h4>${state.sqlHistory.slice(1).map((h) => `<div class="item" data-sql="${esc(h.sql)}"><span class="${h.ok ? 'ok' : 'ko'}">${h.ok ? '✓' : '✗'}</span><span class="qq">${esc(h.sql.replace(/\s+/g, ' '))}</span><span class="when">${h.ok ? `${h.rowCount} rows · ${h.elapsedMs}ms` : 'error'}</span></div>`).join('')}</div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// AI Chat
+// ─────────────────────────────────────────────────────────────────
+let aiBusy = false;
+
+function renderAi() {
+  const empty = state.chatHistory.length === 0;
+  $('#cnt').innerHTML = `<div class="ai-pane">
+    <div class="ai-head">
+      <div class="ic">AI</div>
+      <div class="ttl"><strong>Conversational analytics</strong><div class="sub">Gemini · context: <strong style="color:var(--ac)">${esc(state.selectedCol || '—')}</strong></div></div>
+      <div class="meta">
+        <span class="pill ${state.geminiKeySet ? 'ok' : 'bad'}">Gemini · ${state.geminiKeySet ? 'ready' : 'no key'}</span>
+        <span class="pill ${state.model ? 'ok' : 'warn'}">Model · ${state.model ? `${state.model.explores.length} explore${state.model.explores.length === 1 ? '' : 's'}` : 'missing'}</span>
+        <button class="tbtn" id="ai-clear" style="padding:4px 10px;font-size:11px;">Clear chat</button>
+      </div>
+    </div>
+    <div class="ai-body" id="ai-body">${empty ? renderAiEmpty() : state.chatHistory.map((m, i) => renderAiMessage(m, i)).join('')}</div>
+    <div class="ai-input">
+      <input id="ai-q" placeholder="${state.geminiKeySet && state.model ? 'Ask about your data…' : state.geminiKeySet ? 'Generate a model first to enable AI…' : 'Configure Gemini API key first…'}" ${state.geminiKeySet && state.model ? '' : 'disabled'}/>
+      <button id="ai-send" ${state.geminiKeySet && state.model ? '' : 'disabled'}>Send</button>
+    </div>
+  </div>`;
+  $('#ai-clear').addEventListener('click', () => { state.chatHistory = []; renderAi(); });
+  $('#ai-q')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !aiBusy) sendChat(); });
+  $('#ai-send')?.addEventListener('click', () => { if (!aiBusy) sendChat(); });
+  $$('#ai-body .example').forEach((b) => b.addEventListener('click', () => { $('#ai-q').value = b.dataset.q; sendChat(); }));
+  $$('#ai-body .chip').forEach((b) => b.addEventListener('click', () => { $('#ai-q').value = b.dataset.q; sendChat(); }));
+  $$('#ai-body .didyou li').forEach((li) => li.addEventListener('click', () => { $('#ai-q').value = li.textContent; sendChat(); }));
+  $$('#ai-body .open-sql').forEach((b) => b.addEventListener('click', () => {
+    pendingSql = b.dataset.sql;
+    state.tab = 'sql';
+    renderTabs(); renderTab();
+  }));
+  $$('#ai-body .qch canvas').forEach((cv) => {
+    const spec = JSON.parse(cv.dataset.chart);
+    drawChart(cv, spec.chart, spec.data);
+  });
+  const body = $('#ai-body');
+  body.scrollTop = body.scrollHeight;
+}
+
+function renderAiEmpty() {
+  if (!state.geminiKeySet) {
+    return `<div class="ai-empty"><div class="em">🔑</div><h4>Add your Gemini API key</h4><p>The conversational analytics feature requires a Google Gemini API key. Set it in <strong>Settings</strong> and reload.</p><button class="tbtn pri" onclick="openModal('modal-settings')" style="margin:0 auto;">Open settings</button></div>`;
+  }
+  if (!state.model) {
+    return `<div class="ai-empty"><div class="em">🧠</div><h4>No semantic model</h4><p>To chat with your data, generate a semantic model so the AI knows what your fields mean.</p><button class="tbtn pri" onclick="generateModel()" style="margin:0 auto;">Generate from data</button></div>`;
+  }
+  const examples = [
+    state.selectedCol ? `How many records are in ${state.selectedCol}?` : 'How many collections are there?',
+    'What are the distinct categories and their counts?',
+    'Show me the top 5 by some metric',
+    'Compare the largest groups in this collection',
+  ];
+  return `<div class="ai-empty"><div class="em">💬</div><h4>Ask a question about your data</h4><p>Type a question in plain English. The AI will translate it to SQL, run it, and explain the result with a chart and follow-up suggestions.</p><div class="examples">${examples.map((q) => `<button class="example" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div></div>`;
+}
+
+function renderAiMessage(m, i) {
+  if (m.role === 'user') {
+    return `<div class="msg u"><div class="who">You</div><div class="bub">${esc(m.text)}</div></div>`;
+  }
+  if (m.thinking) return `<div class="msg a"><div class="who">AI</div><div class="bub thinking">${esc(m.text)}</div></div>`;
+  if (m.error) return `<div class="msg a"><div class="who">AI</div><div class="bub err">${esc(m.error)}</div></div>`;
+  const r = m.response;
+  let h = '';
+  if (r.query) {
+    h += `<div class="q"><div class="qhead">Generated SQL<span class="open-sql" data-sql="${esc(r.query)}">Open in SQL editor →</span></div><div class="qcode">${esc(r.query)}</div></div>`;
+  }
+  if (r.interpretation) h += `<div class="in">${esc(r.interpretation)}</div>`;
+  if (r.data && r.data.length > 0) {
+    const cols = Object.keys(r.data[0]);
+    h += `<table class="qt"><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.data.slice(0, 30).map((row) => `<tr>${cols.map((c) => typeof row[c] === 'number' ? `<td class="cn">${fmtNum(row[c])}</td>` : `<td>${esc(String(row[c] ?? ''))}</td>`).join('')}</tr>`).join('')}${r.data.length > 30 ? `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--t3);">+ ${r.data.length - 30} more rows</td></tr>` : ''}</tbody></table>`;
+  }
+  if (r.chart && r.chart.type && r.chart.type !== 'none' && r.data && r.data.length > 0) {
+    const id = `chart-${i}-${Date.now()}`;
+    h += `<div class="qch"><canvas id="${id}" data-chart='${esc(JSON.stringify({ chart: r.chart, data: r.data }))}'></canvas></div>`;
+  }
+  if (r.summary) h += `<div class="sum">${esc(r.summary)}</div>`;
+  if (r.anomaly) h += `<div class="anom">${esc(r.anomaly)}</div>`;
+  if (r.didYouMean && r.didYouMean.length > 0) h += `<div class="didyou"><strong>Did you mean…</strong><ul>${r.didYouMean.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></div>`;
+  if (r.suggestions && r.suggestions.length > 0) {
+    h += `<div class="chips">${r.suggestions.map((s) => `<button class="chip" data-q="${esc(s.text)}"><span class="l">${esc(s.type)}</span>${esc(s.text)}</button>`).join('')}</div>`;
+  }
+  if (r.error) h = `<div class="anom" style="border-color:var(--rd);background:var(--rdb);color:var(--rd);">${esc(r.error)}</div>` + h;
+  return `<div class="msg a"><div class="who">AI</div><div class="bub">${h || '<em style="color:var(--t3)">(empty response)</em>'}</div></div>`;
+}
+
+async function sendChat() {
+  const q = $('#ai-q').value.trim();
+  if (!q || aiBusy) return;
+  $('#ai-q').value = '';
+  aiBusy = true;
+  state.chatHistory.push({ role: 'user', text: q });
+  state.chatHistory.push({ role: 'assistant', text: 'Thinking… generating SQL, running it, summarizing…', thinking: true });
+  renderAi();
+  try {
+    const history = state.chatHistory.filter((m) => !m.thinking && (m.role === 'user' || (m.role === 'assistant' && m.response))).map((m) => ({ role: m.role, text: m.role === 'user' ? m.text : `Query: ${m.response.query}\nResult: ${m.response.summary}` }));
+    // drop the most recent user (we'll re-send via question)
+    history.pop();
+    const response = await api('/api/conversational/ask', { method: 'POST', body: { question: q, history } });
+    state.chatHistory = state.chatHistory.filter((m) => !m.thinking);
+    state.chatHistory.push({ role: 'assistant', response });
+  } catch (e) {
+    state.chatHistory = state.chatHistory.filter((m) => !m.thinking);
+    state.chatHistory.push({ role: 'assistant', error: e.message });
+  } finally {
+    aiBusy = false;
+    renderAi();
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Chart rendering (Chart.js)
+// ─────────────────────────────────────────────────────────────────
+const PALETTE = ['#2c5aa0', '#0a8f4e', '#b06d00', '#6d4ab8', '#c02929', '#3771c8', '#1a8a8f', '#a3a83a'];
+
+function drawChart(canvas, chart, data) {
+  if (!chart || !data || data.length === 0) return;
+  const labels = data.map((r) => String(r[chart.xColumn] ?? ''));
+  let datasets;
+  if (chart.seriesColumn) {
+    const seriesVals = Array.from(new Set(data.map((r) => String(r[chart.seriesColumn]))));
+    const xVals = Array.from(new Set(labels));
+    datasets = seriesVals.map((sv, i) => ({
+      label: sv,
+      data: xVals.map((xv) => {
+        const row = data.find((r) => String(r[chart.xColumn]) === xv && String(r[chart.seriesColumn]) === sv);
+        return row ? Number(row[chart.yColumns[0]]) || 0 : 0;
+      }),
+      backgroundColor: PALETTE[i % PALETTE.length],
+      borderColor: PALETTE[i % PALETTE.length],
+      borderWidth: 1,
+    }));
+    canvas._labels = xVals;
+  } else {
+    datasets = chart.yColumns.map((y, i) => ({
+      label: y,
+      data: data.map((r) => Number(r[y]) || 0),
+      backgroundColor: chart.type === 'pie' || chart.type === 'doughnut' ? data.map((_, j) => PALETTE[j % PALETTE.length]) : PALETTE[i % PALETTE.length],
+      borderColor: PALETTE[i % PALETTE.length],
+      borderWidth: 1,
+    }));
+    canvas._labels = labels;
+  }
+  new Chart(canvas, {
+    type: chart.type,
+    data: { labels: canvas._labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#475569', font: { size: 11 } } },
+        title: chart.title ? { display: true, text: chart.title, color: '#1f2937', font: { size: 13, weight: '500' } } : { display: false },
+      },
+      scales: chart.type === 'pie' || chart.type === 'doughnut' ? {} : {
+        x: { ticks: { color: '#6b7589', font: { size: 11 } }, grid: { color: '#e9eef4' } },
+        y: { ticks: { color: '#6b7589', font: { size: 11 } }, grid: { color: '#e9eef4' }, beginAtZero: true },
+      },
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Confirm modal
+// ─────────────────────────────────────────────────────────────────
+let pendingConfirm = null;
+function confirmAction(title, msg, onConfirm) {
+  $('#confirm-title').textContent = title;
+  $('#confirm-msg').textContent = msg;
+  pendingConfirm = onConfirm;
+  openModal('modal-confirm');
+}
+$('#confirm-ok').addEventListener('click', () => {
+  closeModal('modal-confirm');
+  if (pendingConfirm) { const fn = pendingConfirm; pendingConfirm = null; fn(); }
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Toolbar / global handlers
+// ─────────────────────────────────────────────────────────────────
+$('#btn-refresh').addEventListener('click', async () => {
+  if (state.selectedCol) await refreshDocs(state.selectedCol);
+  await loadCollections();
+  await loadModel();
+  render();
+  toast('Refreshed', 'ok');
+});
+$('#sb-refresh').addEventListener('click', async () => {
+  await loadCollections(); await loadModel(); render(); toast('Refreshed', 'ok');
+});
+$('#btn-newcoll').addEventListener('click', () => { $('#newcoll-name').value = ''; $('#newcoll-doc').value = '{"id": "c_001"}'; $('#newcoll-err').classList.add('hidden'); openModal('modal-newcoll'); });
+$('#btn-genmodel').addEventListener('click', generateModel);
+$('#btn-settings').addEventListener('click', () => { $('#set-gemini-key').value = ''; $('#set-gemini-err').classList.add('hidden'); $('#set-gemini-ok').classList.add('hidden'); openModal('modal-settings'); });
+$('#sb-filter').addEventListener('input', renderTree);
+
+// Connect modal
+$('#connect-open').addEventListener('click', async () => {
+  const fp = $('#connect-filepath').value.trim();
+  if (!fp) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = 'Provide a file path.'; return; }
+  $('#connect-err').classList.add('hidden');
+  try {
+    const { message } = await api('/api/connect', { method: 'POST', body: { filepath: fp } });
+    state.connected = true; state.filepath = fp;
+    toast(message, 'ok');
+    closeModal('modal-connect');
+    updateConnState();
+    await loadCollections(); await loadModel(); render();
+  } catch (e) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = e.message; }
+});
+$('#connect-create').addEventListener('click', async () => {
+  const fp = $('#connect-filepath').value.trim();
+  if (!fp) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = 'Provide a file path.'; return; }
+  $('#connect-err').classList.add('hidden');
+  try {
+    const { message } = await api('/api/create', { method: 'POST', body: { filepath: fp } });
+    state.connected = true; state.filepath = fp;
+    toast(message, 'ok');
+    closeModal('modal-connect');
+    updateConnState();
+    await loadCollections(); await loadModel(); render();
+  } catch (e) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = e.message; }
+});
+
+// Settings modal
+$('#set-save-gemini').addEventListener('click', async () => {
+  const key = $('#set-gemini-key').value.trim();
+  if (!key) { $('#set-gemini-err').classList.remove('hidden'); $('#set-gemini-err').textContent = 'Provide a key.'; return; }
+  try {
+    await api('/api/settings/gemini-key', { method: 'POST', body: { key } });
+    state.geminiKeySet = true;
+    $('#set-gemini-ok').classList.remove('hidden'); $('#set-gemini-err').classList.add('hidden');
+    updateConnState(); renderTabs(); renderTab();
+  } catch (e) { $('#set-gemini-err').classList.remove('hidden'); $('#set-gemini-err').textContent = e.message; }
+});
+$('#set-disconnect').addEventListener('click', async () => {
+  try {
+    await api('/api/disconnect', { method: 'POST' });
+    state.connected = false; state.filepath = null; state.collections = []; state.docsByColl = {}; state.countsByColl = {}; state.model = null; state.selectedCol = null; state.chatHistory = [];
+    toast('Disconnected', 'ok');
+    closeModal('modal-settings');
+    updateConnState(); openModal('modal-connect');
+  } catch (e) { toast(e.message, 'err'); }
+});
+$('#set-reset').addEventListener('click', () => {
+  confirmAction('Reset this database?', 'All collections and documents will be permanently deleted.', async () => {
+    try {
+      await api('/api/debug/reset', { method: 'POST' });
+      toast('Database reset', 'ok');
+      closeModal('modal-settings');
+      await loadCollections(); await loadModel(); state.selectedCol = null; render();
+    } catch (e) { toast('Reset failed: ' + e.message, 'err'); }
+  });
+});
+
+// New collection
+$('#newcoll-create').addEventListener('click', async () => {
+  const name = $('#newcoll-name').value.trim();
+  if (!name) { $('#newcoll-err').classList.remove('hidden'); $('#newcoll-err').textContent = 'Collection name required.'; return; }
+  let doc;
+  try { doc = JSON.parse($('#newcoll-doc').value); }
+  catch (e) { $('#newcoll-err').classList.remove('hidden'); $('#newcoll-err').textContent = 'Invalid JSON: ' + e.message; return; }
+  if (!doc || !doc.id) { $('#newcoll-err').classList.remove('hidden'); $('#newcoll-err').textContent = 'Document must have an "id" field.'; return; }
+  try {
+    await api(`/api/documents/${encodeURIComponent(name)}`, { method: 'POST', body: { document: doc } });
+    toast(`Created “${name}”`, 'ok');
+    closeModal('modal-newcoll');
+    await loadCollections();
+    state.selectedCol = name;
+    render();
+  } catch (e) { $('#newcoll-err').classList.remove('hidden'); $('#newcoll-err').textContent = e.message; }
+});
+
+// Make selectCollection callable inline
+window.selectCollection = selectCollection;
+window.openModal = openModal;
+
+// Start
+bootstrap();
+</script>
+</body>
 </html>
