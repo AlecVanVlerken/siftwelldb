@@ -94,12 +94,31 @@ export type OrderByClause = {
 
 // ── JOIN Types ───────────────────────────────────────────────────────────────
 
-export type JoinType = 'INNER' | 'LEFT' | 'RIGHT' | 'FULL' | 'NATURAL';
+/**
+ * The three join modes the parser actually emits and the executor
+ * actually implements:
+ *
+ *   - `INNER`: explicit `JOIN ... ON left = right` (and the bare
+ *     `INNER JOIN ... ON ...` synonym). Yields one merged row per
+ *     matching (left, right) pair.
+ *   - `NATURAL`: `NATURAL JOIN ...` (no `ON`). Matches on every field
+ *     name that appears on both sides; collapses those fields into one
+ *     output column per match.
+ *   - `CROSS`: `CROSS JOIN ...` (no `ON`). Cartesian product —
+ *     intentionally noisy syntax so it can't be requested by accident.
+ *
+ * `LEFT`, `RIGHT`, and `FULL OUTER` joins are intentionally not in this
+ * union: the executor doesn't emit unmatched rows on either side. Add
+ * them here only once that's implemented.
+ */
+export type JoinType = 'INNER' | 'NATURAL' | 'CROSS';
 
 export type JoinClause = {
   type: JoinType;
   collection: string;
+  /** Field on the left side of an INNER `ON`. Empty for NATURAL / CROSS. */
   leftField: string;
+  /** Field on the right side of an INNER `ON`. Empty for NATURAL / CROSS. */
   rightField: string;
 };
 
@@ -197,4 +216,27 @@ export type ParsedUpdate = {
   where?: WhereExpression;
 };
 
-export type ParsedQuery = ParsedSelect | ParsedInsert | ParsedDelete | ParsedUpdate;
+/**
+ * `<select> UNION [ALL] <select> [UNION ...]` — concatenation of two or
+ * more SELECTs with the same column shape.
+ *
+ *   - `UNION` deduplicates rows (per standard SQL).
+ *   - `UNION ALL` keeps duplicates.
+ *
+ * The mode applies to every adjacent pair; we model it as a flat array
+ * of branches with one mode flag because mixing UNION and UNION ALL in
+ * one statement is rare and standard-ambiguous in SQL anyway.
+ */
+export type ParsedUnion = {
+  kind: 'union';
+  /** `true` for `UNION ALL` (keep duplicates), `false` for `UNION`. */
+  all: boolean;
+  branches: ParsedSelect[];
+};
+
+export type ParsedQuery =
+  | ParsedSelect
+  | ParsedInsert
+  | ParsedDelete
+  | ParsedUpdate
+  | ParsedUnion;

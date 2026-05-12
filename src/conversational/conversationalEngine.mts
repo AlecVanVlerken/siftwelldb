@@ -2,10 +2,19 @@
 
 import type { LLMProvider, ChatMessage } from './llmProvider.mjs';
 import type { SemanticModel } from './semanticModel.mjs';
-import type { QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
+import type { ParsedQuery, QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
 import { QueryLanguage } from '../dbms/querylanguage/querylanguage.mjs';
 import { QueryGenerator } from './queryGenerator.mjs';
 import { SimpleDbms } from '../dbms/simpledbms.mjs';
+
+/**
+ * Whitelist of query kinds the chat surface will execute. Anything not
+ * in here is rejected — keep this list to operations that cannot mutate
+ * the database.
+ */
+function isReadOnlyKind(kind: ParsedQuery['kind']): boolean {
+  return kind === 'select' || kind === 'union';
+}
 
 export type ChartSpec = {
   type: 'bar' | 'line' | 'pie' | 'doughnut' | 'none';
@@ -88,11 +97,13 @@ export class ConversationalEngine {
       return { question, query: '', data: [], summary: '', chart: null, error: errMsg };
     }
 
-    // ── Step 2: SELECT-only guard ────────────────────────────────────────
-    // The chat interface is read-only analytics. Reject any LLM-generated
-    // INSERT or DELETE to prevent accidental or prompt-injected mutations.
-    if (generated.parsed.kind !== 'select') {
-      const errMsg = `Only SELECT queries are allowed via chat (got: ${generated.parsed.kind}).`;
+    // ── Step 2: read-only guard ──────────────────────────────────────────
+    // The chat interface is read-only analytics. Deny any mutating kind
+    // (INSERT / UPDATE / DELETE) instead of allowlisting SELECT — that
+    // way new read-only kinds (UNION, future EXPLAIN / SHOW, …) work
+    // automatically without another policy edit.
+    if (!isReadOnlyKind(generated.parsed.kind)) {
+      const errMsg = `Only read-only queries are allowed via chat (got: ${generated.parsed.kind}).`;
       this.pushHistory(history, question, errMsg);
       return { question, query, data: [], summary: '', chart: null, error: errMsg };
     }
