@@ -149,8 +149,8 @@ export class HnswIndexNative {
   }
 
   /**
-   * Soft-delete the entry for `docId`.
-   * @returns `true` if the entry was found and deleted.
+   * Soft-delete the live entry for `docId`.
+   * @returns `true` if the live entry was found and tombstoned.
    */
   delete(docId: number): boolean {
     return (_fns['delete'](this.handle, docId) as number) === 1;

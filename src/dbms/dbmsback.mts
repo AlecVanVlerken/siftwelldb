@@ -473,8 +473,8 @@ export class DbmsBack {
       await this.hnswIndexCache.get(collection)!.delete(documentPointer);
     }
 
-    // Free the record blocks from the record store
-    await this.recordStore.deleteRecord(documentPointer);
+    // Pure soft deletion: remove all public indexes, but keep the record
+    // blocks allocated so document pointers are never recycled into HNSW.
 
     // Note: metaWriteJSON is called in commit() to batch writes
   }

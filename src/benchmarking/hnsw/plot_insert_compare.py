@@ -89,7 +89,7 @@ def main():
         label = LABELS.get(implementation, implementation)
         if implementation == "legacy-typescript" and legacy_commit:
             label = f"{label} ({legacy_commit})"
-        ax.plot(xs, ys, marker="o", linewidth=1.8, label=label, color=COLORS.get(implementation, "#333333"))
+        ax.plot(xs, ys, linewidth=1.8, label=label, color=COLORS.get(implementation, "#333333"))
         summary_lines.append(
             f"{label}: pure insert={format_duration_ms(run['totalInsertMs'])}, wall={format_duration_ms(run['totalWallMs'])}"
         )

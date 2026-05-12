@@ -1425,8 +1425,8 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
   describe('delete removes document from semantic index', () => {
     it('deleted document does not appear in search results', async () => {
       /**
-       * Deleting a document must remove it from the HNSW graph (soft-delete +
-       * graph re-wiring).  Subsequent semanticSearch calls must not return it.
+       * Deleting a document must tombstone its HNSW entry so subsequent
+       * semanticSearch calls do not return it.
        */
       await db.insertDocument('news', JSON.stringify({ id: 'n1', headline: 'Big news today' }));
       await db.insertDocument('news', JSON.stringify({ id: 'n2', headline: 'Small local news' }));
@@ -1599,8 +1599,8 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
       /**
        * A document that was inserted, committed, then deleted and committed
        * again must NOT be returned by semanticSearch after reopening.
-       * The deletion is durable: the HNSW graph FBF was committed without
-       * the node, and the vector FBF no longer holds its embedding.
+       * The deletion is durable even though the underlying HNSW node and
+       * record remain as soft-deleted tombstones on disk.
        */
       const doc = { id: 'gone2', headline: 'This article will be permanently removed' };
       await db.insertDocument('news', JSON.stringify(doc));

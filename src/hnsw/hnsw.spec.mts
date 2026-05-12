@@ -686,11 +686,10 @@ describe('HNSWIndex', () => {
     expect(await index.search(vec(1, 0), 1)).toContain(1);
   });
 
-  it('deleted docId can be re-inserted with the same id', async () => {
+  it('soft-deleted docId remains tombstoned and cannot be re-used', async () => {
     await index.insert(1, vec(0, 0));
     await index.delete(1);
-    await expect(index.insert(1, vec(5, 5))).resolves.not.toThrow();
-    expect(await index.search(vec(5, 5), 1)).toContain(1);
+    await expect(index.insert(1, vec(5, 5))).rejects.toThrow(/cannot be reused|already exists/i);
   });
 
   it('deleting the only node leaves an empty index', async () => {
@@ -721,6 +720,23 @@ describe('HNSWIndex', () => {
     const results = await index2.search(vec(0, 0), 5);
     expect(results).not.toContain(1);
     expect(results).toContain(2);
+  });
+
+  it('soft-deleted nodes survive commit + reopen as tombstones', async () => {
+    await index.insert(1, vec(0, 0));
+    await index.delete(1);
+    await index.commit();
+
+    const gs2 = await HNSWGraphStorage.open(graphFbf, graphMetaBlockId);
+
+    const matchingNodes: HNSWNode[] = [];
+    for await (const node of gs2.scanNodes()) {
+      if (node.docId === 1) matchingNodes.push(node);
+    }
+
+    expect(matchingNodes).toHaveLength(1);
+    expect(matchingNodes[0].deleted).toBe(true);
+    await gs2.close();
   });
 
   it('multiple commits accumulate correctly', async () => {

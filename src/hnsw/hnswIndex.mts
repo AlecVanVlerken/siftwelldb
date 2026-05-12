@@ -1,7 +1,7 @@
 //@author: Thomas Dumon with usage of Claude sonnet 4.6
 //@date: 2026-02-18
 
-import { VectorHeapFile, type VectorPointer } from './vectorHeapFile.mjs';
+import { VectorHeapFile } from './vectorHeapFile.mjs';
 import { HNSWNode, type NodeId } from './hnswNode.mjs';
 import { HNSWGraphStorage } from './hnswGraphStorage.mjs';
 import { HnswIndexNative } from './hnswNative.mjs';
@@ -56,17 +56,13 @@ export class HNSWIndex {
   private readonly rustIdx: HnswIndexNative;
 
   /**
-   * In-memory reverse index: docId → NodeId.
-   * Rebuilt from disk on `open()` by scanning graph storage.
-   * Updated incrementally by `insert()` and `delete()`.
+   * Reverse index for all persisted nodes: docId → NodeId.
+   *
+   * Soft-deleted nodes stay allocated, so this map intentionally retains
+   * tombstoned docIds as well. That lets the persistence layer keep
+   * serialised neighbor references stable across future rewrites.
    */
   private readonly docIdIndex = new Map<number, NodeId>();
-
-  /**
-   * Cache of docId → VectorPointer so we can free vectors on delete
-   * without a FBF round-trip.
-   */
-  private readonly vectorPtrCache = new Map<number, VectorPointer>();
 
   // Private constructor — use the static factory methods.
   private constructor(
@@ -116,7 +112,9 @@ export class HNSWIndex {
    */
   async insert(docId: number, vector: Float32Array): Promise<void> {
     if (this.docIdIndex.has(docId)) {
-      throw new Error(`HNSWIndex: docId ${docId} already exists. Use delete() first to replace it.`);
+      throw new Error(
+        `HNSWIndex: docId ${docId} already exists or was previously soft-deleted; HNSW docIds cannot be reused.`,
+      );
     }
 
     // 1. Persist the raw vector — data before index (crash-consistency rule).
@@ -143,7 +141,6 @@ export class HNSWIndex {
     await this.graphStorage.insertNode(newNode); // sets newNode.nodeId
     this.graphStorage.incrementLevel(newLevel);
     this.docIdIndex.set(docId, newNode.nodeId);
-    this.vectorPtrCache.set(docId, vectorPtr);
 
     // 5. Update existing neighbors that had their connection lists modified.
     for (const dirtyDocId of dirtyDocIds) {
@@ -184,31 +181,22 @@ export class HNSWIndex {
     const nodeId = this.docIdIndex.get(docId);
     if (nodeId === undefined) return;
 
-    // 1. Get the level before deleting from Rust (needed for histogram).
+    // If the node was already deleted earlier, the live Rust map no longer
+    // contains it even though the persisted tombstone still exists on disk.
     const level = this.rustIdx.getLevel(docId);
+    if (level < 0) return;
 
-    // 2. Free the vector storage slot.
-    const vectorPtr = this.vectorPtrCache.get(docId);
-    if (vectorPtr !== undefined) {
-      await this.vectorHeap.delete(vectorPtr);
-    } else {
-      const node = await this.graphStorage.getNode(nodeId);
-      await this.vectorHeap.delete(node.vectorPtr);
-    }
+    // 1. Update the live-level histogram before removing the docId from Rust.
+    this.graphStorage.decrementLevel(level);
 
-    // 3. Update histogram before removing from Rust.
-    if (level >= 0) this.graphStorage.decrementLevel(level);
-
-    // 4. Run Rust delete (removes back-links from all neighbors).
+    // 2. Run the in-memory soft delete.
     this.rustIdx.delete(docId);
     const dirtyDocIds = this.rustIdx.takeDirtyNodes();
 
-    // 5. Hard-delete the node slot from FBF (frees the allocated slot).
-    await this.graphStorage.hardDeleteNode(nodeId);
-    this.docIdIndex.delete(docId);
-    this.vectorPtrCache.delete(docId);
+    // 3. Persist the tombstone flag while keeping the slot and vector intact.
+    await this.graphStorage.softDeleteNode(nodeId);
 
-    // 6. Update neighbor lists in FBF for all nodes whose connections changed.
+    // 4. Update neighbor lists in FBF for any nodes Rust reported as dirty.
     for (const dirtyDocId of dirtyDocIds) {
       const nbNodeId = this.docIdIndex.get(dirtyDocId);
       if (nbNodeId === undefined) continue;
@@ -216,7 +204,7 @@ export class HNSWIndex {
       if (p !== undefined) await p;
     }
 
-    // 7. Update graph-level metadata.
+    // 5. Update graph-level metadata for the live graph.
     const newEntryDocId = this.rustIdx.getEntryDocId();
     const newEntryNodeId = newEntryDocId !== null ? (this.docIdIndex.get(newEntryDocId) ?? null) : null;
     const correctMaxLevel = newEntryNodeId !== null ? this.graphStorage.computedMaxLevel() : 0;
@@ -251,7 +239,7 @@ export class HNSWIndex {
   /**
    * Build the `NodeId[][]` neighbor list for `docId` at all layers up to
    * `level`, reading the current neighbor doc_ids from Rust and converting
-   * them to FBF NodeIds via `docIdIndex`.
+   * them to FBF NodeIds via the persisted docId → NodeId map.
    */
   private buildNeighborList(docId: number, level: number): NodeId[][] {
     // ONE FFI call: [nodeLevel, count0, nb0..., count1, nb1..., ...]
@@ -282,24 +270,18 @@ export class HNSWIndex {
    */
   private async loadFromFBF(): Promise<void> {
     this.docIdIndex.clear();
-    this.vectorPtrCache.clear();
     this.graphStorage.resetHistogram();
 
     const allNodes: HNSWNode[] = [];
     const nodeIdToDocId = new Map<NodeId, number>();
 
-    // Pass 1: import node data into Rust.
+    // Pass 1: import node data into Rust, including soft-deleted tombstones.
     for await (const node of this.graphStorage.scanNodes()) {
-      // Skip deleted nodes — their vector slots are freed and their back-links
-      // have been removed by softDelete, so they carry no useful graph state.
-      if (node.deleted) continue;
-
       const vector = await this.vectorHeap.get(node.vectorPtr);
-      this.rustIdx.importNode(node.docId, node.level, vector, false);
+      this.rustIdx.importNode(node.docId, node.level, vector, node.deleted);
       nodeIdToDocId.set(node.nodeId, node.docId);
       this.docIdIndex.set(node.docId, node.nodeId);
-      this.vectorPtrCache.set(node.docId, node.vectorPtr);
-      this.graphStorage.incrementLevel(node.level);
+      if (!node.deleted) this.graphStorage.incrementLevel(node.level);
       allNodes.push(node);
     }
 
