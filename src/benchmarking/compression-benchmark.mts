@@ -9,7 +9,7 @@ import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { FreeBlockFile } from '../freeblockfile/freeblockfile.mjs';
 import { parseRawDocument } from '../dbms/document.mjs';
 import { RecordStore, type EncodedDocument } from '../dbms/recordstore.mjs';
-import type { CompressionAlgorithm } from '../dbms/compression.mjs';
+import { COMPRESSION_ALGORITHMS, type CompressionAlgorithm } from '../dbms/compression.mjs';
 
 type ScenarioName = 'highly-compressible' | 'mixed' | 'low-compressible';
 type PayloadKind = 'text' | 'image';
@@ -38,7 +38,7 @@ type BenchResult = {
   effectiveCompression: Record<CompressionAlgorithm, number>;
 };
 
-const ALGORITHMS: CompressionAlgorithm[] = ['none', 'gzip', 'deflate'];
+const ALGORITHMS: CompressionAlgorithm[] = COMPRESSION_ALGORITHMS;
 const SCENARIOS: ScenarioName[] = ['highly-compressible', 'mixed', 'low-compressible'];
 const PAYLOAD_KINDS: PayloadKind[] = ['text', 'image'];
 const FIELD_BY_KIND: Record<PayloadKind, string> = {
@@ -193,11 +193,7 @@ function countLostBytes(expected: Buffer, actual: Buffer): number {
 }
 
 function emptyEffectiveCompressionCounts(): Record<CompressionAlgorithm, number> {
-  return {
-    none: 0,
-    gzip: 0,
-    deflate: 0,
-  };
+  return Object.fromEntries(ALGORITHMS.map((algorithm) => [algorithm, 0])) as Record<CompressionAlgorithm, number>;
 }
 
 async function runScenario(

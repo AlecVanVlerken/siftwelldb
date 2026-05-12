@@ -40,5 +40,16 @@ export const state = {
   isEditMode: false,
   isNewDocument: false,
   sortableInstance: null as SortableInstance | null,
-  currentSearchMode: 'text' as 'text' | 'image',
+  currentSearchMode: 'text' as 'text' | 'image' | 'word',
+  // Cursor-based pagination for the document table
+  hasMore: false,
+  nextCursor: undefined as string | number | undefined,
+  // Offset-based pagination for word search results
+  wordSearchOffset: 0,
+  wordSearchTotal: 0,
+  lastWordQuery: '',
+  // Offset-based pagination for content search results
+  contentSearchOffset: 0,
+  contentSearchTotal: 0,
+  lastContentQuery: '',
 };
