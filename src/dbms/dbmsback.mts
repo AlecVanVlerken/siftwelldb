@@ -6,7 +6,12 @@ import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
 import { allocateBlock } from '../freeblockfile/freelist.mjs';
 import { Document, type FieldValue, isImageField } from '../dbms/document.mjs';
-import { RecordStore, type EncodedDocument, type RecordWriteOptions } from './recordstore.mjs';
+import {
+  RecordStore,
+  type EncodedDocument,
+  type RecordStorageEstimate,
+  type RecordWriteOptions,
+} from './recordstore.mjs';
 import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
 import type { BlockLeafNode } from '../btree/leafnode.mjs';
@@ -15,6 +20,7 @@ import { HNSWIndex, type HnswGraphStructureNode, type HnswGraphStructureSnapshot
 import { HNSWGraphStorage } from '../hnsw/hnswGraphStorage.mjs';
 import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
 import {
+  COMPRESSION_ALGORITHMS,
   type CompressionAlgorithm,
   type FieldCompressionDefaults,
   type FieldCompressionOverrides,
@@ -24,6 +30,14 @@ import {
   runIncrementalCompactionStep as runIncrementalCompactionStepForSource,
   vacuumCompactInto as runVacuumCompactInto,
 } from '../compaction/compaction.mjs';
+import {
+  compressionSampleFromValue,
+  recommendCompression,
+  type CompressionRecommendation,
+  type CompressionRecommendationRequest,
+  type CompressionSample,
+  type CompressionStorageEstimate,
+} from './compression-advisor.mjs';
 import type { VacuumProgress } from '../compaction/compaction.mjs';
 import type {
   HnswRelocationTarget,
@@ -77,7 +91,7 @@ export type HnswConfig = {
 const HNSW_META_KEY = '__hnsw__';
 const COMPRESSION_META_KEY = '__compression__';
 const RESERVED_META_KEYS = new Set([HNSW_META_KEY, COMPRESSION_META_KEY]);
-const SUPPORTED_COMPRESSION_ALGORITHMS: Set<CompressionAlgorithm> = new Set(['none', 'gzip', 'deflate']);
+const SUPPORTED_COMPRESSION_ALGORITHMS: Set<CompressionAlgorithm> = new Set(COMPRESSION_ALGORITHMS);
 
 type CachedTree = {
   storage: BlockNodeStorage;
@@ -85,6 +99,7 @@ type CachedTree = {
 };
 
 type MetaCache = Record<string, unknown>;
+type CompressionStorageTotals = Map<CompressionAlgorithm, CompressionStorageEstimate>;
 
 /**
  * DbmsBack class
@@ -151,9 +166,21 @@ export class DbmsBack {
 
     // Re-open HNSW indices for every collection that was indexed before.
     if (hnswConfig) {
-      for (const col of Object.keys(dbmsback.getHnswMeta())) {
-        const idx = await dbmsback.openHnswIndex(col);
-        dbmsback.hnswIndexCache.set(col, idx);
+      try {
+        for (const col of Object.keys(dbmsback.getHnswMeta())) {
+          const idx = await dbmsback.openHnswIndex(col);
+          dbmsback.hnswIndexCache.set(col, idx);
+        }
+      } catch (err) {
+        // Stored HNSW parameters don't match current config (e.g. DB was created
+        // with different dimensions or M). Disable HNSW for this session so the
+        // DB can still be opened for non-semantic operations.
+        console.warn(
+          'HNSW index could not be opened, semantic search disabled:',
+          err instanceof Error ? err.message : err,
+        );
+        dbmsback.hnswConfig = undefined;
+        dbmsback.hnswIndexCache.clear();
       }
     }
 
@@ -361,6 +388,173 @@ export class DbmsBack {
     compressionMeta[collection] = { ...defaults };
   }
 
+  getFieldCompressionDefaults(collection: string): FieldCompressionDefaults {
+    return { ...this.getCompressionDefaults(collection) };
+  }
+
+  private createCompressionStorageEstimate(): CompressionStorageEstimate {
+    return {
+      samples: 0,
+      rawSerializedBytes: 0,
+      compressedSerializedBytes: 0,
+      rawBlocks: 0,
+      compressedBlocks: 0,
+      blocksSaved: 0,
+      allocatedBytesSaved: 0,
+      readAmplification: 1,
+      writeCost: 0,
+    };
+  }
+
+  private ensureCompressionStorageTotal(
+    totals: CompressionStorageTotals,
+    algorithm: CompressionAlgorithm,
+  ): CompressionStorageEstimate {
+    const existing = totals.get(algorithm);
+    if (existing) return existing;
+
+    const created = this.createCompressionStorageEstimate();
+    totals.set(algorithm, created);
+    return created;
+  }
+
+  private addCompressionStorageTotals(
+    totals: CompressionStorageTotals,
+    algorithm: CompressionAlgorithm,
+    rawEstimate: RecordStorageEstimate,
+    candidateEstimate: RecordStorageEstimate,
+  ): void {
+    const total = this.ensureCompressionStorageTotal(totals, algorithm);
+    total.samples++;
+    total.rawSerializedBytes += rawEstimate.serializedBytes;
+    total.compressedSerializedBytes += candidateEstimate.serializedBytes;
+    total.rawBlocks += rawEstimate.blocks;
+    total.compressedBlocks += candidateEstimate.blocks;
+    total.blocksSaved += rawEstimate.blocks - candidateEstimate.blocks;
+    total.allocatedBytesSaved += rawEstimate.allocatedBytes - candidateEstimate.allocatedBytes;
+  }
+
+  private estimateCompressionStorageForDocument(
+    totals: CompressionStorageTotals,
+    document: Document,
+    field: string,
+    compressionDefaults: FieldCompressionDefaults,
+  ): Pick<RecordStorageEstimate, 'blockSize' | 'dataBytesPerBlock'> {
+    const rawEstimate = this.recordStore.estimateRecordStorage(document, {
+      compressionDefaults,
+      compressionOverrides: { [field]: 'off' },
+    });
+
+    for (const algorithm of COMPRESSION_ALGORITHMS) {
+      const candidateEstimate = this.recordStore.estimateRecordStorage(document, {
+        compressionDefaults,
+        compressionOverrides: { [field]: algorithm === 'none' ? 'off' : algorithm },
+      });
+      this.addCompressionStorageTotals(totals, algorithm, rawEstimate, candidateEstimate);
+    }
+
+    return {
+      blockSize: rawEstimate.blockSize,
+      dataBytesPerBlock: rawEstimate.dataBytesPerBlock,
+    };
+  }
+
+  private finalizeCompressionStorageEstimates(
+    totals: CompressionStorageTotals,
+  ): Partial<Record<CompressionAlgorithm, CompressionStorageEstimate>> {
+    const estimates: Partial<Record<CompressionAlgorithm, CompressionStorageEstimate>> = {};
+
+    for (const [algorithm, total] of totals) {
+      estimates[algorithm] = {
+        ...total,
+        readAmplification: total.rawBlocks === 0 ? 1 : total.compressedBlocks / total.rawBlocks,
+      };
+    }
+
+    return estimates;
+  }
+
+  private draftDocumentForCompressionEstimate(
+    request: CompressionRecommendationRequest,
+    sample: CompressionSample,
+  ): Document {
+    const value: FieldValue =
+      sample.kind === 'text' ? (request.draftValue ?? sample.raw.toString('utf-8')) : sample.raw;
+    const entry: [string, FieldValue] = [request.field, value];
+
+    if (request.field.startsWith('_') || isImageField(request.field)) {
+      return new Document(request.collection, '__draft__', [], [entry]);
+    }
+
+    return new Document(request.collection, '__draft__', [entry], []);
+  }
+
+  async recommendCompression(request: CompressionRecommendationRequest): Promise<CompressionRecommendation> {
+    const sampleLimit = Math.max(1, Math.floor(request.sampleSize ?? 50));
+    const samples: CompressionSample[] = [];
+    const storageTotals: CompressionStorageTotals = new Map();
+    let documentsScanned = 0;
+    let fieldPresenceCount = 0;
+    let blockSize: number | undefined;
+    let dataBytesPerBlock: number | undefined;
+    const collectionExists = this.hasCollectionMeta(request.collection);
+    const compressionDefaults = collectionExists ? this.getCompressionDefaults(request.collection) : {};
+
+    if (collectionExists) {
+      const cursor = await this.cursor(request.collection, 'id');
+      for await (const document of cursor) {
+        documentsScanned++;
+        const fieldValue = document.getFields()[request.field];
+        if (fieldValue !== undefined) {
+          fieldPresenceCount++;
+          const sample = compressionSampleFromValue(request.field, fieldValue);
+          if (sample) {
+            samples.push(sample);
+          }
+
+          const estimateShape = this.estimateCompressionStorageForDocument(
+            storageTotals,
+            document,
+            request.field,
+            compressionDefaults,
+          );
+          blockSize = estimateShape.blockSize;
+          dataBytesPerBlock = estimateShape.dataBytesPerBlock;
+        }
+        if (documentsScanned >= sampleLimit) break;
+      }
+    }
+
+    let draftValueUsed = false;
+    if (request.draftValue !== undefined && request.draftValue !== '') {
+      const draftSample = compressionSampleFromValue(request.field, request.draftValue);
+      if (draftSample) {
+        samples.push(draftSample);
+        draftValueUsed = true;
+        const draftDocument = this.draftDocumentForCompressionEstimate(request, draftSample);
+        const estimateShape = this.estimateCompressionStorageForDocument(
+          storageTotals,
+          draftDocument,
+          request.field,
+          compressionDefaults,
+        );
+        blockSize = estimateShape.blockSize;
+        dataBytesPerBlock = estimateShape.dataBytesPerBlock;
+      }
+    }
+
+    return recommendCompression({
+      request,
+      samples,
+      documentsScanned,
+      fieldPresenceCount,
+      draftValueUsed,
+      storageEstimates: this.finalizeCompressionStorageEstimates(storageTotals),
+      blockSize,
+      dataBytesPerBlock,
+    });
+  }
+
   /**
    * Commits all changes to the database.
    * A single commit atomically flushes records, B+ tree indexes, HNSW graph
@@ -381,7 +575,11 @@ export class DbmsBack {
    * @param document - The Document to insert.
    * @returns A Promise that resolves when the document is inserted.
    */
-  async insertDocument(document: Document, compressionOverrides?: FieldCompressionOverrides): Promise<void> {
+  async insertDocument(
+    document: Document,
+    compressionOverrides?: FieldCompressionOverrides,
+    options?: { skipSemanticIndex?: boolean },
+  ): Promise<void> {
     const collectionName = document.getCollectionName(); //constant time
     const writeOptions: RecordWriteOptions = {
       compressionDefaults: this.getCompressionDefaults(collectionName),
@@ -462,7 +660,7 @@ export class DbmsBack {
     // END FOR LOOP
 
     // HNSW: embed and index the document (image or text) if HNSW is configured.
-    if (this.hnswConfig) {
+    if (this.hnswConfig && !options?.skipSemanticIndex) {
       const imageData = this.extractImageData(document);
       if (imageData !== null && this.hnswConfig.imageEmbeddingFn) {
         // Document contains an image field — embed with the image encoder.
@@ -1186,6 +1384,85 @@ export class DbmsBack {
     return HNSWIndex.open(graphStorage, vectorHeap, { efSearch, efConstruction });
   }
 
+  /**
+   * Return a snapshot of regular collection metadata for the vacuum subsystem.
+   */
+  getVacuumCollectionMetaSnapshot(): Record<string, Record<string, [number, string]>> {
+    const result: Record<string, Record<string, [number, string]>> = {};
+
+    for (const [key, value] of Object.entries(this.metaCache)) {
+      if (key === HNSW_META_KEY || key === COMPRESSION_META_KEY) continue;
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const collectionMeta = value as Record<string, [number, string]>;
+        const copiedCollectionMeta: Record<string, [number, string]> = {};
+
+        for (const [field, tuple] of Object.entries(collectionMeta)) {
+          copiedCollectionMeta[field] = [...tuple] as [number, string];
+        }
+
+        result[key] = copiedCollectionMeta;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Return a snapshot of compression metadata for the vacuum subsystem.
+   */
+  getVacuumCompressionMetaSnapshot(): Record<string, FieldCompressionDefaults> {
+    const result: Record<string, FieldCompressionDefaults> = {};
+    for (const [collection, defaults] of Object.entries(this.getCompressionMeta())) {
+      result[collection] = { ...defaults };
+    }
+    return result;
+  }
+
+  /**
+   * Return a snapshot of HNSW metadata for the vacuum subsystem.
+   */
+  getVacuumHnswMetaSnapshot(): Record<string, [number, string]> {
+    const result: Record<string, [number, string]> = {};
+    for (const [collection, meta] of Object.entries(this.getHnswMeta())) {
+      result[collection] = [...meta] as [number, string];
+    }
+    return result;
+  }
+
+  /**
+   * Return the runtime HNSW configuration used by the vacuum subsystem.
+   */
+  getVacuumHnswConfig(): HnswConfig | undefined {
+    return this.hnswConfig;
+  }
+
+  getVacuumDataFile(): File {
+    return this.dataFile;
+  }
+
+  getVacuumLogFile(): File {
+    return this.logFile;
+  }
+
+  /**
+   * Rebuild this database into fresh temporary files using full vacuum compaction.
+   */
+  async vacuumCompactInto(
+    tempDataFile: File,
+    tempLogFile: File,
+    onProgress?: (progress: VacuumProgress) => void,
+  ): Promise<DbmsBack> {
+    const result = await runVacuumCompactInto({
+      source: this,
+      tempDataFile,
+      tempLogFile,
+      validate: true,
+      rebuildHnsw: true,
+      onProgress,
+    });
+    return result.target;
+  }
+
   //hulperfuncties voor de meta
 
   /**
@@ -1281,123 +1558,6 @@ export class DbmsBack {
     // write block ids to client area
     const newBinaryBlockIds = Buffer.from(JSON.stringify(metaBlockIds));
     await this.freeblockFile.writeClientArea(newBinaryBlockIds);
-  }
-
-  /**
-   * Return a snapshot of regular collection metadata for the vacuum subsystem.
-   *
-   * @returns Copied regular collection metadata.
-   *
-   * @author Alec Van Vlerken
-   */
-  getVacuumCollectionMetaSnapshot(): Record<string, Record<string, [number, string]>> {
-    const result: Record<string, Record<string, [number, string]>> = {};
-
-    for (const [key, value] of Object.entries(this.metaCache)) {
-      if (key === '__hnsw__' || key === '__compression__') continue;
-      if (value && typeof value === 'object' && !Array.isArray(value)) {
-        const collectionMeta = value as Record<string, [number, string]>;
-        const copiedCollectionMeta: Record<string, [number, string]> = {};
-
-        for (const [field, tuple] of Object.entries(collectionMeta)) {
-          copiedCollectionMeta[field] = [...tuple] as [number, string];
-        }
-
-        result[key] = copiedCollectionMeta;
-      }
-    }
-
-    return result;
-  }
-
-  /**
-   * Return a snapshot of compression metadata for the vacuum subsystem.
-   *
-   * @returns Copied compression metadata.
-   *
-   * @author Alec Van Vlerken
-   */
-  getVacuumCompressionMetaSnapshot(): Record<string, FieldCompressionDefaults> {
-    const result: Record<string, FieldCompressionDefaults> = {};
-    for (const [collection, defaults] of Object.entries(this.getCompressionMeta())) {
-      result[collection] = { ...defaults };
-    }
-    return result;
-  }
-
-  /**
-   * Return a snapshot of HNSW metadata for the vacuum subsystem.
-   *
-   * @returns Copied HNSW metadata.
-   *
-   * @author Alec Van Vlerken
-   */
-  getVacuumHnswMetaSnapshot(): Record<string, [number, string]> {
-    const result: Record<string, [number, string]> = {};
-    for (const [collection, meta] of Object.entries(this.getHnswMeta())) {
-      result[collection] = [...meta] as [number, string];
-    }
-    return result;
-  }
-
-  /**
-   * Return the runtime HNSW configuration used by the vacuum subsystem.
-   *
-   * @returns HNSW config, or `undefined` if HNSW is disabled.
-   *
-   * @author Alec Van Vlerken
-   */
-  getVacuumHnswConfig(): HnswConfig | undefined {
-    return this.hnswConfig;
-  }
-
-  /**
-   * Return the source data file used by the vacuum subsystem.
-   *
-   * @returns Source data file.
-   *
-   * @author Alec Van Vlerken
-   */
-  getVacuumDataFile(): File {
-    return this.dataFile;
-  }
-
-  /**
-   * Return the source log file used by the vacuum subsystem.
-   *
-   * @returns Source log file.
-   *
-   * @author Alec Van Vlerken
-   */
-  getVacuumLogFile(): File {
-    return this.logFile;
-  }
-
-  /**
-   * Rebuild this database into fresh temporary files using vacuum compaction.
-   *
-   * @param tempDataFile - Fresh temporary data file.
-   * @param tempLogFile - Fresh temporary log file.
-   * @param onProgress - Optional progress callback.
-   * @returns The rebuilt compacted database backend.
-   *
-   * @author Alec Van Vlerken
-   */
-  async vacuumCompactInto(
-    tempDataFile: File,
-    tempLogFile: File,
-    onProgress?: (progress: VacuumProgress) => void,
-  ): Promise<DbmsBack> {
-    const result = await runVacuumCompactInto({
-      source: this,
-      tempDataFile,
-      tempLogFile,
-      validate: true,
-      rebuildHnsw: true,
-      onProgress,
-    });
-
-    return result.target;
   }
 }
 
