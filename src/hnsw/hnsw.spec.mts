@@ -343,6 +343,27 @@ describe('HNSWGraphStorage', () => {
     expect(gs2.nodeSize).toBe(gs.nodeSize);
   });
 
+  it('opens legacy 8-byte node-id graph metadata and preserves that layout', async () => {
+    await fbf.commit();
+
+    const legacyNodeSize = 12 + (1 + 2 * M * 8) + MAX_STORED_LEVEL * (1 + M * 8);
+    const rawMeta = await fbf.readBlock(metaBlockId);
+    rawMeta.writeUInt32LE(legacyNodeSize, 1 + 8);
+    await fbf.writeBlock(metaBlockId, rawMeta.subarray(1));
+    await fbf.commit();
+
+    const legacyGs = await HNSWGraphStorage.open(fbf, metaBlockId);
+    expect(legacyGs.nodeSize).toBe(legacyNodeSize);
+
+    const first = makeNode({ docId: 10, neighbors: [[]] });
+    const firstId = await legacyGs.insertNode(first);
+    const second = makeNode({ docId: 20, neighbors: [[firstId]] });
+    await legacyGs.insertNode(second);
+
+    const loaded = await legacyGs.getNode(second.nodeId);
+    expect(loaded.neighbors[0]).toEqual([firstId]);
+  });
+
   // ── insertNode / getNode ──────────────────────────────────────────────────
 
   it('insertNode assigns a valid non-zero nodeId', async () => {

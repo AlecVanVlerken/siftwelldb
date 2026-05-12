@@ -32,6 +32,11 @@
         <div class="header-actions" style="position: relative">
           <button id="header-menu-btn" class="menu-btn" disabled>⋮</button>
           <div id="header-dropdown" class="dropdown hidden">
+            <div class="dropdown-status">
+              <span>Database grootte</span>
+              <strong id="database-size-value">-</strong>
+            </div>
+            <button id="vacuum-db-btn" disabled class="dropdown-item">Database compacten</button>
             <button id="reset-db-btn" disabled class="dropdown-item dropdown-item--danger">DB Resetten</button>
             <button id="disconnect-btn" disabled class="dropdown-item">Verbinding verbreken</button>
           </div>
@@ -102,6 +107,13 @@
         <input type="text" id="new-collection-name" placeholder="bijv. gebruikers" />
         <button id="new-collection-confirm-btn" class="btn-primary">Aanmaken</button>
         <p id="new-collection-error" class="error"></p>
+      </div>
+    </div>
+
+    <div id="maintenance-modal" class="modal hidden">
+      <div class="modal-content">
+        <h2 id="maintenance-title">Database compacteren</h2>
+        <p id="maintenance-status">Even geduld. De database is tijdelijk vergrendeld.</p>
       </div>
     </div>
 

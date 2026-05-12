@@ -33,6 +33,8 @@ import {
   type CompressionSample,
   type CompressionStorageEstimate,
 } from './compression-advisor.mjs';
+import { vacuumCompactInto as runVacuumCompactInto } from '../compaction/compaction.mjs';
+import type { VacuumProgress } from '../compaction/compaction.mjs';
 
 /**
  * Optional configuration block that enables per-collection HNSW semantic
@@ -946,6 +948,85 @@ export class DbmsBack {
     const graphStorage = await HNSWGraphStorage.open(this.freeblockFile, metaBlockId);
     const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
     return HNSWIndex.open(graphStorage, vectorHeap, { efSearch, efConstruction });
+  }
+
+  /**
+   * Return a snapshot of regular collection metadata for the vacuum subsystem.
+   */
+  getVacuumCollectionMetaSnapshot(): Record<string, Record<string, [number, string]>> {
+    const result: Record<string, Record<string, [number, string]>> = {};
+
+    for (const [key, value] of Object.entries(this.metaCache)) {
+      if (key === HNSW_META_KEY || key === COMPRESSION_META_KEY) continue;
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        const collectionMeta = value as Record<string, [number, string]>;
+        const copiedCollectionMeta: Record<string, [number, string]> = {};
+
+        for (const [field, tuple] of Object.entries(collectionMeta)) {
+          copiedCollectionMeta[field] = [...tuple] as [number, string];
+        }
+
+        result[key] = copiedCollectionMeta;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Return a snapshot of compression metadata for the vacuum subsystem.
+   */
+  getVacuumCompressionMetaSnapshot(): Record<string, FieldCompressionDefaults> {
+    const result: Record<string, FieldCompressionDefaults> = {};
+    for (const [collection, defaults] of Object.entries(this.getCompressionMeta())) {
+      result[collection] = { ...defaults };
+    }
+    return result;
+  }
+
+  /**
+   * Return a snapshot of HNSW metadata for the vacuum subsystem.
+   */
+  getVacuumHnswMetaSnapshot(): Record<string, [number, string]> {
+    const result: Record<string, [number, string]> = {};
+    for (const [collection, meta] of Object.entries(this.getHnswMeta())) {
+      result[collection] = [...meta] as [number, string];
+    }
+    return result;
+  }
+
+  /**
+   * Return the runtime HNSW configuration used by the vacuum subsystem.
+   */
+  getVacuumHnswConfig(): HnswConfig | undefined {
+    return this.hnswConfig;
+  }
+
+  getVacuumDataFile(): File {
+    return this.dataFile;
+  }
+
+  getVacuumLogFile(): File {
+    return this.logFile;
+  }
+
+  /**
+   * Rebuild this database into fresh temporary files using full vacuum compaction.
+   */
+  async vacuumCompactInto(
+    tempDataFile: File,
+    tempLogFile: File,
+    onProgress?: (progress: VacuumProgress) => void,
+  ): Promise<DbmsBack> {
+    const result = await runVacuumCompactInto({
+      source: this,
+      tempDataFile,
+      tempLogFile,
+      validate: true,
+      rebuildHnsw: true,
+      onProgress,
+    });
+    return result.target;
   }
 
   //hulperfuncties voor de meta

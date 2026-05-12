@@ -68,6 +68,27 @@ type LabRecommendationBundle = {
   forcedGzipBytesSaved: number | null;
 };
 
+export type DatabaseSizeInfo = {
+  dataFileBytes: number;
+  logFileBytes: number;
+  totalBytes: number;
+};
+
+export type DatabaseStatus = {
+  connected: boolean;
+  filepath: string | null;
+  busyOperation: string | null;
+  size: DatabaseSizeInfo | null;
+};
+
+export type VacuumSummary = {
+  filepath: string;
+  before: DatabaseSizeInfo;
+  after: DatabaseSizeInfo;
+  bytesSaved: number;
+  durationMs: number;
+};
+
 /**
  * Delete a file if it exists (ignores the error if not found).
  *
@@ -81,6 +102,25 @@ async function deleteIfExists(filePath: string): Promise<void> {
     await fs.unlink(filePath);
   } catch {
     // File doesn't exist — that's fine
+  }
+}
+
+async function renameIfExists(source: string, target: string): Promise<boolean> {
+  try {
+    await fs.rename(source, target);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function sizeOrZero(filePath: string): Promise<number> {
+  try {
+    return (await fs.stat(filePath)).size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
   }
 }
 
@@ -108,7 +148,8 @@ function rankingItem(
 export class DatabaseService {
   private dbms: SimpleDbms | null = null;
   private currentFilepath: string | null = null;
-  private lifecycleQueue: Promise<void> = Promise.resolve();
+  private operationChain: Promise<void> = Promise.resolve();
+  private currentOperation: string | null = null;
 
   // HNSW semantic search config
   private hnswConfigPromise: Promise<HnswConfig> | null = null;
@@ -180,12 +221,17 @@ export class DatabaseService {
     return this.currentFilepath;
   }
 
+  /** The operation currently holding exclusive DB access, if any. */
+  get busyOperation(): string | null {
+    return this.currentOperation;
+  }
+
   /**
    * Connect to an existing database or create a new one if the
    * file does not exist yet.
    */
   async connect(filepath: string): Promise<string> {
-    return this.runLifecycle(async () => {
+    return this.runExclusive('connect', async () => {
       await this.closeInternal();
 
       // Load HNSW config first (this can take a long time loading CLIP models).
@@ -202,7 +248,7 @@ export class DatabaseService {
       }
 
       const dataFile = new RealFile(filepath);
-      const logFile = new RealFile(`${filepath}.log`);
+      const logFile = new RealFile(this.logFilepath(filepath));
 
       if (fileExists) {
         this.dbms = await SimpleDbms.open(dataFile, logFile, hnswConfig);
@@ -221,14 +267,14 @@ export class DatabaseService {
    * Force-create a new database, deleting any existing files first.
    */
   async create(filepath: string): Promise<string> {
-    return this.runLifecycle(async () => {
+    return this.runExclusive('create', async () => {
       await this.closeInternal();
 
       await deleteIfExists(filepath);
-      await deleteIfExists(`${filepath}.log`);
+      await deleteIfExists(this.logFilepath(filepath));
 
       const dataFile = new RealFile(filepath);
-      const logFile = new RealFile(`${filepath}.log`);
+      const logFile = new RealFile(this.logFilepath(filepath));
       const hnswConfig = await this.getHnswConfig();
 
       this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
@@ -240,7 +286,7 @@ export class DatabaseService {
 
   /** Disconnect from the current database. */
   async disconnect(): Promise<void> {
-    await this.runLifecycle(async () => this.closeInternal());
+    await this.runExclusive('disconnect', async () => this.closeInternal());
   }
 
   /**
@@ -250,18 +296,102 @@ export class DatabaseService {
     const filepath = this.currentFilepath;
     if (!filepath) throw new Error('No filepath available');
 
-    await this.closeInternal();
+    await this.runExclusive('reset', async () => {
+      await this.closeInternal();
 
-    await deleteIfExists(filepath);
-    await deleteIfExists(`${filepath}.log`);
+      await deleteIfExists(filepath);
+      await deleteIfExists(this.logFilepath(filepath));
 
-    const dataFile = new RealFile(filepath);
-    const logFile = new RealFile(`${filepath}.log`);
-    const hnswConfig = await this.getHnswConfig();
+      const dataFile = new RealFile(filepath);
+      const logFile = new RealFile(this.logFilepath(filepath));
+      const hnswConfig = await this.getHnswConfig();
 
-    this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
-    await this.dbms.commit();
-    this.currentFilepath = filepath;
+      this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
+      await this.dbms.commit();
+      this.currentFilepath = filepath;
+    });
+  }
+
+  /** Return connection and file-size information for the current database. */
+  async getStatus(): Promise<DatabaseStatus> {
+    return {
+      connected: this.isConnected,
+      filepath: this.currentFilepath,
+      busyOperation: this.busyOperation,
+      size: this.currentFilepath ? await this.databaseSizeInfo(this.currentFilepath) : null,
+    };
+  }
+
+  /**
+   * Rebuild the current database into fresh files and swap them into place.
+   */
+  async vacuum(): Promise<VacuumSummary> {
+    return this.runExclusive('vacuum', async () => {
+      this.ensureConnected();
+      const filepath = this.currentFilepath;
+      if (!filepath) throw new Error('No filepath available');
+
+      const logPath = this.logFilepath(filepath);
+      const before = await this.databaseSizeInfo(filepath);
+      const stamp = Date.now().toString(36);
+      const tempPath = `${filepath}.vacuum-${stamp}.tmp`;
+      const tempLogPath = `${logPath}.vacuum-${stamp}.tmp`;
+      const backupPath = `${filepath}.vacuum-${stamp}.bak`;
+      const backupLogPath = `${logPath}.vacuum-${stamp}.bak`;
+      const started = performance.now();
+      let compacted: SimpleDbms | null = null;
+
+      try {
+        compacted = await this.dbms!.vacuumCompactInto(new RealFile(tempPath), new RealFile(tempLogPath));
+        await compacted.close();
+        compacted = null;
+
+        await this.closeInternal();
+
+        const dataBackedUp = await renameIfExists(filepath, backupPath);
+        const logBackedUp = await renameIfExists(logPath, backupLogPath);
+
+        try {
+          await fs.rename(tempPath, filepath);
+          if (!(await renameIfExists(tempLogPath, logPath))) {
+            await fs.writeFile(logPath, '');
+          }
+        } catch (error) {
+          if (dataBackedUp) await renameIfExists(backupPath, filepath);
+          if (logBackedUp) await renameIfExists(backupLogPath, logPath);
+          throw error;
+        }
+
+        await deleteIfExists(backupPath);
+        await deleteIfExists(backupLogPath);
+        await deleteIfExists(tempPath);
+        await deleteIfExists(tempLogPath);
+
+        const hnswConfig = await this.getHnswConfig();
+        this.dbms = await SimpleDbms.open(new RealFile(filepath), new RealFile(logPath), hnswConfig);
+        this.currentFilepath = filepath;
+
+        const after = await this.databaseSizeInfo(filepath);
+        return {
+          filepath,
+          before,
+          after,
+          bytesSaved: before.totalBytes - after.totalBytes,
+          durationMs: performance.now() - started,
+        };
+      } catch (error) {
+        if (compacted) {
+          try {
+            await compacted.close();
+          } catch (closeError) {
+            console.error('Failed to close compacted database after vacuum error:', closeError);
+          }
+        }
+        await deleteIfExists(tempPath);
+        await deleteIfExists(tempLogPath);
+        throw error;
+      }
+    });
   }
 
   // ── Collections ──────────────────────────────────────────────
@@ -638,19 +768,36 @@ export class DatabaseService {
     if (!this.dbms) throw new Error('No database connected');
   }
 
-  private async runLifecycle<T>(operation: () => Promise<T>): Promise<T> {
-    const previous = this.lifecycleQueue;
+  private async runExclusive<T>(operation: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.operationChain.catch(() => undefined);
     let release: () => void = () => {};
-    this.lifecycleQueue = new Promise((resolve) => {
+    const current = new Promise<void>((resolve) => {
       release = resolve;
     });
+    this.operationChain = previous.then(() => current);
 
     await previous;
+    this.currentOperation = operation;
     try {
-      return await operation();
+      return await task();
     } finally {
+      this.currentOperation = null;
       release();
     }
+  }
+
+  private logFilepath(filepath: string): string {
+    return `${filepath}.log`;
+  }
+
+  private async databaseSizeInfo(filepath: string): Promise<DatabaseSizeInfo> {
+    const dataFileBytes = await sizeOrZero(filepath);
+    const logFileBytes = await sizeOrZero(this.logFilepath(filepath));
+    return {
+      dataFileBytes,
+      logFileBytes,
+      totalBytes: dataFileBytes + logFileBytes,
+    };
   }
 
   private async closeInternal(): Promise<void> {

@@ -130,6 +130,17 @@ export class ApiRouter {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/database/status') {
+        sendJSON(res, 200, await this.db.getStatus());
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/database/vacuum') {
+        const result = await this.db.vacuum();
+        sendJSON(res, 200, result as unknown as JsonBody);
+        return;
+      }
+
       if (method === 'GET' && pathname === '/api/compression/defaults') {
         const collection = url.searchParams.get('collection');
         if (!collection) {

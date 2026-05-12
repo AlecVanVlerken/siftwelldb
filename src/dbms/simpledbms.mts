@@ -150,6 +150,7 @@ import {
 } from './compression-advisor.mjs';
 import { type CompressionProfileSummary } from './compression-benchmarks.mjs';
 import { type EncodedDocument } from './recordstore.mjs';
+import type { VacuumProgress } from '../compaction/compaction.mjs';
 
 /**
  * SimpleDbms class
@@ -395,6 +396,18 @@ export class SimpleDbms {
   async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<string[]> {
     const documents = await this.dbmsback.semanticImageSearch(collection, queryImage, k);
     return documents.map(documentToJSON);
+  }
+
+  /**
+   * Rebuild this database into fresh temporary files using full vacuum compaction.
+   */
+  async vacuumCompactInto(
+    tempDataFile: File,
+    tempLogFile: File,
+    onProgress?: (progress: VacuumProgress) => void,
+  ): Promise<SimpleDbms> {
+    const compactedBack = await this.dbmsback.vacuumCompactInto(tempDataFile, tempLogFile, onProgress);
+    return new SimpleDbms(compactedBack);
   }
 
   private encodedDocumentToObject(document: EncodedDocument): Record<string, unknown> {
