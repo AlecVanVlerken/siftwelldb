@@ -4,7 +4,7 @@
 import { state } from './state.js';
 import type { Document } from './state.js';
 import { apiCall } from './api.js';
-import { isImageField } from './utils.js';
+import { formatSize, isImageField } from './utils.js';
 import { initTable, applyFilter, renderTable, closeAllDropdowns } from './table.js';
 import { initDocView, openDocView, closeDocView, enterEditMode, cancelEditMode, saveDocView } from './doc-view.js';
 import { initLab } from './lab.js';
@@ -26,6 +26,11 @@ const filterInput = document.getElementById('filter-input') as HTMLInputElement;
 const refreshBtn = document.getElementById('refresh-btn') as HTMLButtonElement;
 const modalCloseBtns = document.querySelectorAll('.close-btn');
 const resetDbBtn = document.getElementById('reset-db-btn') as HTMLButtonElement | null;
+const vacuumDbBtn = document.getElementById('vacuum-db-btn') as HTMLButtonElement | null;
+const databaseSizeValue = document.getElementById('database-size-value');
+const maintenanceModal = document.getElementById('maintenance-modal');
+const maintenanceTitle = document.getElementById('maintenance-title');
+const maintenanceStatus = document.getElementById('maintenance-status');
 const newCollectionBtn = document.getElementById('new-collection-btn') as HTMLButtonElement | null;
 const newCollectionModal = document.getElementById('new-collection-modal');
 const newCollectionInput = document.getElementById('new-collection-name') as HTMLInputElement | null;
@@ -124,6 +129,7 @@ async function connect(filepath: string) {
     await apiCall('/api/connect', 'POST', { filepath });
     onConnected(filepath);
     await loadCollections();
+    await updateDatabaseStatus();
   } catch (error) {
     connectError.textContent = (error as Error).message;
   } finally {
@@ -138,6 +144,7 @@ async function createNew(filepath: string) {
     await apiCall('/api/create', 'POST', { filepath });
     onConnected(filepath);
     await loadCollections();
+    await updateDatabaseStatus();
   } catch (error) {
     connectError.textContent = (error as Error).message;
   } finally {
@@ -155,6 +162,7 @@ function onConnected(filepath: string) {
   connectionStatus.classList.add('connected');
   disconnectBtn.disabled = false;
   if (resetDbBtn) resetDbBtn.disabled = false;
+  if (vacuumDbBtn) vacuumDbBtn.disabled = false;
   if (newCollectionBtn) newCollectionBtn.disabled = false;
   if (headerMenuBtn) headerMenuBtn.disabled = false;
   connectModal.classList.add('hidden');
@@ -167,6 +175,7 @@ async function disconnect() {
     connectionStatus.classList.remove('connected');
     disconnectBtn.disabled = true;
     if (resetDbBtn) resetDbBtn.disabled = true;
+    if (vacuumDbBtn) vacuumDbBtn.disabled = true;
     if (newCollectionBtn) newCollectionBtn.disabled = true;
     if (headerMenuBtn) headerMenuBtn.disabled = true;
     collectionList.innerHTML = '';
@@ -197,10 +206,59 @@ async function resetDb() {
     await apiCall('/api/debug/reset', 'POST');
     clearWorkspace();
     await loadCollections();
+    await updateDatabaseStatus();
     alert('Database reset successfully.');
   } catch (error) {
     alert('Reset failed: ' + (error as Error).message);
   }
+}
+
+async function compactDatabase() {
+  if (!confirm('Database compacten? De database is tijdelijk niet bruikbaar tot dit klaar is.')) return;
+  try {
+    setMaintenance(true, 'Database wordt gecompacteerd. De database is tijdelijk vergrendeld.');
+    const beforeStatus = await apiCall('/api/database/status');
+    const before = beforeStatus['size'] as { totalBytes?: number } | null | undefined;
+    const data = await apiCall('/api/database/vacuum', 'POST');
+    const after = data['after'] as { totalBytes?: number } | undefined;
+    await updateDatabaseStatus();
+    await loadCollections();
+    if (state.currentCollection) await loadDocuments(state.currentCollection);
+    const savedBytes =
+      before?.totalBytes !== undefined && after?.totalBytes !== undefined ? before.totalBytes - after.totalBytes : 0;
+    alert(`Database compactie klaar. Bespaard: ${formatSize(Math.max(0, savedBytes))}.`);
+  } catch (error) {
+    alert('Database compactie mislukt: ' + (error as Error).message);
+  } finally {
+    setMaintenance(false);
+  }
+}
+
+async function updateDatabaseStatus(): Promise<void> {
+  if (!databaseSizeValue || !connectionStatus.classList.contains('connected')) return;
+  try {
+    const data = await apiCall('/api/database/status');
+    const size = data['size'] as { dataFileBytes?: number; logFileBytes?: number; totalBytes?: number } | null;
+    if (!size) {
+      databaseSizeValue.textContent = '-';
+      databaseSizeValue.removeAttribute('title');
+      return;
+    }
+    const totalBytes = size.totalBytes ?? (size.dataFileBytes ?? 0) + (size.logFileBytes ?? 0);
+    databaseSizeValue.textContent = formatSize(totalBytes);
+    databaseSizeValue.title = `Datafile: ${formatSize(size.dataFileBytes ?? 0)}\nLogfile: ${formatSize(size.logFileBytes ?? 0)}`;
+  } catch (error) {
+    console.error('Failed to load database status:', error);
+  }
+}
+
+function setMaintenance(active: boolean, statusText = '', titleText = 'Database compacteren'): void {
+  maintenanceModal?.classList.toggle('hidden', !active);
+  if (maintenanceTitle) maintenanceTitle.textContent = titleText;
+  if (maintenanceStatus && statusText) maintenanceStatus.textContent = statusText;
+  if (vacuumDbBtn) vacuumDbBtn.disabled = active || !connectionStatus.classList.contains('connected');
+  connectConfirmBtn.disabled = active;
+  createNewBtn.disabled = active;
 }
 
 // ── Collections ──────────────────────────────────────────────
@@ -675,6 +733,10 @@ if (newCollectionInput) {
   });
 }
 
+if (vacuumDbBtn) {
+  vacuumDbBtn.addEventListener('click', () => void compactDatabase());
+}
+
 // Document view
 docViewBack.addEventListener('click', closeDocView);
 docViewEdit.addEventListener('click', enterEditMode);
@@ -697,3 +759,7 @@ modalCloseBtns.forEach((btn) => {
 
 // Show connect modal on startup
 connectModal.classList.remove('hidden');
+
+setInterval(() => {
+  if (connectionStatus.classList.contains('connected')) void updateDatabaseStatus();
+}, 5000);

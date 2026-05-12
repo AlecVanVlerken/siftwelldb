@@ -1648,3 +1648,21 @@ textarea.doc-field-value.is-object:focus {
     grid-template-columns: 1fr;
   }
 }
+
+.dropdown-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.dropdown-status span {
+  color: var(--text-muted);
+}
+
+.dropdown-status strong {
+  color: var(--text);
+  white-space: nowrap;
+}
