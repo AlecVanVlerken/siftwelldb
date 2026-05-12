@@ -31,7 +31,7 @@ const M = envNumber('HNSW_M', 16);
 const EF_CONSTRUCTION = envNumber('HNSW_EF_CONSTRUCTION', 200);
 const EF_SEARCH = envNumber('HNSW_EF_SEARCH', 128);
 const CHECKPOINT_INTERVAL = envNumber('HNSW_COMPARE_CHECKPOINT_INTERVAL', 1_000);
-const INSERT_LIMIT = envNumber('HNSW_COMPARE_INSERT_LIMIT', 100_000);
+const INSERT_LIMIT = envNumber('HNSW_COMPARE_INSERT_LIMIT', 1_000_000);
 const KEEP_DB_FILES = envBoolean('HNSW_KEEP_DB', false);
 const STORAGE_MODE = resolveStorageMode('real');
 
