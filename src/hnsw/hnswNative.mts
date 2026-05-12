@@ -25,7 +25,6 @@
  *  • Flat Vec<f32> storage — cache-friendly, no pointer chasing
  */
 
-import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import os from 'os';
@@ -150,8 +149,8 @@ export class HnswIndexNative {
   }
 
   /**
-   * Soft-delete the entry for `docId`.
-   * @returns `true` if the entry was found and deleted.
+   * Remove `docId` from the native live-document map.
+   * @returns `true` if the live entry was found.
    */
   delete(docId: number): boolean {
     return (_fns['delete'](this.handle, docId) as number) === 1;
