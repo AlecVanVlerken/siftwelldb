@@ -13,7 +13,7 @@
  *   • the client metadata area
  */
 
-import { FreeBlockFile } from './freeblockfile.mjs';
+import type { FreeBlockFile } from './freeblockfile.mjs';
 import * as layout from './layout.mjs';
 import { offsetOf, validateBlockNumber, getBlockCount } from './io.mjs';
 

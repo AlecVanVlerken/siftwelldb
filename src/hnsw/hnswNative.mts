@@ -25,6 +25,7 @@
  *  • Flat Vec<f32> storage — cache-friendly, no pointer chasing
  */
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
