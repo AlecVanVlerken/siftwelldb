@@ -131,10 +131,24 @@ import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
  *   HNSW vectors together via the WAL.
  */
 export type { HnswConfig };
+export type {
+  CompressionRecommendation,
+  CompressionRecommendationItem,
+  CompressionRecommendationRequest,
+  CompressionStorageEstimate,
+  CompressionRecommendationWeights,
+} from './compression-advisor.mjs';
+export type { CompressionProfileSummary } from './compression-benchmarks.mjs';
 import { type File } from '../core/file.mjs';
-import { documentToJSON, parseRawDocument, type Document, type FieldValue } from './document.mjs';
+import { documentToJSON, parseRawDocument, type Document, type FieldValue, type IndexPredicate } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
 import { type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
+import {
+  listAvailableCompressionProfiles,
+  type CompressionRecommendation,
+  type CompressionRecommendationRequest,
+} from './compression-advisor.mjs';
+import { type CompressionProfileSummary } from './compression-benchmarks.mjs';
 import { type EncodedDocument } from './recordstore.mjs';
 import type { VacuumProgress } from '../compaction/compaction.mjs';
 
@@ -189,12 +203,9 @@ export class SimpleDbms {
    * Reopens an existing instance of the SimpleDbms class.
    * @param datafile - The data file to use for the database.
    * @param logfile - The log file to use for the database.
-   * @param hnswConfig - Optional. Must be the same config (same `embeddingFn`
-   *   and `dimension`) that was used when the database was created. Required
-   *   if you want to call `semanticSearch()` on the reopened instance.
    */
-  async reopen(datafile: File, logfile: File, hnswConfig?: HnswConfig): Promise<void> {
-    const dbmsback = await DbmsBack.open(datafile, logfile, hnswConfig);
+  async reopen(datafile: File, logfile: File): Promise<void> {
+    const dbmsback = await DbmsBack.open(datafile, logfile);
     this.dbmsback = dbmsback;
   }
 
@@ -240,10 +251,12 @@ export class SimpleDbms {
   async insertDocument(
     collection: string,
     documentJSON: string,
-    options?: { compression?: FieldCompressionOverrides },
+    options?: { compression?: FieldCompressionOverrides; skipSemanticIndex?: boolean },
   ): Promise<void> {
     const documentObj = JSONtoDocument(documentJSON, collection);
-    return this.dbmsback.insertDocument(documentObj, options?.compression);
+    return this.dbmsback.insertDocument(documentObj, options?.compression, {
+      skipSemanticIndex: options?.skipSemanticIndex,
+    });
   }
 
   /**
@@ -253,10 +266,16 @@ export class SimpleDbms {
   async insertDocumentObject(
     collection: string,
     document: unknown,
-    options?: { compression?: FieldCompressionOverrides },
+    options?: {
+      compression?: FieldCompressionOverrides;
+      skipSemanticIndex?: boolean;
+      indexPredicate?: IndexPredicate;
+    },
   ): Promise<void> {
-    const documentObj = parseRawDocument(collection, document);
-    return this.dbmsback.insertDocument(documentObj, options?.compression);
+    const documentObj = parseRawDocument(collection, document, options?.indexPredicate);
+    return this.dbmsback.insertDocument(documentObj, options?.compression, {
+      skipSemanticIndex: options?.skipSemanticIndex,
+    });
   }
 
   /**
@@ -275,6 +294,18 @@ export class SimpleDbms {
 
   setFieldCompressionDefaults(collection: string, defaults: FieldCompressionDefaults): void {
     this.dbmsback.setFieldCompressionDefaults(collection, defaults);
+  }
+
+  getFieldCompressionDefaults(collection: string): FieldCompressionDefaults {
+    return this.dbmsback.getFieldCompressionDefaults(collection);
+  }
+
+  listCompressionProfiles(): CompressionProfileSummary[] {
+    return listAvailableCompressionProfiles();
+  }
+
+  async recommendCompression(request: CompressionRecommendationRequest): Promise<CompressionRecommendation> {
+    return this.dbmsback.recommendCompression(request);
   }
 
   /**
@@ -367,6 +398,18 @@ export class SimpleDbms {
     return documents.map(documentToJSON);
   }
 
+  /**
+   * Rebuild this database into fresh temporary files using full vacuum compaction.
+   */
+  async vacuumCompactInto(
+    tempDataFile: File,
+    tempLogFile: File,
+    onProgress?: (progress: VacuumProgress) => void,
+  ): Promise<SimpleDbms> {
+    const compactedBack = await this.dbmsback.vacuumCompactInto(tempDataFile, tempLogFile, onProgress);
+    return new SimpleDbms(compactedBack);
+  }
+
   private encodedDocumentToObject(document: EncodedDocument): Record<string, unknown> {
     const toFieldValue = (entry: EncodedDocument['iterableEntries'][number]) => ({
       valueType: entry.valueType,
@@ -386,30 +429,5 @@ export class SimpleDbms {
       id: document.id,
       ...fields,
     };
-  }
-
-  /**
-   * Rebuilds this database into fresh temporary files using the vacuum
-   * compaction subsystem.
-   *
-   * This is the public DBMS wrapper around the backend vacuum operation.
-   * The returned SimpleDbms instance wraps the newly created compacted target
-   * database.
-   *
-   * Replacing the original files is intentionally left to a higher layer.
-   *
-   * @param tempDataFile - Fresh temporary data file for the compacted database.
-   * @param tempLogFile - Fresh temporary log file for the compacted database.
-   * @param onProgress - Optional progress callback.
-   * @returns A new SimpleDbms instance backed by the compacted database.
-   */
-  async vacuumCompactInto(
-    tempDataFile: File,
-    tempLogFile: File,
-    onProgress?: (progress: VacuumProgress) => void,
-  ): Promise<SimpleDbms> {
-    const compactedBack = await this.dbmsback.vacuumCompactInto(tempDataFile, tempLogFile, onProgress);
-
-    return new SimpleDbms(compactedBack);
   }
 }

@@ -1,10 +1,29 @@
 // author: Frederik Caeyman
 // date: 2025-12-08
 
-import { deflateSync, gunzipSync, gzipSync, inflateSync } from 'node:zlib';
+import {
+  brotliCompressSync,
+  brotliDecompressSync,
+  constants,
+  deflateSync,
+  gunzipSync,
+  gzipSync,
+  inflateSync,
+  zstdCompressSync,
+  zstdDecompressSync,
+} from 'node:zlib';
 
-export type CompressionAlgorithm = 'none' | 'gzip' | 'deflate';
+export type CompressionAlgorithm = 'none' | 'gzip' | 'deflate' | 'brotli' | 'zstd-fast' | 'zstd';
 export type CompressionOverride = CompressionAlgorithm | 'off';
+
+export const COMPRESSION_ALGORITHMS: CompressionAlgorithm[] = [
+  'none',
+  'gzip',
+  'deflate',
+  'brotli',
+  'zstd-fast',
+  'zstd',
+];
 
 export interface CompressionCodec {
   id: CompressionAlgorithm;
@@ -63,6 +82,66 @@ class DeflateCodec implements CompressionCodec {
   }
 }
 
+class BrotliCodec implements CompressionCodec {
+  id: CompressionAlgorithm = 'brotli';
+
+  compress(input: Buffer): Buffer {
+    return brotliCompressSync(input, {
+      params: {
+        [constants.BROTLI_PARAM_QUALITY]: 4,
+      },
+    });
+  }
+
+  decompress(input: Buffer): Buffer {
+    return brotliDecompressSync(input);
+  }
+
+  canDecode(_input: Buffer): boolean {
+    return false;
+  }
+}
+
+class ZstdFastCodec implements CompressionCodec {
+  id: CompressionAlgorithm = 'zstd-fast';
+
+  compress(input: Buffer): Buffer {
+    return zstdCompressSync(input, {
+      params: {
+        [constants.ZSTD_c_compressionLevel]: 3,
+      },
+    });
+  }
+
+  decompress(input: Buffer): Buffer {
+    return zstdDecompressSync(input);
+  }
+
+  canDecode(input: Buffer): boolean {
+    return input.length >= 4 && input[0] === 0x28 && input[1] === 0xb5 && input[2] === 0x2f && input[3] === 0xfd;
+  }
+}
+
+class ZstdCodec implements CompressionCodec {
+  id: CompressionAlgorithm = 'zstd';
+
+  compress(input: Buffer): Buffer {
+    return zstdCompressSync(input, {
+      params: {
+        [constants.ZSTD_c_compressionLevel]: 10,
+      },
+    });
+  }
+
+  decompress(input: Buffer): Buffer {
+    return zstdDecompressSync(input);
+  }
+
+  canDecode(input: Buffer): boolean {
+    return input.length >= 4 && input[0] === 0x28 && input[1] === 0xb5 && input[2] === 0x2f && input[3] === 0xfd;
+  }
+}
+
 export class CompressionRegistry {
   private codecs: Map<CompressionAlgorithm, CompressionCodec> = new Map();
 
@@ -70,6 +149,9 @@ export class CompressionRegistry {
     this.register(new NoopCodec());
     this.register(new GzipCodec());
     this.register(new DeflateCodec());
+    this.register(new BrotliCodec());
+    this.register(new ZstdFastCodec());
+    this.register(new ZstdCodec());
   }
 
   register(codec: CompressionCodec): void {

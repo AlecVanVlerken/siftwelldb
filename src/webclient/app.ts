@@ -7,6 +7,7 @@ import { apiCall } from './api.js';
 import { formatSize, isImageField } from './utils.js';
 import { initTable, applyFilter, renderTable, closeAllDropdowns } from './table.js';
 import { initDocView, openDocView, closeDocView, enterEditMode, cancelEditMode, saveDocView } from './doc-view.js';
+import { initLab } from './lab.js';
 
 // ── DOM Elements ─────────────────────────────────────────────
 
@@ -27,24 +28,20 @@ const modalCloseBtns = document.querySelectorAll('.close-btn');
 const resetDbBtn = document.getElementById('reset-db-btn') as HTMLButtonElement | null;
 const vacuumDbBtn = document.getElementById('vacuum-db-btn') as HTMLButtonElement | null;
 const databaseSizeValue = document.getElementById('database-size-value');
-const newCollectionBtn = document.querySelector('#new-collection-btn');
+const maintenanceModal = document.getElementById('maintenance-modal');
+const maintenanceTitle = document.getElementById('maintenance-title');
+const maintenanceStatus = document.getElementById('maintenance-status');
+const newCollectionBtn = document.getElementById('new-collection-btn') as HTMLButtonElement | null;
 const newCollectionModal = document.getElementById('new-collection-modal');
 const newCollectionInput = document.getElementById('new-collection-name') as HTMLInputElement | null;
 const newCollectionConfirmBtn = document.getElementById('new-collection-confirm-btn') as HTMLButtonElement | null;
 const newCollectionError = document.getElementById('new-collection-error');
 const headerMenuBtn = document.getElementById('header-menu-btn') as HTMLButtonElement | null;
 const headerDropdown = document.getElementById('header-dropdown') as HTMLDivElement | null;
-const maintenanceOverlay = document.getElementById('maintenance-overlay');
-const maintenanceTitle = document.getElementById('maintenance-title');
-const maintenanceStatus = document.getElementById('maintenance-status');
-
-type DatabaseSizeInfo = {
-  dataFileBytes: number;
-  logFileBytes: number;
-  totalBytes: number;
-};
-
-let connectionRequestActive = false;
+const tabCollections = document.getElementById('tab-collections') as HTMLButtonElement | null;
+const tabLab = document.getElementById('tab-lab') as HTMLButtonElement | null;
+const contentPanel = document.getElementById('content');
+const labPanel = document.getElementById('lab-panel');
 
 // Semantic search
 const semanticSearchInput = document.getElementById('semantic-search-input') as HTMLInputElement;
@@ -52,6 +49,19 @@ const semanticSearchBtn = document.getElementById('semantic-search-btn') as HTML
 const semanticSearchClearBtn = document.getElementById('semantic-search-clear-btn') as HTMLButtonElement;
 const searchModeTextBtn = document.getElementById('search-mode-text') as HTMLButtonElement | null;
 const searchModeImageBtn = document.getElementById('search-mode-image') as HTMLButtonElement | null;
+const searchModeWordBtn = document.getElementById('search-mode-word') as HTMLButtonElement | null;
+
+// Pagination
+const loadMoreBar = document.getElementById('load-more-bar') as HTMLElement;
+const loadMoreBtn = document.getElementById('load-more-btn') as HTMLButtonElement;
+const loadMoreInfo = document.getElementById('load-more-info') as HTMLElement;
+
+// Content search bar
+const contentSearchBar = document.getElementById('content-search-bar') as HTMLElement;
+const contentSearchInput = document.getElementById('content-search-input') as HTMLInputElement;
+const contentSearchBtn = document.getElementById('content-search-btn') as HTMLButtonElement;
+const contentSearchClearBtn = document.getElementById('content-search-clear-btn') as HTMLButtonElement;
+const contentSearchInfo = document.getElementById('content-search-info') as HTMLElement;
 
 // Doc view buttons
 const docViewBack = document.getElementById('doc-view-back') as HTMLButtonElement;
@@ -81,42 +91,40 @@ initDocView({
   loadCollections,
 });
 
+initLab({
+  loadCollections,
+  openCollection: (collection) => selectCollection(collection),
+});
+
 // ── Workspace reset helper ───────────────────────────────────
 
 function clearWorkspace(): void {
   state.currentCollection = null;
   state.allDocuments = [];
+  state.hasMore = false;
+  state.nextCursor = undefined;
+  state.wordSearchOffset = 0;
+  state.wordSearchTotal = 0;
+  state.lastWordQuery = '';
+  state.contentSearchOffset = 0;
+  state.contentSearchTotal = 0;
+  state.lastContentQuery = '';
   dataTableHead.innerHTML = '';
   dataTableBody.innerHTML = '';
   filterInput.value = '';
-  addDocBtn.disabled = true;
-  filterInput.disabled = true;
-  refreshBtn.disabled = true;
-  if (searchModeTextBtn) searchModeTextBtn.disabled = true;
-  if (searchModeImageBtn) searchModeImageBtn.disabled = true;
-  semanticSearchInput.disabled = true;
-  semanticSearchBtn.disabled = true;
-  semanticSearchClearBtn.classList.add('hidden');
+  loadMoreBar.classList.add('hidden');
+  contentSearchBar.classList.add('hidden');
+  contentSearchInput.value = '';
+  contentSearchClearBtn.classList.add('hidden');
+  contentSearchInfo.textContent = '';
   closeDocView();
 }
 
 // ── Connection ───────────────────────────────────────────────
 
-function setConnectBusy(active: boolean, statusText = ''): void {
-  connectConfirmBtn.disabled = active;
-  createNewBtn.disabled = active;
-  dbFilepathInput.disabled = active;
-  connectConfirmBtn.textContent = active ? 'Openen...' : 'Openen';
-  createNewBtn.textContent = active ? 'Bezig...' : 'Nieuw aanmaken';
-  if (active) setMaintenance(true, statusText, 'Database openen');
-  else setMaintenance(false);
-}
-
 async function connect(filepath: string) {
-  if (connectionRequestActive) return;
-  connectionRequestActive = true;
   connectError.textContent = '';
-  setConnectBusy(true, 'De database wordt geopend en de semantische zoekmodellen worden geladen.');
+  setConnectionButtonsBusy(true);
   try {
     await apiCall('/api/connect', 'POST', { filepath });
     onConnected(filepath);
@@ -125,16 +133,13 @@ async function connect(filepath: string) {
   } catch (error) {
     connectError.textContent = (error as Error).message;
   } finally {
-    connectionRequestActive = false;
-    setConnectBusy(false);
+    setConnectionButtonsBusy(false);
   }
 }
 
 async function createNew(filepath: string) {
-  if (connectionRequestActive) return;
-  connectionRequestActive = true;
   connectError.textContent = '';
-  setConnectBusy(true, 'De nieuwe database wordt aangemaakt en de semantische zoekmodellen worden geladen.');
+  setConnectionButtonsBusy(true);
   try {
     await apiCall('/api/create', 'POST', { filepath });
     onConnected(filepath);
@@ -143,9 +148,13 @@ async function createNew(filepath: string) {
   } catch (error) {
     connectError.textContent = (error as Error).message;
   } finally {
-    connectionRequestActive = false;
-    setConnectBusy(false);
+    setConnectionButtonsBusy(false);
   }
+}
+
+function setConnectionButtonsBusy(busy: boolean): void {
+  connectConfirmBtn.disabled = busy;
+  createNewBtn.disabled = busy;
 }
 
 function onConnected(filepath: string) {
@@ -154,7 +163,7 @@ function onConnected(filepath: string) {
   disconnectBtn.disabled = false;
   if (resetDbBtn) resetDbBtn.disabled = false;
   if (vacuumDbBtn) vacuumDbBtn.disabled = false;
-  if (newCollectionBtn instanceof HTMLButtonElement) newCollectionBtn.disabled = false;
+  if (newCollectionBtn) newCollectionBtn.disabled = false;
   if (headerMenuBtn) headerMenuBtn.disabled = false;
   connectModal.classList.add('hidden');
 }
@@ -167,8 +176,7 @@ async function disconnect() {
     disconnectBtn.disabled = true;
     if (resetDbBtn) resetDbBtn.disabled = true;
     if (vacuumDbBtn) vacuumDbBtn.disabled = true;
-    renderDatabaseSize(null);
-    if (newCollectionBtn instanceof HTMLButtonElement) newCollectionBtn.disabled = true;
+    if (newCollectionBtn) newCollectionBtn.disabled = true;
     if (headerMenuBtn) headerMenuBtn.disabled = true;
     collectionList.innerHTML = '';
     clearWorkspace();
@@ -177,10 +185,15 @@ async function disconnect() {
     refreshBtn.disabled = true;
     if (searchModeTextBtn) searchModeTextBtn.disabled = true;
     if (searchModeImageBtn) searchModeImageBtn.disabled = true;
+    if (searchModeWordBtn) searchModeWordBtn.disabled = true;
     semanticSearchInput.disabled = true;
     semanticSearchInput.value = '';
     semanticSearchBtn.disabled = true;
     semanticSearchClearBtn.classList.add('hidden');
+    contentSearchBar.classList.add('hidden');
+    contentSearchInput.value = '';
+    contentSearchClearBtn.classList.add('hidden');
+    contentSearchInfo.textContent = '';
     connectModal.classList.remove('hidden');
   } catch (error) {
     console.error('Disconnect failed:', error);
@@ -202,30 +215,20 @@ async function resetDb() {
 
 async function compactDatabase() {
   if (!confirm('Database compacten? De database is tijdelijk niet bruikbaar tot dit klaar is.')) return;
-
-  const previousCollection = state.currentCollection;
-  if (headerDropdown) headerDropdown.classList.add('hidden');
-  setMaintenance(true, 'Database wordt gecompacteerd. De database is tijdelijk vergrendeld.');
-
   try {
+    setMaintenance(true, 'Database wordt gecompacteerd. De database is tijdelijk vergrendeld.');
+    const beforeStatus = await apiCall('/api/database/status');
+    const before = beforeStatus['size'] as { totalBytes?: number } | null | undefined;
     const data = await apiCall('/api/database/vacuum', 'POST');
-    const before = readSizeInfo(data['before']);
-    const after = readSizeInfo(data['after']);
-    if (after) renderDatabaseSize(after);
-
-    await loadCollections();
-    if (previousCollection && state.collections.includes(previousCollection)) {
-      selectCollection(previousCollection);
-    } else {
-      clearWorkspace();
-    }
-
-    const savedBytes = before && after ? before.totalBytes - after.totalBytes : undefined;
-    const savedText = savedBytes !== undefined ? ` Bespaard: ${formatSize(Math.max(0, savedBytes))}.` : '';
-    alert(`Database compactie klaar.${savedText}`);
-  } catch (error) {
-    alert('Compactie mislukt: ' + (error as Error).message);
+    const after = data['after'] as { totalBytes?: number } | undefined;
     await updateDatabaseStatus();
+    await loadCollections();
+    if (state.currentCollection) await loadDocuments(state.currentCollection);
+    const savedBytes =
+      before?.totalBytes !== undefined && after?.totalBytes !== undefined ? before.totalBytes - after.totalBytes : 0;
+    alert(`Database compactie klaar. Bespaard: ${formatSize(Math.max(0, savedBytes))}.`);
+  } catch (error) {
+    alert('Database compactie mislukt: ' + (error as Error).message);
   } finally {
     setMaintenance(false);
   }
@@ -233,40 +236,29 @@ async function compactDatabase() {
 
 async function updateDatabaseStatus(): Promise<void> {
   if (!databaseSizeValue || !connectionStatus.classList.contains('connected')) return;
-
   try {
     const data = await apiCall('/api/database/status');
-    renderDatabaseSize(readSizeInfo(data['size']));
+    const size = data['size'] as { dataFileBytes?: number; logFileBytes?: number; totalBytes?: number } | null;
+    if (!size) {
+      databaseSizeValue.textContent = '-';
+      databaseSizeValue.removeAttribute('title');
+      return;
+    }
+    const totalBytes = size.totalBytes ?? (size.dataFileBytes ?? 0) + (size.logFileBytes ?? 0);
+    databaseSizeValue.textContent = formatSize(totalBytes);
+    databaseSizeValue.title = `Datafile: ${formatSize(size.dataFileBytes ?? 0)}\nLogfile: ${formatSize(size.logFileBytes ?? 0)}`;
   } catch (error) {
     console.error('Failed to load database status:', error);
-    renderDatabaseSize(null);
   }
-}
-
-function readSizeInfo(value: unknown): DatabaseSizeInfo | null {
-  if (!value || typeof value !== 'object') return null;
-  const record = value as Record<string, unknown>;
-  const dataFileBytes = record['dataFileBytes'];
-  const logFileBytes = record['logFileBytes'];
-  const totalBytes = record['totalBytes'];
-
-  if (typeof dataFileBytes !== 'number' || typeof logFileBytes !== 'number' || typeof totalBytes !== 'number') {
-    return null;
-  }
-
-  return { dataFileBytes, logFileBytes, totalBytes };
-}
-
-function renderDatabaseSize(size: DatabaseSizeInfo | null): void {
-  if (!databaseSizeValue) return;
-  databaseSizeValue.textContent = size ? formatSize(size.totalBytes) : '-';
 }
 
 function setMaintenance(active: boolean, statusText = '', titleText = 'Database compacteren'): void {
-  if (maintenanceOverlay) maintenanceOverlay.classList.toggle('hidden', !active);
-  if (maintenanceTitle && titleText) maintenanceTitle.textContent = titleText;
+  maintenanceModal?.classList.toggle('hidden', !active);
+  if (maintenanceTitle) maintenanceTitle.textContent = titleText;
   if (maintenanceStatus && statusText) maintenanceStatus.textContent = statusText;
   if (vacuumDbBtn) vacuumDbBtn.disabled = active || !connectionStatus.classList.contains('connected');
+  connectConfirmBtn.disabled = active;
+  createNewBtn.disabled = active;
 }
 
 // ── Collections ──────────────────────────────────────────────
@@ -276,7 +268,6 @@ async function loadCollections(): Promise<void> {
     const data = await apiCall('/api/collections');
     state.collections = (data['collections'] as string[] | undefined) ?? [];
     renderCollectionList();
-    void updateDatabaseStatus();
   } catch (error) {
     console.error('Failed to load collections:', error);
   }
@@ -333,7 +324,14 @@ function renderCollectionList() {
 }
 
 function selectCollection(collection: string) {
+  switchTab('collections');
   state.currentCollection = collection;
+  state.lastWordQuery = '';
+  state.wordSearchOffset = 0;
+  state.wordSearchTotal = 0;
+  state.lastContentQuery = '';
+  state.contentSearchOffset = 0;
+  state.contentSearchTotal = 0;
   filterInput.value = '';
   closeDocView();
   renderCollectionList();
@@ -342,24 +340,166 @@ function selectCollection(collection: string) {
   refreshBtn.disabled = false;
   if (searchModeTextBtn) searchModeTextBtn.disabled = false;
   if (searchModeImageBtn) searchModeImageBtn.disabled = false;
+  if (searchModeWordBtn) searchModeWordBtn.disabled = false;
   semanticSearchInput.disabled = false;
   semanticSearchBtn.disabled = false;
   semanticSearchInput.value = '';
   semanticSearchClearBtn.classList.add('hidden');
+  contentSearchBar.classList.remove('hidden');
+  contentSearchInput.value = '';
+  contentSearchClearBtn.classList.add('hidden');
+  contentSearchInfo.textContent = '';
   void loadDocuments(collection);
+}
+
+function switchTab(tab: 'collections' | 'lab'): void {
+  const showLab = tab === 'lab';
+  tabCollections?.classList.toggle('active', !showLab);
+  tabLab?.classList.toggle('active', showLab);
+  contentPanel?.classList.toggle('hidden', showLab);
+  labPanel?.classList.toggle('hidden', !showLab);
+  if (showLab) closeDocView();
 }
 
 // ── Documents ────────────────────────────────────────────────
 
-async function loadDocuments(collection: string): Promise<void> {
+async function loadDocuments(collection: string, append = false): Promise<void> {
   try {
-    const data = await apiCall(`/api/documents/${encodeURIComponent(collection)}`);
+    const cursor = append ? state.nextCursor : undefined;
+    const params = new URLSearchParams({ limit: '50' });
+    if (cursor !== undefined) params.set('cursor', String(cursor));
+    const data = await apiCall(`/api/documents/${encodeURIComponent(collection)}?${params.toString()}`);
     const rawDocs = (data['documents'] as string[] | undefined) ?? [];
-    state.allDocuments = rawDocs.map((d) => JSON.parse(d) as Document);
+    const newDocs = rawDocs.map((d) => JSON.parse(d) as Document);
+    state.allDocuments = append ? [...state.allDocuments, ...newDocs] : newDocs;
+    state.hasMore = (data['hasMore'] as boolean | undefined) ?? false;
+    state.nextCursor = data['nextCursor'] as string | number | undefined;
     applyFilter(filterInput);
+    updateLoadMoreBar();
   } catch (error) {
     console.error('Failed to load documents:', error);
     dataTableBody.innerHTML = `<tr><td colspan="4" class="error">Fout bij laden: ${(error as Error).message}</td></tr>`;
+  }
+}
+
+function updateLoadMoreBar(): void {
+  if (state.hasMore) {
+    loadMoreBar.classList.remove('hidden');
+    let total = '';
+    if (state.currentSearchMode === 'word' && state.wordSearchTotal > 0) {
+      total = ` van ${state.wordSearchTotal}`;
+    } else if (state.lastContentQuery && state.contentSearchTotal > 0) {
+      total = ` van ${state.contentSearchTotal}`;
+    }
+    loadMoreInfo.textContent = `${state.allDocuments.length}${total} geladen`;
+  } else {
+    loadMoreBar.classList.add('hidden');
+  }
+}
+
+async function loadMore(): Promise<void> {
+  if (!state.currentCollection || !state.hasMore) return;
+  if (state.currentSearchMode === 'word' && state.lastWordQuery) {
+    await performWordSearch(true);
+  } else if (state.lastContentQuery) {
+    await performContentSearch(true);
+  } else {
+    await loadDocuments(state.currentCollection, true);
+  }
+}
+
+async function performWordSearch(append = false): Promise<void> {
+  if (!state.currentCollection) return;
+
+  const word = append ? state.lastWordQuery : semanticSearchInput.value.trim();
+  if (!word) {
+    semanticSearchClearBtn.classList.add('hidden');
+    applyFilter(filterInput);
+    return;
+  }
+
+  if (!append) {
+    state.wordSearchOffset = 0;
+    state.wordSearchTotal = 0;
+    state.lastWordQuery = word;
+    semanticSearchClearBtn.classList.remove('hidden');
+  }
+
+  semanticSearchBtn.classList.add('loading');
+  semanticSearchBtn.disabled = true;
+  semanticSearchInput.disabled = true;
+  if (searchModeTextBtn) searchModeTextBtn.disabled = true;
+  if (searchModeImageBtn) searchModeImageBtn.disabled = true;
+  if (searchModeWordBtn) searchModeWordBtn.disabled = true;
+
+  try {
+    const params = new URLSearchParams({ word, limit: '50', offset: String(state.wordSearchOffset) });
+    const data = await apiCall(
+      `/api/documents/${encodeURIComponent(state.currentCollection)}/wordsearch?${params.toString()}`,
+    );
+    const rawDocs = (data['documents'] as string[] | undefined) ?? [];
+    const newDocs = rawDocs.map((d) => JSON.parse(d) as Document);
+    state.wordSearchOffset += newDocs.length;
+    state.wordSearchTotal = (data['total'] as number | undefined) ?? 0;
+    state.hasMore = (data['hasMore'] as boolean | undefined) ?? false;
+    state.allDocuments = append ? [...state.allDocuments, ...newDocs] : newDocs;
+    renderTable(state.allDocuments);
+    updateLoadMoreBar();
+  } catch (error) {
+    console.error('Word search failed:', error);
+    dataTableBody.innerHTML = `<tr><td colspan="4" class="error">Woordzoekfout: ${(error as Error).message}</td></tr>`;
+  } finally {
+    semanticSearchBtn.classList.remove('loading');
+    semanticSearchBtn.disabled = false;
+    semanticSearchInput.disabled = false;
+    if (searchModeTextBtn) searchModeTextBtn.disabled = false;
+    if (searchModeImageBtn) searchModeImageBtn.disabled = false;
+    if (searchModeWordBtn) searchModeWordBtn.disabled = false;
+    semanticSearchInput.focus();
+  }
+}
+
+async function performContentSearch(append = false): Promise<void> {
+  if (!state.currentCollection) return;
+
+  const word = append ? state.lastContentQuery : contentSearchInput.value.trim();
+  if (!word) {
+    contentSearchClearBtn.classList.add('hidden');
+    contentSearchInfo.textContent = '';
+    return;
+  }
+
+  if (!append) {
+    state.contentSearchOffset = 0;
+    state.contentSearchTotal = 0;
+    state.lastContentQuery = word;
+    contentSearchClearBtn.classList.remove('hidden');
+  }
+
+  contentSearchBtn.disabled = true;
+  contentSearchInput.disabled = true;
+
+  try {
+    const params = new URLSearchParams({ word, limit: '50', offset: String(state.contentSearchOffset) });
+    const data = await apiCall(
+      `/api/documents/${encodeURIComponent(state.currentCollection)}/contentsearch?${params.toString()}`,
+    );
+    const rawDocs = (data['documents'] as string[] | undefined) ?? [];
+    const newDocs = rawDocs.map((d) => JSON.parse(d) as Document);
+    state.contentSearchOffset += newDocs.length;
+    state.contentSearchTotal = (data['total'] as number | undefined) ?? 0;
+    state.hasMore = (data['hasMore'] as boolean | undefined) ?? false;
+    state.allDocuments = append ? [...state.allDocuments, ...newDocs] : newDocs;
+    renderTable(state.allDocuments);
+    contentSearchInfo.textContent = `${state.contentSearchTotal} artikel(en) gevonden`;
+    updateLoadMoreBar();
+  } catch (error) {
+    console.error('Content search failed:', error);
+    dataTableBody.innerHTML = `<tr><td colspan="4" class="error">Inhoudszoekfout: ${(error as Error).message}</td></tr>`;
+  } finally {
+    contentSearchBtn.disabled = false;
+    contentSearchInput.disabled = false;
+    contentSearchInput.focus();
   }
 }
 
@@ -412,6 +552,11 @@ function createCollection(name: string) {
 async function performSemanticSearch() {
   if (!state.currentCollection) return;
 
+  if (state.currentSearchMode === 'word') {
+    await performWordSearch();
+    return;
+  }
+
   const query = semanticSearchInput.value.trim();
   if (!query) {
     semanticSearchClearBtn.classList.add('hidden');
@@ -425,6 +570,7 @@ async function performSemanticSearch() {
   semanticSearchInput.disabled = true;
   if (searchModeTextBtn) searchModeTextBtn.disabled = true;
   if (searchModeImageBtn) searchModeImageBtn.disabled = true;
+  if (searchModeWordBtn) searchModeWordBtn.disabled = true;
 
   try {
     const data = await apiCall(
@@ -447,6 +593,7 @@ async function performSemanticSearch() {
     semanticSearchInput.disabled = false;
     if (searchModeTextBtn) searchModeTextBtn.disabled = false;
     if (searchModeImageBtn) searchModeImageBtn.disabled = false;
+    if (searchModeWordBtn) searchModeWordBtn.disabled = false;
     semanticSearchInput.focus();
   }
 }
@@ -490,14 +637,27 @@ if (resetDbBtn) {
     void resetDb();
   });
 }
-if (vacuumDbBtn) {
-  vacuumDbBtn.addEventListener('click', () => void compactDatabase());
-}
+
+tabCollections?.addEventListener('click', () => switchTab('collections'));
+tabLab?.addEventListener('click', () => switchTab('lab'));
 
 // Toolbar
 addDocBtn.addEventListener('click', () => openDocView({ id: '' }, true, true));
 refreshBtn.addEventListener('click', () => {
-  if (state.currentCollection) void loadDocuments(state.currentCollection);
+  if (state.currentCollection) {
+    state.lastWordQuery = '';
+    state.wordSearchOffset = 0;
+    state.wordSearchTotal = 0;
+    state.lastContentQuery = '';
+    state.contentSearchOffset = 0;
+    state.contentSearchTotal = 0;
+    semanticSearchInput.value = '';
+    semanticSearchClearBtn.classList.add('hidden');
+    contentSearchInput.value = '';
+    contentSearchClearBtn.classList.add('hidden');
+    contentSearchInfo.textContent = '';
+    void loadDocuments(state.currentCollection);
+  }
 });
 filterInput.addEventListener('input', () => applyFilter(filterInput));
 
@@ -507,13 +667,24 @@ if (searchModeTextBtn && searchModeImageBtn) {
     state.currentSearchMode = 'text';
     searchModeTextBtn.classList.add('active');
     searchModeImageBtn.classList.remove('active');
+    if (searchModeWordBtn) searchModeWordBtn.classList.remove('active');
     semanticSearchInput.placeholder = 'Zoek op betekenis...';
   });
   searchModeImageBtn.addEventListener('click', () => {
     state.currentSearchMode = 'image';
     searchModeImageBtn.classList.add('active');
     searchModeTextBtn.classList.remove('active');
+    if (searchModeWordBtn) searchModeWordBtn.classList.remove('active');
     semanticSearchInput.placeholder = 'Zoek foto op beschrijving...';
+  });
+}
+if (searchModeWordBtn && searchModeTextBtn && searchModeImageBtn) {
+  searchModeWordBtn.addEventListener('click', () => {
+    state.currentSearchMode = 'word';
+    searchModeWordBtn.classList.add('active');
+    searchModeTextBtn.classList.remove('active');
+    searchModeImageBtn.classList.remove('active');
+    semanticSearchInput.placeholder = 'Zoek op woord...';
   });
 }
 
@@ -525,7 +696,30 @@ semanticSearchBtn.addEventListener('click', () => void performSemanticSearch());
 semanticSearchClearBtn.addEventListener('click', () => {
   semanticSearchInput.value = '';
   semanticSearchClearBtn.classList.add('hidden');
-  applyFilter(filterInput);
+  state.lastWordQuery = '';
+  state.wordSearchOffset = 0;
+  state.wordSearchTotal = 0;
+  if (state.currentCollection && state.currentSearchMode === 'word') {
+    void loadDocuments(state.currentCollection);
+  } else {
+    applyFilter(filterInput);
+  }
+});
+loadMoreBtn.addEventListener('click', () => void loadMore());
+
+// Content search bar
+contentSearchInput.addEventListener('keyup', (e) => {
+  if (e.key === 'Enter') void performContentSearch();
+});
+contentSearchBtn.addEventListener('click', () => void performContentSearch());
+contentSearchClearBtn.addEventListener('click', () => {
+  contentSearchInput.value = '';
+  contentSearchClearBtn.classList.add('hidden');
+  contentSearchInfo.textContent = '';
+  state.lastContentQuery = '';
+  state.contentSearchOffset = 0;
+  state.contentSearchTotal = 0;
+  if (state.currentCollection) void loadDocuments(state.currentCollection);
 });
 
 // New collection
@@ -537,6 +731,10 @@ if (newCollectionInput) {
   newCollectionInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') createCollection(newCollectionInput.value);
   });
+}
+
+if (vacuumDbBtn) {
+  vacuumDbBtn.addEventListener('click', () => void compactDatabase());
 }
 
 // Document view
@@ -561,3 +759,7 @@ modalCloseBtns.forEach((btn) => {
 
 // Show connect modal on startup
 connectModal.classList.remove('hidden');
+
+setInterval(() => {
+  if (connectionStatus.classList.contains('connected')) void updateDatabaseStatus();
+}, 5000);
