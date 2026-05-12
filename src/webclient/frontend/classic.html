@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SimpleDBMS Dashboard</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>SimpleDBMS <span class="header-team">Team-03</span></h1>
+        <div id="connection-status">Disconnected</div>
+        <div class="semantic-search-container">
+          <div class="semantic-search-toggle">
+            <button id="search-mode-text" class="search-mode-btn active" disabled>Tekst</button>
+            <button id="search-mode-image" class="search-mode-btn" disabled>Foto</button>
+          </div>
+          <div class="semantic-search-input-wrapper">
+            <input type="text" id="semantic-search-input" placeholder="Zoek op betekenis..." disabled />
+          </div>
+          <button id="semantic-search-btn" class="btn-primary" disabled>
+            <span class="search-icon">🔎</span>
+          </button>
+          <button id="semantic-search-clear-btn" class="btn-secondary hidden" disabled>✕</button>
+        </div>
+        <div class="header-actions" style="position: relative">
+          <button id="header-menu-btn" class="menu-btn" disabled>⋮</button>
+          <div id="header-dropdown" class="dropdown hidden">
+            <button id="reset-db-btn" disabled class="dropdown-item dropdown-item--danger">DB Resetten</button>
+            <button id="disconnect-btn" disabled class="dropdown-item">Verbinding verbreken</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="layout">
+        <!--Sidebar -->
+        <aside id="sidebar">
+          <div class="sidebar-header">
+            <span>Collecties</span>
+            <button id="new-collection-btn" disabled class="btn-icon" title="Nieuwe collectie">+</button>
+          </div>
+          <ul id="collection-list"></ul>
+        </aside>
+
+        <!-- Main content -->
+        <main id="content">
+          <div id="toolbar">
+            <button id="add-doc-btn" disabled class="btn-primary">+ Toevoegen</button>
+            <input type="text" id="filter-input" placeholder="Zoeken..." disabled />
+            <button id="refresh-btn" disabled class="btn-secondary btn-icon-text">↻ Vernieuwen</button>
+          </div>
+
+          <div id="table-wrapper">
+            <table id="data-table">
+              <thead></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <!-- Connect Modal -->
+    <div id="connect-modal" class="modal">
+      <div class="modal-content">
+        <h2>Verbinding maken</h2>
+        <label for="db-filepath">Database pad</label>
+        <input type="text" id="db-filepath" placeholder="bijv. data.db" value="data.db" />
+        <div class="modal-actions">
+          <button id="connect-confirm-btn" class="btn-primary">Openen</button>
+          <button id="create-new-btn" class="btn-success">Nieuw aanmaken</button>
+        </div>
+        <p id="connect-error" class="error"></p>
+      </div>
+    </div>
+
+    <!-- New Collection Modal -->
+    <div id="new-collection-modal" class="modal hidden">
+      <div class="modal-content">
+        <span class="close-btn">✕</span>
+        <h2>Nieuwe collectie</h2>
+        <p class="hint">Geef een naam op. Je wordt daarna gevraagd om het eerste document toe te voegen.</p>
+        <label for="new-collection-name">Naam</label>
+        <input type="text" id="new-collection-name" placeholder="bijv. gebruikers" />
+        <button id="new-collection-confirm-btn" class="btn-primary">Aanmaken</button>
+        <p id="new-collection-error" class="error"></p>
+      </div>
+    </div>
+
+    <!-- Wikipedia-style Document View -->
+    <div id="doc-view" class="doc-view hidden">
+      <div class="doc-view-header">
+        <button id="doc-view-back" class="btn-secondary">← Terug</button>
+        <div class="doc-view-actions">
+          <button id="doc-view-edit" class="btn-primary">Bewerken</button>
+          <button id="doc-view-save" class="btn-success hidden">Opslaan</button>
+          <button id="doc-view-cancel" class="btn-secondary hidden">Annuleren</button>
+          <button id="doc-view-delete" class="btn-danger">Verwijderen</button>
+        </div>
+      </div>
+      <div class="doc-view-body">
+        <div class="doc-view-grid">
+          <article class="doc-article">
+            <h1 id="doc-view-title"></h1>
+            <div id="doc-view-fields" class="doc-fields-list"></div>
+            <div id="doc-view-content"></div>
+          </article>
+          <aside class="doc-sidebar">
+            <div id="doc-infobox" class="doc-infobox"></div>
+            <nav id="doc-toc" class="doc-toc">
+              <div class="doc-toc-header">
+                <span class="doc-toc-title">Inhoud</span>
+                <button id="doc-toc-toggle" class="doc-toc-toggle-btn">verbergen</button>
+              </div>
+              <div id="doc-toc-list" class="doc-toc-list"></div>
+            </nav>
+          </aside>
+        </div>
+      </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

@@ -67,7 +67,13 @@ QUERY SYNTAX (SQL-like):
     [LIMIT n]
     [OFFSET k]
 
-WHERE/HAVING conditions support: =, !=, >, >=, <, <= with AND / OR.
+WHERE/HAVING conditions:
+  - Comparisons: =, !=, >, >=, <, <=
+  - Pattern matching: LIKE 'pattern' / NOT LIKE 'pattern'
+      % matches any sequence of characters, _ matches exactly one character.
+      Example: WHERE name LIKE 'A%'  (starts with A)
+               WHERE city LIKE '%dam%' (contains "dam")
+  - Logical: AND, OR (combine multiple conditions)
 Aggregates: COUNT(*), SUM(field), AVG(field), MIN(field), MAX(field).
 String values must be in single quotes: 'value'.
 Field names are case-sensitive and must match the schema exactly.
@@ -76,15 +82,14 @@ RULES:
 1. Respond with ONLY the query. No explanation, no markdown, no code fences.
 2. Use the exact field names from the schema above.
 3. When the user asks about a concept, use the field synonyms and descriptions to find the right field.
-4. For questions asking "how many", use COUNT(*).
-5. For "average", "mean" use AVG(). For "total", "sum" use SUM().
-6. For "highest", "most", "maximum" use MAX() or ORDER BY ... DESC LIMIT 1.
-7. For "lowest", "least", "minimum" use MIN() or ORDER BY ... ASC LIMIT 1.
+4. For "how many", use COUNT(*). For "average"/"mean" use AVG(). For "total"/"sum" use SUM().
+5. For "highest"/"most"/"maximum" use MAX() or ORDER BY ... DESC LIMIT 1.
+6. For "lowest"/"least"/"minimum" use MIN() or ORDER BY ... ASC LIMIT 1.
+7. For pattern or substring matches ("starts with", "contains", "ends with"), use LIKE.
 8. If a question involves multiple collections, use JOIN when relationships are defined.
 9. If the question is ambiguous, prefer the simplest valid query.
 10. Always include the relevant fields in SELECT so the answer is understandable.
-11. IMPORTANT: If the user references a previous question (e.g. "break that down by city", "same but for Sales", "now filter those"), use the conversation history to understand what they mean and generate the appropriate new query.
-12. DERIVED FIELDS: Fields marked as [DERIVED] are virtual computed fields. Use them by their exact name in SELECT and GROUP BY just like regular fields — do NOT expand or replace them with their expression.`;
+11. IMPORTANT: If the user references a previous question (e.g. "break that down by city", "same but for Sales", "now filter those"), use the conversation history to understand what they mean and generate the appropriate new query.`;
 }
 
 function extractQuery(raw: string): string {

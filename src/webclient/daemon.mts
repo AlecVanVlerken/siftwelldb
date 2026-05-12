@@ -1,11 +1,14 @@
 // @author Alexandre-Gatien Bienfet
 // @date 2026-03-31
 
+import 'dotenv/config';
 import * as http from 'node:http';
 import * as fs from 'node:fs/promises';
+import * as fssync from 'node:fs';
 import * as path from 'node:path';
 import { DatabaseService } from './service.mjs';
 import { ApiRouter } from './api.mjs';
+import { ConversationalService } from './conversational-service.mjs';
 
 const port = 8000;
 const frontendDir = path.join(import.meta.dirname, 'frontend');
@@ -101,7 +104,8 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
 // ── Bootstrap ────────────────────────────────────────────────
 
 const db = new DatabaseService();
-const api = new ApiRouter(db);
+const conv = new ConversationalService();
+const api = new ApiRouter(db, conv);
 
 /**
  * Global HTTP request handler.

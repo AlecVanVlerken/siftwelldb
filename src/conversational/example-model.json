@@ -67,24 +67,6 @@
           "label": "Years at Company",
           "description": "Number of full years the employee has been with the company",
           "synonyms": ["tenure", "years employed", "seniority years"]
-        },
-        {
-          "name": "salary_tier",
-          "type": "string",
-          "label": "Salary Tier",
-          "description": "Salary bracket — Low (< €60k), Mid (€60k–€90k), or High (> €90k)",
-          "derived": "salary < 60000 ? 'Low' : salary < 90000 ? 'Mid' : 'High'",
-          "synonyms": ["salary bracket", "pay tier", "salary range", "salary band", "compensation tier"],
-          "tags": ["compensation", "derived"]
-        },
-        {
-          "name": "age_group",
-          "type": "string",
-          "label": "Age Group",
-          "description": "Age decade bracket — 20s, 30s, 40s, or 50s+",
-          "derived": "age < 30 ? '20s' : age < 40 ? '30s' : age < 50 ? '40s' : '50s+'",
-          "synonyms": ["age bracket", "age range", "age band", "generation"],
-          "tags": ["demographics", "derived"]
         }
       ],
       "measures": [
