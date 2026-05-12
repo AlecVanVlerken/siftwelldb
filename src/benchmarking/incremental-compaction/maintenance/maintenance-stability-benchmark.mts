@@ -3,10 +3,7 @@
 
 import assert from 'assert';
 
-import {
-  captureCrossStructureSnapshot,
-  assertCrossStructureCoreEqual,
-} from '../shared/consistency-utils.mjs';
+import { captureCrossStructureSnapshot, assertCrossStructureCoreEqual } from '../shared/consistency-utils.mjs';
 import {
   DEFAULT_K,
   deleteDocuments,
@@ -66,7 +63,12 @@ export async function main(): Promise<void> {
     await benchmark.db.commit();
 
     const expected = await captureCrossStructureSnapshot(benchmark.db, semanticChecks);
-    const result = await runIncrementalUntilStable(benchmark.db, `maintenance-stability-cycle-${cycle.toString()}`, policy, 60);
+    const result = await runIncrementalUntilStable(
+      benchmark.db,
+      `maintenance-stability-cycle-${cycle.toString()}`,
+      policy,
+      60,
+    );
     const afterCompaction = await captureCrossStructureSnapshot(benchmark.db, semanticChecks);
     assertCrossStructureCoreEqual(expected, afterCompaction);
 
@@ -77,7 +79,9 @@ export async function main(): Promise<void> {
     benchmark.db = reopened;
 
     const stepOffset = history.length;
-    history.push(...result.history.map((step) => ({ ...step, scenario: 'maintenance-stability', step: step.step + stepOffset })));
+    history.push(
+      ...result.history.map((step) => ({ ...step, scenario: 'maintenance-stability', step: step.step + stepOffset })),
+    );
     relocatedDocuments += result.relocatedDocuments;
     relocatedBtreeNodes += result.relocatedBtreeNodes;
     relocatedHnswUnits += result.relocatedHnswUnits;

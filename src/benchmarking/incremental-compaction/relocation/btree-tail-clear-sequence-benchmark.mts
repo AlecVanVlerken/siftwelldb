@@ -5,7 +5,14 @@ import assert from 'assert';
 import { performance } from 'node:perf_hooks';
 
 import { BlockNodeStorage } from '../../../btree/nodestorage.mjs';
-import { DEFAULT_K, printScenarioResult, runIfMain, type ScenarioResult, type StepSample, writeScenarioArtifacts } from '../shared/benchmark-utils.mjs';
+import {
+  DEFAULT_K,
+  printScenarioResult,
+  runIfMain,
+  type ScenarioResult,
+  type StepSample,
+  writeScenarioArtifacts,
+} from '../shared/benchmark-utils.mjs';
 import { assertRootOnlyIndexesReadable, createRootOnlyIndexes } from './btree-dominant-tail-blocker-benchmark.mjs';
 import {
   allocateFillerBlocks,

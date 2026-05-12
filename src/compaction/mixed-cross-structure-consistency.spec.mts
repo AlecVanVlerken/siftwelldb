@@ -62,7 +62,11 @@ describe('mixed cross-structure consistency after incremental compaction', () =>
     const btreeTarget = (await db.listBtreeRelocationTargets(40)).find(
       (target) => target.collection !== undefined && target.field !== undefined && target.blockNumber !== undefined,
     );
-    if (btreeTarget?.collection !== undefined && btreeTarget.field !== undefined && btreeTarget.blockNumber !== undefined) {
+    if (
+      btreeTarget?.collection !== undefined &&
+      btreeTarget.field !== undefined &&
+      btreeTarget.blockNumber !== undefined
+    ) {
       await db.relocateBtreeNode(btreeTarget.collection, btreeTarget.field, btreeTarget.blockNumber, {
         maxBlockExclusive: Math.min(boundary, btreeTarget.blockNumber),
       });

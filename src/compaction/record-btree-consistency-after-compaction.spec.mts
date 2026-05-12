@@ -46,7 +46,8 @@ describe('record to B+ tree consistency after incremental compaction', () => {
     let relocated = 0;
 
     for (const target of targets) {
-      if (target.collection === undefined || target.documentId === undefined || target.blockNumber === undefined) continue;
+      if (target.collection === undefined || target.documentId === undefined || target.blockNumber === undefined)
+        continue;
       const result = await db.relocateDocument(target.collection, target.documentId, {
         maxBlockExclusive: Math.min(boundary, target.blockNumber),
       });

@@ -6,10 +6,7 @@ import { describe, it } from 'vitest';
 
 import type { DbmsBack } from '../dbms/dbmsback.mjs';
 import type { HnswGraphStructureSnapshot } from '../hnsw/hnswIndex.mjs';
-import {
-  buildSemanticEquivalenceDataset,
-  makeSemanticEquivalenceDb,
-} from './hnsw-semantic-equivalence-utils.mjs';
+import { buildSemanticEquivalenceDataset, makeSemanticEquivalenceDb } from './hnsw-semantic-equivalence-utils.mjs';
 
 describe('HNSW relabel graph invariants', () => {
   it('relabels a relocated record without changing HNSW graph topology', async () => {

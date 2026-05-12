@@ -72,7 +72,9 @@ export async function main(): Promise<void> {
     const afterChurn = await getStorageSample(benchmark.db);
     const result = await runIncrementalUntilStable(benchmark.db, `rolling-churn-cycle-${cycle.toString()}`, policy, 80);
     const stepOffset = history.length;
-    history.push(...result.history.map((step) => ({ ...step, scenario: 'rolling-churn', step: step.step + stepOffset })));
+    history.push(
+      ...result.history.map((step) => ({ ...step, scenario: 'rolling-churn', step: step.step + stepOffset })),
+    );
     const afterMaintenance = await getStorageSample(benchmark.db);
 
     cycles.push({

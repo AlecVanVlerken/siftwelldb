@@ -189,7 +189,9 @@ export class VectorHeapFile {
   /**
    * Allocate a new page, initialise it, and return (pageId, usable buffer).
    */
-  private async allocatePage(options: { maxBlockExclusive?: number } = {}): Promise<{ pageId: number; usable: Buffer }> {
+  private async allocatePage(
+    options: { maxBlockExclusive?: number } = {},
+  ): Promise<{ pageId: number; usable: Buffer }> {
     const pageId =
       options.maxBlockExclusive === undefined
         ? await this.file.allocateBlock()

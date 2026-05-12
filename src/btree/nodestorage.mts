@@ -395,10 +395,7 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     return leaves.find((leaf) => leaf.getNextLeafBlockNumber() === targetBlock) ?? null;
   }
 
-  private async collectNodeBlocks(
-    node: BlockLeafNode | BlockInternalNode,
-    result: BlockNodeLocation[],
-  ): Promise<void> {
+  private async collectNodeBlocks(node: BlockLeafNode | BlockInternalNode, result: BlockNodeLocation[]): Promise<void> {
     result.push({
       kind: node.isLeaf ? 'btree-leaf' : 'btree-internal',
       blockNumber: node.getBlockNumber(),

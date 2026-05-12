@@ -31,7 +31,12 @@ export async function main(): Promise<void> {
       await db.commit();
     },
     {
-      policy: { maxAmplification: DEFAULT_K, softAmplification: DEFAULT_K, targetBatchDocuments: 8, targetBatchUnits: 8 },
+      policy: {
+        maxAmplification: DEFAULT_K,
+        softAmplification: DEFAULT_K,
+        targetBatchDocuments: 8,
+        targetBatchUnits: 8,
+      },
       maxSteps: 160,
     },
   );
@@ -54,16 +59,18 @@ async function runTargetedBtreeRelocation(): Promise<void> {
   const boundary = Math.ceil(before.usedBlocks * DEFAULT_K);
   const targets = await db.listBtreeRelocationTargets(200);
   const sortedTargets = targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0));
-  const target = sortedTargets.find(
-    (candidate) =>
-      candidate.collection !== undefined &&
-      candidate.field !== undefined &&
-      candidate.blockNumber !== undefined &&
-      candidate.blockNumber >= boundary,
-  ) ?? sortedTargets.find(
-    (candidate) =>
-      candidate.collection !== undefined && candidate.field !== undefined && candidate.blockNumber !== undefined,
-  );
+  const target =
+    sortedTargets.find(
+      (candidate) =>
+        candidate.collection !== undefined &&
+        candidate.field !== undefined &&
+        candidate.blockNumber !== undefined &&
+        candidate.blockNumber >= boundary,
+    ) ??
+    sortedTargets.find(
+      (candidate) =>
+        candidate.collection !== undefined && candidate.field !== undefined && candidate.blockNumber !== undefined,
+    );
   assert(target?.collection !== undefined && target.field !== undefined && target.blockNumber !== undefined);
   const maxBlockExclusive = Math.min(boundary, target.blockNumber);
 

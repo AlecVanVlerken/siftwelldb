@@ -23,7 +23,12 @@ export async function main(): Promise<void> {
       await db.commit();
     },
     {
-      policy: { maxAmplification: DEFAULT_K, softAmplification: DEFAULT_K, targetBatchDocuments: 1, targetBatchUnits: 1 },
+      policy: {
+        maxAmplification: DEFAULT_K,
+        softAmplification: DEFAULT_K,
+        targetBatchDocuments: 1,
+        targetBatchUnits: 1,
+      },
       maxSteps: 120,
     },
   );
@@ -42,7 +47,12 @@ export async function main(): Promise<void> {
       await db.commit();
     },
     {
-      policy: { maxAmplification: DEFAULT_K, softAmplification: DEFAULT_K, targetBatchDocuments: 2, targetBatchUnits: 2 },
+      policy: {
+        maxAmplification: DEFAULT_K,
+        softAmplification: DEFAULT_K,
+        targetBatchDocuments: 2,
+        targetBatchUnits: 2,
+      },
       maxSteps: 120,
     },
   );

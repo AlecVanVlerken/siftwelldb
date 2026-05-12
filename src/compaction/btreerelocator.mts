@@ -20,9 +20,14 @@ export class BtreeRelocator {
 
     for (const target of targets) {
       try {
-        const newBlockNumber = await this.source.relocateBtreeNode(target.collection, target.field, target.blockNumber, {
-          maxBlockExclusive: target.maxBlockExclusive,
-        });
+        const newBlockNumber = await this.source.relocateBtreeNode(
+          target.collection,
+          target.field,
+          target.blockNumber,
+          {
+            maxBlockExclusive: target.maxBlockExclusive,
+          },
+        );
         if (target.maxBlockExclusive === undefined || newBlockNumber < target.blockNumber) {
           relocatedBtreeNodes++;
         }

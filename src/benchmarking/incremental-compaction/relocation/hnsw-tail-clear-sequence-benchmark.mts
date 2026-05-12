@@ -4,7 +4,14 @@
 import assert from 'assert';
 import { performance } from 'node:perf_hooks';
 
-import { DEFAULT_K, printScenarioResult, runIfMain, type ScenarioResult, type StepSample, writeScenarioArtifacts } from '../shared/benchmark-utils.mjs';
+import {
+  DEFAULT_K,
+  printScenarioResult,
+  runIfMain,
+  type ScenarioResult,
+  type StepSample,
+  writeScenarioArtifacts,
+} from '../shared/benchmark-utils.mjs';
 import { relocateHnswTarget } from './hnsw-dominant-tail-blocker-benchmark.mjs';
 import {
   allocateFillerBlocks,

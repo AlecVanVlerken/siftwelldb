@@ -77,7 +77,12 @@ export async function captureCrossStructureSnapshot(
       if (field === 'id') {
         indexedResultIds[`${collection}:id:*`] = docs.map((doc) => String(doc.getId())).sort();
         for (const doc of docs) {
-          indexedResultIds[`${collection}:id:${String(doc.getId())}`] = await queryIds(db, collection, 'id', doc.getId());
+          indexedResultIds[`${collection}:id:${String(doc.getId())}`] = await queryIds(
+            db,
+            collection,
+            'id',
+            doc.getId(),
+          );
         }
         continue;
       }
@@ -167,7 +172,12 @@ export function assertSemanticResultsReadable(snapshot: CrossStructureSnapshot):
 export async function runConsistencyCompaction(
   db: DbmsBack,
   policy: IncrementalCompactionPolicy = strictConsistencyPolicy,
-): Promise<{ relocatedDocuments: number; relocatedBtreeNodes: number; relocatedHnswUnits: number; reclaimedTailBlocks: number }> {
+): Promise<{
+  relocatedDocuments: number;
+  relocatedBtreeNodes: number;
+  relocatedHnswUnits: number;
+  reclaimedTailBlocks: number;
+}> {
   const result = await db.compactIfNeeded(policy);
   await db.commit();
   return {

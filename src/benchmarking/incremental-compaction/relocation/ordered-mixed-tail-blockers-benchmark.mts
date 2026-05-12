@@ -85,7 +85,9 @@ export async function runControlledMixedScenario(
       .sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0))[0];
     const selected = [
       { selectionKind: 'record' as const, blockNumber: recordBlock },
-      btreeTarget === undefined ? undefined : { root: btreeTarget, blockNumber: btreeTarget.rootBlock, selectionKind: 'btree' as const },
+      btreeTarget === undefined
+        ? undefined
+        : { root: btreeTarget, blockNumber: btreeTarget.rootBlock, selectionKind: 'btree' as const },
       hnswTarget?.blockNumber === undefined ? undefined : { ...hnswTarget, selectionKind: 'hnsw' as const },
     ]
       .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined)

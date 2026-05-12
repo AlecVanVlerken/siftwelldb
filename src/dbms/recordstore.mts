@@ -111,15 +111,15 @@ export class RecordStore {
     return blockNumber;
   }
 
-  async writeRecordEncodedBelow(
-    doc: EncodedDocument,
-    options: RecordRelocationWriteOptions,
-  ): Promise<number | null> {
+  async writeRecordEncodedBelow(doc: EncodedDocument, options: RecordRelocationWriteOptions): Promise<number | null> {
     const data = this.serializeEncodedDocument(doc);
     return await this.writeSerializedRecord(data, options);
   }
 
-  private async writeSerializedRecord(data: Buffer, options: RecordRelocationWriteOptions = {}): Promise<number | null> {
+  private async writeSerializedRecord(
+    data: Buffer,
+    options: RecordRelocationWriteOptions = {},
+  ): Promise<number | null> {
     // Block size minus block type byte and next block pointer
     const maxDataPerBlock = this.blockSize - RecordStore.DATA_OFFSET;
 

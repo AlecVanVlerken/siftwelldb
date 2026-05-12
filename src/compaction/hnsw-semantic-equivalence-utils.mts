@@ -84,7 +84,10 @@ export async function reopenSemanticEquivalenceDb(source: SemanticEquivalenceDb)
   return await DbmsBack.open(source.data, source.log, source.hnswConfig);
 }
 
-export async function buildSemanticEquivalenceDataset(db: DbmsBack, options: { fragmentation?: boolean } = {}): Promise<void> {
+export async function buildSemanticEquivalenceDataset(
+  db: DbmsBack,
+  options: { fragmentation?: boolean } = {},
+): Promise<void> {
   if (options.fragmentation === true) {
     for (let i = 0; i < 18; i++) {
       await db.insertDocument(

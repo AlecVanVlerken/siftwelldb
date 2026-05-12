@@ -47,7 +47,10 @@ describe('DbmsBack.deleteCollection storage cleanup', () => {
     await db.commit();
 
     const afterDelete = await db.getCompactionStorageStats();
-    assert(afterDelete.freeBlocks > before.freeBlocks, 'dropping a collection should add owned blocks to the free list');
+    assert(
+      afterDelete.freeBlocks > before.freeBlocks,
+      'dropping a collection should add owned blocks to the free list',
+    );
     assert(!(await db.getCollections()).includes('dropme'));
 
     const compactResult = await db.compactIfNeeded({

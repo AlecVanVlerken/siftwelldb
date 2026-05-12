@@ -88,7 +88,13 @@ async function buildIsolationDataset(db: DbmsBack): Promise<void> {
   await db.commit();
 }
 
-async function insertDoc(db: DbmsBack, collection: string, id: string, text: string, payloadWords: number): Promise<void> {
+async function insertDoc(
+  db: DbmsBack,
+  collection: string,
+  id: string,
+  text: string,
+  payloadWords: number,
+): Promise<void> {
   await db.insertDocument(
     JSONtoDocument(
       JSON.stringify({
@@ -141,7 +147,13 @@ function isolationEmbedding(text: string): Float32Array {
   return new Float32Array([1, 1, 1, 1]);
 }
 
-function compactionPolicy(): { maxAmplification: number; softAmplification: number; targetBatchDocuments: number; targetBatchUnits: number; maxStepsPerRun: number } {
+function compactionPolicy(): {
+  maxAmplification: number;
+  softAmplification: number;
+  targetBatchDocuments: number;
+  targetBatchUnits: number;
+  maxStepsPerRun: number;
+} {
   return {
     maxAmplification: 1.05,
     softAmplification: 1.05,

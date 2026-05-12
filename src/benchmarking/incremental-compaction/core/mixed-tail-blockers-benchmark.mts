@@ -34,7 +34,12 @@ export async function main(): Promise<void> {
     },
     {
       hnsw: true,
-      policy: { maxAmplification: DEFAULT_K, softAmplification: DEFAULT_K, targetBatchDocuments: 4, targetBatchUnits: 4 },
+      policy: {
+        maxAmplification: DEFAULT_K,
+        softAmplification: DEFAULT_K,
+        targetBatchDocuments: 4,
+        targetBatchUnits: 4,
+      },
       maxSteps: 160,
       benchmarkQueries: true,
     },

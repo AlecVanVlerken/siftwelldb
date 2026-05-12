@@ -31,8 +31,12 @@ function makeFakeSource(options: FakeSourceOptions = {}): {
   let commits = 0;
   let tailReclaims = 0;
   const recordRelocations: Array<{ collection: string; id: string | number; maxBlockExclusive?: number }> = [];
-  const btreeRelocations: Array<{ collection: string; field: string; blockNumber: number; maxBlockExclusive?: number }> =
-    [];
+  const btreeRelocations: Array<{
+    collection: string;
+    field: string;
+    blockNumber: number;
+    maxBlockExclusive?: number;
+  }> = [];
   const hnswRelocations: RelocationTarget[] = [];
   const blockSize = 4096;
   const totalBlocks = options.totalBlocks ?? 10;
@@ -198,12 +202,16 @@ describe('IncrementalCompactionService', () => {
     const payload = 'bounded convergence '.repeat(900);
 
     for (let i = 0; i < 8; i++) {
-      await db.insertDocument(JSONtoDocument(JSON.stringify({ id: `f${i.toString()}`, group: 'f', _payload: payload }), 'items'));
+      await db.insertDocument(
+        JSONtoDocument(JSON.stringify({ id: `f${i.toString()}`, group: 'f', _payload: payload }), 'items'),
+      );
     }
     await db.commit();
 
     for (let i = 0; i < 8; i++) {
-      await db.insertDocument(JSONtoDocument(JSON.stringify({ id: `t${i.toString()}`, group: 't', _payload: payload }), 'items'));
+      await db.insertDocument(
+        JSONtoDocument(JSON.stringify({ id: `t${i.toString()}`, group: 't', _payload: payload }), 'items'),
+      );
     }
     await db.commit();
 

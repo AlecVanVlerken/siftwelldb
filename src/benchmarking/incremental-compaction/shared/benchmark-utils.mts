@@ -419,7 +419,9 @@ export function printScenarioResult(result: ScenarioResult): void {
   );
   console.log(`Shrink: blocks=${result.shrunkBlocks.toString()} bytes=${result.shrunkBytes.toString()}`);
   if (result.firstShrinkStep !== undefined) {
-    console.log(`First shrink: step=${result.firstShrinkStep.toString()} cause=${result.firstShrinkReason ?? 'unknown'}`);
+    console.log(
+      `First shrink: step=${result.firstShrinkStep.toString()} cause=${result.firstShrinkReason ?? 'unknown'}`,
+    );
   }
   if (result.sameDocumentContents !== undefined) {
     console.log(
@@ -455,7 +457,10 @@ function determineStatus(
   history: StepSample[],
   maxAmplification: number,
 ): BenchmarkStatus {
-  if (history.length === 0 || (history.length === 1 && !history[0].didWork && before.amplification <= maxAmplification)) {
+  if (
+    history.length === 0 ||
+    (history.length === 1 && !history[0].didWork && before.amplification <= maxAmplification)
+  ) {
     return 'no-op';
   }
   if (after.amplification <= maxAmplification) return 'converged';
@@ -614,21 +619,11 @@ export function annotateResult(result: ScenarioResult): ScenarioResult {
 
   const firstShrink = result.history.find((step) => (step.shrunkBlocksThisStep ?? 0) > 0);
   const firstShrinkIndex = firstShrink === undefined ? -1 : result.history.indexOf(firstShrink);
-  const attributionWindow =
-    firstShrinkIndex >= 0 ? result.history.slice(0, firstShrinkIndex + 1) : result.history;
+  const attributionWindow = firstShrinkIndex >= 0 ? result.history.slice(0, firstShrinkIndex + 1) : result.history;
 
-  const recordsBeforeFirstShrink = attributionWindow.reduce(
-    (sum, step) => sum + (step.stepRelocatedDocuments ?? 0),
-    0,
-  );
-  const btreeBeforeFirstShrink = attributionWindow.reduce(
-    (sum, step) => sum + (step.stepRelocatedBtreeNodes ?? 0),
-    0,
-  );
-  const hnswBeforeFirstShrink = attributionWindow.reduce(
-    (sum, step) => sum + (step.stepRelocatedHnswUnits ?? 0),
-    0,
-  );
+  const recordsBeforeFirstShrink = attributionWindow.reduce((sum, step) => sum + (step.stepRelocatedDocuments ?? 0), 0);
+  const btreeBeforeFirstShrink = attributionWindow.reduce((sum, step) => sum + (step.stepRelocatedBtreeNodes ?? 0), 0);
+  const hnswBeforeFirstShrink = attributionWindow.reduce((sum, step) => sum + (step.stepRelocatedHnswUnits ?? 0), 0);
 
   result.firstShrinkStep = firstShrink?.step;
   result.firstShrinkReason = firstShrink === undefined ? undefined : describeFirstShrink(firstShrink);
