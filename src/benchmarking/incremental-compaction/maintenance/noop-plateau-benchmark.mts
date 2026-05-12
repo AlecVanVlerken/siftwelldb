@@ -3,12 +3,7 @@
 
 import assert from 'assert';
 
-import {
-  deleteDocuments,
-  insertDocuments,
-  runAndWriteScenario,
-  runIfMain,
-} from '../shared/benchmark-utils.mjs';
+import { deleteDocuments, insertDocuments, runAndWriteScenario, runIfMain } from '../shared/benchmark-utils.mjs';
 
 export async function main(): Promise<void> {
   const noOp = await runAndWriteScenario(

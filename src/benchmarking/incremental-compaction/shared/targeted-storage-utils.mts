@@ -62,11 +62,7 @@ export async function buildTree(
   return { storage, tree, rootBlock: tree.getRoot().getBlockNumber() };
 }
 
-export async function assertTreeReadable(
-  storage: BlockNodeStorage,
-  rootBlock: number,
-  count: number,
-): Promise<void> {
+export async function assertTreeReadable(storage: BlockNodeStorage, rootBlock: number, count: number): Promise<void> {
   const reopened = BPlusTree.open<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(
     storage,
     await storage.openTree(rootBlock),

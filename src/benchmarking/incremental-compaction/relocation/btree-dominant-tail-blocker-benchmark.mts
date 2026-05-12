@@ -8,7 +8,14 @@ import { BPlusTree } from '../../../btree/btree.mjs';
 import { BlockInternalNode } from '../../../btree/internalnode.mjs';
 import { BlockLeafNode } from '../../../btree/leafnode.mjs';
 import { BlockNodeStorage } from '../../../btree/nodestorage.mjs';
-import { DEFAULT_K, printScenarioResult, runIfMain, type ScenarioResult, type StepSample, writeScenarioArtifacts } from '../shared/benchmark-utils.mjs';
+import {
+  DEFAULT_K,
+  printScenarioResult,
+  runIfMain,
+  type ScenarioResult,
+  type StepSample,
+  writeScenarioArtifacts,
+} from '../shared/benchmark-utils.mjs';
 import {
   allocateFillerBlocks,
   freeFillerBlocks,

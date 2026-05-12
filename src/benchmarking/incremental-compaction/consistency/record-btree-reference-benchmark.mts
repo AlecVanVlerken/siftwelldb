@@ -3,10 +3,7 @@
 
 import assert from 'assert';
 
-import {
-  assertCrossStructureSnapshotsEqual,
-  captureCrossStructureSnapshot,
-} from '../shared/consistency-utils.mjs';
+import { assertCrossStructureSnapshotsEqual, captureCrossStructureSnapshot } from '../shared/consistency-utils.mjs';
 import {
   DEFAULT_K,
   deleteDocuments,

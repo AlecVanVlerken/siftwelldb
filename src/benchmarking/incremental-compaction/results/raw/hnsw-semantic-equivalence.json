@@ -34,132 +34,36 @@
   "realRelocationOccurred": true,
   "fullVacuumHnswMode": "deterministic-logical-rebuild",
   "textResultsBefore": {
-    "articles:text:brown cat:4": [
-      "doc000",
-      "doc007",
-      "doc006",
-      "doc005"
-    ],
-    "articles:text:black dog:4": [
-      "doc001",
-      "doc007",
-      "doc006",
-      "doc005"
-    ],
-    "articles:text:orange fox:4": [
-      "doc003",
-      "doc007",
-      "doc006",
-      "doc005"
-    ],
-    "articles:text:striped tiger:4": [
-      "doc004",
-      "doc007",
-      "doc006",
-      "doc005"
-    ]
+    "articles:text:brown cat:4": ["doc000", "doc007", "doc006", "doc005"],
+    "articles:text:black dog:4": ["doc001", "doc007", "doc006", "doc005"],
+    "articles:text:orange fox:4": ["doc003", "doc007", "doc006", "doc005"],
+    "articles:text:striped tiger:4": ["doc004", "doc007", "doc006", "doc005"]
   },
   "textResultsAfterIncremental": {
-    "articles:text:brown cat:4": [
-      "doc000",
-      "doc007",
-      "doc006",
-      "doc005"
-    ],
-    "articles:text:black dog:4": [
-      "doc001",
-      "doc007",
-      "doc006",
-      "doc005"
-    ],
-    "articles:text:orange fox:4": [
-      "doc003",
-      "doc007",
-      "doc006",
-      "doc005"
-    ],
-    "articles:text:striped tiger:4": [
-      "doc004",
-      "doc007",
-      "doc006",
-      "doc005"
-    ]
+    "articles:text:brown cat:4": ["doc000", "doc007", "doc006", "doc005"],
+    "articles:text:black dog:4": ["doc001", "doc007", "doc006", "doc005"],
+    "articles:text:orange fox:4": ["doc003", "doc007", "doc006", "doc005"],
+    "articles:text:striped tiger:4": ["doc004", "doc007", "doc006", "doc005"]
   },
   "textResultsAfterVacuum": {
-    "articles:text:brown cat:4": [
-      "doc000",
-      "doc007",
-      "doc006",
-      "doc005"
-    ],
-    "articles:text:black dog:4": [
-      "doc001",
-      "doc007",
-      "doc006",
-      "doc005"
-    ],
-    "articles:text:orange fox:4": [
-      "doc003",
-      "doc007",
-      "doc006",
-      "doc005"
-    ],
-    "articles:text:striped tiger:4": [
-      "doc004",
-      "doc007",
-      "doc006",
-      "doc005"
-    ]
+    "articles:text:brown cat:4": ["doc000", "doc007", "doc006", "doc005"],
+    "articles:text:black dog:4": ["doc001", "doc007", "doc006", "doc005"],
+    "articles:text:orange fox:4": ["doc003", "doc007", "doc006", "doc005"],
+    "articles:text:striped tiger:4": ["doc004", "doc007", "doc006", "doc005"]
   },
   "imageResultsBefore": {
-    "images:image:brown cat image:3": [
-      "img000",
-      "img002",
-      "img001"
-    ],
-    "images:image:black dog image:3": [
-      "img001",
-      "img002",
-      "img000"
-    ],
-    "images:image:orange fox image:3": [
-      "img002",
-      "img001",
-      "img000"
-    ]
+    "images:image:brown cat image:3": ["img000", "img002", "img001"],
+    "images:image:black dog image:3": ["img001", "img002", "img000"],
+    "images:image:orange fox image:3": ["img002", "img001", "img000"]
   },
   "imageResultsAfterIncremental": {
-    "images:image:brown cat image:3": [
-      "img000",
-      "img002",
-      "img001"
-    ],
-    "images:image:black dog image:3": [
-      "img001",
-      "img002",
-      "img000"
-    ],
-    "images:image:orange fox image:3": [
-      "img002",
-      "img001",
-      "img000"
-    ]
+    "images:image:brown cat image:3": ["img000", "img002", "img001"],
+    "images:image:black dog image:3": ["img001", "img002", "img000"],
+    "images:image:orange fox image:3": ["img002", "img001", "img000"]
   },
   "imageResultsAfterVacuum": {
-    "images:image:brown cat image:3": [
-      "img000",
-      "img002",
-      "img001"
-    ],
-    "images:image:black dog image:3": [
-      "img001",
-      "img002",
-      "img000"
-    ],
-    "images:image:orange fox image:3": [
-      "img002",
-      "img001",
-      "img000"
-    ]
+    "images:image:brown cat image:3": ["img000", "img002", "img001"],
+    "images:image:black dog image:3": ["img001", "img002", "img000"],
+    "images:image:orange fox image:3": ["img002", "img001", "img000"]
   }
 }

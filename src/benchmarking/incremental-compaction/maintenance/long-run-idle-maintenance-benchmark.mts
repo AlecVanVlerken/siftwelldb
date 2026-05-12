@@ -68,9 +68,20 @@ export async function main(): Promise<void> {
     await deleteDocuments(benchmark.db, 'items', `free${phase}-`, 20);
     await benchmark.db.commit();
 
-    const result = await runIncrementalUntilStable(benchmark.db, `long-run-idle-maintenance-phase-${phase.toString()}`, policy, 70);
+    const result = await runIncrementalUntilStable(
+      benchmark.db,
+      `long-run-idle-maintenance-phase-${phase.toString()}`,
+      policy,
+      70,
+    );
     const stepOffset = history.length;
-    history.push(...result.history.map((step) => ({ ...step, scenario: 'long-run-idle-maintenance', step: step.step + stepOffset })));
+    history.push(
+      ...result.history.map((step) => ({
+        ...step,
+        scenario: 'long-run-idle-maintenance',
+        step: step.step + stepOffset,
+      })),
+    );
     phases.push({
       phase,
       beforeBlocks: result.before.totalBlocks,
@@ -139,7 +150,10 @@ async function writeTimeline(phases: PhaseSample[]): Promise<void> {
       phase.timeTakenMs.toFixed(3),
     ].join(','),
   );
-  await fs.writeFile(join(resultsDir, 'long-run-idle-maintenance-timeline.csv'), [header.join(','), ...rows].join('\n'));
+  await fs.writeFile(
+    join(resultsDir, 'long-run-idle-maintenance-timeline.csv'),
+    [header.join(','), ...rows].join('\n'),
+  );
 }
 
 runIfMain(import.meta.url, main);

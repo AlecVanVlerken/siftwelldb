@@ -150,7 +150,9 @@ describe('HnswRelocator', () => {
     const movedGraph = await db.inspectHnswGraphStructure('articles');
     assert(!movedGraph.some((node) => node.deleted));
 
-    const vectorTarget = (await db.listHnswRelocationTargets('articles')).find((target) => target.kind === 'hnsw-vector');
+    const vectorTarget = (await db.listHnswRelocationTargets('articles')).find(
+      (target) => target.kind === 'hnsw-vector',
+    );
     assert(vectorTarget?.nodeId !== undefined);
 
     const vectorMoved = await db.relocateHnswUnit({

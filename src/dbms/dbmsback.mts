@@ -11,11 +11,7 @@ import { BPlusTree } from '../btree/btree.mjs';
 import { BlockNodeStorage } from '../btree/nodestorage.mjs';
 import type { BlockLeafNode } from '../btree/leafnode.mjs';
 import type { BlockInternalNode } from '../btree/internalnode.mjs';
-import {
-  HNSWIndex,
-  type HnswGraphStructureNode,
-  type HnswGraphStructureSnapshot,
-} from '../hnsw/hnswIndex.mjs';
+import { HNSWIndex, type HnswGraphStructureNode, type HnswGraphStructureSnapshot } from '../hnsw/hnswIndex.mjs';
 import { HNSWGraphStorage } from '../hnsw/hnswGraphStorage.mjs';
 import { VectorHeapFile } from '../hnsw/vectorHeapFile.mjs';
 import {
@@ -615,10 +611,13 @@ export class DbmsBack {
     id: string | number,
     options: RelocationOptions = {},
   ): Promise<DocumentRelocationResult> {
-    const { collectionMeta, pointer: oldPointer, idTree, idBuffer, idMetaData } = await this.findDocumentPointer(
-      collection,
-      id,
-    );
+    const {
+      collectionMeta,
+      pointer: oldPointer,
+      idTree,
+      idBuffer,
+      idMetaData,
+    } = await this.findDocumentPointer(collection, id);
 
     const document = await this.recordStore.readRecord(oldPointer);
     if (!document) {
@@ -730,12 +729,14 @@ export class DbmsBack {
         blockNumber: metaBlock,
       },
     ];
-    targets.push(...(await hnswIdx.listRelocationTargets()).map((target) => ({
-      collection,
-      kind: target.kind,
-      nodeId: target.nodeId,
-      blockNumber: target.blockNumber,
-    })));
+    targets.push(
+      ...(await hnswIdx.listRelocationTargets()).map((target) => ({
+        collection,
+        kind: target.kind,
+        nodeId: target.nodeId,
+        blockNumber: target.blockNumber,
+      })),
+    );
     return targets;
   }
 
@@ -772,18 +773,26 @@ export class DbmsBack {
       const newBlockNumber = await hnswIdx.relocateMetadata({ maxBlockExclusive: target.maxBlockExclusive });
       if (newBlockNumber === null) return false;
       hnswMeta[target.collection] = [newBlockNumber, vorm];
-      return target.maxBlockExclusive === undefined ? newBlockNumber !== oldBlockNumber : newBlockNumber < oldBlockNumber;
+      return target.maxBlockExclusive === undefined
+        ? newBlockNumber !== oldBlockNumber
+        : newBlockNumber < oldBlockNumber;
     }
 
     const nodeId = await this.resolveHnswRelocationNodeId(target);
     if (target.kind === 'hnsw-graph') {
       const newNodeId = await hnswIdx.relocateGraphNode(nodeId, { maxBlockExclusive: target.maxBlockExclusive });
       const newBlockNumber = Math.floor(newNodeId / 4294967296);
-      return target.maxBlockExclusive === undefined || target.blockNumber === undefined || newBlockNumber < target.blockNumber;
+      return (
+        target.maxBlockExclusive === undefined ||
+        target.blockNumber === undefined ||
+        newBlockNumber < target.blockNumber
+      );
     }
 
     const newPtr = await hnswIdx.relocateVectorForNode(nodeId, { maxBlockExclusive: target.maxBlockExclusive });
-    return target.maxBlockExclusive === undefined || target.blockNumber === undefined || newPtr.pageId < target.blockNumber;
+    return (
+      target.maxBlockExclusive === undefined || target.blockNumber === undefined || newPtr.pageId < target.blockNumber
+    );
   }
 
   async trimFreeTail(): Promise<number> {
@@ -796,9 +805,7 @@ export class DbmsBack {
     return await this.freeblockFile.getStats();
   }
 
-  async runIncrementalCompactionStep(
-    policy?: IncrementalCompactionPolicy,
-  ): Promise<IncrementalCompactionResult> {
+  async runIncrementalCompactionStep(policy?: IncrementalCompactionPolicy): Promise<IncrementalCompactionResult> {
     return await runIncrementalCompactionStepForSource(this, policy);
   }
 
@@ -832,9 +839,7 @@ export class DbmsBack {
       }
     }
 
-    return targets
-      .sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0))
-      .slice(0, Math.max(0, limit));
+    return targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0)).slice(0, Math.max(0, limit));
   }
 
   async listBtreeRelocationTargets(limit = 16): Promise<RelocationTarget[]> {
@@ -855,9 +860,7 @@ export class DbmsBack {
       }
     }
 
-    return targets
-      .sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0))
-      .slice(0, Math.max(0, limit));
+    return targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0)).slice(0, Math.max(0, limit));
   }
 
   async listHnswRelocationCandidateTargets(limit = 16): Promise<RelocationTarget[]> {
@@ -882,9 +885,7 @@ export class DbmsBack {
       }
     }
 
-    return targets
-      .sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0))
-      .slice(0, Math.max(0, limit));
+    return targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0)).slice(0, Math.max(0, limit));
   }
 
   private async resolveHnswRelocationNodeId(target: HnswRelocationTarget): Promise<number> {
@@ -956,11 +957,7 @@ export class DbmsBack {
     return toBuffer(vorm, convertedValue, id);
   }
 
-  private async relocateHnswDocumentPointer(
-    collection: string,
-    oldPointer: number,
-    newPointer: number,
-  ): Promise<void> {
+  private async relocateHnswDocumentPointer(collection: string, oldPointer: number, newPointer: number): Promise<void> {
     const hnswMeta = this.getExistingHnswMeta();
     if (!hnswMeta || !(collection in hnswMeta)) return;
     if (!this.hnswConfig) {

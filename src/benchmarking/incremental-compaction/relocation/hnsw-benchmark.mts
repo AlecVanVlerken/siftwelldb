@@ -39,7 +39,12 @@ export async function main(): Promise<void> {
     },
     {
       hnsw: true,
-      policy: { maxAmplification: DEFAULT_K, softAmplification: DEFAULT_K, targetBatchDocuments: 4, targetBatchUnits: 4 },
+      policy: {
+        maxAmplification: DEFAULT_K,
+        softAmplification: DEFAULT_K,
+        targetBatchDocuments: 4,
+        targetBatchUnits: 4,
+      },
       maxSteps: 120,
       benchmarkQueries: true,
     },
@@ -66,10 +71,14 @@ async function runTargetedHnswRelocation(): Promise<void> {
   await deleteDocuments(db, 'items', 'free', 18);
   await db.commit();
 
-  const semanticBefore = (await db.semanticSearch('items', 'semantic tail vector', 5)).map((doc) => String(doc.getId()));
+  const semanticBefore = (await db.semanticSearch('items', 'semantic tail vector', 5)).map((doc) =>
+    String(doc.getId()),
+  );
   const before = await getStorageSample(db);
   const boundary = Math.ceil(before.usedBlocks * DEFAULT_K);
-  const targets = (await db.listHnswRelocationTargets('items')).sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0));
+  const targets = (await db.listHnswRelocationTargets('items')).sort(
+    (a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0),
+  );
   const target = targets.find((candidate) => (candidate.blockNumber ?? 0) >= boundary) ?? targets[0];
   assert(target);
   const maxBlockExclusive = Math.min(boundary, target.blockNumber ?? boundary);

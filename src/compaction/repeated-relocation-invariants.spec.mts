@@ -71,9 +71,7 @@ describe('repeated relocation invariants', () => {
     for (let i = 0; i < 4; i++) {
       const currentTarget = (await db.listHnswRelocationCandidateTargets(64)).find(
         (target) =>
-          target.collection === 'articles' &&
-          target.kind === 'hnsw-vector' &&
-          target.nodeId === originalTarget.nodeId,
+          target.collection === 'articles' && target.kind === 'hnsw-vector' && target.nodeId === originalTarget.nodeId,
       );
       if (currentTarget === undefined) {
         throw new Error('Expected repeated HNSW vector relocation target to remain discoverable.');

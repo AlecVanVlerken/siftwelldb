@@ -27,9 +27,7 @@ const modalCloseBtns = document.querySelectorAll('.close-btn');
 const resetDbBtn = document.getElementById('reset-db-btn') as HTMLButtonElement | null;
 const vacuumDbBtn = document.getElementById('vacuum-db-btn') as HTMLButtonElement | null;
 const databaseSizeValue = document.getElementById('database-size-value');
-const incrementalCompactionToggle = document.getElementById(
-  'incremental-compaction-toggle',
-) as HTMLInputElement | null;
+const incrementalCompactionToggle = document.getElementById('incremental-compaction-toggle') as HTMLInputElement | null;
 const incrementalCompactionStatus = document.getElementById('incremental-compaction-status');
 const newCollectionBtn = document.querySelector('#new-collection-btn');
 const newCollectionModal = document.getElementById('new-collection-modal');
@@ -397,7 +395,10 @@ function readIncrementalCompactionResultInfo(value: unknown): IncrementalCompact
   };
 }
 
-function renderIncrementalCompaction(info: IncrementalCompactionInfo | null, size: DatabaseSizeInfo | null = null): void {
+function renderIncrementalCompaction(
+  info: IncrementalCompactionInfo | null,
+  size: DatabaseSizeInfo | null = null,
+): void {
   const connected = connectionStatus.classList.contains('connected');
   if (incrementalCompactionToggle) {
     incrementalCompactionToggle.checked = info?.enabled ?? false;
@@ -421,7 +422,11 @@ function renderIncrementalCompaction(info: IncrementalCompactionInfo | null, siz
     incrementalCompactionStatus.textContent = 'In wachtrij: compaction wacht op databasegebruik.';
     return;
   }
-  if (size?.amplification !== undefined && info.maxAmplification !== null && size.amplification <= info.maxAmplification) {
+  if (
+    size?.amplification !== undefined &&
+    info.maxAmplification !== null &&
+    size.amplification <= info.maxAmplification
+  ) {
     const free =
       size.freeBlocks !== undefined
         ? ` ${size.freeBlocks.toString()} vrije blokken, ${size.freeTailBlocks ?? 0} vrije staartblokken.`
