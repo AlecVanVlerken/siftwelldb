@@ -221,6 +221,11 @@ const INTERNAL_HEADER_SIZE = 5;
 
 type BlockChild = { blockNumber: number; key: Buffer };
 
+export type BlockInternalNodeSnapshot = {
+  children: BlockChild[];
+  loadedChildren: Array<[number, BlockLeafNode | BlockInternalNode]>;
+};
+
 /**
  * Block-based internal node that stores data in a FreeBlockFile.
  */
@@ -269,6 +274,55 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
 
   getBlockNumber(): number {
     return this.blockNumber;
+  }
+
+  getChildBlockNumbers(): number[] {
+    return this.children.map((child) => child.blockNumber);
+  }
+
+  replaceChildBlockNumber(
+    oldBlockNumber: number,
+    newBlockNumber: number,
+    loadedNode?: BlockLeafNode | BlockInternalNode,
+  ): boolean {
+    const child = this.children.find((candidate) => candidate.blockNumber === oldBlockNumber);
+    if (!child) {
+      return false;
+    }
+
+    const cached = this.childrenLoaded.get(oldBlockNumber);
+    this.childrenLoaded.delete(oldBlockNumber);
+    child.blockNumber = newBlockNumber;
+    if (loadedNode) {
+      this.childrenLoaded.set(newBlockNumber, loadedNode);
+    } else if (cached) {
+      this.childrenLoaded.set(newBlockNumber, cached);
+    }
+    this.dirty = true;
+    return true;
+  }
+
+  exportSnapshot(): BlockInternalNodeSnapshot {
+    return {
+      children: this.children.map((child) => ({
+        blockNumber: child.blockNumber,
+        key: Buffer.from(child.key),
+      })),
+      loadedChildren: [...this.childrenLoaded.entries()],
+    };
+  }
+
+  initFromSnapshot(snapshot: BlockInternalNodeSnapshot): void {
+    this.children = snapshot.children.map((child) => ({
+      blockNumber: child.blockNumber,
+      key: Buffer.from(child.key),
+    }));
+    this.childrenLoaded.clear();
+    for (const [blockNumber, child] of snapshot.loadedChildren) {
+      this.childrenLoaded.set(blockNumber, child);
+    }
+    this.currentSize = this.calculateSize(this.children);
+    this.dirty = true;
   }
 
   /**

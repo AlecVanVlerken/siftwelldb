@@ -31,6 +31,14 @@ export function decodeNodeId(nodeId: NodeId): { pageId: number; slotId: number }
   };
 }
 
+export type HnswGraphNodeRelocationResult = {
+  oldNodeId: NodeId;
+  newNodeId: NodeId;
+  docId: number;
+  oldBlockNumber: number;
+  newBlockNumber: number;
+};
+
 // ** Per-collection metadata block offsets **
 // When HNSWGraphStorage is used as part of a shared FreeBlockFile (DbmsBack
 // unified mode), metadata is written to a dedicated allocated block rather
@@ -72,7 +80,8 @@ const META_CURRENT_MAX_LEVEL = 21;
 //
 // Layer 0 neighbors: 1 + 2*M*nodeIdBytes bytes
 //   [12]        count0   (uint8)
-//   [13 …] NodeId[]  (current: 6 bytes; legacy files: 8 bytes)
+//   [13 …] NodeId[]  (current: 6 bytes pageId+slotId; legacy files:
+//                      8 bytes slotId+pageId)
 //
 // Layer l (1 ≤ l ≤ maxStoredLevel): 1 + M*nodeIdBytes bytes
 //   neighborsOffset(l) + [0]   count_l (uint8)
@@ -255,6 +264,28 @@ export class HNSWGraphStorage {
     return this._metaBlockId;
   }
 
+  async freeMetadataBlock(): Promise<void> {
+    if (this._metaBlockId === 0) return;
+    await this.file.freeBlock(this._metaBlockId);
+    this._metaBlockId = 0;
+  }
+
+  async relocateMetadata(options: { maxBlockExclusive?: number } = {}): Promise<number | null> {
+    const oldBlockId = this._metaBlockId;
+    if (oldBlockId === 0) return null;
+
+    const newBlockId =
+      options.maxBlockExclusive === undefined
+        ? await this.file.allocateBlock()
+        : await this.file.allocateBlockBelow(options.maxBlockExclusive);
+    if (newBlockId === null) return null;
+
+    this._metaBlockId = newBlockId;
+    await this.saveMetadata();
+    await this.file.freeBlock(oldBlockId);
+    return newBlockId;
+  }
+
   get entryPoint(): NodeId | null {
     return this._entryPoint;
   }
@@ -432,19 +463,30 @@ export class HNSWGraphStorage {
 
   private writeNodeId(usable: Buffer, offset: number, nodeId: NodeId): void {
     const { pageId, slotId } = decodeNodeId(nodeId);
+    if (this.nodeIdBytes === LEGACY_NODE_ID_BYTES) {
+      // Older graph pages used 8-byte node ids with the low slot id first,
+      // then the page id. Preserve that on-disk format when old indexes are
+      // opened so neighbor rewrites remain compatible with existing data.
+      usable.writeUInt32LE(slotId, offset);
+      usable.writeUInt32LE(pageId, offset + 4);
+      return;
+    }
+
     usable.writeUInt32LE(pageId, offset);
     if (this.nodeIdBytes === CURRENT_NODE_ID_BYTES) {
       if (slotId > 0xffff) throw new Error(`HNSWGraphStorage: slotId ${slotId} exceeds current node-id format.`);
       usable.writeUInt16LE(slotId, offset + 4);
-    } else {
-      usable.writeUInt32LE(slotId, offset + 4);
     }
   }
 
   private readNodeId(usable: Buffer, offset: number): NodeId {
+    if (this.nodeIdBytes === LEGACY_NODE_ID_BYTES) {
+      const slotId = usable.readUInt32LE(offset);
+      const pageId = usable.readUInt32LE(offset + 4);
+      return pageId * 4294967296 + slotId;
+    }
     const pageId = usable.readUInt32LE(offset);
-    const slotId =
-      this.nodeIdBytes === CURRENT_NODE_ID_BYTES ? usable.readUInt16LE(offset + 4) : usable.readUInt32LE(offset + 4);
+    const slotId = usable.readUInt16LE(offset + 4);
     return pageId * 4294967296 + slotId;
   }
 
@@ -528,9 +570,12 @@ export class HNSWGraphStorage {
    * `node.neighbors`, and `node.deleted` before calling this.
    * `node.nodeId` will be set to the assigned NodeId.
    */
-  async insertNode(node: HNSWNode): Promise<NodeId> {
+  async insertNode(node: HNSWNode, options: { maxBlockExclusive?: number } = {}): Promise<NodeId> {
     // Try insert hint first — O(1) fast path.
-    if (this.insertHint > 0) {
+    if (
+      this.insertHint > 0 &&
+      (options.maxBlockExclusive === undefined || this.insertHint < options.maxBlockExclusive)
+    ) {
       const usable = await this.readPage(this.insertHint);
       const slotId = this.findFreeSlot(usable);
       if (slotId >= 0) {
@@ -542,7 +587,10 @@ export class HNSWGraphStorage {
     // Skipping the previous O(N) scan of all existing data pages.
     // Freed slots from deletes are reclaimed lazily when the hint page
     // itself has space (after a hardDeleteNode frees a slot on the hint page).
-    const pageId = await this.file.allocateBlock();
+    const pageId =
+      options.maxBlockExclusive === undefined
+        ? await this.file.allocateBlock()
+        : await this.allocatePageBelow(options.maxBlockExclusive);
     const usable = this.newPageBuffer();
     await this.writePage(pageId, usable); // initial write so block exists
     this.insertHint = pageId;
@@ -564,6 +612,12 @@ export class HNSWGraphStorage {
    */
   async getNode(nodeId: NodeId): Promise<HNSWNode> {
     const { pageId, slotId } = decodeNodeId(nodeId);
+    if (slotId < 0 || slotId >= this.slotsPerPage) {
+      throw new Error(
+        `HNSWGraphStorage: nodeId ${nodeId} has invalid slot ${slotId.toString()} ` +
+          `(slotsPerPage=${this.slotsPerPage.toString()}).`,
+      );
+    }
     const usable = await this.readPage(pageId);
     if (!this.isBitSet(usable, slotId)) {
       throw new Error(`HNSWGraphStorage: nodeId ${nodeId} slot is not occupied.`);
@@ -583,6 +637,67 @@ export class HNSWGraphStorage {
     }
     this.serialiseNode(usable, this.slotOffset(slotId), node);
     await this.writePage(pageId, usable);
+  }
+
+  /**
+   * Move one graph node to a fresh physical NodeId.
+   *
+   * The persisted graph currently uses NodeId as both identity and physical
+   * location, so relocation repairs stored neighbor references and the entry
+   * point when they point at the moved node.
+   */
+  async relocateNode(
+    nodeId: NodeId,
+    options: { maxBlockExclusive?: number } = {},
+  ): Promise<HnswGraphNodeRelocationResult> {
+    const oldLocation = decodeNodeId(nodeId);
+    const node = await this.getNode(nodeId);
+    if (node.deleted) {
+      throw new Error(`HNSWGraphStorage: cannot relocate deleted node ${nodeId}`);
+    }
+
+    const moved = new HNSWNode({
+      nodeId: 0,
+      docId: node.docId,
+      level: node.level,
+      vectorPtr: { ...node.vectorPtr },
+      neighbors: node.neighbors.map((layer) => [...layer]),
+      deleted: node.deleted,
+    });
+    const newNodeId = await this.insertNode(moved, options);
+    const newLocation = decodeNodeId(newNodeId);
+
+    if (this._entryPoint === nodeId) {
+      this._entryPoint = newNodeId;
+      await this.saveMetadata();
+    }
+
+    for await (const candidate of this.scanPhysicalNodes()) {
+      if (candidate.nodeId === nodeId) {
+        continue;
+      }
+      if (this.replaceNeighborNodeId(candidate, nodeId, newNodeId)) {
+        await this.saveNode(candidate);
+      }
+    }
+
+    await this.hardDeleteNode(nodeId);
+
+    return {
+      oldNodeId: nodeId,
+      newNodeId,
+      docId: node.docId,
+      oldBlockNumber: oldLocation.pageId,
+      newBlockNumber: newLocation.pageId,
+    };
+  }
+
+  private async allocatePageBelow(maxBlockExclusive: number): Promise<number> {
+    const pageId = await this.file.allocateBlockBelow(maxBlockExclusive);
+    if (pageId === null) {
+      throw new Error(`No free HNSW graph relocation block below ${maxBlockExclusive.toString()}`);
+    }
+    return pageId;
   }
 
   /**
@@ -735,6 +850,21 @@ export class HNSWGraphStorage {
     // Data already reflected in dirty cache via raw — no writePage needed.
   }
 
+  private replaceNeighborNodeId(node: HNSWNode, oldNodeId: NodeId, newNodeId: NodeId): boolean {
+    let changed = false;
+
+    for (const neighbors of node.neighbors) {
+      for (let i = 0; i < neighbors.length; i++) {
+        if (neighbors[i] === oldNodeId) {
+          neighbors[i] = newNodeId;
+          changed = true;
+        }
+      }
+    }
+
+    return changed;
+  }
+
   /**
    * Mark a node as deleted (soft-delete).
    * The slot is NOT freed; the node remains in the graph but will be ignored
@@ -766,22 +896,57 @@ export class HNSWGraphStorage {
   }
 
   /**
-   * Async generator that yields every occupied node slot in the graph,
-   * including soft-deleted nodes.  Callers must check `node.deleted` themselves.
+   * Async generator that yields nodes reachable from this graph's entry point.
+   *
+   * All HNSW collections share one FreeBlockFile, so scans must stay scoped
+   * to this collection-local graph instead of every HNSW graph page.
    * Used by `HNSWIndex.open()` to rebuild the in-memory docId → NodeId map
    * and level histogram.
    */
   async *scanNodes(): AsyncGenerator<HNSWNode> {
+    if (this._entryPoint === null) {
+      yield* this.scanPhysicalNodes();
+      return;
+    }
+
+    const seen = new Set<NodeId>();
+    const queue: NodeId[] = [this._entryPoint];
+
+    while (queue.length > 0) {
+      const nodeId = queue.shift()!;
+      if (seen.has(nodeId)) continue;
+      seen.add(nodeId);
+
+      let node: HNSWNode;
+      try {
+        node = await this.getNode(nodeId);
+      } catch (error) {
+        if (!(error instanceof Error) || !error.message.includes('slot is not occupied')) {
+          throw error;
+        }
+        continue;
+      }
+
+      yield node;
+
+      for (const layer of node.neighbors) {
+        for (const neighbor of layer) {
+          if (!seen.has(neighbor)) queue.push(neighbor);
+        }
+      }
+    }
+  }
+
+  private async *scanPhysicalNodes(): AsyncGenerator<HNSWNode> {
     const blockCount = Math.max(this.file._getCachedBlockCount(), this.file._getHighestDirtyBlock() + 1);
     for (let pageId = 1; pageId < blockCount; pageId++) {
       const usable = await this.readPageIfData(pageId).catch(() => null);
-      if (usable === null) continue; // freed or inaccessible block
+      if (usable === null) continue;
       if (this.getUsedCount(usable) === 0) continue;
       for (let slotId = 0; slotId < this.slotsPerPage; slotId++) {
         if (this.isBitSet(usable, slotId)) {
           const nodeId = encodeNodeId(pageId, slotId);
-          const node = this.deserialiseNode(usable, this.slotOffset(slotId), nodeId);
-          yield node;
+          yield this.deserialiseNode(usable, this.slotOffset(slotId), nodeId);
         }
       }
     }

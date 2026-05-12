@@ -1,0 +1,6 @@
+scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
+rolling-churn,1,true,2.361,48,36,12,1.3333,196608,4,16384,4,0,0,4,4,0,0,4
+rolling-churn,2,true,1.669,45,36,9,1.2500,184320,3,28672,3,0,0,3,7,0,0,7
+rolling-churn,3,false,0.827,77,61,16,1.2623,315392,0,0,0,0,0,0,0,0,0,0
+rolling-churn,4,false,0.034,104,86,18,1.2093,425984,0,0,0,0,0,0,0,0,0,0
+rolling-churn,5,false,0.035,129,113,16,1.1416,528384,0,0,0,0,0,0,0,0,0,0

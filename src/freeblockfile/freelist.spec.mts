@@ -8,7 +8,7 @@ import { MockFile } from '../core/mockfile.mjs';
 import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { FreeBlockFile } from './freeblockfile.mjs';
 
-import { allocateBlock, freeBlock, getFreeBlockCount } from './freelist.mjs';
+import { allocateBlock, allocateBlocksBelow, freeBlock, getFreeBlockCount } from './freelist.mjs';
 import * as layout from './layout.mjs';
 import { getHeader } from './header.mjs';
 import { getBlockCount } from './io.mjs';
@@ -166,6 +166,37 @@ describe('freelist.mjs', () => {
     const r3 = await allocateBlock(fbf);
 
     assert.deepStrictEqual([r1, r2, r3], [b3, b2, b1]);
+  });
+
+  it('allocateBlocksBelow skips high free-list blocks and reuses lower holes', async () => {
+    const b1 = await allocateBlock(fbf);
+    const b2 = await allocateBlock(fbf);
+    const b3 = await allocateBlock(fbf);
+    const b4 = await allocateBlock(fbf);
+    await freeBlock(fbf, b2);
+    await freeBlock(fbf, b4);
+
+    const relocated = await allocateBlocksBelow(fbf, 3, 1);
+    const normal = await allocateBlock(fbf);
+
+    assert.deepStrictEqual(relocated, [b2]);
+    assert.strictEqual(normal, b4);
+    assert.strictEqual(await getFreeBlockCount(fbf), 0);
+    assert.strictEqual(b1, 1);
+    assert.strictEqual(b3, 3);
+  });
+
+  it('allocateBlocksBelow returns null without mutating when too few low holes exist', async () => {
+    const low = await allocateBlock(fbf);
+    const high = await allocateBlock(fbf);
+    await freeBlock(fbf, low);
+    await freeBlock(fbf, high);
+
+    const relocated = await allocateBlocksBelow(fbf, 2, 2);
+    const count = await getFreeBlockCount(fbf);
+
+    assert.strictEqual(relocated, null);
+    assert.strictEqual(count, 2);
   });
 
   // ---------------------------------------------------------

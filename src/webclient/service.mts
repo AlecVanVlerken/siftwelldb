@@ -4,6 +4,7 @@
 import * as fs from 'node:fs/promises';
 import { SimpleDbms, type HnswConfig } from '../dbms/simpledbms.mjs';
 import { RealFile } from '../core/file.mjs';
+import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../compaction/compaction.mjs';
 
 /**
  * Delete a file if it exists (ignores the error if not found).
@@ -44,6 +45,13 @@ export type DatabaseSizeInfo = {
   dataFileBytes: number;
   logFileBytes: number;
   totalBytes: number;
+  activeDataBytes?: number;
+  freeDataBytes?: number;
+  amplification?: number;
+  totalBlocks?: number;
+  usedBlocks?: number;
+  freeBlocks?: number;
+  freeTailBlocks?: number;
 };
 
 export type DatabaseStatus = {
@@ -51,6 +59,19 @@ export type DatabaseStatus = {
   filepath: string | null;
   busyOperation: string | null;
   size: DatabaseSizeInfo | null;
+  incrementalCompaction: IncrementalCompactionStatus;
+};
+
+export type IncrementalCompactionStatus = {
+  enabled: boolean;
+  queued: boolean;
+  running: boolean;
+  intervalMs: number;
+  policy: IncrementalCompactionPolicy;
+  lastRunAt: string | null;
+  lastDurationMs: number | null;
+  lastError: string | null;
+  lastResult: IncrementalCompactionResult | null;
 };
 
 export type VacuumSummary = {
@@ -74,6 +95,23 @@ export class DatabaseService {
   private currentFilepath: string | null = null;
   private operationChain: Promise<void> = Promise.resolve();
   private currentOperation: string | null = null;
+  private incrementalCompactionEnabled = false;
+  private incrementalCompactionQueued = false;
+  private incrementalCompactionActive = false;
+  private incrementalCompactionTimer: ReturnType<typeof setInterval> | null = null;
+  private incrementalCompactionLastRunAt: Date | null = null;
+  private incrementalCompactionLastDurationMs: number | null = null;
+  private incrementalCompactionLastError: string | null = null;
+  private incrementalCompactionLastResult: IncrementalCompactionResult | null = null;
+
+  private readonly incrementalCompactionIntervalMs = 5_000;
+  private readonly incrementalCompactionPolicy: IncrementalCompactionPolicy = {
+    maxAmplification: 1.6,
+    softAmplification: 1.45,
+    targetBatchDocuments: 4,
+    targetBatchUnits: 2,
+    maxStepsPerRun: 4,
+  };
 
   // HNSW semantic search config
   private hnswConfigPromise: Promise<HnswConfig> | null = null;
@@ -177,12 +215,14 @@ export class DatabaseService {
       if (fileExists) {
         this.dbms = await SimpleDbms.open(dataFile, logFile, hnswConfig);
         this.currentFilepath = filepath;
+        this.onDatabaseOpened();
         return 'Connected to existing database';
       }
 
       this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
       await this.dbms.commit();
       this.currentFilepath = filepath;
+      this.onDatabaseOpened();
       return 'Created new database';
     });
   }
@@ -204,6 +244,7 @@ export class DatabaseService {
       this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
       await this.dbms.commit();
       this.currentFilepath = filepath;
+      this.onDatabaseOpened();
       return 'Created new database';
     });
   }
@@ -235,6 +276,7 @@ export class DatabaseService {
       this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
       await this.dbms.commit();
       this.currentFilepath = filepath;
+      this.onDatabaseOpened();
     });
   }
 
@@ -245,7 +287,23 @@ export class DatabaseService {
       filepath: this.currentFilepath,
       busyOperation: this.busyOperation,
       size: this.currentFilepath ? await this.readSizeInfo(this.currentFilepath) : null,
+      incrementalCompaction: this.getIncrementalCompactionStatus(),
     };
+  }
+
+  setIncrementalCompactionEnabled(enabled: boolean): IncrementalCompactionStatus {
+    this.incrementalCompactionEnabled = enabled;
+    this.incrementalCompactionLastError = null;
+
+    if (enabled) {
+      this.startIncrementalCompactionTimer();
+      this.scheduleIncrementalCompaction();
+    } else {
+      this.incrementalCompactionQueued = false;
+      this.stopIncrementalCompactionTimer();
+    }
+
+    return this.getIncrementalCompactionStatus();
   }
 
   /**
@@ -339,7 +397,9 @@ export class DatabaseService {
     await this.runExclusive('delete-collection', async () => {
       this.ensureConnected();
       await this.dbms!.deleteCollection(collection);
+      await this.dbms!.commit();
     });
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
   // ── Documents ────────────────────────────────────────────────
@@ -384,6 +444,7 @@ export class DatabaseService {
       await this.dbms!.insertDocumentObject(collection, document, { compression });
       await this.dbms!.commit();
     });
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
   /** Retrieve a specific document by its ID. */
@@ -401,6 +462,7 @@ export class DatabaseService {
       await this.dbms!.deleteDocumentById(collection, id);
       await this.dbms!.commit();
     });
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
   /** Edit a single field in a document by ID. */
@@ -410,6 +472,7 @@ export class DatabaseService {
       await this.dbms!.editDocument(collection, id, field, value as Parameters<SimpleDbms['editDocument']>[3]);
       await this.dbms!.commit();
     });
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
   /** Semantic text-to-text or text-to-image search */
@@ -432,6 +495,72 @@ export class DatabaseService {
 
   private ensureConnected(): void {
     if (!this.dbms) throw new Error('No database connected');
+  }
+
+  private getIncrementalCompactionStatus(): IncrementalCompactionStatus {
+    return {
+      enabled: this.incrementalCompactionEnabled,
+      queued: this.incrementalCompactionQueued,
+      running: this.incrementalCompactionActive || this.currentOperation === 'incremental-compaction',
+      intervalMs: this.incrementalCompactionIntervalMs,
+      policy: this.incrementalCompactionPolicy,
+      lastRunAt: this.incrementalCompactionLastRunAt?.toISOString() ?? null,
+      lastDurationMs: this.incrementalCompactionLastDurationMs,
+      lastError: this.incrementalCompactionLastError,
+      lastResult: this.incrementalCompactionLastResult,
+    };
+  }
+
+  private onDatabaseOpened(): void {
+    if (!this.incrementalCompactionEnabled) return;
+    this.startIncrementalCompactionTimer();
+    this.scheduleIncrementalCompaction();
+  }
+
+  private startIncrementalCompactionTimer(): void {
+    if (this.incrementalCompactionTimer) return;
+
+    this.incrementalCompactionTimer = setInterval(() => {
+      this.scheduleIncrementalCompaction();
+    }, this.incrementalCompactionIntervalMs);
+    this.incrementalCompactionTimer.unref?.();
+  }
+
+  private stopIncrementalCompactionTimer(): void {
+    if (!this.incrementalCompactionTimer) return;
+    clearInterval(this.incrementalCompactionTimer);
+    this.incrementalCompactionTimer = null;
+  }
+
+  private scheduleIncrementalCompaction(): void {
+    if (!this.incrementalCompactionEnabled) return;
+    if (!this.isConnected) return;
+    if (this.incrementalCompactionQueued || this.incrementalCompactionActive) return;
+
+    this.incrementalCompactionQueued = true;
+    void this.runExclusive('incremental-compaction', async () => {
+      this.incrementalCompactionQueued = false;
+      if (!this.incrementalCompactionEnabled || !this.dbms) return;
+
+      this.incrementalCompactionActive = true;
+      const start = Date.now();
+      try {
+        const result = await this.dbms.compactIfNeeded(this.incrementalCompactionPolicy);
+        if (result !== null) {
+          this.incrementalCompactionLastRunAt = new Date();
+          this.incrementalCompactionLastDurationMs = Date.now() - start;
+          this.incrementalCompactionLastResult = result;
+        }
+        this.incrementalCompactionLastError = null;
+      } finally {
+        this.incrementalCompactionActive = false;
+      }
+    }).catch((error: unknown) => {
+      this.incrementalCompactionQueued = false;
+      this.incrementalCompactionActive = false;
+      this.incrementalCompactionLastError = String(error);
+      console.error('Incremental compaction failed:', error);
+    });
   }
 
   private async runExclusive<T>(operation: string, task: () => Promise<T>): Promise<T> {
@@ -459,11 +588,26 @@ export class DatabaseService {
   private async readSizeInfo(filepath: string): Promise<DatabaseSizeInfo> {
     const dataFileBytes = await sizeOrZero(filepath);
     const logFileBytes = await sizeOrZero(this.logFilepath(filepath));
-    return {
+    const info: DatabaseSizeInfo = {
       dataFileBytes,
       logFileBytes,
       totalBytes: dataFileBytes + logFileBytes,
     };
+
+    if (this.dbms) {
+      const stats = await this.dbms.getCompactionStorageStats().catch(() => null);
+      if (stats) {
+        info.activeDataBytes = stats.usedBlocks * stats.blockSize;
+        info.freeDataBytes = stats.freeBlocks * stats.blockSize;
+        info.amplification = stats.usedBlocks > 0 ? stats.totalBlocks / stats.usedBlocks : 1;
+        info.totalBlocks = stats.totalBlocks;
+        info.usedBlocks = stats.usedBlocks;
+        info.freeBlocks = stats.freeBlocks;
+        info.freeTailBlocks = stats.freeTailBlocks;
+      }
+    }
+
+    return info;
   }
 
   private async closeInternal(): Promise<void> {
@@ -472,5 +616,8 @@ export class DatabaseService {
       this.dbms = null;
       this.currentFilepath = null;
     }
+    this.incrementalCompactionQueued = false;
+    this.incrementalCompactionActive = false;
+    this.stopIncrementalCompactionTimer();
   }
 }

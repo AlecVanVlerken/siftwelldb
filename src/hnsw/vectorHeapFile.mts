@@ -189,8 +189,11 @@ export class VectorHeapFile {
   /**
    * Allocate a new page, initialise it, and return (pageId, usable buffer).
    */
-  private async allocatePage(): Promise<{ pageId: number; usable: Buffer }> {
-    const pageId = await this.file.allocateBlock();
+  private async allocatePage(options: { maxBlockExclusive?: number } = {}): Promise<{ pageId: number; usable: Buffer }> {
+    const pageId =
+      options.maxBlockExclusive === undefined
+        ? await this.file.allocateBlock()
+        : await this.allocatePageBelow(options.maxBlockExclusive);
     const usable = this.newPageBuffer();
     await this.writePage(pageId, usable);
     return { pageId, usable };
@@ -202,13 +205,16 @@ export class VectorHeapFile {
    * Insert `vector` and return a persistent pointer to its location.
    * Call `index.commit()` (or `heap.commit()`) to flush to disk.
    */
-  async insert(vector: Float32Array): Promise<VectorPointer> {
+  async insert(vector: Float32Array, options: { maxBlockExclusive?: number } = {}): Promise<VectorPointer> {
     if (vector.length !== this.dimension) {
       throw new Error(`Vector dimension mismatch: expected ${this.dimension}, got ${vector.length}`);
     }
 
     // Try the cached hint page first — O(1) fast path.
-    if (this.insertHint > 0) {
+    if (
+      this.insertHint > 0 &&
+      (options.maxBlockExclusive === undefined || this.insertHint < options.maxBlockExclusive)
+    ) {
       const usable = await this.readPage(this.insertHint);
       const slotId = this.findFreeSlot(usable);
       if (slotId >= 0) {
@@ -220,7 +226,7 @@ export class VectorHeapFile {
     // Skipping the previous O(N) scan of all existing data pages.
     // Freed slots from deletes are reclaimed lazily when the hint page
     // itself has space (after a delete frees a slot on the hint page).
-    const { pageId, usable } = await this.allocatePage();
+    const { pageId, usable } = await this.allocatePage(options);
     this.insertHint = pageId;
     return this.writeToSlot(pageId, usable, 0, vector);
   }
@@ -267,6 +273,27 @@ export class VectorHeapFile {
     } else {
       await this.writePage(ptr.pageId, usable);
     }
+  }
+
+  /**
+   * Move one vector to a fresh slot and free the old slot.
+   *
+   * This targeted primitive is used by incremental compaction. It preserves
+   * the vector value while changing only its physical VectorPointer.
+   */
+  async relocate(ptr: VectorPointer, options: { maxBlockExclusive?: number } = {}): Promise<VectorPointer> {
+    const vector = await this.get(ptr);
+    const newPtr = await this.insert(vector, options);
+    await this.delete(ptr);
+    return newPtr;
+  }
+
+  private async allocatePageBelow(maxBlockExclusive: number): Promise<number> {
+    const pageId = await this.file.allocateBlockBelow(maxBlockExclusive);
+    if (pageId === null) {
+      throw new Error(`No free HNSW vector relocation block below ${maxBlockExclusive.toString()}`);
+    }
+    return pageId;
   }
 
   /**
