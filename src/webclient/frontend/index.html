@@ -338,7 +338,7 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 .bub .qch { background:var(--bg2); border:1px solid var(--bd); border-radius:3px; padding:12px; margin-bottom:10px; height:240px; }
 .bub .sum { font-weight:500; margin-bottom:8px; }
 .bub .anom { background:var(--amb); border-left:3px solid var(--am); padding:7px 11px; font-size:12px; color:var(--am); margin-top:6px; }
-.bub .anom::before { content:'⚠ '; font-weight:700; }
+.bub .anom::before { content:'Note: '; font-weight:700; }
 .bub .didyou { font-size:12px; color:var(--t2); margin-top:8px; }
 .bub .didyou strong { color:var(--t); display:block; margin-bottom:5px; font-weight:500; }
 .bub .didyou ul { margin:0 0 0 18px; }
@@ -349,7 +349,6 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 .bub .chip:hover { border-color:var(--ac); }
 .bub .chip .l { font-size:9.5px; font-weight:700; opacity:.7; text-transform:uppercase; letter-spacing:.4px; color:var(--ac); }
 .bub.thinking { color:var(--t3); font-style:italic; font-size:13px; }
-.bub.thinking::before { content:'⏳ '; }
 
 .ai-input { padding:11px 14px; background:var(--bg2); border-top:1px solid var(--bd); display:flex; gap:6px; flex-shrink:0; max-width:1000px; margin:0 auto; width:100%; box-sizing:border-box; }
 .ai-input input { flex:1; padding:7px 12px; border:1px solid var(--bd); border-radius:4px; font-size:13px; background:var(--bg2); }
@@ -418,8 +417,6 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
     <div class="brand"><div class="mk">pg</div>SimpleDBMS · pgStudio</div>
     <button class="tbtn" id="btn-refresh" title="Refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg>Refresh</button>
     <button class="tbtn" id="btn-newcoll" title="New collection"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>New collection</button>
-    <div class="tb-sep"></div>
-    <button class="tbtn" id="btn-genmodel" title="Generate semantic model" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Generate model</button>
     <div class="sp"></div>
     <div class="conn-info" id="conn-info"><span class="d"></span><span id="conn-text">Disconnected</span></div>
     <button class="tbtn" id="btn-settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
@@ -482,7 +479,7 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 <!-- Settings modal -->
 <div class="modal-bg hidden" id="modal-settings">
   <div class="modal-box">
-    <div class="modal-head"><div class="ic">⚙</div><div class="ttl">Settings<div class="sub">Connection &amp; LLM configuration.</div></div><button class="close" data-close="modal-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="modal-head"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div><div class="ttl">Settings<div class="sub">Connection &amp; LLM configuration.</div></div><button class="close" data-close="modal-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="modal-body">
       <label>Gemini API key</label>
       <input type="password" id="set-gemini-key" placeholder="Paste GEMINI_API_KEY..." autocomplete="off"/>
@@ -540,6 +537,31 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
   </div>
 </div>
 
+<!-- Semantic model modal (opened from AI chat header) -->
+<div class="modal-bg hidden" id="modal-model">
+  <div class="modal-box wide tall">
+    <div class="modal-head">
+      <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M9 9l6 6"/></svg></div>
+      <div class="ttl">Semantic model<div class="sub" id="modal-model-sub">Edit the JSON model the AI uses to understand your data.</div></div>
+      <button class="close" data-close="modal-model"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="modal-body" style="display:flex;flex-direction:column;gap:10px;">
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button class="tbtn pri" id="mdl-gen" title="Regenerate the semantic model from the data using Gemini"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Generate from data</button>
+        <button class="tbtn" id="mdl-reload" style="border:1px solid var(--bd);background:var(--bg2);">Reload from server</button>
+        <div class="meta" id="mdl-status" style="margin-left:auto;font-size:11.5px;color:var(--t3);"></div>
+      </div>
+      <label>Model JSON</label>
+      <textarea id="mdl-json" spellcheck="false" placeholder='{ "explores": [ ... ] }' style="min-height:340px;font-family:Consolas,monospace;font-size:12px;"></textarea>
+      <div class="err hidden" id="mdl-err"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="sec" data-close="modal-model">Cancel</button>
+      <button class="pri" id="mdl-save">Save changes</button>
+    </div>
+  </div>
+</div>
+
 <!-- Confirm modal -->
 <div class="modal-bg hidden" id="modal-confirm">
   <div class="modal-box" style="max-width:440px;">
@@ -576,6 +598,17 @@ const state = {
   selectedDocIndex: null,
   searchMode: 'text',         // 'text' | 'image'
   searchActive: false,        // when a semantic search is filtering the data table
+  // Per-collection expansion state in the explorer tree. A collection
+  // is expanded if true; missing keys default to "expanded when the
+  // collection is selected" so the first click behaves like before.
+  treeExpanded: {},           // { [coll]: bool }
+  // Per-collection state for the AI chat's "no semantic model yet,
+  // generate?" prompt. Once the user picks Yes or No we remember it
+  // so we don't ask again on every render.
+  modelPromptDismissed: {},   // { [coll]: bool }
+  // When true, the AI chat shows a busy "generating model" message
+  // and disables further input.
+  modelGenerating: false,
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -672,7 +705,6 @@ function updateConnState() {
   const hasModel = state.model && state.model.explores && state.model.explores.length > 0;
   $('#ft-model').textContent = `Model: ${hasModel ? `${state.model.explores.length} explore${state.model.explores.length > 1 ? 's' : ''}` : 'none'}`;
   $('#ft-model').className = 'si ' + (hasModel ? 'ok' : '');
-  $('#btn-genmodel').disabled = !(state.connected && state.geminiKeySet);
 }
 
 async function loadCollections() {
@@ -757,6 +789,14 @@ const ICONS = {
   idx: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>`,
 };
 
+// A collection is expanded if treeExpanded[c] === true. We default a
+// newly selected collection to expanded so the first click feels right,
+// but afterwards the user is in full control via the arrow.
+function isCollExpanded(c) {
+  if (c in state.treeExpanded) return state.treeExpanded[c];
+  return state.selectedCol === c;
+}
+
 function renderTree() {
   const filter = $('#sb-filter').value.trim().toLowerCase();
   const colls = state.collections.filter((c) => !filter || c.toLowerCase().includes(filter));
@@ -771,32 +811,32 @@ function renderTree() {
   } else {
     for (const c of colls) {
       const isOn = state.selectedCol === c;
+      const expanded = isCollExpanded(c);
       const count = state.countsByColl[c];
       h += `<button class="tn ${isOn ? 'on' : ''}" data-c="${esc(c)}" style="padding-left:34px;">
-        <span class="ch">${isOn ? '▾' : '▸'}</span><span class="ic coll">${ICONS.coll}</span><span class="name">${esc(c)}</span><span class="ct">${count === undefined ? '…' : count}</span>
+        <span class="ch" data-toggle="${esc(c)}" title="${expanded ? 'Collapse' : 'Expand'}">${expanded ? '▾' : '▸'}</span><span class="ic coll">${ICONS.coll}</span><span class="name">${esc(c)}</span><span class="ct">${count === undefined ? '…' : count}</span>
         <span class="x" data-del="${esc(c)}" title="Drop collection">✕</span>
       </button>`;
-      if (isOn) {
+      if (expanded) {
         const explore = getExplore(c);
         const docs = state.docsByColl[c] || [];
         const fieldNames = docs.length ? Object.keys(docs[0]).filter((k) => !k.startsWith('_')) : [];
-        h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch">▾</span><span class="ic field">${ICONS.field}</span><span class="name">Fields</span><span class="ct">${fieldNames.length}</span></div>`;
+        h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch"> </span><span class="ic field">${ICONS.field}</span><span class="name">Fields</span><span class="ct">${fieldNames.length}</span></div>`;
         for (const f of fieldNames) {
           h += `<div class="tn" style="padding-left:66px;color:var(--t2);"><span class="ch"> </span><span class="ic field">${ICONS.field}</span><span class="name">${esc(f)}</span></div>`;
         }
         if (explore && explore.measures && explore.measures.length > 0) {
-          h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch">▾</span><span class="ic measure">${ICONS.measure}</span><span class="name">Measures</span><span class="ct">${explore.measures.length}</span></div>`;
+          h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch"> </span><span class="ic measure">${ICONS.measure}</span><span class="name">Measures</span><span class="ct">${explore.measures.length}</span></div>`;
           for (const m of explore.measures) {
             h += `<div class="tn" style="padding-left:66px;color:var(--t2);"><span class="ch"> </span><span class="ic measure">${ICONS.measure}</span><span class="name">${esc(m.aggregation)}(${esc(m.field)})</span></div>`;
           }
         }
         if (explore && explore.joins && explore.joins.length > 0) {
-          h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch">▾</span><span class="ic join">${ICONS.join}</span><span class="name">Joins</span><span class="ct">${explore.joins.length}</span></div>`;
+          h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch"> </span><span class="ic join">${ICONS.join}</span><span class="name">Joins</span><span class="ct">${explore.joins.length}</span></div>`;
           for (const j of explore.joins) {
             h += `<div class="tn" style="padding-left:66px;color:var(--t2);"><span class="ch"> </span><span class="ic join">${ICONS.join}</span><span class="name">→ ${esc(j.collection)}</span></div>`;
           }
         }
-        h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch"> </span><span class="ic idx">${ICONS.idx}</span><span class="name">HNSW vector index</span></div>`;
       }
     }
   }
@@ -804,6 +844,15 @@ function renderTree() {
   $$('#tree [data-root]').forEach((n) => n.addEventListener('click', selectRoot));
   $$('#tree [data-c]').forEach((n) => n.addEventListener('click', (e) => {
     if (e.target.closest('[data-del]')) return;
+    // The chevron-arrow is purely an expand/collapse affordance; row
+    // body still selects.
+    if (e.target.closest('[data-toggle]')) {
+      e.stopPropagation();
+      const c = e.target.closest('[data-toggle]').dataset.toggle;
+      state.treeExpanded[c] = !isCollExpanded(c);
+      renderTree();
+      return;
+    }
     selectCollection(n.dataset.c);
   }));
   $$('#tree [data-del]').forEach((b) => b.addEventListener('click', (e) => {
@@ -823,14 +872,12 @@ function renderTree() {
 function renderTabs() {
   const otabs = $('#otabs');
   const dis = !state.selectedCol;
-  const aiDisabled = !state.selectedCol || !state.geminiKeySet || !state.model;
   otabs.innerHTML = `
     <button class="ot ${state.tab === 'overview' ? 'on' : ''}" data-t="overview"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>Overview</button>
     <button class="ot ${state.tab === 'data' ? 'on' : ''}" data-t="data" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span>Data${state.selectedCol ? `<span class="badge">${(state.docsByColl[state.selectedCol] || []).length}</span>` : ''}</button>
     <button class="ot ${state.tab === 'fields' ? 'on' : ''}" data-t="fields" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>Fields</button>
-    <button class="ot ${state.tab === 'model' ? 'on' : ''}" data-t="model"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M9 9l6 6"/></svg></span>Model</button>
     <button class="ot ${state.tab === 'sql' ? 'on' : ''}" data-t="sql"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>SQL</button>
-    <button class="ot ${state.tab === 'ai' ? 'on' : ''}" data-t="ai"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>AI Chat ${aiDisabled ? '<span class="badge" title="Requires connected db, Gemini key, and a saved model">!</span>' : ''}</button>
+    <button class="ot ${state.tab === 'ai' ? 'on' : ''}" data-t="ai"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>AI Chat</button>
     <div class="sp"></div>
     <div class="meta">${state.selectedCol ? `Selected · <strong style="color:var(--ac)">${esc(state.selectedCol)}</strong>` : `Selected · <strong>${esc(state.filepath || '—')}</strong>`}</div>`;
   $$('.ot[data-t]').forEach((b) => b.addEventListener('click', () => {
@@ -845,9 +892,9 @@ function renderTab() {
   if (state.tab === 'overview') renderOverview();
   else if (state.tab === 'data') renderData();
   else if (state.tab === 'fields') renderFields();
-  else if (state.tab === 'model') renderModel();
   else if (state.tab === 'sql') renderSql();
   else if (state.tab === 'ai') renderAi();
+  else { state.tab = 'overview'; renderOverview(); }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -860,16 +907,15 @@ function renderOverview() {
     const totalSize = state.collections.reduce((s, x) => s + (state.docsByColl[x] || []).reduce((a, d) => a + docSize(d), 0), 0);
     $('#cnt').innerHTML = `<div class="ov">
       <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(state.filepath || '—')}</span></h1>
-      <p class="ovsub"><span>📁 file <strong>${esc(state.filepath || '—')}</strong></span><span>📦 <strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span>📄 <strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>💾 ≈ <strong>${fmtSize(totalSize)}</strong> in-memory</span></p>
+      <p class="ovsub"><span>File <strong>${esc(state.filepath || '—')}</strong></span><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>≈ <strong>${fmtSize(totalSize)}</strong> in-memory</span></p>
       <div class="kpis">
-        <div class="kpi"><div class="l">Connection</div><div class="v" style="font-size:14px;font-family:Consolas,monospace;color:var(--gr);">● ${esc(state.filepath || '—')}</div><div class="d ok">Connected, ready for queries</div></div>
+        <div class="kpi"><div class="l">Connection</div><div class="v" style="font-size:14px;font-family:Consolas,monospace;color:var(--gr);">${esc(state.filepath || '—')}</div><div class="d ok">Connected, ready for queries</div></div>
         <div class="kpi"><div class="l">Gemini API key</div><div class="v" style="font-size:14px;color:${state.geminiKeySet ? 'var(--gr)' : 'var(--am)'};">${state.geminiKeySet ? 'Configured' : 'Not set'}</div><div class="d ${state.geminiKeySet ? 'ok' : 'warn'}">${state.geminiKeySet ? 'AI chat &amp; model generation available' : 'Open settings to add a key'}</div></div>
         <div class="kpi"><div class="l">Semantic model</div><div class="v" style="font-size:14px;color:${state.model ? 'var(--gr)' : 'var(--am)'};">${state.model ? `${state.model.explores.length} explore${state.model.explores.length > 1 ? 's' : ''}` : 'None'}</div><div class="d ${state.model ? 'ok' : 'warn'}">${state.model ? 'Required for AI chat' : 'Generate one to enable AI chat'}</div></div>
-        <div class="kpi"><div class="l">Vector search</div><div class="v" style="font-size:14px;color:var(--ac);">HNSW (CLIP)</div><div class="d">Loaded lazily on first semantic search</div></div>
       </div>
       <div class="psec">
         <h3>Collections</h3>
-        <div>${state.collections.length === 0 ? `<div class="empty-state"><div class="em">📦</div><h4>No collections yet</h4><p>Create your first collection — give it a name and an initial document.</p><button class="tbtn pri" onclick="openModal('modal-newcoll')">+ New collection</button></div>` :
+        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>Create your first collection — give it a name and an initial document.</p><button class="tbtn pri" onclick="openModal('modal-newcoll')">+ New collection</button></div>` :
           state.collections.map((x) => {
             const ex = getExplore(x);
             const n = state.countsByColl[x];
@@ -887,20 +933,18 @@ function renderOverview() {
 
   $('#cnt').innerHTML = `<div class="ov">
     <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span><span class="name">${esc(state.filepath)}.${esc(c)}</span></h1>
-    <p class="ovsub"><span>📄 <strong>${docs.length}</strong> documents</span><span>🔑 <strong>${fields.length}</strong> field${fields.length === 1 ? '' : 's'}</span><span>💾 ≈ <strong>${fmtSize(totalSize)}</strong></span><span>${explore ? `<span style="color:var(--gr)">✓ has model</span>` : `<span style="color:var(--am)">⚠ no model</span>`}</span></p>
+    <p class="ovsub"><span><strong>${docs.length}</strong> document${docs.length === 1 ? '' : 's'}</span><span><strong>${fields.length}</strong> field${fields.length === 1 ? '' : 's'}</span><span>≈ <strong>${fmtSize(totalSize)}</strong></span><span style="color:${explore ? 'var(--gr)' : 'var(--am)'};">${explore ? 'has semantic model' : 'no semantic model'}</span></p>
     <div class="kpis">
       <div class="kpi"><div class="l"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>Documents</div><div class="v">${docs.length}</div><div class="d">${docs.length > 0 ? `${fields.length} fields detected` : 'empty collection'}</div></div>
       <div class="kpi"><div class="l">Total size</div><div class="v">${fmtSize(totalSize).replace(/^([\d.]+)\s*/, (_, n) => `${n} <small>`)}${fmtSize(totalSize).endsWith('B') ? '</small>' : '</small>'}</div><div class="d">avg ${fmtSize(docs.length ? totalSize / docs.length : 0)}/doc</div></div>
-      <div class="kpi"><div class="l">Semantic model</div><div class="v" style="font-size:14px;color:${explore ? 'var(--gr)' : 'var(--am)'}">${explore ? 'Defined' : 'Missing'}</div><div class="d ${explore ? 'ok' : 'warn'}">${explore ? `${explore.fields.length} field defs · ${(explore.measures || []).length} measures · ${(explore.joins || []).length} joins` : 'Generate from the toolbar'}</div></div>
-      <div class="kpi"><div class="l">Vector search</div><div class="v" style="font-size:14px;color:var(--ac);">Indexed</div><div class="d">HNSW · CLIP embeddings · loaded lazily</div></div>
+      <div class="kpi"><div class="l">Semantic model</div><div class="v" style="font-size:14px;color:${explore ? 'var(--gr)' : 'var(--am)'}">${explore ? 'Defined' : 'Missing'}</div><div class="d ${explore ? 'ok' : 'warn'}">${explore ? `${explore.fields.length} field defs · ${(explore.measures || []).length} measures · ${(explore.joins || []).length} joins` : 'Open AI Chat to generate one'}</div></div>
     </div>
     <div class="psec"><h3>General</h3><div>
       <div class="prow"><div class="k">Name</div><div class="v id">${esc(c)}</div></div>
       <div class="prow"><div class="k">File</div><div class="v">${esc(state.filepath)}</div></div>
       <div class="prow"><div class="k">Document count</div><div class="v num">${docs.length}</div></div>
       <div class="prow"><div class="k">Field count (introspected)</div><div class="v num">${fields.length}</div></div>
-      <div class="prow"><div class="k">Has semantic model</div><div class="v bool ${explore ? 't' : 'f'}"><span class="pill">${explore ? '✓ yes' : '✗ no'}</span></div></div>
-      <div class="prow"><div class="k">Indexes</div><div class="v">HNSW (vector) · id (primary)</div></div>
+      <div class="prow"><div class="k">Has semantic model</div><div class="v bool ${explore ? 't' : 'f'}"><span class="pill">${explore ? 'yes' : 'no'}</span></div></div>
     </div></div>
     ${explore ? `<div class="psec"><h3>From semantic model</h3><div>
       <div class="prow"><div class="k">Label</div><div class="v" style="font-family:Segoe UI;color:var(--t)">${esc(explore.label)}</div></div>
@@ -908,7 +952,7 @@ function renderOverview() {
       <div class="prow"><div class="k">Defined fields</div><div class="v num">${explore.fields.length}</div></div>
       <div class="prow"><div class="k">Defined measures</div><div class="v num">${(explore.measures || []).length}</div></div>
       <div class="prow"><div class="k">Defined joins</div><div class="v num">${(explore.joins || []).length}</div></div>
-    </div></div>` : `<div class="psec"><h3>Semantic model</h3><div class="empty-state"><div class="em">🧠</div><h4>No semantic model yet</h4><p>The AI chat needs a semantic model to understand this collection. Generate one from the data (requires a Gemini API key), or write one manually in the <strong>Model</strong> tab.</p>${state.geminiKeySet ? `<button class="tbtn pri" onclick="generateModel()">Generate from data</button>` : `<button class="tbtn" onclick="openModal('modal-settings')">Configure Gemini key</button>`}</div></div>`}
+    </div></div>` : `<div class="psec"><h3>Semantic model</h3><div class="empty-state"><h4>No semantic model for this collection</h4><p>The AI chat needs a semantic model to understand this collection. Open the AI Chat tab — you'll be asked to generate one on first use.</p>${state.geminiKeySet ? `<button class="tbtn pri" onclick="state.tab='ai';renderTabs();renderTab();">Open AI Chat</button>` : `<button class="tbtn" onclick="openModal('modal-settings')">Configure Gemini key</button>`}</div></div>`}
   </div>`;
 }
 
@@ -1011,6 +1055,10 @@ async function doSemanticSearch(c, q) {
   try {
     const { documents } = await api(`/api/documents/${encodeURIComponent(c)}/search?q=${encodeURIComponent(q)}&limit=50`);
     const parsed = (documents || []).map((d) => JSON.parse(d));
+    if (parsed.length === 0) {
+      host.innerHTML = `<div class="dg"><div class="loader">No semantic matches for <strong>${esc(q)}</strong> in <strong>${esc(c)}</strong>.</div></div>`;
+      return;
+    }
     state.docsByColl[c] = parsed;
     state.searchActive = true;
     render();
@@ -1024,6 +1072,10 @@ async function doImageSearch(c, b64) {
   try {
     const { documents } = await api(`/api/documents/${encodeURIComponent(c)}/search/image?limit=50`, { method: 'POST', body: { image: b64 } });
     const parsed = (documents || []).map((d) => JSON.parse(d));
+    if (parsed.length === 0) {
+      host.innerHTML = `<div class="dg"><div class="loader">No matches for the supplied image in <strong>${esc(c)}</strong>.</div></div>`;
+      return;
+    }
     state.docsByColl[c] = parsed;
     state.searchActive = true;
     render();
@@ -1157,7 +1209,7 @@ function renderFields() {
   const c = state.selectedCol;
   const docs = state.docsByColl[c] || [];
   if (docs.length === 0) {
-    $('#cnt').innerHTML = `<div class="flds"><div class="empty-state"><div class="em">🔑</div><h4>No documents to introspect</h4><p>Add a document to see what fields exist and their types.</p></div></div>`;
+    $('#cnt').innerHTML = `<div class="flds"><div class="empty-state"><h4>No documents to introspect</h4><p>Add a document to see what fields exist and their types.</p></div></div>`;
     return;
   }
   const explore = getExplore(c);
@@ -1193,70 +1245,56 @@ function renderFields() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Model
+// Semantic model (modal opened from AI Chat header)
 // ─────────────────────────────────────────────────────────────────
-function renderModel() {
-  const explore = state.selectedCol ? getExplore(state.selectedCol) : null;
+function openModelModal() {
   const jsonStr = state.model ? JSON.stringify(state.model, null, 2) : '';
-  const hasGemini = state.geminiKeySet;
-  $('#cnt').innerHTML = `<div class="model-pane">
-    <div class="model-tools">
-      <button class="tbtn pri" id="mdl-gen" ${hasGemini ? '' : 'disabled'} title="${hasGemini ? 'Generate model by introspecting the DB + Gemini' : 'Requires Gemini API key'}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Generate from data</button>
-      <button class="tbtn" id="mdl-save"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/></svg>Save edits</button>
-      <button class="tbtn" id="mdl-reload">Reload from server</button>
-      <div class="meta ${state.model ? 'ok' : 'warn'}">${state.model ? `${state.model.explores.length} explore${state.model.explores.length === 1 ? '' : 's'} · ${state.model.explores.reduce((s, e) => s + e.fields.length, 0)} fields total` : 'No model loaded'}</div>
-    </div>
-    <div class="model-body">
-      <div class="grid">
-        <div class="json-editor">
-          <div class="head"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>Model JSON</div>
-          <textarea id="mdl-json" spellcheck="false" placeholder="{ &quot;explores&quot;: [ ... ] }">${esc(jsonStr)}</textarea>
-          <div class="err hidden" id="mdl-err"></div>
-        </div>
-        <div>
-          ${explore ? `
-            <div class="model-table" style="margin-bottom:10px;">
-              <div class="head">📐 Measures<span class="ct">${(explore.measures || []).length}</span></div>
-              ${(explore.measures || []).length > 0 ? `<table><thead><tr><th>Name</th><th>Aggregation</th><th>Field</th><th>Description</th></tr></thead><tbody>${explore.measures.map((m) => `<tr><td><span class="ac">${esc(m.name)}</span></td><td><span class="pp">${esc(m.aggregation)}</span></td><td><span class="am">${esc(m.field)}</span></td><td><span class="t3">${esc(m.description || '')}</span></td></tr>`).join('')}</tbody></table>` : `<div class="empty">No measures defined for ${esc(state.selectedCol)}.</div>`}
-            </div>
-            <div class="model-table">
-              <div class="head">🔗 Joins<span class="ct">${(explore.joins || []).length}</span></div>
-              ${(explore.joins || []).length > 0 ? `<table><thead><tr><th>To collection</th><th>Left field</th><th>Right field</th><th>Relationship</th></tr></thead><tbody>${explore.joins.map((j) => `<tr><td><span class="ac">${esc(j.collection)}</span></td><td><span class="am">${esc(j.leftField)}</span></td><td><span class="am">${esc(j.rightField)}</span></td><td><span class="t3">${esc(j.relationship)}</span></td></tr>`).join('')}</tbody></table>` : `<div class="empty">No joins defined for ${esc(state.selectedCol)}.</div>`}
-            </div>` : `
-            <div class="model-table"><div class="head">Pick a collection</div><div class="empty">${state.model ? 'Select a collection on the left to see its measures and joins.' : 'No model loaded — generate one or paste JSON on the left, then Save.'}</div></div>
-          `}
-        </div>
-      </div>
-    </div>
-  </div>`;
-  $('#mdl-gen').addEventListener('click', generateModel);
-  $('#mdl-save').addEventListener('click', async () => {
-    const raw = $('#mdl-json').value;
-    try {
-      JSON.parse(raw);
-    } catch (e) { $('#mdl-err').classList.remove('hidden'); $('#mdl-err').textContent = 'Invalid JSON: ' + e.message; return; }
-    $('#mdl-err').classList.add('hidden');
-    try {
-      const { model } = await api('/api/conversational/model', { method: 'PUT', body: { model: raw } });
-      state.model = model;
-      toast('Model saved', 'ok');
-      render();
-    } catch (e) { $('#mdl-err').classList.remove('hidden'); $('#mdl-err').textContent = e.message; }
-  });
-  $('#mdl-reload').addEventListener('click', async () => { await loadModel(); toast('Model reloaded', 'ok'); render(); });
+  $('#mdl-json').value = jsonStr;
+  $('#mdl-err').classList.add('hidden');
+  $('#mdl-status').textContent = state.model
+    ? `${state.model.explores.length} explore${state.model.explores.length === 1 ? '' : 's'} · ${state.model.explores.reduce((s, e) => s + e.fields.length, 0)} fields total`
+    : 'No model loaded';
+  openModal('modal-model');
 }
 
 async function generateModel() {
   if (!state.geminiKeySet) { toast('Set the Gemini API key first.', 'warn'); openModal('modal-settings'); return; }
+  state.modelGenerating = true;
+  if (state.tab === 'ai') renderAi();
   toast('Generating model… this may take ~20s', '', 'Generating');
   try {
     const { model } = await api('/api/conversational/model/generate', { method: 'POST' });
     state.model = model;
     toast('Semantic model generated', 'ok');
-    render();
   } catch (e) { toast('Generation failed: ' + e.message, 'err'); }
+  finally {
+    state.modelGenerating = false;
+    render();
+  }
 }
 window.generateModel = generateModel;
+
+// Wire the model modal once at startup (the buttons live in a fixed
+// modal, not inside the tab content, so they're registered just once).
+$('#mdl-gen').addEventListener('click', generateModel);
+$('#mdl-save').addEventListener('click', async () => {
+  const raw = $('#mdl-json').value;
+  try { JSON.parse(raw); }
+  catch (e) { $('#mdl-err').classList.remove('hidden'); $('#mdl-err').textContent = 'Invalid JSON: ' + e.message; return; }
+  $('#mdl-err').classList.add('hidden');
+  try {
+    const { model } = await api('/api/conversational/model', { method: 'PUT', body: { model: raw } });
+    state.model = model;
+    toast('Model saved', 'ok');
+    closeModal('modal-model');
+    render();
+  } catch (e) { $('#mdl-err').classList.remove('hidden'); $('#mdl-err').textContent = e.message; }
+});
+$('#mdl-reload').addEventListener('click', async () => {
+  await loadModel();
+  $('#mdl-json').value = state.model ? JSON.stringify(state.model, null, 2) : '';
+  toast('Model reloaded', 'ok');
+});
 
 // ─────────────────────────────────────────────────────────────────
 // SQL
@@ -1332,7 +1370,7 @@ async function runSqlNow(sql) {
 
 function renderSqlOut(last) {
   if (!last) return '';
-  if (!last.ok) return `<div class="err">✗ ${esc(last.error)}</div>`;
+  if (!last.ok) return `<div class="err">${esc(last.error)}</div>`;
   if (last.kind !== 'select') return `<div class="rhead"><span class="ok-pill">${esc(last.kind)}</span><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} affected · ${last.elapsedMs} ms</div>`;
   const rows = last.rows || [];
   if (rows.length === 0) return `<div class="rhead"><strong>0</strong> rows · ${last.elapsedMs} ms</div><div style="padding:20px;text-align:center;color:var(--t3);font-size:12px;">No rows returned.</div>`;
@@ -1343,7 +1381,7 @@ function renderSqlOut(last) {
 }
 function renderSqlHistory() {
   if (state.sqlHistory.length <= 1) return '';
-  return `<div class="sql-history"><h4>History</h4>${state.sqlHistory.slice(1).map((h) => `<div class="item" data-sql="${esc(h.sql)}"><span class="${h.ok ? 'ok' : 'ko'}">${h.ok ? '✓' : '✗'}</span><span class="qq">${esc(h.sql.replace(/\s+/g, ' '))}</span><span class="when">${h.ok ? `${h.rowCount} rows · ${h.elapsedMs}ms` : 'error'}</span></div>`).join('')}</div>`;
+  return `<div class="sql-history"><h4>History</h4>${state.sqlHistory.slice(1).map((h) => `<div class="item" data-sql="${esc(h.sql)}"><span class="${h.ok ? 'ok' : 'ko'}">${h.ok ? 'OK' : 'ERR'}</span><span class="qq">${esc(h.sql.replace(/\s+/g, ' '))}</span><span class="when">${h.ok ? `${h.rowCount} rows · ${h.elapsedMs}ms` : 'error'}</span></div>`).join('')}</div>`;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1352,24 +1390,47 @@ function renderSqlHistory() {
 let aiBusy = false;
 
 function renderAi() {
+  const c = state.selectedCol;
+  const exploreForCol = c ? getExplore(c) : null;
+  // The collection needs a semantic-model entry to chat. If the user
+  // hasn't already dismissed the prompt, we show a Y/N card. If they
+  // dismissed it, the chat stays disabled until they generate one.
+  const needsModelForCol = !!c && !exploreForCol && !state.modelGenerating;
+  const promptForCol = needsModelForCol && !state.modelPromptDismissed[c];
+
+  const canChat = state.geminiKeySet && !!state.model && !!exploreForCol && !state.modelGenerating;
   const empty = state.chatHistory.length === 0;
+
   $('#cnt').innerHTML = `<div class="ai-pane">
     <div class="ai-head">
       <div class="ic">AI</div>
-      <div class="ttl"><strong>Conversational analytics</strong><div class="sub">Gemini · context: <strong style="color:var(--ac)">${esc(state.selectedCol || '—')}</strong></div></div>
+      <div class="ttl"><strong>Conversational analytics</strong><div class="sub">Gemini · context: <strong style="color:var(--ac)">${esc(c || '—')}</strong></div></div>
       <div class="meta">
         <span class="pill ${state.geminiKeySet ? 'ok' : 'bad'}">Gemini · ${state.geminiKeySet ? 'ready' : 'no key'}</span>
-        <span class="pill ${state.model ? 'ok' : 'warn'}">Model · ${state.model ? `${state.model.explores.length} explore${state.model.explores.length === 1 ? '' : 's'}` : 'missing'}</span>
+        <span class="pill ${exploreForCol ? 'ok' : 'warn'}">Model · ${exploreForCol ? 'ready' : (c ? 'missing for ' + esc(c) : 'no collection')}</span>
+        <button class="tbtn" id="ai-model" title="View or edit the semantic model JSON" style="padding:4px 10px;font-size:11px;border:1px solid var(--bd);background:var(--bg2);">Edit model</button>
         <button class="tbtn" id="ai-clear" style="padding:4px 10px;font-size:11px;">Clear chat</button>
       </div>
     </div>
-    <div class="ai-body" id="ai-body">${empty ? renderAiEmpty() : state.chatHistory.map((m, i) => renderAiMessage(m, i)).join('')}</div>
+    <div class="ai-body" id="ai-body">${
+      state.modelGenerating ? renderModelGeneratingCard(c)
+      : promptForCol ? renderModelPromptCard(c)
+      : empty ? renderAiEmpty(c, exploreForCol)
+      : state.chatHistory.map((m, i) => renderAiMessage(m, i)).join('')
+    }</div>
     <div class="ai-input">
-      <input id="ai-q" placeholder="${state.geminiKeySet && state.model ? 'Ask about your data…' : state.geminiKeySet ? 'Generate a model first to enable AI…' : 'Configure Gemini API key first…'}" ${state.geminiKeySet && state.model ? '' : 'disabled'}/>
-      <button id="ai-send" ${state.geminiKeySet && state.model ? '' : 'disabled'}>Send</button>
+      <input id="ai-q" placeholder="${
+        !state.geminiKeySet ? 'Configure Gemini API key first…'
+        : !c ? 'Select a collection in the sidebar…'
+        : !exploreForCol ? 'Generate a semantic model for this collection first…'
+        : state.modelGenerating ? 'Generating semantic model…'
+        : 'Ask about your data…'
+      }" ${canChat ? '' : 'disabled'}/>
+      <button id="ai-send" ${canChat ? '' : 'disabled'}>Send</button>
     </div>
   </div>`;
   $('#ai-clear').addEventListener('click', () => { state.chatHistory = []; renderAi(); });
+  $('#ai-model').addEventListener('click', openModelModal);
   $('#ai-q')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !aiBusy) sendChat(); });
   $('#ai-send')?.addEventListener('click', () => { if (!aiBusy) sendChat(); });
   $$('#ai-body .example').forEach((b) => b.addEventListener('click', () => { $('#ai-q').value = b.dataset.q; sendChat(); }));
@@ -1384,24 +1445,43 @@ function renderAi() {
     const spec = JSON.parse(cv.dataset.chart);
     drawChart(cv, spec.chart, spec.data);
   });
+  // Wiring for the per-collection model-generation prompt card.
+  $('#ai-model-yes')?.addEventListener('click', generateModel);
+  $('#ai-model-no')?.addEventListener('click', () => {
+    if (c) state.modelPromptDismissed[c] = true;
+    renderAi();
+  });
+  $('#ai-model-settings')?.addEventListener('click', () => openModal('modal-settings'));
+
   const body = $('#ai-body');
   body.scrollTop = body.scrollHeight;
 }
 
-function renderAiEmpty() {
+function renderModelGeneratingCard(c) {
+  return `<div class="ai-empty"><h4>Generating semantic model</h4><p>Inspecting <strong>${esc(state.filepath || '—')}</strong> with Gemini. This usually takes around 20 seconds. The chat input will unlock automatically when it's done.</p></div>`;
+}
+
+function renderModelPromptCard(c) {
   if (!state.geminiKeySet) {
-    return `<div class="ai-empty"><div class="em">🔑</div><h4>Add your Gemini API key</h4><p>The conversational analytics feature requires a Google Gemini API key. Set it in <strong>Settings</strong> and reload.</p><button class="tbtn pri" onclick="openModal('modal-settings')" style="margin:0 auto;">Open settings</button></div>`;
+    return `<div class="ai-empty"><h4>Configure your Gemini API key first</h4><p>The conversational analytics feature requires a Google Gemini API key. Set it in <strong>Settings</strong>, then come back here.</p><div style="display:flex;gap:8px;justify-content:center;margin-top:8px;"><button class="tbtn pri" id="ai-model-settings">Open settings</button></div></div>`;
   }
-  if (!state.model) {
-    return `<div class="ai-empty"><div class="em">🧠</div><h4>No semantic model</h4><p>To chat with your data, generate a semantic model so the AI knows what your fields mean.</p><button class="tbtn pri" onclick="generateModel()" style="margin:0 auto;">Generate from data</button></div>`;
+  return `<div class="ai-empty"><h4>No semantic model for <span class="mono" style="color:var(--ac)">${esc(c)}</span> yet</h4><p>The AI chat needs a semantic model — a small JSON description of your fields, their synonyms, and how collections relate — to answer questions accurately. Generate one now?</p><div style="display:flex;gap:8px;justify-content:center;margin-top:8px;"><button class="tbtn pri" id="ai-model-yes">Yes, generate now</button><button class="tbtn" id="ai-model-no" style="border:1px solid var(--bd);background:var(--bg2);">Not now</button></div></div>`;
+}
+
+function renderAiEmpty(c, exploreForCol) {
+  if (!c) {
+    return `<div class="ai-empty"><h4>Pick a collection</h4><p>Select a collection in the sidebar to chat about its data.</p></div>`;
+  }
+  if (!exploreForCol) {
+    return `<div class="ai-empty"><h4>Chat is paused</h4><p>This collection doesn't have a semantic model yet. <button class="tbtn" id="ai-model-yes" style="border:1px solid var(--bd);background:var(--bg2);padding:4px 10px;">Generate one now</button> to enable chat.</p></div>`;
   }
   const examples = [
-    state.selectedCol ? `How many records are in ${state.selectedCol}?` : 'How many collections are there?',
+    `How many records are in ${c}?`,
     'What are the distinct categories and their counts?',
     'Show me the top 5 by some metric',
     'Compare the largest groups in this collection',
   ];
-  return `<div class="ai-empty"><div class="em">💬</div><h4>Ask a question about your data</h4><p>Type a question in plain English. The AI will translate it to SQL, run it, and explain the result with a chart and follow-up suggestions.</p><div class="examples">${examples.map((q) => `<button class="example" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div></div>`;
+  return `<div class="ai-empty"><h4>Ask a question about your data</h4><p>Type a question in plain English. The AI will translate it to SQL, run it, and explain the result with a chart and follow-up suggestions.</p><div class="examples">${examples.map((q) => `<button class="example" data-q="${esc(q)}">${esc(q)}</button>`).join('')}</div></div>`;
 }
 
 function renderAiMessage(m, i) {
@@ -1538,7 +1618,6 @@ $('#sb-refresh').addEventListener('click', async () => {
   await loadCollections(); await loadModel(); render(); toast('Refreshed', 'ok');
 });
 $('#btn-newcoll').addEventListener('click', () => { $('#newcoll-name').value = ''; $('#newcoll-doc').value = '{"id": "c_001"}'; $('#newcoll-err').classList.add('hidden'); openModal('modal-newcoll'); });
-$('#btn-genmodel').addEventListener('click', generateModel);
 $('#btn-settings').addEventListener('click', () => { $('#set-gemini-key').value = ''; $('#set-gemini-err').classList.add('hidden'); $('#set-gemini-ok').classList.add('hidden'); openModal('modal-settings'); });
 $('#sb-filter').addEventListener('input', renderTree);
 

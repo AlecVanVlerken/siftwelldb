@@ -9,7 +9,6 @@ import {
   type CompressionRecommendation,
   type CompressionRecommendationItem,
   type CompressionRecommendationRequest,
-  type HnswConfig,
 } from '../dbms/simpledbms.mjs';
 import { listAvailableCompressionProfiles } from '../dbms/compression-advisor.mjs';
 import { type CompressionAlgorithm } from '../dbms/compression.mjs';
@@ -20,6 +19,7 @@ import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '.
 import { fetchPageCursor } from '../largedatasets/pagination.mjs';
 import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
 import { QueryLanguage, type QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
+import { getClipHnswConfig } from '../conversational/clipHnswConfig.mjs';
 
 export type LabPolicyKey = 'none-uniform' | 'gzip-uniform' | 'zstd-uniform' | 'gzip-everything' | 'advisor-mix';
 
@@ -172,6 +172,12 @@ function rankingItem(
  * All database interaction from the HTTP layer should go through
  * this service.
  *
+ * Every database the service opens is wired up with the shared CLIP
+ * `HnswConfig` from {@link getClipHnswConfig}, so semantic search
+ * works on the first insert without any "rebuild index" dance. The
+ * CLIP weights themselves are loaded lazily on the first embedding
+ * call, so opening a database is still cheap.
+ *
  * @author Alexandre-Gatien Bienfet
  */
 export class DatabaseService {
@@ -196,65 +202,6 @@ export class DatabaseService {
     targetBatchUnits: 2,
     maxStepsPerRun: 4,
   };
-
-  // HNSW semantic search config — loaded lazily on first semanticSearch call.
-  private hnswConfigPromise: Promise<HnswConfig> | null = null;
-  private hnswLoaded = false;
-
-  private getHnswConfig(): Promise<HnswConfig> {
-    if (!this.hnswConfigPromise) {
-      this.hnswConfigPromise = (async () => {
-        const MODEL_ID = 'Xenova/clip-vit-base-patch32';
-        const CLIP_DIM = 512;
-
-        console.log('Lazy loading huggingface transformers for semantic search...');
-        const { AutoTokenizer, AutoProcessor, CLIPTextModelWithProjection, CLIPVisionModelWithProjection, RawImage } =
-          await import('@huggingface/transformers');
-
-        console.log('Loading CLIP tokenizer & text model...');
-        const tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
-        const textModel = await CLIPTextModelWithProjection.from_pretrained(MODEL_ID, { dtype: 'fp32' });
-
-        console.log('Loading CLIP processor & vision model...');
-        const processor = await AutoProcessor.from_pretrained(MODEL_ID);
-        const visionModel = await CLIPVisionModelWithProjection.from_pretrained(MODEL_ID, { dtype: 'fp32' });
-
-        function l2Normalize(v: Float32Array): Float32Array {
-          let norm = 0;
-          for (const val of v) norm += val * val;
-          norm = Math.sqrt(norm);
-          if (norm === 0) return v;
-          for (let i = 0; i < v.length; i++) v[i] /= norm;
-          return v;
-        }
-
-        const embeddingFn = async (text: string): Promise<Float32Array> => {
-          const inputs = tokenizer(text, { padding: true, truncation: true });
-          const { text_embeds } = (await textModel(inputs)) as { text_embeds: { data: ArrayLike<number> } };
-          return l2Normalize(new Float32Array(text_embeds.data));
-        };
-
-        const imageEmbeddingFn = async (imageData: Buffer): Promise<Float32Array> => {
-          const blob = new Blob([new Uint8Array(imageData)]);
-          const image = await RawImage.fromBlob(blob);
-          const inputs = await processor(image);
-          const { image_embeds } = (await visionModel(inputs)) as { image_embeds: { data: ArrayLike<number> } };
-          return l2Normalize(new Float32Array(image_embeds.data));
-        };
-
-        console.log('CLIP models loaded successfully.');
-        return {
-          dimension: CLIP_DIM,
-          embeddingFn,
-          imageEmbeddingFn,
-          M: 16,
-          efConstruction: 100,
-          efSearch: 50,
-        };
-      })();
-    }
-    return this.hnswConfigPromise;
-  }
 
   // ── Lifecycle ────────────────────────────────────────────────
 
@@ -281,8 +228,7 @@ export class DatabaseService {
     return this.runExclusive('connect', async () => {
       await this.closeInternal();
 
-      // Load HNSW config first (this can take a long time loading CLIP models).
-      const hnswConfig = await this.getHnswConfig();
+      const hnswConfig = getClipHnswConfig();
 
       // Check file existence right before opening to avoid race conditions
       // (e.g. file state changing during the slow HNSW model loading above).
@@ -324,7 +270,7 @@ export class DatabaseService {
 
       const dataFile = new RealFile(filepath);
       const logFile = new RealFile(this.logFilepath(filepath));
-      const hnswConfig = await this.getHnswConfig();
+      const hnswConfig = getClipHnswConfig();
 
       this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
       await this.dbms.commit();
@@ -354,7 +300,7 @@ export class DatabaseService {
 
       const dataFile = new RealFile(filepath);
       const logFile = new RealFile(this.logFilepath(filepath));
-      const hnswConfig = await this.getHnswConfig();
+      const hnswConfig = getClipHnswConfig();
 
       this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
       await this.dbms.commit();
@@ -434,7 +380,7 @@ export class DatabaseService {
         await deleteIfExists(tempPath);
         await deleteIfExists(tempLogPath);
 
-        const hnswConfig = await this.getHnswConfig();
+        const hnswConfig = getClipHnswConfig();
         this.dbms = await SimpleDbms.open(new RealFile(filepath), new RealFile(logPath), hnswConfig);
         this.currentFilepath = filepath;
         this.onDatabaseOpened();
@@ -725,34 +671,16 @@ export class DatabaseService {
     return { rows, rowCount: rows.length, kind: parsed.kind, elapsedMs };
   }
 
-  /** Semantic text-to-text search. Lazily loads CLIP models on first call. */
+  /** Semantic text-to-text search. */
   async semanticSearch(collection: string, query: string, limit: number): Promise<string[]> {
     this.ensureConnected();
-    await this.ensureHnsw();
     return this.dbms!.semanticSearch(collection, query, limit);
   }
 
-  /** Semantic image-to-image search. Lazily loads CLIP models on first call. */
+  /** Semantic image-to-image search. */
   async semanticImageSearch(collection: string, queryImage: Buffer, limit: number): Promise<string[]> {
     this.ensureConnected();
-    await this.ensureHnsw();
     return this.dbms!.semanticImageSearch(collection, queryImage, limit);
-  }
-
-  /**
-   * Ensures CLIP models are loaded and the DB is open with HNSW enabled.
-   * Reopens the database with the full HnswConfig on the first semantic search call.
-   */
-  private async ensureHnsw(): Promise<void> {
-    if (this.hnswLoaded) return;
-    const filepath = this.currentFilepath!;
-    const hnswConfig = await this.getHnswConfig();
-    // Reopen with HNSW — close current handle first, then reopen.
-    await this.dbms!.close();
-    const dataFile = new RealFile(filepath);
-    const logFile = new RealFile(`${filepath}.log`);
-    this.dbms = await SimpleDbms.open(dataFile, logFile, hnswConfig);
-    this.hnswLoaded = true;
   }
 
   /** Returns the underlying SimpleDbms instance (throws if not connected). */
@@ -1018,7 +946,6 @@ export class DatabaseService {
       await this.dbms.close();
       this.dbms = null;
       this.currentFilepath = null;
-      this.hnswLoaded = false;
     }
     this.incrementalCompactionQueued = false;
     this.incrementalCompactionActive = false;
