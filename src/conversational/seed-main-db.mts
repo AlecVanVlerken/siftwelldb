@@ -2,10 +2,15 @@
  * One-off test seed: creates data.db in the project root with 200 employees.
  * Run once with: npx tsx src/conversational/seed-main-db.mts
  * Delete data.db + data.db.log when done testing.
+ *
+ * The database is opened with the shared CLIP HnswConfig so every
+ * insert is embedded as it's written — no rebuild step needed
+ * afterwards for semantic search to work.
  */
 import { RealFile } from '../core/file.mjs';
 import { SimpleDbms } from '../dbms/simpledbms.mjs';
 import { generateEmployees } from './seedData.mjs';
+import { getClipHnswConfig } from './clipHnswConfig.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -20,7 +25,7 @@ if (fs.existsSync(DB)) {
 }
 
 const employees = generateEmployees(200);
-const db = await SimpleDbms.create(new RealFile(DB), new RealFile(LOG));
+const db = await SimpleDbms.create(new RealFile(DB), new RealFile(LOG), getClipHnswConfig());
 for (const emp of employees) {
   await db.insertDocument('employees', JSON.stringify(emp));
 }
