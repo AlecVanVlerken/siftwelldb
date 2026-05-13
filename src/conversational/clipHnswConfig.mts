@@ -31,9 +31,35 @@ type ClipModels = {
 // Module-level promise so the load happens at most once across the
 // whole process, no matter how many times getClipHnswConfig is called.
 let modelsPromise: Promise<ClipModels> | null = null;
+type LoadState = 'idle' | 'loading' | 'ready' | 'error';
+let loadState: LoadState = 'idle';
+let loadError: string | null = null;
+
+/**
+ * Status of the CLIP model load. `idle` means nothing has triggered
+ * the load yet, `loading` means it's in progress, `ready` means
+ * subsequent embeddings will be fast, and `error` means the last load
+ * attempt failed.
+ */
+export function getEmbeddingStatus(): { state: LoadState; error: string | null } {
+  return { state: loadState, error: loadError };
+}
+
+/**
+ * Eagerly start loading the CLIP model in the background. Subsequent
+ * calls are no-ops. Errors are caught and reflected via
+ * `getEmbeddingStatus`.
+ */
+export function preloadClipModels(): void {
+  if (loadState === 'idle') {
+    void loadClipModels().catch(() => undefined);
+  }
+}
 
 function loadClipModels(): Promise<ClipModels> {
   if (!modelsPromise) {
+    loadState = 'loading';
+    loadError = null;
     modelsPromise = (async () => {
       console.log('Lazy loading huggingface transformers for semantic search…');
       const {
@@ -53,6 +79,7 @@ function loadClipModels(): Promise<ClipModels> {
       const visionModel = await CLIPVisionModelWithProjection.from_pretrained(MODEL_ID, { dtype: 'fp32' });
 
       console.log('CLIP models loaded successfully.');
+      loadState = 'ready';
       return {
         tokenizer: tokenizer as ClipModels['tokenizer'],
         textModel: textModel as unknown as ClipModels['textModel'],
@@ -60,7 +87,12 @@ function loadClipModels(): Promise<ClipModels> {
         visionModel: visionModel as unknown as ClipModels['visionModel'],
         rawImageFromBlob: (blob: Blob) => RawImage.fromBlob(blob),
       };
-    })();
+    })().catch((err) => {
+      loadState = 'error';
+      loadError = err instanceof Error ? err.message : String(err);
+      modelsPromise = null;
+      throw err;
+    });
   }
   return modelsPromise;
 }

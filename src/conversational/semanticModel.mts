@@ -27,20 +27,12 @@ export type MeasureDefinition = {
   description?: string;
 };
 
-export type JoinDefinition = {
-  collection: string;
-  leftField: string;
-  rightField: string;
-  relationship: string;
-};
-
 export type ExploreDefinition = {
   collection: string;
   label: string;
   description?: string;
   fields: FieldDefinition[];
   measures?: MeasureDefinition[];
-  joins?: JoinDefinition[];
 };
 
 export type SemanticModel = {
@@ -138,14 +130,6 @@ export function modelToSchemaPrompt(model: SemanticModel): string {
       });
       parts.push('  Measures:');
       parts.push(...measureDescs);
-    }
-
-    if (explore.joins && explore.joins.length > 0) {
-      const joinDescs = explore.joins.map(
-        (j) => `  - JOIN ${j.collection} ON ${j.leftField} = ${j.rightField} (${j.relationship})`,
-      );
-      parts.push('  Joins:');
-      parts.push(...joinDescs);
     }
 
     parts.push('');
@@ -327,22 +311,13 @@ function buildEnrichmentPrompt(model: SemanticModel, stats: Record<string, Field
     schemaDesc += `\nSample rows:\n${JSON.stringify(s.sampleRows.slice(0, 5), null, 2)}\n`;
   }
 
-  const multiCollectionNote =
-    model.explores.length > 1
-      ? `\nMultiple collections are present. If you see strong evidence that a field in one collection ` +
-        `references records in another (matching names, values that appear as IDs elsewhere), ` +
-        `you MAY suggest JOIN relationships in the "joins" array. ` +
-        `Only suggest a join when you are very confident. A wrong join breaks queries. ` +
-        `NOTE: FK detection is inherently heuristic — when in doubt, omit it.`
-      : '';
-
   return `You are enriching a semantic model for a conversational analytics system.
 
 Current model (needs enrichment):
 ${JSON.stringify(model, null, 2)}
 
 Schema and data statistics:
-${schemaDesc}${multiCollectionNote}
+${schemaDesc}
 
 Return an enriched version of the model JSON following these rules:
 1. Keep all existing field names exactly — do NOT rename them.
@@ -351,14 +326,15 @@ Return an enriched version of the model JSON following these rules:
 4. Set "hidden": true for ID/internal fields not useful for analytics.
 5. Do NOT remove any existing fields or measures.
 6. You MAY add useful measures beyond the auto-generated ones (e.g. headcount measure using COUNT(*)).
-7. Output ONLY the enriched model JSON — no explanation, no markdown fences.`;
+7. Each explore is single-collection. Do NOT propose join, relationship, or foreign-key information — joins are not part of this model.
+8. Output ONLY the enriched model JSON — no explanation, no markdown fences.`;
 }
 
 /**
  * Merge the LLM's enriched model onto the original, applying only additive/safe changes.
  * Never removes existing fields, measures, or explores.
- * Only updates field metadata (description, synonyms, hidden, tags) and adds new measures
- * or join suggestions — the LLM cannot invent new base fields.
+ * Only updates field metadata (description, synonyms, hidden, tags) and adds new measures.
+ * The LLM cannot invent new base fields or cross-collection joins.
  */
 function mergeEnrichedModel(original: SemanticModel, llmOutput: string): SemanticModel {
   let text = llmOutput.trim();
@@ -372,8 +348,6 @@ function mergeEnrichedModel(original: SemanticModel, llmOutput: string): Semanti
     console.warn('[enrichModel] LLM returned invalid JSON, keeping original model');
     return original;
   }
-
-  const allOriginalCollections = new Set(original.explores.map((e) => e.collection));
 
   for (const origExplore of original.explores) {
     const enrichedExplore = enriched.explores?.find((e) => e.collection === origExplore.collection);
@@ -401,17 +375,8 @@ function mergeEnrichedModel(original: SemanticModel, llmOutput: string): Semanti
       origExplore.measures.push(em);
     }
 
-    // Add suggested joins — only when target collection exists in this model
-    if (Array.isArray(enrichedExplore.joins)) {
-      origExplore.joins = origExplore.joins ?? [];
-      for (const ej of enrichedExplore.joins) {
-        if (!allOriginalCollections.has(ej.collection)) continue;
-        if (origExplore.joins.some((j) => j.collection === ej.collection)) continue;
-        if (!ej.leftField || !ej.rightField) continue;
-        origExplore.joins.push(ej);
-        console.log(`[enrichModel] Auto-detected FK: ${origExplore.collection}.${ej.leftField} → ${ej.collection}.${ej.rightField}`);
-      }
-    }
+    // Joins intentionally not supported in the schema model.
+    // If the LLM tries to inject them, silently drop.
   }
 
   return original;
@@ -422,14 +387,11 @@ function mergeEnrichedModel(original: SemanticModel, llmOutput: string): Semanti
  *
  * Collects field statistics (distinct string values, numeric ranges, sample rows)
  * for every collection, then asks the LLM to add descriptions, synonyms, hidden
- * flags, and — when multiple collections are present — suggested FK join relationships.
+ * flags, and optional analytics measures.
  *
  * The merge step is strictly additive: existing fields/measures are never removed,
- * and the LLM cannot invent new base fields.
- *
- * NOTE on FK detection: requires 2+ collections to activate. When multiple collections
- * exist the LLM suggests relationships; the merge validates both collections exist
- * before writing any join. Treat suggested joins as hints that may need manual verification.
+ * and the LLM cannot invent new base fields or join relationships. Each explore is
+ * single-collection by design; cross-collection analytics is a SQL-tab feature.
  */
 export async function enrichModelWithLLM(model: SemanticModel, dbms: SimpleDbms, llm: LLMProvider): Promise<SemanticModel> {
   const stats: Record<string, FieldStats> = {};

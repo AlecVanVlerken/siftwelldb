@@ -338,6 +338,45 @@ export class SimpleDbms {
   }
 
   /**
+   * Replace the entire body of an existing document. The `id` field
+   * must match the existing document; collection and id are immutable.
+   * Any fields absent from `newDocument` are dropped.
+   *
+   * @param collection - Collection that owns the document.
+   * @param id - ID of the document to replace.
+   * @param newDocument - Full replacement payload (raw object). Must include the same `id`.
+   */
+  async replaceDocument(collection: string, id: string, newDocument: unknown): Promise<void> {
+    const doc = parseRawDocument(collection, newDocument);
+    await this.dbmsback.replaceDocumentByID(collection, id, doc);
+  }
+
+  /**
+   * Returns the physical on-disk byte footprint of a single document
+   * (`chainLength × blockSize`). Throws if the document does not exist.
+   */
+  async getDocumentStoredBytes(collection: string, id: string): Promise<number> {
+    return this.dbmsback.getDocumentStoredBytes(collection, id);
+  }
+
+  /**
+   * Returns the sum of physical block bytes used by every document in
+   * a collection. Excludes B+ tree index blocks and HNSW vector blocks.
+   */
+  async getCollectionRecordBytes(collection: string): Promise<number> {
+    return this.dbmsback.getCollectionRecordBytes(collection);
+  }
+
+  /**
+   * Physical block size in bytes. Useful for surfacing accurate byte
+   * accounting in UIs (every record reservation is a whole multiple of
+   * this value).
+   */
+  getBlockSize(): number {
+    return this.dbmsback.getBlockSize();
+  }
+
+  /**
    * Creates a cursor for iterating over documents in a collection.
    * @param collection - The name of the collection to query.
    * @param iterableKey - The key to iterate over.

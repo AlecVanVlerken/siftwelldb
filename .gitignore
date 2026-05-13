@@ -27,3 +27,4 @@ src/benchmarking/hnsw/datasets/sift/
 
 .vscode/
 .env
+*.md

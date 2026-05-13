@@ -240,6 +240,34 @@ export class RecordStore {
    * @returns {Promise<void>}
    * @throws {Error} If any block cannot be freed
    */
+  /**
+   * Returns the on-disk byte footprint of a record's block chain:
+   * `chainLength × blockSize`. Walks the linked list of blocks starting
+   * at `blockID`. This reflects physical disk reservation, including
+   * unused tail space in the last block.
+   *
+   * @param {number} blockID - The block ID of the first block in the chain
+   * @returns {Promise<number>} - Total bytes reserved on disk for this record
+   */
+  async getStoredByteCount(blockID: number): Promise<number> {
+    let chainLength = 0;
+    let currentBlockID = blockID;
+    while (currentBlockID !== 0) {
+      chainLength += 1;
+      const blockData = await this.freeBlockFile.readBlock(currentBlockID);
+      currentBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
+    }
+    return chainLength * this.blockSize;
+  }
+
+  /**
+   * Underlying block size in bytes. Useful for callers that want to
+   * report per-block accounting alongside per-record byte totals.
+   */
+  getBlockSize(): number {
+    return this.blockSize;
+  }
+
   async deleteRecord(blockID: number): Promise<void> {
     const blocksToFree = await this.readRecordBlockChain(blockID);
 

@@ -4,7 +4,6 @@
 import 'dotenv/config';
 import * as http from 'node:http';
 import * as fs from 'node:fs/promises';
-import * as fssync from 'node:fs';
 import * as path from 'node:path';
 import { DatabaseService } from './service.mjs';
 import { ApiRouter } from './api.mjs';
@@ -14,11 +13,12 @@ const port = 8000;
 const frontendDir = path.join(import.meta.dirname, 'frontend');
 const srcFrontendDir = path.join(import.meta.dirname, '../../src/webclient/frontend');
 
-// MIME types mapping
+// MIME types mapping. The frontend is intentionally a single HTML
+// file with inline JS — no bundling step, no .ts compilation for the
+// client — so .js is not part of the served set.
 const mimeTypes: Record<string, string> = {
   '.html': 'text/html',
   '.css': 'text/css',
-  '.js': 'text/javascript',
   '.json': 'application/json',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -47,25 +47,6 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
     const queryIndex = filePath.indexOf('?');
     if (queryIndex !== -1) {
       filePath = filePath.substring(0, queryIndex);
-    }
-
-    // Serve .js files from the compiled build directory
-    if (filePath.endsWith('.js')) {
-      const BUILD_DIR = path.join(import.meta.dirname, '../../build/webclient');
-      const buildPath = path.join(BUILD_DIR, filePath);
-      if (!buildPath.startsWith(BUILD_DIR)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Forbidden' }));
-        return;
-      }
-      try {
-        const content = await fs.readFile(buildPath);
-        res.writeHead(200, { 'Content-Type': 'text/javascript' });
-        res.end(content);
-        return;
-      } catch {
-        console.log(`Build file not found: ${filePath}`);
-      }
     }
 
     // Try local frontend/ first (dev), then src/ fallback (build)
