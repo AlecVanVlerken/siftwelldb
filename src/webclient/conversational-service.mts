@@ -95,19 +95,36 @@ export class ConversationalService {
   // ── Model management ─────────────────────────────────────────
 
   /**
-   * Auto-generate a semantic model by introspecting the database,
-   * then enrich it with the LLM (descriptions, synonyms, derived fields).
-   * Persists the result and rebuilds the engine.
+   * Auto-generate a semantic model by introspecting the database.
+   *
+   * Two-stage process:
+   *   1. Pure introspection — reads B+ tree metadata + a sample document
+   *      for every collection. Always runs, never fails.
+   *   2. LLM enrichment — asks Gemini to add descriptions, synonyms,
+   *      hidden flags, and analytics measures. Optional. If no API key
+   *      is configured, or if the LLM call fails, this step is skipped
+   *      silently and the basic introspected model is what gets
+   *      persisted.
+   *
+   * The result is always a valid model file the user can hand-edit.
+   * `enriched` in the return tuple reports whether stage 2 actually ran
+   * so the caller can show an appropriate toast.
    */
-  async generateModel(): Promise<SemanticModel> {
+  async generateModel(): Promise<{ model: SemanticModel; enriched: boolean }> {
     this.ensureDbConnected();
-    if (!this.apiKey) throw new Error('GEMINI_API_KEY is not set — cannot generate model');
-
-    const llm = new GeminiProvider(this.apiKey);
     let model = await generateSemanticModel(this.dbms!);
-    model = await enrichModelWithLLM(model, this.dbms!, llm);
+    if (this.apiKey) {
+      const llm = new GeminiProvider(this.apiKey);
+      model = await enrichModelWithLLM(model, this.dbms!, llm);
+    }
+    // The basic introspection step never adds field descriptions; only
+    // the LLM enrichment does. So "any field has a description" is a
+    // reliable signal that Gemini actually contributed.
+    const enriched = model.explores.some((e) =>
+      !!e.description || e.fields.some((f) => !!f.description),
+    );
     await this.persistModel(model);
-    return model;
+    return { model, enriched };
   }
 
   /**

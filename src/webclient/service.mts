@@ -180,6 +180,15 @@ function rankingItem(
  *
  * @author Alexandre-Gatien Bienfet
  */
+export type CollectionStorage = {
+  collection: string;
+  documentCount: number;
+  blockSize: number;
+  recordBytes: number;
+  /** Methodology used per category. Each entry describes what was measured and what was excluded. */
+  notes: { records: string; indexes: string };
+};
+
 export class DatabaseService {
   private dbms: SimpleDbms | null = null;
   private currentFilepath: string | null = null;
@@ -202,6 +211,9 @@ export class DatabaseService {
     targetBatchUnits: 2,
     maxStepsPerRun: 4,
   };
+
+  /** Per-collection cache of `getCollectionRecordBytes`. Invalidated on inserts/edits/deletes. */
+  private recordBytesCache: Map<string, number> = new Map();
 
   // ── Lifecycle ────────────────────────────────────────────────
 
@@ -424,6 +436,7 @@ export class DatabaseService {
       await this.dbms!.deleteCollection(collection);
       await this.dbms!.commit();
     });
+    this.recordBytesCache.delete(collection);
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
@@ -553,6 +566,47 @@ export class DatabaseService {
     };
   }
 
+  /**
+   * On-disk byte footprint of a single document, walked from the
+   * document's head block: `chainLength × blockSize`. Excludes any
+   * index entries shared across the collection.
+   */
+  async getDocumentStoredBytes(collection: string, id: string): Promise<number> {
+    this.ensureConnected();
+    return this.dbms!.getDocumentStoredBytes(collection, id);
+  }
+
+  /**
+   * Per-collection storage breakdown. Currently accounts for the
+   * record-block chains accurately; B+ tree and HNSW index blocks
+   * are not yet enumerable through the public API and are surfaced
+   * via the `notes.indexes` message so the UI can be honest about it.
+   * The records figure is cached and invalidated on writes.
+   */
+  async getCollectionStorage(collection: string): Promise<CollectionStorage> {
+    this.ensureConnected();
+    const blockSize = this.dbms!.getBlockSize();
+    const cached = this.recordBytesCache.get(collection);
+    let recordBytes: number;
+    if (cached !== undefined) {
+      recordBytes = cached;
+    } else {
+      recordBytes = await this.dbms!.getCollectionRecordBytes(collection);
+      this.recordBytesCache.set(collection, recordBytes);
+    }
+    const docs = await this.getDocuments(collection, 'id', undefined, 100000);
+    return {
+      collection,
+      documentCount: docs.documents.length,
+      blockSize,
+      recordBytes,
+      notes: {
+        records: `Sum of (chainLength × blockSize) across all documents in this collection. Block size is ${blockSize} bytes.`,
+        indexes: 'B+ tree indexes and the HNSW vector index are not yet accounted for in this number.',
+      },
+    };
+  }
+
   // ── Documents ────────────────────────────────────────────────
 
   /** Fetch a cursor-paginated page of documents from a collection. */
@@ -621,6 +675,7 @@ export class DatabaseService {
       });
       await this.dbms!.commit();
     });
+    this.recordBytesCache.delete(collection);
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
@@ -637,6 +692,7 @@ export class DatabaseService {
       await this.dbms!.deleteDocumentById(collection, id);
       await this.dbms!.commit();
     });
+    this.recordBytesCache.delete(collection);
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
@@ -647,6 +703,22 @@ export class DatabaseService {
       await this.dbms!.editDocument(collection, id, field, value as Parameters<SimpleDbms['editDocument']>[3]);
       await this.dbms!.commit();
     });
+    this.recordBytesCache.delete(collection);
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
+  }
+
+  /**
+   * Replace an entire document by ID. Wire-compatible single round-trip
+   * for the data-tab edit drawer — the underlying engine still does a
+   * delete + reinsert atomically.
+   */
+  async replaceDocument(collection: string, id: string, newDocument: unknown): Promise<void> {
+    await this.runExclusive('replace-document', async () => {
+      this.ensureConnected();
+      await this.dbms!.replaceDocument(collection, id, newDocument);
+      await this.dbms!.commit();
+    });
+    this.recordBytesCache.delete(collection);
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
@@ -667,6 +739,7 @@ export class DatabaseService {
     const elapsedMs = Date.now() - start;
     if (parsed.kind === 'insert' || parsed.kind === 'update' || parsed.kind === 'delete') {
       await this.dbms!.commit();
+      this.recordBytesCache.clear();
     }
     return { rows, rowCount: rows.length, kind: parsed.kind, elapsedMs };
   }
@@ -950,5 +1023,6 @@ export class DatabaseService {
     this.incrementalCompactionQueued = false;
     this.incrementalCompactionActive = false;
     this.stopIncrementalCompactionTimer();
+    this.recordBytesCache.clear();
   }
 }

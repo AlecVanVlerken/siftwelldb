@@ -724,6 +724,62 @@ export class DbmsBack {
   }
 
   /**
+   * Resolves a `(collection, id)` pair to the head block ID of the
+   * document's block chain. Returns `null` if no such document exists.
+   * This is internal plumbing for size/metadata queries; callers that
+   * just want the document should use `getDocument` instead.
+   */
+  async getDocumentBlockId(collection: string, documentId: number | string): Promise<number | null> {
+    if (!this.hasCollectionMeta(collection)) return null;
+    const collectionMeta = this.getCollectionMeta(collection);
+    if (!('id' in collectionMeta)) return null;
+    const [root, vorm] = collectionMeta['id'];
+    const idBuffer = toBuffer(vorm, documentId);
+    const idTree = await this.getOrCreateTree(collection, 'id', vorm, root);
+    const documentPointerBuffer = await idTree.get(idBuffer);
+    if (!documentPointerBuffer) return null;
+    return documentPointerBuffer.readUInt32BE(0);
+  }
+
+  /**
+   * Returns the physical on-disk byte footprint of a single document:
+   * `chainLength × blockSize`, walked from the document's head block.
+   * Throws if the document does not exist.
+   */
+  async getDocumentStoredBytes(collection: string, documentId: number | string): Promise<number> {
+    const blockId = await this.getDocumentBlockId(collection, documentId);
+    if (blockId === null) throw new Error('Document not found');
+    return this.recordStore.getStoredByteCount(blockId);
+  }
+
+  /**
+   * Returns the sum of physical block bytes used by every document in
+   * the collection. Equal to `Σ (chainLength_i × blockSize)`.
+   * Returns 0 for unknown collections.
+   */
+  async getCollectionRecordBytes(collection: string): Promise<number> {
+    if (!this.hasCollectionMeta(collection)) return 0;
+    const collectionMeta = this.getCollectionMeta(collection);
+    if (!('id' in collectionMeta)) return 0;
+    const [root, vorm] = collectionMeta['id'];
+    const idTree = await this.getOrCreateTree(collection, 'id', vorm, root);
+    let total = 0;
+    for await (const [, documentPointerBuffer] of idTree.iterate(undefined)) {
+      const documentPointer = documentPointerBuffer.readUInt32BE(0);
+      total += await this.recordStore.getStoredByteCount(documentPointer);
+    }
+    return total;
+  }
+
+  /**
+   * Physical block size in bytes (e.g. 4096). All on-disk reservation
+   * happens in whole-block multiples of this value.
+   */
+  getBlockSize(): number {
+    return this.recordStore.getBlockSize();
+  }
+
+  /**
    * Deletes a document from the database.
    * @param documentId - The ID of the document to delete.
    * @param collection - The collection to delete the document from.
@@ -1191,6 +1247,38 @@ export class DbmsBack {
 
     await this.deleteDocument(existingDocument.getId(), existingDocument.getCollectionName());
     await this.insertDocument(newDocumentObj);
+  }
+
+  /**
+   * Replace a document's body in one shot. The `id` is preserved (the
+   * provided document's id must match the existing one). All non-id
+   * fields are replaced with the new document — fields that disappear
+   * from the new payload are dropped from the store.
+   *
+   * Internally this is still a delete-then-insert against the same
+   * collection (so index entries are kept in sync and the HNSW vector
+   * is re-embedded exactly once), but exposes a single round-trip from
+   * the API layer instead of N per-field calls.
+   */
+  async replaceDocumentByID(collection: string, id: string, newDocument: Document): Promise<void> {
+    if (!this.hasCollectionMeta(collection)) {
+      throw new Error('Collection does not exist');
+    }
+    if (newDocument.getCollectionName() !== collection) {
+      throw new Error('Cannot change collection name during replace.');
+    }
+    if (String(newDocument.getId()) !== String(id)) {
+      throw new Error('Cannot change document ID during replace.');
+    }
+    // Confirm the existing document is there; otherwise treat it as
+    // a not-found error rather than a silent insert.
+    const existing = await this.getDocumentBlockId(collection, id);
+    if (existing === null) {
+      throw new Error('Document not found');
+    }
+
+    await this.deleteDocument(id, collection);
+    await this.insertDocument(newDocument);
   }
 
   /**

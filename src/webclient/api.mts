@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseService } from './service.mjs';
 import type { ConversationalService } from './conversational-service.mjs';
+import { getEmbeddingStatus, preloadClipModels } from '../conversational/clipHnswConfig.mjs';
 
 const ENV_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../.env');
 
@@ -107,6 +108,19 @@ export class ApiRouter {
       // GET /api/settings — returns whether key is configured (never the key itself)
       if (method === 'GET' && pathname === '/api/settings') {
         sendJSON(res, 200, { geminiKeySet: this.conv?.llmAvailable ?? false });
+        return;
+      }
+
+      // GET /api/embeddings/status — load-state of the CLIP embedding model
+      if (method === 'GET' && pathname === '/api/embeddings/status') {
+        sendJSON(res, 200, getEmbeddingStatus());
+        return;
+      }
+
+      // POST /api/embeddings/preload — kick off CLIP load in the background
+      if (method === 'POST' && pathname === '/api/embeddings/preload') {
+        preloadClipModels();
+        sendJSON(res, 200, getEmbeddingStatus());
         return;
       }
 
@@ -463,41 +477,62 @@ export class ApiRouter {
       if (method === 'GET' && metaMatch) {
         const collection = decodeURIComponent(metaMatch[1]);
         const id = decodeURIComponent(metaMatch[2]);
+
+        // Accurate on-disk reservation: chainLength × blockSize.
+        const storedSize = await this.db.getDocumentStoredBytes(collection, id);
+        const blockSize = this.db.rawDbms.getBlockSize();
+
+        // Compression algorithms in use per field, surfaced from the
+        // encoded payload (informational; doesn't affect storedSize).
         const encodedStr = await this.db.getDocumentById(collection, id, { encoded: true });
         const encodedDoc = JSON.parse(encodedStr) as Record<string, unknown>;
-
-        let totalPayloadSize = 0;
         const compressions: Record<string, string> = {};
         for (const [key, val] of Object.entries(encodedDoc)) {
-          if (key === 'id') {
-            totalPayloadSize += Buffer.from(String(val)).length;
-            continue;
-          }
+          if (key === 'id') continue;
           if (typeof val === 'object' && val !== null && 'payloadBase64' in val) {
-            const encodedField = val as { payloadBase64?: string; compression?: string };
-            if (encodedField.payloadBase64) {
-              const payloadLen = Buffer.from(encodedField.payloadBase64, 'base64').length;
-              totalPayloadSize += payloadLen;
-            }
+            const encodedField = val as { compression?: string };
             if (encodedField.compression && encodedField.compression !== 'none') {
               compressions[key] = encodedField.compression;
             }
           }
         }
 
-        sendJSON(res, 200, { storedSize: totalPayloadSize, compressions });
+        sendJSON(res, 200, { storedSize, blockSize, compressions });
+        return;
+      }
+
+      // GET /api/collections/:collection/storage
+      const storageMatch = pathname.match(/^\/api\/collections\/([^/]+)\/storage$/);
+      if (method === 'GET' && storageMatch) {
+        const collection = decodeURIComponent(storageMatch[1]);
+        const storage = await this.db.getCollectionStorage(collection);
+        sendJSON(res, 200, storage);
         return;
       }
 
       // POST /api/documents/:collection/:id/edit
+      //
+      // Two body shapes:
+      //   { document: {...} }       → whole-document replace (preferred)
+      //   { field: ..., value: ... } → legacy single-field edit (kept for callers)
       if (method === 'POST' && editMatch) {
         const collection = decodeURIComponent(editMatch[1]);
         const id = decodeURIComponent(editMatch[2]);
         const body = await parseBody(req);
+        const document = body['document'];
+        if (document !== undefined) {
+          if (document === null || typeof document !== 'object' || Array.isArray(document)) {
+            sendError(res, 400, 'document must be a JSON object');
+            return;
+          }
+          await this.db.replaceDocument(collection, id, document);
+          sendJSON(res, 200, { message: 'Document replaced' });
+          return;
+        }
         const field = body['field'];
         const value = body['value'];
         if (typeof field !== 'string' || !field) {
-          sendError(res, 400, 'Missing field');
+          sendError(res, 400, 'Missing field (or document)');
           return;
         }
         await this.db.editDocument(collection, id, field, value);
@@ -532,13 +567,13 @@ export class ApiRouter {
         }
 
         // POST /api/conversational/model/generate
+        // Always available — even without a Gemini key, a basic
+        // introspected model can be produced from the data alone.
+        // `enriched` in the response tells the client whether the LLM
+        // contributed descriptions / synonyms / measures.
         if (method === 'POST' && pathname === '/api/conversational/model/generate') {
-          if (!this.conv.llmAvailable) {
-            sendError(res, 400, 'GEMINI_API_KEY is not set — cannot generate model');
-            return;
-          }
-          const model = await this.conv.generateModel();
-          sendJSON(res, 200, { model });
+          const result = await this.conv.generateModel();
+          sendJSON(res, 200, { model: result.model, enriched: result.enriched });
           return;
         }
 

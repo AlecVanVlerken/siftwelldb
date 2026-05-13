@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>SimpleDBMS · pgStudio</title>
+<title>NotSoSimpleDBMS</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
 * { box-sizing:border-box; margin:0; padding:0; }
@@ -20,13 +20,12 @@ input, textarea, select { font:inherit; color:inherit; background:none; border:n
 .mono { font-family:'Consolas','Monaco','Courier New',monospace; }
 .hidden { display:none !important; }
 
-.app { display:grid; grid-template-rows:42px 1fr 26px; height:100vh; }
+.app { display:grid; grid-template-rows:42px 1fr; height:100vh; }
 .app.disconnected { filter:blur(2px) saturate(.7); pointer-events:none; }
 
 /* ── Toolbar ───────────────────────────────────────────────── */
 .tb { background:var(--bg2); border-bottom:1px solid var(--bd); padding:0 12px; display:flex; align-items:center; gap:8px; }
-.tb .brand { display:flex; align-items:center; gap:8px; padding-right:12px; margin-right:6px; border-right:1px solid var(--bd); height:24px; font-weight:600; color:var(--ac); }
-.tb .brand .mk { width:22px; height:22px; background:var(--ac); color:#fff; border-radius:4px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; }
+.tb .brand { padding-right:12px; margin-right:6px; border-right:1px solid var(--bd); height:24px; display:flex; align-items:center; font-weight:600; font-size:13px; color:var(--t); letter-spacing:-.1px; }
 .tbtn { height:28px; padding:0 10px; display:inline-flex; align-items:center; gap:5px; font-size:12.5px; border-radius:4px; cursor:pointer; color:var(--t); }
 .tbtn:hover { background:var(--bg3); }
 .tbtn:disabled { opacity:.4; cursor:not-allowed; pointer-events:none; }
@@ -37,17 +36,36 @@ input, textarea, select { font:inherit; color:inherit; background:none; border:n
 .tbtn svg { width:13px; height:13px; }
 .tb-sep { width:1px; height:18px; background:var(--bd); margin:0 4px; }
 .tb .sp { flex:1; }
-.tb .conn-info { display:flex; gap:7px; align-items:center; padding:4px 10px; border-radius:99px; background:var(--bg3); font-size:11.5px; color:var(--t2); }
-.tb .conn-info .d { width:7px; height:7px; border-radius:50%; background:var(--t4); }
-.tb .conn-info.ok { background:var(--grb); color:var(--gr); }
-.tb .conn-info.ok .d { background:var(--gr); box-shadow:0 0 6px var(--gr); }
-.tb .conn-info strong { font-weight:600; }
+
+/* Connection pill (dropdown trigger) */
+.conn-wrap { position:relative; }
+.conn-info { display:inline-flex; gap:7px; align-items:center; padding:4px 10px; border-radius:99px; background:var(--bg3); font-size:11.5px; color:var(--t2); cursor:pointer; border:1px solid transparent; }
+.conn-info:hover { background:var(--bg4); }
+.conn-info.open { border-color:var(--bd); background:var(--bg2); }
+.conn-info .d { width:7px; height:7px; border-radius:50%; background:var(--t4); }
+.conn-info.ok { background:var(--grb); color:var(--gr); }
+.conn-info.ok:hover { background:#cdeada; }
+.conn-info.ok .d { background:var(--gr); box-shadow:0 0 6px var(--gr); }
+.conn-info strong { font-weight:600; }
+.conn-info .caret { width:10px; height:10px; opacity:.55; margin-left:2px; }
+.conn-menu { position:absolute; top:calc(100% + 5px); right:0; background:var(--bg2); border:1px solid var(--bd); border-radius:5px; box-shadow:0 10px 24px rgba(0,0,0,.12); padding:3px; z-index:50; min-width:200px; }
+.conn-menu.hidden { display:none; }
+.cm-item { width:100%; padding:7px 11px; text-align:left; font-size:12px; color:var(--t); border-radius:3px; display:flex; align-items:center; gap:7px; }
+.cm-item:hover:not(:disabled) { background:var(--bg3); }
+.cm-item:disabled { color:var(--t4); cursor:not-allowed; }
+.cm-item.dn { color:var(--rd); }
+.cm-item.dn:hover:not(:disabled) { background:var(--rdb); }
+.cm-item svg { width:13px; height:13px; opacity:.8; }
+.cm-sep { height:1px; background:var(--bd); margin:3px 0; }
 
 /* ── Body grid ─────────────────────────────────────────────── */
-.body { display:grid; grid-template-columns:280px 1fr; min-height:0; }
+.body { display:grid; grid-template-columns:var(--sb-w, 280px) 4px 1fr; min-height:0; }
 
 /* ── Sidebar: Object Explorer ─────────────────────────────── */
-.sb { background:var(--bg2); border-right:1px solid var(--bd); display:flex; flex-direction:column; overflow:hidden; }
+.sb { background:var(--bg2); border-right:1px solid var(--bd); display:flex; flex-direction:column; overflow:hidden; min-width:0; }
+.sb-resize { cursor:col-resize; background:transparent; position:relative; }
+.sb-resize:hover, .sb-resize.dragging { background:var(--acl); }
+.sb-resize::after { content:''; position:absolute; left:1px; top:0; bottom:0; width:1px; background:transparent; }
 .sbh { height:32px; padding:0 10px; display:flex; align-items:center; justify-content:space-between; background:var(--bg3); border-bottom:1px solid var(--bd); font-size:11.5px; flex-shrink:0; }
 .sbh .l { font-weight:600; color:var(--t2); }
 .sbh .acts { display:flex; gap:1px; }
@@ -71,11 +89,7 @@ input, textarea, select { font:inherit; color:inherit; background:none; border:n
 .tn .ic svg { width:14px; height:14px; }
 .tn .ic.coll { color:var(--ac); }
 .tn .ic.db { color:var(--ac2); }
-.tn .ic.server { color:var(--gr); }
-.tn .ic.idx { color:var(--pp); }
 .tn .ic.field { color:var(--t3); }
-.tn .ic.measure { color:var(--am); }
-.tn .ic.join { color:var(--gr); }
 .tn .name { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .tn .ct { margin-left:auto; font-size:11px; color:var(--t3); padding-left:6px; font-variant-numeric:tabular-nums; flex-shrink:0; }
 .tn.on .ct { color:var(--ac); }
@@ -104,9 +118,13 @@ input, textarea, select { font:inherit; color:inherit; background:none; border:n
 .ov h1 .name { font-family:'Consolas',monospace; color:var(--ac); font-size:18px; }
 .ov h1 .ic { width:26px; height:26px; border-radius:5px; background:var(--bg2); display:flex; align-items:center; justify-content:center; color:var(--ac); border:1px solid var(--bd); }
 .ov h1 .ic svg { width:14px; height:14px; }
+.ov .crumb { display:inline-flex; align-items:center; gap:6px; font-size:11.5px; color:var(--t3); margin-bottom:8px; }
+.ov .crumb a { color:var(--ac); cursor:pointer; }
+.ov .crumb a:hover { text-decoration:underline; }
 .ov .ovsub { color:var(--t2); font-size:13px; margin-bottom:20px; }
 .ov .ovsub span { display:inline-block; margin-right:14px; }
 .ov .ovsub strong { color:var(--t); font-weight:500; }
+.ov .ovdesc { color:var(--t2); font-size:13px; font-style:italic; margin:-2px 0 12px 0; max-width:760px; line-height:1.5; }
 
 .kpis { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:10px; margin-bottom:22px; }
 .kpi { background:var(--bg2); border:1px solid var(--bd); border-radius:5px; padding:11px 14px; }
@@ -162,8 +180,9 @@ input, textarea, select { font:inherit; color:inherit; background:none; border:n
 table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospace; font-size:12px; }
 .dg th { padding:6px 12px; text-align:left; font-weight:600; font-size:11.5px; color:var(--t); background:var(--bg3); border-bottom:1px solid var(--bd); border-right:1px solid var(--bd); position:sticky; top:0; font-family:'Segoe UI',sans-serif; z-index:2; }
 .dg th:last-child { border-right:none; }
-.dg th .ti { display:flex; align-items:center; gap:5px; }
-.dg th .ic { font-family:'Consolas',monospace; font-size:9.5px; color:var(--pp); font-weight:600; padding:1px 4px; background:var(--bg2); border-radius:2px; border:1px solid var(--bd); }
+.dg th .ti { display:flex; align-items:baseline; gap:6px; }
+.dg th .tb { font-family:'Consolas',monospace; font-size:10px; color:var(--t4); font-weight:400; text-transform:lowercase; letter-spacing:.2px; }
+.dg th .tb.pk { color:var(--t3); font-weight:600; }
 .dg td { padding:5px 12px; border-bottom:1px solid #e5e9f0; cursor:pointer; white-space:nowrap; color:var(--t); border-right:1px solid #e5e9f0; max-width:280px; overflow:hidden; text-overflow:ellipsis; }
 .dg td:last-child { border-right:none; }
 .dg tbody tr:hover td { background:var(--bg3); }
@@ -183,7 +202,7 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 .dg .err { color:var(--rd); font-family:'Consolas',monospace; white-space:pre-wrap; max-width:760px; margin:0 auto; }
 
 /* Document detail drawer */
-.drawer { position:fixed; top:42px; bottom:26px; right:0; width:520px; background:var(--bg2); border-left:1px solid var(--bd); box-shadow:-8px 0 30px rgba(0,0,0,.08); transform:translateX(100%); transition:transform .18s; display:flex; flex-direction:column; z-index:30; }
+.drawer { position:fixed; top:42px; bottom:0; right:0; width:520px; background:var(--bg2); border-left:1px solid var(--bd); box-shadow:-8px 0 30px rgba(0,0,0,.08); transform:translateX(100%); transition:transform .18s; display:flex; flex-direction:column; z-index:30; }
 .drawer.on { transform:translateX(0); }
 .dr-head { padding:12px 16px; border-bottom:1px solid var(--bd); display:flex; align-items:center; gap:10px; flex-shrink:0; background:var(--bg3); }
 .dr-head .ttl { flex:1; font-family:'Consolas',monospace; font-size:13px; color:var(--ac); font-weight:600; }
@@ -216,26 +235,25 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 
 /* ── Fields tab ────────────────────────────────────────────── */
 .flds { padding:14px 18px; max-width:1200px; }
-.flds .summary { padding:10px 14px; background:var(--acl); border:1px solid var(--aclb); border-radius:4px; font-size:12.5px; color:var(--ac); margin-bottom:14px; }
-.flds .summary strong { font-weight:600; }
-.fld-card { background:var(--bg2); border:1px solid var(--bd); border-radius:5px; margin-bottom:10px; overflow:hidden; }
-.fld-card .head { padding:9px 14px; display:grid; grid-template-columns:1fr 80px 110px 1fr; gap:14px; align-items:center; background:var(--bg3); border-bottom:1px solid var(--bd); }
-.fld-card .head .name { font-family:'Consolas',monospace; font-weight:600; font-size:13px; color:var(--ac); }
-.fld-card .head .ty { font-size:11px; padding:2px 8px; border-radius:99px; background:var(--bg2); color:var(--t2); text-align:center; font-family:'Consolas',monospace; border:1px solid var(--bd); justify-self:start; }
-.fld-card .head .ty.s { background:#fef3e6; color:var(--am); border-color:#f5d49e; }
-.fld-card .head .ty.n { background:var(--grb); color:var(--gr); border-color:#a8e0c2; }
-.fld-card .head .ty.b { background:#f0e8fb; color:var(--pp); border-color:#d6c5f0; }
-.fld-card .head .cov { display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--t3); }
-.fld-card .head .cov .bar { flex:1; height:6px; background:var(--bg2); border:1px solid var(--bd); border-radius:3px; overflow:hidden; }
-.fld-card .head .cov .bar .fill { height:100%; background:var(--ac); }
-.fld-card .head .sample { font-family:'Consolas',monospace; font-size:11.5px; color:var(--t3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.fld-card .model-info { padding:11px 14px; background:var(--bg2); display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:10px 18px; font-size:12px; }
-.fld-card .model-info .row { color:var(--t2); }
-.fld-card .model-info .row .l { font-size:10px; text-transform:uppercase; letter-spacing:.4px; color:var(--t3); font-weight:600; margin-bottom:2px; }
-.fld-card .model-info .row .v { color:var(--t); }
-.fld-card .model-info .row .v.tags span { display:inline-block; padding:1.5px 7px; background:var(--bg3); border-radius:99px; font-size:10.5px; margin:2px 4px 0 0; color:var(--t2); }
-.fld-card .model-info .row .v.syn em { font-style:normal; padding:1px 6px; background:var(--acl); color:var(--ac); border-radius:99px; font-size:11px; margin-right:4px; }
-.fld-card .nomodel { padding:9px 14px; background:var(--bg2); font-size:11.5px; color:var(--t3); font-style:italic; }
+.flds h2 { font-size:13px; font-weight:600; color:var(--t2); margin-bottom:10px; display:flex; align-items:center; gap:10px; }
+.flds h2 .ct { font-weight:400; color:var(--t3); font-size:11.5px; font-variant-numeric:tabular-nums; }
+.flds-table { background:var(--bg2); border:1px solid var(--bd); border-radius:4px; overflow:hidden; font-size:12px; }
+/* The header is one row, every field is wrapped in its own .fr block
+   so the description (when present) hangs cleanly beneath the row
+   columns instead of overlapping the next row's separator. */
+.flds-table .h { display:grid; grid-template-columns:minmax(180px,1.4fr) 90px 130px minmax(180px,2fr); gap:12px; padding:8px 14px; align-items:center; background:var(--bg3); border-bottom:1px solid var(--bd); font-size:10.5px; text-transform:uppercase; letter-spacing:.5px; color:var(--t3); font-weight:600; }
+.flds-table .fr { border-bottom:1px solid var(--bg3); }
+.flds-table .fr:last-child { border-bottom:none; }
+.flds-table .fr:hover { background:var(--bg); }
+.flds-table .r { display:grid; grid-template-columns:minmax(180px,1.4fr) 90px 130px minmax(180px,2fr); gap:12px; padding:9px 14px; align-items:center; font-family:'Consolas',monospace; min-height:30px; }
+.flds-table .r .nm { font-weight:600; color:var(--ac); display:flex; align-items:center; gap:6px; }
+.flds-table .r .nm .pk { font-size:9.5px; color:var(--t3); font-weight:500; letter-spacing:.4px; }
+.flds-table .r .ty { color:var(--t2); font-size:11.5px; }
+.flds-table .r .cov { color:var(--t3); font-variant-numeric:tabular-nums; font-size:11.5px; }
+.flds-table .r .cov.partial { color:var(--am); }
+.flds-table .r .sm { color:var(--t3); font-size:11.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.flds-table .fr.has-desc .r { padding-bottom:4px; }
+.flds-table .desc { padding:0 14px 10px 14px; font-family:'Segoe UI','Helvetica Neue',sans-serif; font-size:11.5px; color:var(--t3); font-style:italic; line-height:1.5; }
 
 /* ── Model tab ─────────────────────────────────────────────── */
 .model-pane { display:grid; grid-template-rows:auto 1fr; height:100%; }
@@ -296,17 +314,63 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 .numk { color:var(--am); }
 .comk { color:var(--t3); font-style:italic; }
 
+/* ── Semantic Search tab ───────────────────────────────────── */
+.ss { display:flex; flex-direction:column; height:100%; min-height:0; }
+.ss-head { padding:10px 14px; background:var(--bg3); border-bottom:1px solid var(--bd); display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.ss-head .ic { width:24px; height:24px; border-radius:4px; background:var(--ac); color:#fff; display:flex; align-items:center; justify-content:center; }
+.ss-head .ic svg { width:14px; height:14px; }
+.ss-head .ttl { display:flex; flex-direction:column; }
+.ss-head .ttl strong { font-weight:600; font-size:13px; }
+.ss-head .ttl .sub { color:var(--t3); font-size:11.5px; }
+.ss-head .meta { margin-left:auto; display:flex; gap:14px; align-items:center; font-size:11.5px; color:var(--t3); }
+.ss-head .meta .dot { display:inline-flex; gap:6px; align-items:center; font-variant-numeric:tabular-nums; }
+.ss-head .meta .dot::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--t4); }
+.ss-head .meta .dot.ok::before { background:var(--gr); }
+.ss-head .meta .dot.warn::before { background:var(--am); }
+.ss-head .meta .dot.bad::before { background:var(--rd); }
+.ss-head .meta .dot strong { font-weight:500; color:var(--t2); }
+.ss-bar { padding:14px 18px; background:var(--bg2); border-bottom:1px solid var(--bd); display:flex; gap:8px; align-items:center; flex-shrink:0; }
+.ss-bar input[type=text] { flex:1; padding:8px 12px; border:1px solid var(--bd); border-radius:4px; font-size:13px; background:var(--bg2); }
+.ss-bar input[type=text]:focus { border-color:var(--ac); }
+.ss-bar .attach { display:inline-flex; align-items:center; gap:7px; padding:6px 11px; border:1px dashed var(--bd); border-radius:4px; cursor:pointer; color:var(--t3); font-size:12px; background:var(--bg); }
+.ss-bar .attach:hover { border-color:var(--ac); color:var(--ac); }
+.ss-bar .attach.has-image { border-style:solid; color:var(--ac); border-color:var(--ac); background:var(--acl); }
+.ss-bar .attach svg { width:13px; height:13px; }
+.ss-bar .clear-img { padding:5px 8px; color:var(--t3); border-radius:3px; cursor:pointer; font-size:11px; }
+.ss-bar .clear-img:hover { color:var(--rd); }
+.ss-bar button.go { padding:8px 18px; background:var(--ac); color:#fff; border-radius:4px; font-size:12.5px; font-weight:500; cursor:pointer; }
+.ss-bar button.go:hover { background:var(--ac2); }
+.ss-bar button.go:disabled { background:var(--bd2); cursor:not-allowed; }
+.ss-status { padding:8px 18px; background:var(--bg); border-bottom:1px solid var(--bd); font-size:11.5px; color:var(--t3); display:flex; gap:14px; align-items:center; flex-shrink:0; font-variant-numeric:tabular-nums; }
+.ss-status .preview { display:inline-flex; align-items:center; gap:7px; }
+.ss-status .preview img { width:24px; height:24px; object-fit:cover; border-radius:3px; border:1px solid var(--bd); }
+.ss-body { padding:14px 18px; overflow:auto; flex:1; min-height:0; }
+.ss-empty { text-align:center; padding:60px 20px; color:var(--t3); }
+.ss-empty h4 { color:var(--t2); margin-bottom:8px; font-size:14px; font-weight:600; }
+.ss-empty p { max-width:540px; margin:0 auto; font-size:12.5px; line-height:1.55; }
+.ss-results { display:flex; flex-direction:column; gap:8px; }
+.ss-result { background:var(--bg2); border:1px solid var(--bd); border-radius:4px; padding:10px 14px; font-family:'Consolas',monospace; font-size:12px; cursor:pointer; }
+.ss-result:hover { border-color:var(--ac); background:var(--acl); }
+.ss-result .rh { display:flex; align-items:center; gap:8px; margin-bottom:5px; font-size:11px; color:var(--t3); font-family:'Segoe UI',sans-serif; }
+.ss-result .rh .idx { background:var(--bg3); border-radius:3px; padding:1px 6px; font-variant-numeric:tabular-nums; }
+.ss-result .rh .id { color:var(--ac); font-family:'Consolas',monospace; }
+.ss-result .body { color:var(--t); white-space:pre-wrap; overflow:hidden; max-height:140px; }
+.ss-loading { padding:24px; text-align:center; color:var(--t3); font-size:12.5px; }
+.ss-loading .spin { display:inline-block; width:14px; height:14px; border:2px solid var(--bg3); border-top-color:var(--ac); border-radius:50%; animation:spin .8s linear infinite; margin-right:8px; vertical-align:middle; }
+
 /* ── AI tab ────────────────────────────────────────────────── */
 .ai-pane { display:grid; grid-template-rows:auto 1fr auto; height:100%; min-height:0; }
 .ai-head { padding:9px 14px; background:var(--bg3); border-bottom:1px solid var(--bd); display:flex; align-items:center; gap:10px; font-size:12.5px; flex-shrink:0; }
 .ai-head .ic { width:24px; height:24px; border-radius:4px; background:var(--ac); color:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:11px; }
 .ai-head .ttl strong { font-weight:600; }
 .ai-head .ttl .sub { color:var(--t3); font-size:11.5px; }
-.ai-head .meta { margin-left:auto; display:flex; gap:8px; }
-.ai-head .meta .pill { padding:2px 9px; background:var(--bg2); border:1px solid var(--bd); border-radius:99px; font-size:11px; }
-.ai-head .meta .pill.ok { background:var(--grb); color:var(--gr); border-color:#a8e0c2; }
-.ai-head .meta .pill.warn { background:var(--amb); color:var(--am); border-color:#f5d49e; }
-.ai-head .meta .pill.bad { background:var(--rdb); color:var(--rd); border-color:#f5b4b4; }
+.ai-head .meta { margin-left:auto; display:flex; gap:14px; align-items:center; }
+.ai-head .meta .dot { display:inline-flex; gap:6px; align-items:center; font-size:11.5px; color:var(--t3); font-variant-numeric:tabular-nums; }
+.ai-head .meta .dot::before { content:''; width:6px; height:6px; border-radius:50%; background:var(--t4); }
+.ai-head .meta .dot.ok::before { background:var(--gr); }
+.ai-head .meta .dot.warn::before { background:var(--am); }
+.ai-head .meta .dot.bad::before { background:var(--rd); }
+.ai-head .meta .dot strong { font-weight:500; color:var(--t2); }
 
 .ai-body { padding:14px 18px; overflow:auto; }
 .ai-empty { text-align:center; padding:40px 20px; color:var(--t3); }
@@ -348,7 +412,14 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 .bub .chip { padding:4px 10px; border-radius:3px; font-size:11.5px; cursor:pointer; display:inline-flex; gap:6px; background:var(--bg3); border:1px solid var(--bd); color:var(--t); align-items:center; }
 .bub .chip:hover { border-color:var(--ac); }
 .bub .chip .l { font-size:9.5px; font-weight:700; opacity:.7; text-transform:uppercase; letter-spacing:.4px; color:var(--ac); }
-.bub.thinking { color:var(--t3); font-style:italic; font-size:13px; }
+.bub.thinking { color:var(--t3); font-size:13px; display:flex; align-items:center; gap:10px; }
+.bub.thinking .spin { width:14px; height:14px; border:2px solid var(--bg3); border-top-color:var(--ac); border-radius:50%; animation:spin .8s linear infinite; flex-shrink:0; }
+.bub.thinking .lbl { font-style:italic; display:inline-flex; align-items:baseline; gap:2px; }
+.bub.thinking .lbl .d { display:inline-block; width:4px; height:4px; border-radius:50%; background:var(--t3); margin-right:1px; opacity:.3; animation:thinkdot 1.2s ease-in-out infinite; }
+.bub.thinking .lbl .d:nth-child(2) { animation-delay:.15s; }
+.bub.thinking .lbl .d:nth-child(3) { animation-delay:.3s; }
+@keyframes spin { to { transform:rotate(360deg); } }
+@keyframes thinkdot { 0%, 80%, 100% { opacity:.25; transform:translateY(0); } 40% { opacity:1; transform:translateY(-2px); } }
 
 .ai-input { padding:11px 14px; background:var(--bg2); border-top:1px solid var(--bd); display:flex; gap:6px; flex-shrink:0; max-width:1000px; margin:0 auto; width:100%; box-sizing:border-box; }
 .ai-input input { flex:1; padding:7px 12px; border:1px solid var(--bd); border-radius:4px; font-size:13px; background:var(--bg2); }
@@ -359,14 +430,6 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 .ai-input button:disabled { background:var(--bd2); cursor:not-allowed; }
 
 /* ── Status bar ────────────────────────────────────────────── */
-.foot { padding:0 0 0 8px; background:var(--bg3); border-top:1px solid var(--bd); display:flex; align-items:center; font-size:11px; color:var(--t3); gap:0; }
-.foot .si { padding:0 10px; height:100%; display:flex; align-items:center; gap:5px; border-right:1px solid var(--bd); }
-.foot .si:last-child { border-right:none; }
-.foot .si.ok { color:var(--gr); }
-.foot .si.bad { color:var(--rd); }
-.foot .si .d { width:6px; height:6px; border-radius:50%; background:currentColor; }
-.foot .sp { flex:1; border-right:1px solid var(--bd); }
-
 /* ── Modals ────────────────────────────────────────────────── */
 .modal-bg { position:fixed; inset:0; background:rgba(15,23,42,.45); backdrop-filter:blur(2px); z-index:100; display:flex; align-items:center; justify-content:center; padding:20px; }
 .modal-bg.hidden { display:none; }
@@ -414,20 +477,25 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 <body>
 <div class="app disconnected" id="app">
   <header class="tb">
-    <div class="brand"><div class="mk">pg</div>SimpleDBMS · pgStudio</div>
-    <button class="tbtn" id="btn-refresh" title="Refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg>Refresh</button>
-    <button class="tbtn" id="btn-newcoll" title="New collection"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>New collection</button>
+    <div class="brand">NotSoSimpleDBMS</div>
     <div class="sp"></div>
-    <div class="conn-info" id="conn-info"><span class="d"></span><span id="conn-text">Disconnected</span></div>
-    <button class="tbtn" id="btn-settings" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+    <div class="conn-wrap" id="conn-wrap">
+      <button class="conn-info" id="conn-info" type="button"><span class="d"></span><span id="conn-text">Disconnected</span><svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button>
+      <div class="conn-menu hidden" id="conn-menu">
+        <button class="cm-item" id="cm-key" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4M18 5l2 2M15 8l2 2"/></svg>Configure Gemini key…</button>
+        <div class="cm-sep"></div>
+        <button class="cm-item dn" id="cm-disconnect" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 17l5-5-5-5M21 12H9M13 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8"/></svg>Disconnect</button>
+      </div>
+    </div>
   </header>
 
   <div class="body">
     <aside class="sb">
-      <div class="sbh"><span class="l">Object Explorer</span><div class="acts"><button id="sb-refresh" title="Refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg></button></div></div>
+      <div class="sbh"><span class="l">Object Explorer</span></div>
       <div class="search-row"><div class="w"><svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg><input id="sb-filter" placeholder="Filter collections..."/></div></div>
       <div class="tree" id="tree"></div>
     </aside>
+    <div class="sb-resize" id="sb-resize" title="Drag to resize"></div>
 
     <main class="main">
       <div class="obj-tabs" id="otabs"></div>
@@ -435,15 +503,6 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
     </main>
   </div>
 
-  <div class="foot">
-    <div class="si" id="ft-conn"><span class="d"></span><span id="ft-conntext">Disconnected</span></div>
-    <div class="si" id="ft-coll">—</div>
-    <div class="si" id="ft-rows">—</div>
-    <div class="sp"></div>
-    <div class="si" id="ft-gemini">Gemini: —</div>
-    <div class="si" id="ft-model">Model: —</div>
-    <div class="si">SimpleDBMS 1.0.1</div>
-  </div>
 </div>
 
 <!-- Document drawer -->
@@ -462,7 +521,7 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
 <!-- Connect modal -->
 <div class="modal-bg" id="modal-connect">
   <div class="modal-box">
-    <div class="modal-head"><div class="ic">pg</div><div class="ttl">Open a database<div class="sub">Connect to an existing SimpleDBMS file, or create a new one.</div></div></div>
+    <div class="modal-head"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6"/></svg></div><div class="ttl">Open a database<div class="sub">Connect to an existing SimpleDBMS file, or create a new one.</div></div></div>
     <div class="modal-body">
       <label>Database file</label>
       <input type="text" id="connect-filepath" placeholder="e.g. data.db" value="data.db" autocomplete="off"/>
@@ -476,25 +535,16 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
   </div>
 </div>
 
-<!-- Settings modal -->
+<!-- Configure Gemini key modal -->
 <div class="modal-bg hidden" id="modal-settings">
   <div class="modal-box">
-    <div class="modal-head"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></div><div class="ttl">Settings<div class="sub">Connection &amp; LLM configuration.</div></div><button class="close" data-close="modal-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="modal-head"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4M18 5l2 2M15 8l2 2"/></svg></div><div class="ttl">Configure Gemini key<div class="sub">Used by the AI chat to generate analytics queries.</div></div><button class="close" data-close="modal-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
     <div class="modal-body">
       <label>Gemini API key</label>
       <input type="password" id="set-gemini-key" placeholder="Paste GEMINI_API_KEY..." autocomplete="off"/>
       <div class="err hidden" id="set-gemini-err"></div>
       <div class="ok hidden" id="set-gemini-ok">Key saved. AI features are enabled.</div>
       <p style="margin-bottom:6px;font-size:12px;">Stored to <code>.env</code> on the daemon host. Cleared whenever the daemon restarts unless persisted there.</p>
-
-      <div style="height:1px;background:var(--bd);margin:14px 0;"></div>
-
-      <label>Danger zone</label>
-      <p style="margin-bottom:8px;font-size:12px;">These actions cannot be undone.</p>
-      <div style="display:flex;gap:8px;">
-        <button class="modal-foot-btn sec" id="set-disconnect" style="padding:7px 14px;border:1px solid var(--bd);border-radius:4px;background:var(--bg2);">Disconnect</button>
-        <button class="modal-foot-btn dn" id="set-reset" style="padding:7px 14px;border:1px solid var(--rd);border-radius:4px;background:var(--rdb);color:var(--rd);">Reset database</button>
-      </div>
     </div>
     <div class="modal-foot">
       <button class="sec" data-close="modal-settings">Close</button>
@@ -503,51 +553,17 @@ table.dg { width:100%; border-collapse:collapse; font-family:'Consolas',monospac
   </div>
 </div>
 
-<!-- New collection modal -->
-<div class="modal-bg hidden" id="modal-newcoll">
-  <div class="modal-box">
-    <div class="modal-head"><div class="ic">+</div><div class="ttl">New collection<div class="sub">A collection is created on first document insert.</div></div><button class="close" data-close="modal-newcoll"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
-    <div class="modal-body">
-      <label>Collection name</label>
-      <input type="text" id="newcoll-name" placeholder="e.g. customers" autocomplete="off"/>
-      <label>First document (JSON, must include an <code>id</code>)</label>
-      <textarea id="newcoll-doc" placeholder='{"id": "c_001", "name": "Acme Corp."}'>{"id": "c_001"}</textarea>
-      <div class="err hidden" id="newcoll-err"></div>
-    </div>
-    <div class="modal-foot">
-      <button class="sec" data-close="modal-newcoll">Cancel</button>
-      <button class="pri" id="newcoll-create">Create</button>
-    </div>
-  </div>
-</div>
-
-<!-- Add document modal -->
-<div class="modal-bg hidden" id="modal-adddoc">
-  <div class="modal-box wide">
-    <div class="modal-head"><div class="ic">+</div><div class="ttl">Insert document<div class="sub" id="adddoc-sub">Into ...</div></div><button class="close" data-close="modal-adddoc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
-    <div class="modal-body">
-      <label>Document JSON (must include an <code>id</code>)</label>
-      <textarea id="adddoc-json" style="min-height:240px;"></textarea>
-      <div class="err hidden" id="adddoc-err"></div>
-    </div>
-    <div class="modal-foot">
-      <button class="sec" data-close="modal-adddoc">Cancel</button>
-      <button class="pri" id="adddoc-save">Insert</button>
-    </div>
-  </div>
-</div>
-
-<!-- Semantic model modal (opened from AI chat header) -->
+<!-- Schema model modal (opened from AI chat header) -->
 <div class="modal-bg hidden" id="modal-model">
   <div class="modal-box wide tall">
     <div class="modal-head">
       <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M9 9l6 6"/></svg></div>
-      <div class="ttl">Semantic model<div class="sub" id="modal-model-sub">Edit the JSON model the AI uses to understand your data.</div></div>
+      <div class="ttl">Schema model<div class="sub" id="modal-model-sub">Edit the JSON model the AI uses to understand your data.</div></div>
       <button class="close" data-close="modal-model"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="modal-body" style="display:flex;flex-direction:column;gap:10px;">
       <div style="display:flex;gap:6px;align-items:center;">
-        <button class="tbtn pri" id="mdl-gen" title="Regenerate the semantic model from the data using Gemini"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Generate from data</button>
+        <button class="tbtn pri" id="mdl-gen" title="Regenerate the schema model from the data using Gemini"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Generate from data</button>
         <button class="tbtn" id="mdl-reload" style="border:1px solid var(--bd);background:var(--bg2);">Reload from server</button>
         <div class="meta" id="mdl-status" style="margin-left:auto;font-size:11.5px;color:var(--t3);"></div>
       </div>
@@ -596,19 +612,29 @@ const state = {
   sqlHistory: [],             // [{sql, ok, ts, rowCount, elapsedMs, error}]
   selectedDoc: null,          // currently shown in drawer
   selectedDocIndex: null,
-  searchMode: 'text',         // 'text' | 'image'
-  searchActive: false,        // when a semantic search is filtering the data table
+  dataFilter: '',             // client-side substring filter on the data tab
   // Per-collection expansion state in the explorer tree. A collection
   // is expanded if true; missing keys default to "expanded when the
   // collection is selected" so the first click behaves like before.
   treeExpanded: {},           // { [coll]: bool }
-  // Per-collection state for the AI chat's "no semantic model yet,
+  // Per-collection state for the AI chat's "no schema model yet,
   // generate?" prompt. Once the user picks Yes or No we remember it
   // so we don't ask again on every render.
   modelPromptDismissed: {},   // { [coll]: bool }
   // When true, the AI chat shows a busy "generating model" message
   // and disables further input.
   modelGenerating: false,
+  // Semantic-search tab state. Persists across tab switches so the
+  // user doesn't lose their last query / results when navigating.
+  search: {
+    query: '',
+    image: null,            // { name, dataUrl, buffer (base64 string) }
+    busy: false,
+    results: null,          // string[] (raw JSON rows) or null
+    error: null,
+    elapsedMs: null,
+    embedStatus: { state: 'idle', error: null },
+  },
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -663,10 +689,15 @@ function detectType(v) {
 // ─────────────────────────────────────────────────────────────────
 async function bootstrap() {
   try {
-    const [status, settings] = await Promise.all([api('/api/status'), api('/api/settings')]);
+    const [status, settings, embed] = await Promise.all([
+      api('/api/status'),
+      api('/api/settings'),
+      api('/api/embeddings/status').catch(() => state.search.embedStatus),
+    ]);
     state.connected = status.connected;
     state.filepath = status.filepath;
     state.geminiKeySet = settings.geminiKeySet;
+    state.search.embedStatus = embed;
   } catch (e) {
     toast('Could not reach daemon: ' + e.message, 'err');
   }
@@ -685,26 +716,17 @@ async function bootstrap() {
 function updateConnState() {
   const ci = $('#conn-info');
   const ct = $('#conn-text');
-  const ftc = $('#ft-conn');
-  const ftct = $('#ft-conntext');
   if (state.connected) {
     ci.classList.add('ok');
     ct.innerHTML = `<strong>${esc(state.filepath)}</strong>`;
-    ftc.classList.add('ok'); ftc.classList.remove('bad');
-    ftct.textContent = state.filepath || 'connected';
+    $('#cm-disconnect').disabled = false;
     $('#app').classList.remove('disconnected');
   } else {
     ci.classList.remove('ok');
     ct.textContent = 'Disconnected';
-    ftc.classList.remove('ok'); ftc.classList.add('bad');
-    ftct.textContent = 'Disconnected';
+    $('#cm-disconnect').disabled = true;
     $('#app').classList.add('disconnected');
   }
-  $('#ft-gemini').textContent = `Gemini: ${state.geminiKeySet ? 'configured' : 'not set'}`;
-  $('#ft-gemini').className = 'si ' + (state.geminiKeySet ? 'ok' : '');
-  const hasModel = state.model && state.model.explores && state.model.explores.length > 0;
-  $('#ft-model').textContent = `Model: ${hasModel ? `${state.model.explores.length} explore${state.model.explores.length > 1 ? 's' : ''}` : 'none'}`;
-  $('#ft-model').className = 'si ' + (hasModel ? 'ok' : '');
 }
 
 async function loadCollections() {
@@ -741,7 +763,7 @@ async function loadModel() {
 function selectCollection(c) {
   state.selectedCol = c;
   state.tab = 'overview';
-  state.searchActive = false;
+  state.dataFilter = '';
   state.selectedDoc = null;
   closeDrawer();
   render();
@@ -761,18 +783,6 @@ function render() {
   renderTree();
   renderTabs();
   renderTab();
-  renderFooter();
-}
-
-function renderFooter() {
-  if (state.selectedCol) {
-    const docs = state.docsByColl[state.selectedCol] || [];
-    $('#ft-coll').textContent = state.selectedCol;
-    $('#ft-rows').textContent = `${docs.length} document${docs.length === 1 ? '' : 's'}`;
-  } else {
-    $('#ft-coll').textContent = '—';
-    $('#ft-rows').textContent = state.connected ? `${state.collections.length} collection${state.collections.length === 1 ? '' : 's'}` : '—';
-  }
 }
 
 function getExplore(c) {
@@ -784,9 +794,6 @@ const ICONS = {
   server: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
   coll: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg>`,
   field: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`,
-  measure: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
-  join: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M9 9l6 6"/></svg>`,
-  idx: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>`,
 };
 
 // A collection is expanded if treeExpanded[c] === true. We default a
@@ -804,44 +811,32 @@ function renderTree() {
     $('#tree').innerHTML = `<div class="empty">Not connected. Use the connection dialog to open a database.</div>`;
     return;
   }
-  let h = `<button class="tn ${state.selectedCol === null ? 'on' : ''}" data-root="1" style="font-weight:600;padding-left:8px;"><span class="ch">▾</span><span class="ic db">${ICONS.server}</span><span class="name">${esc(state.filepath || '—')}</span><span class="ct">${state.collections.length}</span></button>`;
-  h += `<div class="tn" style="padding-left:22px;color:var(--t3);"><span class="ch">▾</span><span class="ic field">${ICONS.coll}</span><span class="name">Collections</span><span class="ct">${colls.length}</span></div>`;
+  // Only one database is ever connected, so there is no "database
+  // node" in this tree — the connection pill in the top bar shows
+  // which file is open. The explorer is just the collections list.
+  let h = '';
   if (colls.length === 0) {
-    h += `<div class="empty" style="padding-left:22px;">${filter ? 'No matches.' : 'No collections yet. Use “New collection” to create one.'}</div>`;
+    h += `<div class="empty" style="padding-left:8px;">${filter ? 'No matches.' : 'No collections yet. Use the SQL tab to insert your first document.'}</div>`;
   } else {
     for (const c of colls) {
       const isOn = state.selectedCol === c;
       const expanded = isCollExpanded(c);
       const count = state.countsByColl[c];
-      h += `<button class="tn ${isOn ? 'on' : ''}" data-c="${esc(c)}" style="padding-left:34px;">
+      h += `<button class="tn ${isOn ? 'on' : ''}" data-c="${esc(c)}" style="padding-left:8px;">
         <span class="ch" data-toggle="${esc(c)}" title="${expanded ? 'Collapse' : 'Expand'}">${expanded ? '▾' : '▸'}</span><span class="ic coll">${ICONS.coll}</span><span class="name">${esc(c)}</span><span class="ct">${count === undefined ? '…' : count}</span>
         <span class="x" data-del="${esc(c)}" title="Drop collection">✕</span>
       </button>`;
       if (expanded) {
-        const explore = getExplore(c);
         const docs = state.docsByColl[c] || [];
         const fieldNames = docs.length ? Object.keys(docs[0]).filter((k) => !k.startsWith('_')) : [];
-        h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch"> </span><span class="ic field">${ICONS.field}</span><span class="name">Fields</span><span class="ct">${fieldNames.length}</span></div>`;
+        h += `<div class="tn" style="padding-left:24px;color:var(--t3);"><span class="ch"> </span><span class="ic field">${ICONS.field}</span><span class="name">Fields</span><span class="ct">${fieldNames.length}</span></div>`;
         for (const f of fieldNames) {
-          h += `<div class="tn" style="padding-left:66px;color:var(--t2);"><span class="ch"> </span><span class="ic field">${ICONS.field}</span><span class="name">${esc(f)}</span></div>`;
-        }
-        if (explore && explore.measures && explore.measures.length > 0) {
-          h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch"> </span><span class="ic measure">${ICONS.measure}</span><span class="name">Measures</span><span class="ct">${explore.measures.length}</span></div>`;
-          for (const m of explore.measures) {
-            h += `<div class="tn" style="padding-left:66px;color:var(--t2);"><span class="ch"> </span><span class="ic measure">${ICONS.measure}</span><span class="name">${esc(m.aggregation)}(${esc(m.field)})</span></div>`;
-          }
-        }
-        if (explore && explore.joins && explore.joins.length > 0) {
-          h += `<div class="tn" style="padding-left:50px;color:var(--t3);"><span class="ch"> </span><span class="ic join">${ICONS.join}</span><span class="name">Joins</span><span class="ct">${explore.joins.length}</span></div>`;
-          for (const j of explore.joins) {
-            h += `<div class="tn" style="padding-left:66px;color:var(--t2);"><span class="ch"> </span><span class="ic join">${ICONS.join}</span><span class="name">→ ${esc(j.collection)}</span></div>`;
-          }
+          h += `<div class="tn" style="padding-left:40px;color:var(--t2);"><span class="ch"> </span><span class="ic field">${ICONS.field}</span><span class="name">${esc(f)}</span></div>`;
         }
       }
     }
   }
   $('#tree').innerHTML = h;
-  $$('#tree [data-root]').forEach((n) => n.addEventListener('click', selectRoot));
   $$('#tree [data-c]').forEach((n) => n.addEventListener('click', (e) => {
     if (e.target.closest('[data-del]')) return;
     // The chevron-arrow is purely an expand/collapse affordance; row
@@ -877,6 +872,7 @@ function renderTabs() {
     <button class="ot ${state.tab === 'data' ? 'on' : ''}" data-t="data" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span>Data${state.selectedCol ? `<span class="badge">${(state.docsByColl[state.selectedCol] || []).length}</span>` : ''}</button>
     <button class="ot ${state.tab === 'fields' ? 'on' : ''}" data-t="fields" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>Fields</button>
     <button class="ot ${state.tab === 'sql' ? 'on' : ''}" data-t="sql"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>SQL</button>
+    <button class="ot ${state.tab === 'search' ? 'on' : ''}" data-t="search" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg></span>Semantic Search</button>
     <button class="ot ${state.tab === 'ai' ? 'on' : ''}" data-t="ai"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>AI Chat</button>
     <div class="sp"></div>
     <div class="meta">${state.selectedCol ? `Selected · <strong style="color:var(--ac)">${esc(state.selectedCol)}</strong>` : `Selected · <strong>${esc(state.filepath || '—')}</strong>`}</div>`;
@@ -893,6 +889,7 @@ function renderTab() {
   else if (state.tab === 'data') renderData();
   else if (state.tab === 'fields') renderFields();
   else if (state.tab === 'sql') renderSql();
+  else if (state.tab === 'search') renderSemanticSearch();
   else if (state.tab === 'ai') renderAi();
   else { state.tab = 'overview'; renderOverview(); }
 }
@@ -900,6 +897,23 @@ function renderTab() {
 // ─────────────────────────────────────────────────────────────────
 // Overview
 // ─────────────────────────────────────────────────────────────────
+// Per-collection storage cache for the overview tab. Loaded lazily
+// when a collection is opened so we don't pay the cost upfront for
+// every collection in the sidebar.
+const storageCache = new Map();
+async function getCollectionStorage(c) {
+  if (storageCache.has(c)) return storageCache.get(c);
+  try {
+    const s = await api(`/api/collections/${encodeURIComponent(c)}/storage`);
+    storageCache.set(c, s);
+    return s;
+  } catch { return null; }
+}
+function invalidateStorageCache(c) {
+  if (c) storageCache.delete(c);
+  else storageCache.clear();
+}
+
 function renderOverview() {
   const c = state.selectedCol;
   if (!c) {
@@ -907,19 +921,14 @@ function renderOverview() {
     const totalSize = state.collections.reduce((s, x) => s + (state.docsByColl[x] || []).reduce((a, d) => a + docSize(d), 0), 0);
     $('#cnt').innerHTML = `<div class="ov">
       <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(state.filepath || '—')}</span></h1>
-      <p class="ovsub"><span>File <strong>${esc(state.filepath || '—')}</strong></span><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>≈ <strong>${fmtSize(totalSize)}</strong> in-memory</span></p>
-      <div class="kpis">
-        <div class="kpi"><div class="l">Connection</div><div class="v" style="font-size:14px;font-family:Consolas,monospace;color:var(--gr);">${esc(state.filepath || '—')}</div><div class="d ok">Connected, ready for queries</div></div>
-        <div class="kpi"><div class="l">Gemini API key</div><div class="v" style="font-size:14px;color:${state.geminiKeySet ? 'var(--gr)' : 'var(--am)'};">${state.geminiKeySet ? 'Configured' : 'Not set'}</div><div class="d ${state.geminiKeySet ? 'ok' : 'warn'}">${state.geminiKeySet ? 'AI chat &amp; model generation available' : 'Open settings to add a key'}</div></div>
-        <div class="kpi"><div class="l">Semantic model</div><div class="v" style="font-size:14px;color:${state.model ? 'var(--gr)' : 'var(--am)'};">${state.model ? `${state.model.explores.length} explore${state.model.explores.length > 1 ? 's' : ''}` : 'None'}</div><div class="d ${state.model ? 'ok' : 'warn'}">${state.model ? 'Required for AI chat' : 'Generate one to enable AI chat'}</div></div>
-      </div>
+      <p class="ovsub"><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>JSON ≈ <strong>${fmtSize(totalSize)}</strong></span></p>
       <div class="psec">
         <h3>Collections</h3>
-        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>Create your first collection — give it a name and an initial document.</p><button class="tbtn pri" onclick="openModal('modal-newcoll')">+ New collection</button></div>` :
+        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Open the <strong>SQL</strong> tab and run an <code>INSERT INTO &lt;name&gt; VALUES {"id": "..."}</code> statement — a collection is created on first insert.</p><button class="tbtn" onclick="state.tab='sql';renderTabs();renderTab();" style="border:1px solid var(--bd);background:var(--bg2);">Open SQL tab</button></div>` :
           state.collections.map((x) => {
             const ex = getExplore(x);
             const n = state.countsByColl[x];
-            return `<div class="prow" style="grid-template-columns:200px 80px 1fr;cursor:pointer;" onclick="selectCollection('${esc(x)}')"><div class="k" style="color:var(--ac);font-family:Consolas,monospace;">${esc(x)}</div><div class="v num" style="text-align:right;">${n === undefined ? '…' : n}</div><div class="v" style="font-family:Segoe UI;color:var(--t2)">${ex && ex.description ? esc(ex.description) : (ex ? esc(ex.label) : '<em style="color:var(--t4);font-style:normal;">No model definition</em>')}</div></div>`;
+            return `<div class="prow" style="grid-template-columns:200px 80px 1fr;cursor:pointer;" onclick="selectCollection('${esc(x)}')"><div class="k" style="color:var(--ac);font-family:Consolas,monospace;">${esc(x)}</div><div class="v num" style="text-align:right;">${n === undefined ? '…' : n}</div><div class="v" style="font-family:Segoe UI;color:var(--t2)">${ex && ex.description ? esc(ex.description) : (ex ? esc(ex.label) : '<em style="color:var(--t4);font-style:normal;">—</em>')}</div></div>`;
           }).join('')}</div>
       </div>
     </div>`;
@@ -932,28 +941,49 @@ function renderOverview() {
   const explore = getExplore(c);
 
   $('#cnt').innerHTML = `<div class="ov">
-    <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span><span class="name">${esc(state.filepath)}.${esc(c)}</span></h1>
-    <p class="ovsub"><span><strong>${docs.length}</strong> document${docs.length === 1 ? '' : 's'}</span><span><strong>${fields.length}</strong> field${fields.length === 1 ? '' : 's'}</span><span>≈ <strong>${fmtSize(totalSize)}</strong></span><span style="color:${explore ? 'var(--gr)' : 'var(--am)'};">${explore ? 'has semantic model' : 'no semantic model'}</span></p>
+    <div class="crumb"><a id="ov-back">All collections</a> ›</div>
+    <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span><span class="name">${esc(c)}</span></h1>
+    ${explore && explore.description ? `<p class="ovdesc">${esc(explore.description)}</p>` : ''}
+    <p class="ovsub"><span><strong>${docs.length}</strong> document${docs.length === 1 ? '' : 's'}</span><span><strong>${fields.length}</strong> field${fields.length === 1 ? '' : 's'}</span><span>JSON ≈ <strong>${fmtSize(totalSize)}</strong></span></p>
     <div class="kpis">
-      <div class="kpi"><div class="l"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>Documents</div><div class="v">${docs.length}</div><div class="d">${docs.length > 0 ? `${fields.length} fields detected` : 'empty collection'}</div></div>
-      <div class="kpi"><div class="l">Total size</div><div class="v">${fmtSize(totalSize).replace(/^([\d.]+)\s*/, (_, n) => `${n} <small>`)}${fmtSize(totalSize).endsWith('B') ? '</small>' : '</small>'}</div><div class="d">avg ${fmtSize(docs.length ? totalSize / docs.length : 0)}/doc</div></div>
-      <div class="kpi"><div class="l">Semantic model</div><div class="v" style="font-size:14px;color:${explore ? 'var(--gr)' : 'var(--am)'}">${explore ? 'Defined' : 'Missing'}</div><div class="d ${explore ? 'ok' : 'warn'}">${explore ? `${explore.fields.length} field defs · ${(explore.measures || []).length} measures · ${(explore.joins || []).length} joins` : 'Open AI Chat to generate one'}</div></div>
+      <div class="kpi" title="Number of documents currently loaded in the client cache for this collection."><div class="l"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>Documents</div><div class="v">${docs.length}</div><div class="d">${docs.length > 0 ? `${fields.length} fields detected` : 'empty collection'}</div></div>
+      <div class="kpi" title="Sum of JSON.stringify byte lengths for client-side display. Not what's on disk."><div class="l">JSON size</div><div class="v">${fmtSize(totalSize).replace(/^([\d.]+)\s*/, (_, n) => `${n} <small>`)}${fmtSize(totalSize).endsWith('B') ? '</small>' : '</small>'}</div><div class="d">avg ${fmtSize(docs.length ? totalSize / docs.length : 0)}/doc</div></div>
+      <div class="kpi" id="kpi-stored" title="Loading on-disk storage info…"><div class="l">Stored size</div><div class="v" style="font-size:14px;color:var(--t3);">loading…</div><div class="d">on-disk reservation</div></div>
     </div>
     <div class="psec"><h3>General</h3><div>
       <div class="prow"><div class="k">Name</div><div class="v id">${esc(c)}</div></div>
-      <div class="prow"><div class="k">File</div><div class="v">${esc(state.filepath)}</div></div>
       <div class="prow"><div class="k">Document count</div><div class="v num">${docs.length}</div></div>
       <div class="prow"><div class="k">Field count (introspected)</div><div class="v num">${fields.length}</div></div>
-      <div class="prow"><div class="k">Has semantic model</div><div class="v bool ${explore ? 't' : 'f'}"><span class="pill">${explore ? 'yes' : 'no'}</span></div></div>
     </div></div>
-    ${explore ? `<div class="psec"><h3>From semantic model</h3><div>
-      <div class="prow"><div class="k">Label</div><div class="v" style="font-family:Segoe UI;color:var(--t)">${esc(explore.label)}</div></div>
-      ${explore.description ? `<div class="prow"><div class="k">Description</div><div class="v" style="font-family:Segoe UI;color:var(--t2);white-space:normal;">${esc(explore.description)}</div></div>` : ''}
-      <div class="prow"><div class="k">Defined fields</div><div class="v num">${explore.fields.length}</div></div>
-      <div class="prow"><div class="k">Defined measures</div><div class="v num">${(explore.measures || []).length}</div></div>
-      <div class="prow"><div class="k">Defined joins</div><div class="v num">${(explore.joins || []).length}</div></div>
-    </div></div>` : `<div class="psec"><h3>Semantic model</h3><div class="empty-state"><h4>No semantic model for this collection</h4><p>The AI chat needs a semantic model to understand this collection. Open the AI Chat tab — you'll be asked to generate one on first use.</p>${state.geminiKeySet ? `<button class="tbtn pri" onclick="state.tab='ai';renderTabs();renderTab();">Open AI Chat</button>` : `<button class="tbtn" onclick="openModal('modal-settings')">Configure Gemini key</button>`}</div></div>`}
+    <div class="psec"><h3>Storage breakdown</h3><div id="ov-storage"><div style="padding:16px;color:var(--t3);font-size:12px;">Loading…</div></div></div>
   </div>`;
+  $('#ov-back')?.addEventListener('click', selectRoot);
+  (async () => {
+    const s = await getCollectionStorage(c);
+    if (state.selectedCol !== c) return;
+    const stored = s ? s.recordBytes : null;
+    const kpi = $('#kpi-stored');
+    if (kpi) {
+      if (stored == null) {
+        kpi.querySelector('.v').innerHTML = `<small style="color:var(--t3)">unavailable</small>`;
+      } else {
+        const f = fmtSize(stored);
+        kpi.querySelector('.v').innerHTML = f.replace(/^([\d.]+)\s*/, (_, n) => `${n} <small>`) + (f.endsWith('B') ? '</small>' : '</small>');
+        kpi.querySelector('.d').textContent = `avg ${fmtSize(docs.length ? stored / docs.length : 0)}/doc`;
+        kpi.title = s.notes.records;
+      }
+    }
+    const host = $('#ov-storage');
+    if (host && s) {
+      host.innerHTML = `
+        <div class="prow" title="${esc(s.notes.records)}"><div class="k">Records<span style="color:var(--t4);margin-left:6px;font-weight:400;">ⓘ</span></div><div class="v num">${fmtSize(s.recordBytes)} <small style="color:var(--t3);font-family:Segoe UI">(${s.documentCount} doc${s.documentCount === 1 ? '' : 's'} × ${s.blockSize} B per block)</small></div></div>
+        <div class="prow" title="${esc(s.notes.indexes)}"><div class="k">Indexes<span style="color:var(--t4);margin-left:6px;font-weight:400;">ⓘ</span></div><div class="v"><small style="color:var(--t3);font-family:Segoe UI">not yet accounted for</small></div></div>
+        <div class="prow"><div class="k">Block size</div><div class="v num">${s.blockSize} B</div></div>
+      `;
+    } else if (host) {
+      host.innerHTML = `<div style="padding:14px;color:var(--t3);font-size:12px;">Storage info unavailable.</div>`;
+    }
+  })();
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -970,52 +1000,43 @@ async function refreshDocs(c) {
 
 function renderData() {
   const c = state.selectedCol;
-  const docs = state.docsByColl[c] || [];
-  const keys = docs.length ? Object.keys(docs[0]).filter((k) => !k.startsWith('_')) : [];
+  const allDocs = state.docsByColl[c] || [];
+  const filter = (state.dataFilter || '').trim().toLowerCase();
+  const docs = filter
+    ? allDocs.filter((d) => Object.values(d).some((v) => v != null && String(v).toLowerCase().includes(filter)))
+    : allDocs;
+  const keys = allDocs.length ? Object.keys(allDocs[0]).filter((k) => !k.startsWith('_')) : [];
   $('#cnt').innerHTML = `<div style="display:flex;flex-direction:column;height:100%;">
     <div class="dt-bar">
       <div class="dt-search">
-        <div class="modes">
-          <button class="${state.searchMode === 'text' ? 'on' : ''}" id="mode-text">Text</button>
-          <button class="${state.searchMode === 'image' ? 'on' : ''}" id="mode-image">Image</button>
-        </div>
         <div class="w">
           <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg>
-          <input id="sem-q" placeholder="${state.searchMode === 'text' ? 'Semantic search — ask in plain language…' : 'Click to upload an image…'}" ${state.searchMode === 'image' ? 'readonly' : ''}/>
-          ${state.searchActive ? `<button class="clear" id="sem-clear" title="Clear">✕</button>` : ''}
+          <input id="dt-filter" placeholder="Filter rows…" value="${esc(state.dataFilter || '')}"/>
+          ${filter ? `<button class="clear" id="dt-filter-clear" title="Clear">✕</button>` : ''}
         </div>
       </div>
-      <input type="file" id="sem-image-file" accept="image/*" style="display:none"/>
-      <button class="tbtn pri" id="dt-add"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Add document</button>
-      <button class="tbtn" id="dt-refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg></button>
-      <div class="dt-meta">${state.searchActive ? `<span class="badge">filtered by similarity</span>` : ''}<span><strong>${docs.length}</strong> row${docs.length === 1 ? '' : 's'}</span></div>
+      <button class="tbtn" id="dt-refresh" title="Reload from server"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg>Reload</button>
+      <div class="dt-meta">${filter ? `<span><strong>${docs.length}</strong> of <strong>${allDocs.length}</strong> row${allDocs.length === 1 ? '' : 's'}</span>` : `<span><strong>${allDocs.length}</strong> row${allDocs.length === 1 ? '' : 's'}</span>`}</div>
     </div>
     <div class="tw" id="dg-host"></div>
   </div>`;
   renderDataGrid(docs, keys);
-  $('#dt-add').addEventListener('click', () => openAddDocModal(c));
-  $('#dt-refresh').addEventListener('click', async () => { state.searchActive = false; await refreshDocs(c); render(); });
-  $('#mode-text').addEventListener('click', () => { state.searchMode = 'text'; renderData(); });
-  $('#mode-image').addEventListener('click', () => { state.searchMode = 'image'; renderData(); $('#sem-image-file').click(); });
-  const semQ = $('#sem-q');
-  if (state.searchMode === 'image') {
-    semQ.addEventListener('click', () => $('#sem-image-file').click());
-  } else {
-    semQ.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSemanticSearch(c, semQ.value.trim()); });
-  }
-  $('#sem-image-file').addEventListener('change', async (e) => {
-    const file = e.target.files[0]; if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      const b64 = String(reader.result).split(',')[1] || '';
-      semQ.value = file.name;
-      await doImageSearch(c, b64);
-    };
-    reader.readAsDataURL(file);
+  $('#dt-refresh').addEventListener('click', async () => { await refreshDocs(c); render(); });
+  const filterEl = $('#dt-filter');
+  let filterTimer = null;
+  filterEl.addEventListener('input', () => {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => {
+      state.dataFilter = filterEl.value;
+      renderData();
+      const newEl = $('#dt-filter');
+      if (newEl) { newEl.focus(); newEl.setSelectionRange(filterEl.value.length, filterEl.value.length); }
+    }, 150);
   });
-  if (state.searchActive) {
-    $('#sem-clear')?.addEventListener('click', async () => { state.searchActive = false; await refreshDocs(c); render(); });
-  }
+  $('#dt-filter-clear')?.addEventListener('click', () => {
+    state.dataFilter = '';
+    renderData();
+  });
 }
 
 function renderDataGrid(docs, keys) {
@@ -1023,15 +1044,18 @@ function renderDataGrid(docs, keys) {
     $('#dg-host').innerHTML = `<div class="dg"><div class="loader">No documents.</div></div>`;
     return;
   }
-  // Build a union of keys across all docs so semantic search results render correctly
   const unionKeys = Array.from(new Set(docs.flatMap((d) => Object.keys(d)))).filter((k) => !k.startsWith('_') && k !== 'body');
   const sample = (k) => {
     for (const d of docs) if (d[k] != null) return d[k];
     return null;
   };
-  const typeBadge = (v) => v == null ? 'A' : typeof v === 'number' ? 'N' : typeof v === 'boolean' ? 'B' : 'A';
+  // Type badges: dim grey lowercase monospace, no badge for unknown/null-only columns.
+  const typeBadge = (v) => v == null ? '' : typeof v === 'number' ? 'n' : typeof v === 'boolean' ? 'b' : typeof v === 'string' ? 's' : '';
   $('#dg-host').innerHTML = `<table class="dg">
-    <thead><tr><th class="rn">#</th>${unionKeys.map((k) => `<th><div class="ti"><span class="ic">${k === 'id' ? 'PK' : typeBadge(sample(k))}</span>${esc(k)}</div></th>`).join('')}</tr></thead>
+    <thead><tr><th class="rn">#</th>${unionKeys.map((k) => {
+      const tb = k === 'id' ? 'pk' : typeBadge(sample(k));
+      return `<th><div class="ti">${esc(k)}${tb ? `<span class="tb ${tb === 'pk' ? 'pk' : ''}">${tb}</span>` : ''}</div></th>`;
+    }).join('')}</tr></thead>
     <tbody>${docs.map((d, i) => {
       const isOn = state.selectedDoc && d.id === state.selectedDoc.id;
       return `<tr data-i="${i}" data-id="${esc(d.id)}" ${isOn ? 'class="on"' : ''}><td class="rn">${i + 1}</td>${unionKeys.map((k) => {
@@ -1046,42 +1070,6 @@ function renderDataGrid(docs, keys) {
     }).join('')}</tbody>
   </table>`;
   $$('.dg tbody tr').forEach((tr) => tr.addEventListener('click', () => openDrawer(docs[parseInt(tr.dataset.i, 10)], parseInt(tr.dataset.i, 10))));
-}
-
-async function doSemanticSearch(c, q) {
-  if (!q) { state.searchActive = false; await refreshDocs(c); render(); return; }
-  const host = $('#dg-host');
-  host.innerHTML = `<div class="dg"><div class="loader">Searching…</div></div>`;
-  try {
-    const { documents } = await api(`/api/documents/${encodeURIComponent(c)}/search?q=${encodeURIComponent(q)}&limit=50`);
-    const parsed = (documents || []).map((d) => JSON.parse(d));
-    if (parsed.length === 0) {
-      host.innerHTML = `<div class="dg"><div class="loader">No semantic matches for <strong>${esc(q)}</strong> in <strong>${esc(c)}</strong>.</div></div>`;
-      return;
-    }
-    state.docsByColl[c] = parsed;
-    state.searchActive = true;
-    render();
-  } catch (e) {
-    host.innerHTML = `<div class="dg"><div class="err">Semantic search failed:\n${esc(e.message)}</div></div>`;
-  }
-}
-async function doImageSearch(c, b64) {
-  const host = $('#dg-host');
-  host.innerHTML = `<div class="dg"><div class="loader">Searching by image…</div></div>`;
-  try {
-    const { documents } = await api(`/api/documents/${encodeURIComponent(c)}/search/image?limit=50`, { method: 'POST', body: { image: b64 } });
-    const parsed = (documents || []).map((d) => JSON.parse(d));
-    if (parsed.length === 0) {
-      host.innerHTML = `<div class="dg"><div class="loader">No matches for the supplied image in <strong>${esc(c)}</strong>.</div></div>`;
-      return;
-    }
-    state.docsByColl[c] = parsed;
-    state.searchActive = true;
-    render();
-  } catch (e) {
-    host.innerHTML = `<div class="dg"><div class="err">Image search failed:\n${esc(e.message)}</div></div>`;
-  }
 }
 
 function openDrawer(doc, idx) {
@@ -1106,10 +1094,12 @@ async function renderDrawer() {
   const compsText = meta && meta.compressions && Object.keys(meta.compressions).length > 0
     ? Object.entries(meta.compressions).map(([k, v]) => `${esc(k)}: <em style="font-style:normal;color:var(--ac)">${esc(v)}</em>`).join(', ')
     : '<em style="color:var(--t3);">none</em>';
+  const jsonSizeTip = 'Document size as JSON for client-side display. Computed from the in-memory object.';
+  const storedSizeTip = meta ? `Physical disk reservation walked from the document's block chain: chainLength × blockSize (${meta.blockSize} bytes). Excludes shared index entries.` : '';
   $('#dr-body').innerHTML = `
     <div class="dr-stats">
-      <div class="dr-stat"><div class="l">In-memory size</div><div class="v">${fmtSize(docSize(d))}</div></div>
-      <div class="dr-stat"><div class="l">Stored size</div><div class="v">${meta ? `${fmtSize(meta.storedSize)} <small>on disk</small>` : '<small>—</small>'}</div></div>
+      <div class="dr-stat" title="${esc(jsonSizeTip)}"><div class="l">JSON size</div><div class="v">${fmtSize(docSize(d))}</div></div>
+      <div class="dr-stat" title="${esc(storedSizeTip)}"><div class="l">Stored size</div><div class="v">${meta ? `${fmtSize(meta.storedSize)} <small>on disk</small>` : '<small>—</small>'}</div></div>
     </div>
     <div class="prow" style="grid-template-columns:130px 1fr;padding:7px 0;border:none;font-size:12px"><div class="k">Compression</div><div class="v" style="font-family:Consolas;color:var(--t2)">${compsText}</div></div>
     <div style="margin-top:14px;font-size:10.5px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Fields</div>
@@ -1130,38 +1120,46 @@ async function renderDrawer() {
 $('#dr-edit').addEventListener('click', () => {
   const d = state.selectedDoc; if (!d) return;
   const c = state.selectedCol;
-  const keys = Object.keys(d).filter((k) => !k.startsWith('_') && k !== 'id');
-  let h = '';
-  for (const k of keys) {
-    const v = d[k];
-    h += `<div class="fld-row editing"><div class="k">${esc(k)}</div><div class="v"><input data-edit-k="${esc(k)}" value="${esc(typeof v === 'string' ? v : JSON.stringify(v))}"/></div></div>`;
-  }
-  $('#dr-body').innerHTML = `<div class="dr-stats"><div class="dr-stat" style="grid-column:1/-1;"><div class="l">Editing</div><div class="v" style="font-size:13px;font-family:Consolas;color:var(--ac);">${esc(d.id)}</div></div></div>${h}<div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;"><button class="tbtn sec" id="edit-cancel" style="border:1px solid var(--bd);background:var(--bg2);">Cancel</button><button class="tbtn pri" id="edit-save">Save</button></div>`;
+  const cleanDoc = Object.fromEntries(Object.entries(d).filter(([k]) => !k.startsWith('_')));
+  const jsonStr = JSON.stringify(cleanDoc, null, 2);
+  $('#dr-body').innerHTML = `
+    <div class="dr-stats"><div class="dr-stat" style="grid-column:1/-1;"><div class="l">Editing</div><div class="v" style="font-size:13px;font-family:Consolas;color:var(--ac);">${esc(d.id)}</div></div></div>
+    <div style="font-size:11px;color:var(--t3);margin-bottom:6px;line-height:1.4;">Edit as JSON. Strings need quotes; numbers and booleans don't. The <code style="font-size:11px;background:var(--bg);padding:0 4px;border-radius:2px;">id</code> field is read-only and must not change.</div>
+    <textarea id="dr-edit-json" spellcheck="false" style="width:100%;min-height:320px;padding:9px 11px;font-family:Consolas,monospace;font-size:12px;line-height:1.5;border:1px solid var(--bd);border-radius:3px;background:var(--bg2);resize:vertical;">${esc(jsonStr)}</textarea>
+    <div class="err hidden" id="dr-edit-err" style="margin-top:8px;padding:7px 10px;background:var(--rdb);color:var(--rd);border-radius:3px;font-size:11.5px;font-family:Consolas,monospace;white-space:pre-wrap;"></div>
+    <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;">
+      <button class="tbtn sec" id="edit-cancel" style="border:1px solid var(--bd);background:var(--bg2);">Cancel</button>
+      <button class="tbtn pri" id="edit-save">Save</button>
+    </div>
+  `;
   $('#edit-cancel').addEventListener('click', () => renderDrawer());
   $('#edit-save').addEventListener('click', async () => {
-    const inputs = $$('[data-edit-k]', $('#dr-body'));
-    const changes = [];
-    for (const inp of inputs) {
-      const field = inp.dataset.editK;
-      const raw = inp.value;
-      let val = raw;
-      // Coerce: try JSON parse for numbers/booleans/null/objects, else keep as string
-      try { val = JSON.parse(raw); } catch { /* keep string */ }
-      if (JSON.stringify(state.selectedDoc[field]) !== JSON.stringify(val)) {
-        changes.push({ field, value: val });
-      }
+    const errEl = $('#dr-edit-err');
+    errEl.classList.add('hidden');
+    let parsed;
+    try { parsed = JSON.parse($('#dr-edit-json').value); }
+    catch (e) { errEl.classList.remove('hidden'); errEl.textContent = 'Invalid JSON: ' + e.message; return; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      errEl.classList.remove('hidden'); errEl.textContent = 'Top-level must be a JSON object.'; return;
     }
-    if (changes.length === 0) { toast('No changes.', 'warn'); renderDrawer(); return; }
+    if (String(parsed.id) !== String(d.id)) {
+      errEl.classList.remove('hidden'); errEl.textContent = `The "id" field is read-only — must remain ${JSON.stringify(d.id)}.`; return;
+    }
+    if (JSON.stringify(parsed) === JSON.stringify(cleanDoc)) {
+      toast('No changes.', 'warn'); renderDrawer(); return;
+    }
     try {
-      for (const ch of changes) {
-        await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/edit`, { method: 'POST', body: ch });
-      }
-      toast(`Updated ${changes.length} field${changes.length === 1 ? '' : 's'}`, 'ok');
+      await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/edit`, { method: 'POST', body: { document: parsed } });
+      toast('Document updated', 'ok');
+      invalidateStorageCache(c);
       await refreshDocs(c);
       const refreshed = (state.docsByColl[c] || []).find((x) => String(x.id) === String(d.id));
       if (refreshed) { state.selectedDoc = refreshed; renderDrawer(); }
       renderData();
-    } catch (e) { toast('Edit failed: ' + e.message, 'err'); }
+    } catch (e) {
+      errEl.classList.remove('hidden');
+      errEl.textContent = 'Save failed: ' + e.message;
+    }
   });
 });
 
@@ -1172,34 +1170,11 @@ $('#dr-del').addEventListener('click', () => {
       await api(`/api/documents/${encodeURIComponent(state.selectedCol)}/${encodeURIComponent(String(d.id))}`, { method: 'DELETE' });
       toast('Document deleted', 'ok');
       closeDrawer();
+      invalidateStorageCache(state.selectedCol);
       await refreshDocs(state.selectedCol);
       render();
     } catch (e) { toast('Delete failed: ' + e.message, 'err'); }
   });
-});
-
-function openAddDocModal(c) {
-  $('#adddoc-sub').textContent = `Into ${c}`;
-  const example = `{\n  "id": "new_${Date.now().toString(36)}"\n}`;
-  $('#adddoc-json').value = example;
-  $('#adddoc-err').classList.add('hidden');
-  openModal('modal-adddoc');
-}
-$('#adddoc-save').addEventListener('click', async () => {
-  let doc;
-  try { doc = JSON.parse($('#adddoc-json').value); }
-  catch (e) { $('#adddoc-err').classList.remove('hidden'); $('#adddoc-err').textContent = 'Invalid JSON: ' + e.message; return; }
-  if (!doc || !doc.id) { $('#adddoc-err').classList.remove('hidden'); $('#adddoc-err').textContent = 'Document must have an "id" field.'; return; }
-  try {
-    await api(`/api/documents/${encodeURIComponent(state.selectedCol)}`, { method: 'POST', body: { document: doc } });
-    toast('Document inserted', 'ok');
-    closeModal('modal-adddoc');
-    await refreshDocs(state.selectedCol);
-    render();
-  } catch (e) {
-    $('#adddoc-err').classList.remove('hidden');
-    $('#adddoc-err').textContent = e.message;
-  }
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -1209,43 +1184,42 @@ function renderFields() {
   const c = state.selectedCol;
   const docs = state.docsByColl[c] || [];
   if (docs.length === 0) {
-    $('#cnt').innerHTML = `<div class="flds"><div class="empty-state"><h4>No documents to introspect</h4><p>Add a document to see what fields exist and their types.</p></div></div>`;
+    $('#cnt').innerHTML = `<div class="flds"><div class="empty-state"><h4>No documents to introspect</h4><p>Insert a document to see what fields exist and their types.</p></div></div>`;
     return;
   }
   const explore = getExplore(c);
   const explored = new Map((explore?.fields || []).map((f) => [f.name, f]));
   const fieldKeys = Array.from(new Set(docs.flatMap((d) => Object.keys(d)))).filter((k) => !k.startsWith('_'));
+  const rows = fieldKeys.map((k) => {
+    const presentCount = docs.reduce((n, d) => n + (d[k] != null ? 1 : 0), 0);
+    const sample = docs.find((d) => d[k] != null)?.[k];
+    const t = detectType(sample);
+    const m = explored.get(k);
+    const sampleStr = sample == null ? '—' : typeof sample === 'string' ? `"${sample.slice(0, 60)}"` : typeof sample === 'object' ? JSON.stringify(sample).slice(0, 60) : String(sample);
+    const covLabel = presentCount === docs.length ? `${docs.length} / ${docs.length}` : `${presentCount} / ${docs.length}`;
+    const covCls = presentCount === docs.length ? '' : 'partial';
+    const hasDesc = !!(m && m.description);
+    return `<div class="fr ${hasDesc ? 'has-desc' : ''}">
+      <div class="r">
+        <div class="nm">${esc(k)}${k === 'id' ? '<span class="pk">PK</span>' : ''}</div>
+        <div class="ty">${t}</div>
+        <div class="cov ${covCls}">${covLabel}</div>
+        <div class="sm">${esc(sampleStr)}</div>
+      </div>
+      ${hasDesc ? `<div class="desc">${esc(m.description)}</div>` : ''}
+    </div>`;
+  }).join('');
   $('#cnt').innerHTML = `<div class="flds">
-    <div class="summary">Detected <strong>${fieldKeys.length}</strong> field${fieldKeys.length === 1 ? '' : 's'} across <strong>${docs.length}</strong> document${docs.length === 1 ? '' : 's'}. ${explore ? `Of those, <strong>${explore.fields.length}</strong> ${explore.fields.length === 1 ? 'has' : 'have'} semantic-model definitions.` : 'No semantic model is defined — synonyms and labels won\'t appear here.'}</div>
-    ${fieldKeys.map((k) => {
-      const presentCount = docs.reduce((n, d) => n + (d[k] != null ? 1 : 0), 0);
-      const pct = (presentCount / docs.length) * 100;
-      const sample = docs.find((d) => d[k] != null)?.[k];
-      const t = detectType(sample);
-      const tCls = t === 'number' ? 'n' : t === 'boolean' ? 'b' : 's';
-      const m = explored.get(k);
-      const sampleStr = sample == null ? '—' : typeof sample === 'string' ? `"${sample.slice(0, 60)}"` : typeof sample === 'object' ? JSON.stringify(sample).slice(0, 60) : String(sample);
-      return `<div class="fld-card">
-        <div class="head">
-          <div class="name">${esc(k)}${k === 'id' ? ' <span style="font-size:10px;color:var(--pp);">PK</span>' : ''}</div>
-          <div class="ty ${tCls}">${t}</div>
-          <div class="cov"><div class="bar"><div class="fill" style="width:${pct.toFixed(0)}%"></div></div><span>${pct.toFixed(0)}%</span></div>
-          <div class="sample">${esc(sampleStr)}</div>
-        </div>
-        ${m ? `<div class="model-info">
-          <div class="row"><div class="l">Label</div><div class="v">${esc(m.label)}</div></div>
-          ${m.description ? `<div class="row"><div class="l">Description</div><div class="v">${esc(m.description)}</div></div>` : ''}
-          ${m.synonyms && m.synonyms.length ? `<div class="row"><div class="l">Synonyms</div><div class="v syn">${m.synonyms.map((s) => `<em>${esc(s)}</em>`).join(' ')}</div></div>` : ''}
-          ${m.tags && m.tags.length ? `<div class="row"><div class="l">Tags</div><div class="v tags">${m.tags.map((s) => `<span>${esc(s)}</span>`).join('')}</div></div>` : ''}
-          <div class="row"><div class="l">Hidden from LLM</div><div class="v">${m.hidden ? '<span style="color:var(--am)">yes</span>' : 'no'}</div></div>
-        </div>` : `<div class="nomodel">No semantic-model definition for this field.</div>`}
-      </div>`;
-    }).join('')}
+    <h2>Fields<span class="ct">${fieldKeys.length} field${fieldKeys.length === 1 ? '' : 's'} · ${docs.length} document${docs.length === 1 ? '' : 's'}</span></h2>
+    <div class="flds-table">
+      <div class="h"><div>Name</div><div>Type</div><div>Coverage</div><div>Sample</div></div>
+      ${rows}
+    </div>
   </div>`;
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Semantic model (modal opened from AI Chat header)
+// Schema model (modal opened from AI Chat header)
 // ─────────────────────────────────────────────────────────────────
 function openModelModal() {
   const jsonStr = state.model ? JSON.stringify(state.model, null, 2) : '';
@@ -1258,14 +1232,18 @@ function openModelModal() {
 }
 
 async function generateModel() {
-  if (!state.geminiKeySet) { toast('Set the Gemini API key first.', 'warn'); openModal('modal-settings'); return; }
   state.modelGenerating = true;
   if (state.tab === 'ai') renderAi();
-  toast('Generating model… this may take ~20s', '', 'Generating');
+  if (state.geminiKeySet) {
+    toast('Generating schema model… this may take ~20s', '', 'Generating');
+  } else {
+    toast('No Gemini key — generating a basic introspected model (no descriptions/synonyms). Set a key later to enrich it.', 'warn', 'Generating');
+  }
   try {
-    const { model } = await api('/api/conversational/model/generate', { method: 'POST' });
+    const { model, enriched } = await api('/api/conversational/model/generate', { method: 'POST' });
     state.model = model;
-    toast('Semantic model generated', 'ok');
+    if (enriched) toast('Schema model generated and enriched.', 'ok');
+    else toast('Basic schema model generated. Descriptions/synonyms not added — set a Gemini key to enrich.', 'warn');
   } catch (e) { toast('Generation failed: ' + e.message, 'err'); }
   finally {
     state.modelGenerating = false;
@@ -1356,7 +1334,7 @@ async function runSqlNow(sql) {
     state.sqlHistory = state.sqlHistory.slice(0, 10);
     if (result.kind !== 'select') {
       toast(`${result.kind.toUpperCase()} ok`, 'ok');
-      // Refresh affected collection if we can determine it
+      invalidateStorageCache();
       const m = sql.match(/(?:from|into)\s+([A-Za-z_][A-Za-z0-9_]*)/i);
       if (m) await refreshDocs(m[1]);
     }
@@ -1376,12 +1354,175 @@ function renderSqlOut(last) {
   if (rows.length === 0) return `<div class="rhead"><strong>0</strong> rows · ${last.elapsedMs} ms</div><div style="padding:20px;text-align:center;color:var(--t3);font-size:12px;">No rows returned.</div>`;
   const cols = Object.keys(rows[0]);
   return `<div class="rhead"><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} · <span class="pill">${esc(last.kind)}</span> · <span class="pill">${last.elapsedMs} ms</span></div>
-  <table class="dg"><thead><tr><th class="rn">#</th>${cols.map((c) => `<th><div class="ti"><span class="ic">${typeof rows[0][c] === 'number' ? 'N' : 'A'}</span>${esc(c)}</div></th>`).join('')}</tr></thead>
+  <table class="dg"><thead><tr><th class="rn">#</th>${cols.map((c) => {
+    const v = rows[0][c];
+    const tb = c === 'id' ? 'pk' : (typeof v === 'number' ? 'n' : typeof v === 'boolean' ? 'b' : typeof v === 'string' ? 's' : '');
+    return `<th><div class="ti">${esc(c)}${tb ? `<span class="tb ${tb === 'pk' ? 'pk' : ''}">${tb}</span>` : ''}</div></th>`;
+  }).join('')}</tr></thead>
   <tbody>${rows.map((r, i) => `<tr><td class="rn">${i + 1}</td>${cols.map((c) => { const v = r[c]; if (v == null) return '<td class="cnu">[NULL]</td>'; if (typeof v === 'number') return `<td class="cn">${fmtNum(v)}</td>`; return `<td class="cs">${esc(String(v))}</td>`; }).join('')}</tr>`).join('')}</tbody></table>`;
 }
 function renderSqlHistory() {
   if (state.sqlHistory.length <= 1) return '';
   return `<div class="sql-history"><h4>History</h4>${state.sqlHistory.slice(1).map((h) => `<div class="item" data-sql="${esc(h.sql)}"><span class="${h.ok ? 'ok' : 'ko'}">${h.ok ? 'OK' : 'ERR'}</span><span class="qq">${esc(h.sql.replace(/\s+/g, ' '))}</span><span class="when">${h.ok ? `${h.rowCount} rows · ${h.elapsedMs}ms` : 'error'}</span></div>`).join('')}</div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Semantic Search
+// ─────────────────────────────────────────────────────────────────
+async function pollEmbedStatus() {
+  try {
+    const s = await api('/api/embeddings/status');
+    state.search.embedStatus = s;
+  } catch { /* leave previous status */ }
+}
+
+function embedStatusPill() {
+  const s = state.search.embedStatus.state;
+  if (s === 'ready') return { cls: 'ok', label: 'Embedding model · ready' };
+  if (s === 'loading') return { cls: 'warn', label: 'Embedding model · loading…' };
+  if (s === 'error') return { cls: 'bad', label: 'Embedding model · error' };
+  return { cls: '', label: 'Embedding model · not started' };
+}
+
+function renderSemanticSearch() {
+  const c = state.selectedCol;
+  const s = state.search;
+  const pill = embedStatusPill();
+
+  // The CLIP model loads lazily on first query; we don't preload on
+  // tab open because the user might just be browsing. We refresh
+  // status when they actually run a query.
+  $('#cnt').innerHTML = `<div class="ss">
+    <div class="ss-head">
+      <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg></div>
+      <div class="ttl"><strong>Semantic search</strong><span class="sub">Find documents by meaning. Powered by CLIP — accepts text, an image, or both.</span></div>
+      <div class="meta"><span class="dot ${pill.cls}" title="CLIP model state. Loads on the first query and stays warm afterwards."><strong>${esc(pill.label.split(' · ')[0])}</strong>${esc(pill.label.split(' · ')[1] || '')}</span></div>
+    </div>
+    <div class="ss-bar">
+      <input type="text" id="ss-q" placeholder="${c ? 'Describe what you are looking for…' : 'Select a collection in the sidebar first…'}" value="${esc(s.query)}" ${c ? '' : 'disabled'}/>
+      <label class="attach ${s.image ? 'has-image' : ''}" title="Attach an image to search visually">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>
+        ${s.image ? esc(s.image.name) : 'Attach image'}
+        <input type="file" id="ss-img" accept="image/*" style="display:none;" ${c ? '' : 'disabled'}/>
+      </label>
+      ${s.image ? `<span class="clear-img" id="ss-img-clear" title="Remove attached image">✕</span>` : ''}
+      <button class="go" id="ss-go" ${c && !s.busy ? '' : 'disabled'}>Search</button>
+    </div>
+    <div class="ss-status">
+      ${s.image ? `<span class="preview"><img src="${esc(s.image.dataUrl)}" alt=""/> using image embedding</span>` : ''}
+      ${!s.image && s.query ? `<span>using text embedding</span>` : ''}
+      ${s.elapsedMs != null ? `<span>· ${s.elapsedMs} ms</span>` : ''}
+      ${s.results ? `<span>· ${s.results.length} result${s.results.length === 1 ? '' : 's'}</span>` : ''}
+    </div>
+    <div class="ss-body" id="ss-body">${renderSemanticSearchBody(c, s)}</div>
+  </div>`;
+
+  $('#ss-q')?.addEventListener('input', (e) => { state.search.query = e.target.value; });
+  $('#ss-q')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !state.search.busy) runSemanticSearch(); });
+  $('#ss-go')?.addEventListener('click', () => { if (!state.search.busy) runSemanticSearch(); });
+  $('#ss-img')?.addEventListener('change', async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const dataUrl = await readFileDataUrl(f);
+    const b64 = dataUrl.split(',', 2)[1] || '';
+    state.search.image = { name: f.name, dataUrl, buffer: b64 };
+    renderSemanticSearch();
+  });
+  $('#ss-img-clear')?.addEventListener('click', () => {
+    state.search.image = null;
+    renderSemanticSearch();
+  });
+  $$('#ss-body .ss-result').forEach((el) => el.addEventListener('click', () => {
+    const i = parseInt(el.dataset.idx, 10);
+    const doc = state.search.results && state.search.results[i];
+    if (!doc) return;
+    try { openDrawer(JSON.parse(doc), i); } catch { /* invalid json */ }
+  }));
+}
+
+function renderSemanticSearchBody(c, s) {
+  if (!c) {
+    return `<div class="ss-empty"><h4>Pick a collection to search</h4><p>Semantic search ranks documents in the selected collection by similarity to your query. The first search of a session loads the CLIP model and may take 10–20 seconds; subsequent searches are fast.</p></div>`;
+  }
+  if (s.busy) {
+    return `<div class="ss-loading"><span class="spin"></span>${state.search.embedStatus.state === 'loading' ? 'Loading CLIP model…' : 'Searching…'}</div>`;
+  }
+  if (s.error) {
+    return `<div class="ss-empty"><h4>Search failed</h4><p style="color:var(--rd)">${esc(s.error)}</p></div>`;
+  }
+  if (!s.results) {
+    return `<div class="ss-empty"><h4>Ready when you are</h4><p>Type a query and press Search. You can also attach an image to find visually similar records (works on collections where image fields were indexed).</p></div>`;
+  }
+  if (s.results.length === 0) {
+    return `<div class="ss-empty"><h4>No results</h4><p>The collection doesn't have any documents that semantically match. Try broader keywords or a different image.</p></div>`;
+  }
+  return `<div class="ss-results">${s.results.map((raw, i) => {
+    let id = '—', preview = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      id = parsed.id ?? '—';
+      preview = JSON.stringify(parsed, null, 2);
+    } catch { /* keep raw */ }
+    return `<div class="ss-result" data-idx="${i}">
+      <div class="rh"><span class="idx">#${i + 1}</span><span class="id">${esc(String(id))}</span></div>
+      <div class="body">${esc(String(preview).slice(0, 600))}${String(preview).length > 600 ? '…' : ''}</div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+function readFileDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = reject;
+    r.onload = () => resolve(r.result);
+    r.readAsDataURL(file);
+  });
+}
+
+async function runSemanticSearch() {
+  const c = state.selectedCol;
+  const s = state.search;
+  if (!c) return;
+  if (!s.query.trim() && !s.image) {
+    s.error = 'Type a query or attach an image first.';
+    renderSemanticSearch();
+    return;
+  }
+  s.busy = true;
+  s.error = null;
+  s.results = null;
+  s.elapsedMs = null;
+  // Kick off the CLIP load (no-op if already in flight) so the status
+  // pill reflects what's actually happening.
+  api('/api/embeddings/preload', { method: 'POST' }).catch(() => undefined);
+  renderSemanticSearch();
+  // Poll status while busy so the pill animates from "loading" to "ready".
+  const statusTimer = setInterval(async () => {
+    await pollEmbedStatus();
+    if (state.tab === 'search') renderSemanticSearch();
+  }, 1500);
+  const t0 = performance.now();
+  try {
+    let resp;
+    if (s.image) {
+      resp = await api(`/api/documents/${encodeURIComponent(c)}/search/image?limit=20`, {
+        method: 'POST',
+        body: { image: s.image.buffer },
+      });
+    } else {
+      const q = encodeURIComponent(s.query.trim());
+      resp = await api(`/api/documents/${encodeURIComponent(c)}/search?q=${q}&limit=20`);
+    }
+    s.results = Array.isArray(resp.documents) ? resp.documents : [];
+    s.elapsedMs = Math.round(performance.now() - t0);
+  } catch (err) {
+    s.error = err.message || String(err);
+  } finally {
+    clearInterval(statusTimer);
+    s.busy = false;
+    await pollEmbedStatus();
+    if (state.tab === 'search') renderSemanticSearch();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1392,7 +1533,7 @@ let aiBusy = false;
 function renderAi() {
   const c = state.selectedCol;
   const exploreForCol = c ? getExplore(c) : null;
-  // The collection needs a semantic-model entry to chat. If the user
+  // The collection needs a schema-model entry to chat. If the user
   // hasn't already dismissed the prompt, we show a Y/N card. If they
   // dismissed it, the chat stays disabled until they generate one.
   const needsModelForCol = !!c && !exploreForCol && !state.modelGenerating;
@@ -1404,11 +1545,11 @@ function renderAi() {
   $('#cnt').innerHTML = `<div class="ai-pane">
     <div class="ai-head">
       <div class="ic">AI</div>
-      <div class="ttl"><strong>Conversational analytics</strong><div class="sub">Gemini · context: <strong style="color:var(--ac)">${esc(c || '—')}</strong></div></div>
+      <div class="ttl"><strong>Conversational analytics</strong><div class="sub">Context: <strong style="color:var(--ac)">${esc(c || '—')}</strong></div></div>
       <div class="meta">
-        <span class="pill ${state.geminiKeySet ? 'ok' : 'bad'}">Gemini · ${state.geminiKeySet ? 'ready' : 'no key'}</span>
-        <span class="pill ${exploreForCol ? 'ok' : 'warn'}">Model · ${exploreForCol ? 'ready' : (c ? 'missing for ' + esc(c) : 'no collection')}</span>
-        <button class="tbtn" id="ai-model" title="View or edit the semantic model JSON" style="padding:4px 10px;font-size:11px;border:1px solid var(--bd);background:var(--bg2);">Edit model</button>
+        <span class="dot ${state.geminiKeySet ? 'ok' : 'bad'}" title="${state.geminiKeySet ? 'A Gemini API key is configured. Validity is verified on first chat.' : 'No Gemini API key configured.'}"><strong>LLM</strong>${state.geminiKeySet ? 'key set' : 'no key'}</span>
+        <span class="dot ${exploreForCol ? 'ok' : 'warn'}" title="${exploreForCol ? 'Schema model loaded for this collection.' : 'No schema model defined for this collection yet.'}"><strong>Schema</strong>${exploreForCol ? 'ready' : (c ? 'missing' : '—')}</span>
+        <button class="tbtn" id="ai-model" title="View or edit the schema model JSON" style="padding:4px 10px;font-size:11px;border:1px solid var(--bd);background:var(--bg2);">Edit schema model</button>
         <button class="tbtn" id="ai-clear" style="padding:4px 10px;font-size:11px;">Clear chat</button>
       </div>
     </div>
@@ -1422,8 +1563,8 @@ function renderAi() {
       <input id="ai-q" placeholder="${
         !state.geminiKeySet ? 'Configure Gemini API key first…'
         : !c ? 'Select a collection in the sidebar…'
-        : !exploreForCol ? 'Generate a semantic model for this collection first…'
-        : state.modelGenerating ? 'Generating semantic model…'
+        : !exploreForCol ? 'Generate a schema model for this collection first…'
+        : state.modelGenerating ? 'Generating schema model…'
         : 'Ask about your data…'
       }" ${canChat ? '' : 'disabled'}/>
       <button id="ai-send" ${canChat ? '' : 'disabled'}>Send</button>
@@ -1458,14 +1599,30 @@ function renderAi() {
 }
 
 function renderModelGeneratingCard(c) {
-  return `<div class="ai-empty"><h4>Generating semantic model</h4><p>Inspecting <strong>${esc(state.filepath || '—')}</strong> with Gemini. This usually takes around 20 seconds. The chat input will unlock automatically when it's done.</p></div>`;
+  if (state.geminiKeySet) {
+    return `<div class="ai-empty"><h4>Generating schema model</h4><p>Inspecting <strong>${esc(state.filepath || '—')}</strong> and enriching with Gemini. This usually takes around 20 seconds. The chat input will unlock automatically when it's done.</p></div>`;
+  }
+  return `<div class="ai-empty"><h4>Generating basic schema model</h4><p>Introspecting <strong>${esc(state.filepath || '—')}</strong> directly from the data. No Gemini key set, so descriptions and synonyms will be skipped — you can set a key later and regenerate.</p></div>`;
 }
 
 function renderModelPromptCard(c) {
-  if (!state.geminiKeySet) {
-    return `<div class="ai-empty"><h4>Configure your Gemini API key first</h4><p>The conversational analytics feature requires a Google Gemini API key. Set it in <strong>Settings</strong>, then come back here.</p><div style="display:flex;gap:8px;justify-content:center;margin-top:8px;"><button class="tbtn pri" id="ai-model-settings">Open settings</button></div></div>`;
-  }
-  return `<div class="ai-empty"><h4>No semantic model for <span class="mono" style="color:var(--ac)">${esc(c)}</span> yet</h4><p>The AI chat needs a semantic model — a small JSON description of your fields, their synonyms, and how collections relate — to answer questions accurately. Generate one now?</p><div style="display:flex;gap:8px;justify-content:center;margin-top:8px;"><button class="tbtn pri" id="ai-model-yes">Yes, generate now</button><button class="tbtn" id="ai-model-no" style="border:1px solid var(--bd);background:var(--bg2);">Not now</button></div></div>`;
+  // The schema model is never generated automatically — neither on
+  // connect, nor on first AI-chat open. The user has to opt in. This
+  // card is what they see when no model exists yet for the selected
+  // collection.
+  const keyHint = state.geminiKeySet
+    ? `<p style="font-size:11.5px;color:var(--t3);margin-top:6px;">Generation runs against <strong>data.db</strong>, samples a few documents per collection, then asks Gemini to add field descriptions and synonyms. Takes ~20s.</p>`
+    : `<p style="font-size:11.5px;color:var(--t3);margin-top:6px;">No Gemini key set. You can still generate a basic model from the data alone (field names, types, sample values). For descriptions and chat, set the key from the connection pill in the top-right.</p>`;
+  return `<div class="ai-empty">
+    <h4>No schema model for <span class="mono" style="color:var(--ac)">${esc(c)}</span> yet</h4>
+    <p>The schema model is a small JSON file that lists every field, its type, and (optionally) what it means. The AI chat needs it to answer questions; it is also used in the Fields tab. <strong>It is never generated automatically — you decide when.</strong></p>
+    ${keyHint}
+    <div style="display:flex;gap:8px;justify-content:center;margin-top:8px;">
+      <button class="tbtn pri" id="ai-model-yes">${state.geminiKeySet ? 'Generate now' : 'Generate basic model'}</button>
+      ${!state.geminiKeySet ? `<button class="tbtn" id="ai-model-settings" style="border:1px solid var(--bd);background:var(--bg2);">Set Gemini key first</button>` : ''}
+      <button class="tbtn" id="ai-model-no" style="border:1px solid var(--bd);background:var(--bg2);">Not now</button>
+    </div>
+  </div>`;
 }
 
 function renderAiEmpty(c, exploreForCol) {
@@ -1473,7 +1630,7 @@ function renderAiEmpty(c, exploreForCol) {
     return `<div class="ai-empty"><h4>Pick a collection</h4><p>Select a collection in the sidebar to chat about its data.</p></div>`;
   }
   if (!exploreForCol) {
-    return `<div class="ai-empty"><h4>Chat is paused</h4><p>This collection doesn't have a semantic model yet. <button class="tbtn" id="ai-model-yes" style="border:1px solid var(--bd);background:var(--bg2);padding:4px 10px;">Generate one now</button> to enable chat.</p></div>`;
+    return `<div class="ai-empty"><h4>Chat is paused</h4><p>This collection doesn't have a schema model yet. <button class="tbtn" id="ai-model-yes" style="border:1px solid var(--bd);background:var(--bg2);padding:4px 10px;">Generate one now</button> to enable chat.</p></div>`;
   }
   const examples = [
     `How many records are in ${c}?`,
@@ -1488,7 +1645,7 @@ function renderAiMessage(m, i) {
   if (m.role === 'user') {
     return `<div class="msg u"><div class="who">You</div><div class="bub">${esc(m.text)}</div></div>`;
   }
-  if (m.thinking) return `<div class="msg a"><div class="who">AI</div><div class="bub thinking">${esc(m.text)}</div></div>`;
+  if (m.thinking) return `<div class="msg a"><div class="who">AI</div><div class="bub thinking"><span class="spin"></span><span class="lbl">${esc(m.text)}<span class="d"></span><span class="d"></span><span class="d"></span></span></div></div>`;
   if (m.error) return `<div class="msg a"><div class="who">AI</div><div class="bub err">${esc(m.error)}</div></div>`;
   const r = m.response;
   let h = '';
@@ -1520,7 +1677,7 @@ async function sendChat() {
   $('#ai-q').value = '';
   aiBusy = true;
   state.chatHistory.push({ role: 'user', text: q });
-  state.chatHistory.push({ role: 'assistant', text: 'Thinking… generating SQL, running it, summarizing…', thinking: true });
+  state.chatHistory.push({ role: 'assistant', text: 'Thinking', thinking: true });
   renderAi();
   try {
     const history = state.chatHistory.filter((m) => !m.thinking && (m.role === 'user' || (m.role === 'assistant' && m.response))).map((m) => ({ role: m.role, text: m.role === 'user' ? m.text : `Query: ${m.response.query}\nResult: ${m.response.summary}` }));
@@ -1607,19 +1764,75 @@ $('#confirm-ok').addEventListener('click', () => {
 // ─────────────────────────────────────────────────────────────────
 // Toolbar / global handlers
 // ─────────────────────────────────────────────────────────────────
-$('#btn-refresh').addEventListener('click', async () => {
-  if (state.selectedCol) await refreshDocs(state.selectedCol);
-  await loadCollections();
-  await loadModel();
-  render();
-  toast('Refreshed', 'ok');
-});
-$('#sb-refresh').addEventListener('click', async () => {
-  await loadCollections(); await loadModel(); render(); toast('Refreshed', 'ok');
-});
-$('#btn-newcoll').addEventListener('click', () => { $('#newcoll-name').value = ''; $('#newcoll-doc').value = '{"id": "c_001"}'; $('#newcoll-err').classList.add('hidden'); openModal('modal-newcoll'); });
-$('#btn-settings').addEventListener('click', () => { $('#set-gemini-key').value = ''; $('#set-gemini-err').classList.add('hidden'); $('#set-gemini-ok').classList.add('hidden'); openModal('modal-settings'); });
 $('#sb-filter').addEventListener('input', renderTree);
+
+// Resizable sidebar
+const SB_W_KEY = 'pgstudio.sidebar.width';
+const SB_W_MIN = 200, SB_W_MAX = 600;
+function applySidebarWidth(px) {
+  const w = Math.max(SB_W_MIN, Math.min(SB_W_MAX, px));
+  document.documentElement.style.setProperty('--sb-w', w + 'px');
+  return w;
+}
+(() => {
+  const saved = parseInt(localStorage.getItem(SB_W_KEY) || '', 10);
+  if (!isNaN(saved)) applySidebarWidth(saved);
+})();
+(() => {
+  const h = $('#sb-resize');
+  let dragging = false;
+  h.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    dragging = true;
+    h.classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    const x = e.clientX;
+    const w = applySidebarWidth(x);
+    localStorage.setItem(SB_W_KEY, String(w));
+  });
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    h.classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+})();
+
+// Connection pill dropdown
+function closeConnMenu() {
+  $('#conn-menu').classList.add('hidden');
+  $('#conn-info').classList.remove('open');
+}
+function toggleConnMenu() {
+  const m = $('#conn-menu');
+  const open = m.classList.toggle('hidden');
+  $('#conn-info').classList.toggle('open', !open);
+}
+$('#conn-info').addEventListener('click', (e) => { e.stopPropagation(); toggleConnMenu(); });
+document.addEventListener('click', (e) => {
+  if (!$('#conn-wrap').contains(e.target)) closeConnMenu();
+});
+$('#cm-key').addEventListener('click', () => {
+  closeConnMenu();
+  $('#set-gemini-key').value = '';
+  $('#set-gemini-err').classList.add('hidden');
+  $('#set-gemini-ok').classList.add('hidden');
+  openModal('modal-settings');
+});
+$('#cm-disconnect').addEventListener('click', async () => {
+  closeConnMenu();
+  try {
+    await api('/api/disconnect', { method: 'POST' });
+    state.connected = false; state.filepath = null; state.collections = []; state.docsByColl = {}; state.countsByColl = {}; state.model = null; state.selectedCol = null; state.chatHistory = [];
+    toast('Disconnected', 'ok');
+    updateConnState(); openModal('modal-connect');
+  } catch (e) { toast(e.message, 'err'); }
+});
 
 // Connect modal
 $('#connect-open').addEventListener('click', async () => {
@@ -1660,44 +1873,6 @@ $('#set-save-gemini').addEventListener('click', async () => {
     updateConnState(); renderTabs(); renderTab();
   } catch (e) { $('#set-gemini-err').classList.remove('hidden'); $('#set-gemini-err').textContent = e.message; }
 });
-$('#set-disconnect').addEventListener('click', async () => {
-  try {
-    await api('/api/disconnect', { method: 'POST' });
-    state.connected = false; state.filepath = null; state.collections = []; state.docsByColl = {}; state.countsByColl = {}; state.model = null; state.selectedCol = null; state.chatHistory = [];
-    toast('Disconnected', 'ok');
-    closeModal('modal-settings');
-    updateConnState(); openModal('modal-connect');
-  } catch (e) { toast(e.message, 'err'); }
-});
-$('#set-reset').addEventListener('click', () => {
-  confirmAction('Reset this database?', 'All collections and documents will be permanently deleted.', async () => {
-    try {
-      await api('/api/debug/reset', { method: 'POST' });
-      toast('Database reset', 'ok');
-      closeModal('modal-settings');
-      await loadCollections(); await loadModel(); state.selectedCol = null; render();
-    } catch (e) { toast('Reset failed: ' + e.message, 'err'); }
-  });
-});
-
-// New collection
-$('#newcoll-create').addEventListener('click', async () => {
-  const name = $('#newcoll-name').value.trim();
-  if (!name) { $('#newcoll-err').classList.remove('hidden'); $('#newcoll-err').textContent = 'Collection name required.'; return; }
-  let doc;
-  try { doc = JSON.parse($('#newcoll-doc').value); }
-  catch (e) { $('#newcoll-err').classList.remove('hidden'); $('#newcoll-err').textContent = 'Invalid JSON: ' + e.message; return; }
-  if (!doc || !doc.id) { $('#newcoll-err').classList.remove('hidden'); $('#newcoll-err').textContent = 'Document must have an "id" field.'; return; }
-  try {
-    await api(`/api/documents/${encodeURIComponent(name)}`, { method: 'POST', body: { document: doc } });
-    toast(`Created “${name}”`, 'ok');
-    closeModal('modal-newcoll');
-    await loadCollections();
-    state.selectedCol = name;
-    render();
-  } catch (e) { $('#newcoll-err').classList.remove('hidden'); $('#newcoll-err').textContent = e.message; }
-});
-
 // Make selectCollection callable inline
 window.selectCollection = selectCollection;
 window.openModal = openModal;
