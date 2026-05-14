@@ -355,7 +355,7 @@ Chart guidelines:
 
       const validSuggestionTypes = new Set(['drill', 'compare', 'filter', 'explore']);
       const suggestions: Suggestion[] = Array.isArray(parsed.suggestions)
-        ? (parsed.suggestions as unknown[])
+        ? (parsed.suggestions)
             .filter(
               (s): s is { type: string; text: string } =>
                 typeof s === 'object' &&

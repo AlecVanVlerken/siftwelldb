@@ -14,15 +14,15 @@ class FakeLLMProvider implements LLMProvider {
 
   constructor(private readonly responses: string[]) {}
 
-  async generate(systemPrompt: string, userMessage: string): Promise<LLMResponse> {
+  generate(systemPrompt: string, userMessage: string): Promise<LLMResponse> {
     return this.chat(systemPrompt, [], userMessage);
   }
 
-  async chat(systemPrompt: string, history: ChatMessage[], userMessage: string): Promise<LLMResponse> {
+  chat(systemPrompt: string, history: ChatMessage[], userMessage: string): Promise<LLMResponse> {
     this.chatCalls.push({ systemPrompt, history, userMessage });
     const text = this.responses.shift();
     if (text === undefined) throw new Error('No fake LLM response queued');
-    return { text };
+    return Promise.resolve({ text });
   }
 }
 
@@ -69,7 +69,9 @@ async function setupDb(): Promise<SimpleDbms> {
   return db;
 }
 
-async function createEngine(responses: string[]): Promise<{ engine: ConversationalEngine; provider: FakeLLMProvider; db: SimpleDbms }> {
+async function createEngine(
+  responses: string[],
+): Promise<{ engine: ConversationalEngine; provider: FakeLLMProvider; db: SimpleDbms }> {
   const db = await setupDb();
   const provider = new FakeLLMProvider(responses);
   const engine = new ConversationalEngine({ dbms: db, llmProvider: provider, semanticModel: model });
@@ -179,10 +181,7 @@ describe('ConversationalEngine', () => {
   });
 
   it('falls back to raw text when insight JSON is malformed', async () => {
-    const { engine, db } = await createEngine([
-      'SELECT name FROM employees',
-      'not json but still useful',
-    ]);
+    const { engine, db } = await createEngine(['SELECT name FROM employees', 'not json but still useful']);
 
     const response = await engine.ask('List employees');
 

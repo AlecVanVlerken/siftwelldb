@@ -20,6 +20,10 @@ function setFakeDbms(service: DatabaseService, dbms: FakeDbms): ServiceInternals
   return internals;
 }
 
+function isDocumentRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 async function* documents(values: string[]): AsyncIterable<string> {
   for (const value of values) {
     await Promise.resolve();
@@ -40,15 +44,16 @@ describe('DatabaseService', () => {
           JSON.stringify({ id: 'c', title: 'C' }),
         ]);
       },
-      async deleteDocumentById() {},
-      async commit() {},
+      deleteDocumentById() {
+        return Promise.resolve();
+      },
+      commit() {
+        return Promise.resolve();
+      },
     });
 
     await expect(service.getDocuments('books', 'title', 'A', 2)).resolves.toEqual({
-      documents: [
-        JSON.stringify({ id: 'b', title: 'B' }),
-        JSON.stringify({ id: 'c', title: 'C' }),
-      ],
+      documents: [JSON.stringify({ id: 'b', title: 'B' }), JSON.stringify({ id: 'c', title: 'C' })],
       hasMore: false,
       nextCursor: undefined,
     });
@@ -81,17 +86,25 @@ describe('DatabaseService', () => {
 
   it('seeds deterministic demo employees when the employees collection is empty', async () => {
     const service = new DatabaseService();
-    const inserted: unknown[] = [];
+    const inserted: Array<Record<string, unknown>> = [];
     const internals = setFakeDbms(service, {
       cursor() {
         return documents([]);
       },
-      async deleteDocumentById() {},
-      async insertDocumentObject(collection, document) {
-        expect(collection).toBe('employees');
-        inserted.push(document);
+      deleteDocumentById() {
+        return Promise.resolve();
       },
-      async commit() {},
+      insertDocumentObject(collection, document) {
+        expect(collection).toBe('employees');
+        if (!isDocumentRecord(document)) {
+          return Promise.reject(new Error('Expected a document object'));
+        }
+        inserted.push(document);
+        return Promise.resolve();
+      },
+      commit() {
+        return Promise.resolve();
+      },
     });
     internals.recordBytesCache.set('employees', 4096);
 
@@ -99,23 +112,30 @@ describe('DatabaseService', () => {
 
     expect(result).toEqual({ collection: 'employees', inserted: 3, skipped: false });
     expect(inserted).toHaveLength(3);
-    expect(inserted[0]).toMatchObject({ id: 'emp001', department: expect.any(String) });
+    expect(inserted[0]).toMatchObject({ id: 'emp001' });
+    expect(typeof inserted[0]?.['department']).toBe('string');
     expect(internals.recordBytesCache.has('employees')).toBe(false);
   });
 
   it('skips demo seeding when employees already exist', async () => {
     const service = new DatabaseService();
-    const inserted: unknown[] = [];
+    const inserted: Array<Record<string, unknown>> = [];
     setFakeDbms(service, {
       cursor() {
         return documents([JSON.stringify({ id: 'emp001' })]);
       },
-      async deleteDocumentById() {},
-      async insertDocumentObject(_collection, document) {
-        inserted.push(document);
+      deleteDocumentById() {
+        return Promise.resolve();
       },
-      async commit() {
-        throw new Error('commit should not be called');
+      insertDocumentObject(_collection, document) {
+        if (!isDocumentRecord(document)) {
+          return Promise.reject(new Error('Expected a document object'));
+        }
+        inserted.push(document);
+        return Promise.resolve();
+      },
+      commit() {
+        return Promise.reject(new Error('commit should not be called'));
       },
     });
 

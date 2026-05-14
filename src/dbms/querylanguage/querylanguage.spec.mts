@@ -254,7 +254,9 @@ describe('LIMIT / OFFSET', () => {
 
   it('LIMIT en OFFSET moeten niet-negatieve integers zijn', async () => {
     await expect(ql.execute('SELECT * FROM cities LIMIT -1')).rejects.toThrow(/LIMIT must be a non-negative integer/i);
-    await expect(ql.execute('SELECT * FROM cities OFFSET 1.5')).rejects.toThrow(/OFFSET must be a non-negative integer/i);
+    await expect(ql.execute('SELECT * FROM cities OFFSET 1.5')).rejects.toThrow(
+      /OFFSET must be a non-negative integer/i,
+    );
   });
 });
 
@@ -393,9 +395,9 @@ describe('Unsupported relational features', () => {
   });
 
   it('rejects JOIN', async () => {
-    await expect(
-      ql.execute('SELECT * FROM cities JOIN countries ON cities.country = countries.id'),
-    ).rejects.toThrow(/JOIN is not supported/i);
+    await expect(ql.execute('SELECT * FROM cities JOIN countries ON cities.country = countries.id')).rejects.toThrow(
+      /JOIN is not supported/i,
+    );
   });
 
   it('rejects subqueries', async () => {
@@ -406,7 +408,9 @@ describe('Unsupported relational features', () => {
 
   it('rejects UNION', async () => {
     await expect(
-      ql.execute("SELECT country FROM cities WHERE country = 'BE' UNION SELECT country FROM cities WHERE country = 'NL'"),
+      ql.execute(
+        "SELECT country FROM cities WHERE country = 'BE' UNION SELECT country FROM cities WHERE country = 'NL'",
+      ),
     ).rejects.toThrow(/UNION is not supported/i);
   });
 });
@@ -435,7 +439,7 @@ describe('DELETE', () => {
   it('DELETE ondersteunt ORDER BY en LIMIT', async () => {
     const ql2 = await setupDb();
 
-    const deleted = await ql2.execute('DELETE FROM cities WHERE country = \'BE\' ORDER BY id ASC LIMIT 2');
+    const deleted = await ql2.execute("DELETE FROM cities WHERE country = 'BE' ORDER BY id ASC LIMIT 2");
     const remainingBe = await ql2.execute("SELECT id FROM cities WHERE country = 'BE' ORDER BY id ASC");
 
     expect(deleted.map((r) => r['id'])).toEqual(['antwerpen', 'brussel']);
@@ -585,7 +589,11 @@ describe('Parentheses in WHERE', () => {
       "SELECT * FROM cities WHERE (country = 'BE' OR country = 'FR') AND population > 1000000",
     );
     expect(withParens).toHaveLength(2);
-    expect(withParens.every((r) => (r['country'] === 'BE' || r['country'] === 'FR') && (r['population'] as number) > 1_000_000)).toBe(true);
+    expect(
+      withParens.every(
+        (r) => (r['country'] === 'BE' || r['country'] === 'FR') && (r['population'] as number) > 1_000_000,
+      ),
+    ).toBe(true);
   });
 
   it('nested parens work', async () => {
@@ -716,9 +724,7 @@ describe('IS NULL / IS NOT NULL', () => {
   });
 
   it('combines with AND/OR', async () => {
-    const rows = await ql.execute(
-      "SELECT id FROM drivers WHERE license IS NULL OR name = 'Alice'",
-    );
+    const rows = await ql.execute("SELECT id FROM drivers WHERE license IS NULL OR name = 'Alice'");
     expect(rows).toHaveLength(2);
   });
 });
@@ -753,9 +759,7 @@ describe('IN / NOT IN', () => {
   });
 
   it('IN composes with other predicates via AND', async () => {
-    const rows = await ql.execute(
-      "SELECT id FROM cities WHERE country IN ('BE', 'NL') AND population > 600000",
-    );
+    const rows = await ql.execute("SELECT id FROM cities WHERE country IN ('BE', 'NL') AND population > 600000");
     // Brussel (1.2M), Amsterdam (900k), Rotterdam (650k)
     expect(rows).toHaveLength(3);
   });
@@ -776,12 +780,8 @@ describe('BETWEEN / NOT BETWEEN', () => {
   });
 
   it('NOT BETWEEN excludes the range', async () => {
-    const within = await ql.execute(
-      'SELECT id FROM cities WHERE population BETWEEN 500000 AND 1000000',
-    );
-    const outside = await ql.execute(
-      'SELECT id FROM cities WHERE population NOT BETWEEN 500000 AND 1000000',
-    );
+    const within = await ql.execute('SELECT id FROM cities WHERE population BETWEEN 500000 AND 1000000');
+    const outside = await ql.execute('SELECT id FROM cities WHERE population NOT BETWEEN 500000 AND 1000000');
     expect(within.length + outside.length).toBe(11);
   });
 
@@ -809,9 +809,7 @@ describe('NOT (prefix negation)', () => {
   });
 
   it('NOT can wrap a compound expression', async () => {
-    const rows = await ql.execute(
-      "SELECT id FROM cities WHERE NOT (country = 'BE' OR country = 'FR')",
-    );
+    const rows = await ql.execute("SELECT id FROM cities WHERE NOT (country = 'BE' OR country = 'FR')");
     // NL (3) + DE (3) = 6
     expect(rows).toHaveLength(6);
   });
@@ -838,7 +836,7 @@ describe('SELECT DISTINCT', () => {
   });
 
   it('DISTINCT respects WHERE', async () => {
-    const rows = await ql.execute("SELECT DISTINCT country FROM cities WHERE population > 500000");
+    const rows = await ql.execute('SELECT DISTINCT country FROM cities WHERE population > 500000');
     expect(new Set(rows.map((r) => r['country']))).toEqual(new Set(['BE', 'NL', 'FR', 'DE']));
   });
 
@@ -904,9 +902,7 @@ describe('AGG(DISTINCT field)', () => {
   });
 
   it('COUNT(DISTINCT) with AS alias projects under the alias', async () => {
-    const rows = await ql.execute(
-      'SELECT COUNT(DISTINCT country) AS n_countries FROM cities',
-    );
+    const rows = await ql.execute('SELECT COUNT(DISTINCT country) AS n_countries FROM cities');
     expect(rows[0]?.['n_countries']).toBe(4);
     expect(rows[0]).not.toHaveProperty('COUNT(DISTINCT country)');
   });
@@ -921,9 +917,7 @@ describe('UPDATE', () => {
   });
 
   it('UPDATE with WHERE updates only matching rows', async () => {
-    const result = await ql.execute(
-      "UPDATE cities SET population = 999 WHERE country = 'BE'",
-    );
+    const result = await ql.execute("UPDATE cities SET population = 999 WHERE country = 'BE'");
     expect(result).toHaveLength(3);
     const after = await ql.execute("SELECT population FROM cities WHERE country = 'BE'");
     expect(after.every((r) => r['population'] === 999)).toBe(true);
@@ -941,9 +935,7 @@ describe('UPDATE', () => {
 
   it('UPDATE supports multiple SET assignments', async () => {
     const ql2 = await setupDb();
-    await ql2.execute(
-      "UPDATE cities SET population = 1, country = 'ZZ' WHERE name = 'Gent'",
-    );
+    await ql2.execute("UPDATE cities SET population = 1, country = 'ZZ' WHERE name = 'Gent'");
     const row = (await ql2.execute("SELECT * FROM cities WHERE name = 'Gent'"))[0];
     expect(row['population']).toBe(1);
     expect(row['country']).toBe('ZZ');
@@ -957,20 +949,18 @@ describe('UPDATE', () => {
 
   it('UPDATE cannot change id', async () => {
     const ql2 = await setupDb();
-    await expect(
-      ql2.execute("UPDATE cities SET id = 'newgent' WHERE id = 'gent'"),
-    ).rejects.toThrow(/cannot change "id"/i);
+    await expect(ql2.execute("UPDATE cities SET id = 'newgent' WHERE id = 'gent'")).rejects.toThrow(
+      /cannot change "id"/i,
+    );
   });
 
   it('UPDATE with IN filter', async () => {
     const ql2 = await setupDb();
-    const result = await ql2.execute(
-      "UPDATE cities SET population = 1 WHERE country IN ('BE', 'NL')",
-    );
+    const result = await ql2.execute("UPDATE cities SET population = 1 WHERE country IN ('BE', 'NL')");
     expect(result).toHaveLength(6);
   });
 
-  it('UPDATE parses kind as "update"', async () => {
+  it('UPDATE parses kind as "update"', () => {
     const parsed = ql.parse("UPDATE cities SET population = 1 WHERE id = 'gent'");
     expect(parsed.kind).toBe('update');
   });
@@ -1017,9 +1007,7 @@ describe('Secondary-index seek', () => {
   });
 
   it('field equality + AND combines with row-level WHERE check', async () => {
-    const rows = await ql.execute(
-      "SELECT id FROM cities WHERE country = 'BE' AND population > 500000",
-    );
+    const rows = await ql.execute("SELECT id FROM cities WHERE country = 'BE' AND population > 500000");
     // BE > 500k: Brussel (1.2M), Antwerpen (530k) → 2.
     expect(rows).toHaveLength(2);
   });
@@ -1056,9 +1044,7 @@ describe('Type semantics', () => {
   });
 
   it('weigert range-vergelijkingen tussen verschillende types', async () => {
-    await expect(ql.execute("SELECT id FROM cities WHERE population > '30'")).rejects.toThrow(
-      /different types/i,
-    );
+    await expect(ql.execute("SELECT id FROM cities WHERE population > '30'")).rejects.toThrow(/different types/i);
   });
 });
 

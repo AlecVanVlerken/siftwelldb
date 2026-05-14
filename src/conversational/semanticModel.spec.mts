@@ -8,6 +8,8 @@ import {
   generateSemanticModel,
   modelToSchemaPrompt,
   parseSemanticModel,
+  type FieldDefinition,
+  type MeasureDefinition,
   type SemanticModel,
 } from './semanticModel.mjs';
 
@@ -39,9 +41,17 @@ describe('semantic model parsing and prompts', () => {
     expect(() => parseSemanticModel(JSON.stringify(validModel))).not.toThrow();
     expect(() => parseSemanticModel(JSON.stringify({ explores: [] }))).toThrow(/at least one explore/i);
     expect(() =>
-      parseSemanticModel(JSON.stringify({
-        explores: [{ collection: 'employees', label: 'Employees', fields: [{ name: 'salary', type: 'money', label: 'Salary' }] }],
-      })),
+      parseSemanticModel(
+        JSON.stringify({
+          explores: [
+            {
+              collection: 'employees',
+              label: 'Employees',
+              fields: [{ name: 'salary', type: 'money', label: 'Salary' }],
+            },
+          ],
+        }),
+      ),
     ).toThrow(/Invalid field type/i);
   });
 
@@ -90,6 +100,13 @@ describe('generateSemanticModel', () => {
     const model = await generateSemanticModel(db);
     const employees = model.explores.find((e) => e.collection === 'employees');
     const prompt = modelToSchemaPrompt(model);
+    const departmentField = employees?.fields.find((field): field is FieldDefinition => field.name === 'department');
+    const cityField = employees?.fields.find((field): field is FieldDefinition => field.name === 'city');
+    const photoField = employees?.fields.find((field): field is FieldDefinition => field.name === 'photo.jpg');
+    const avgSalary = employees?.measures?.find(
+      (measure): measure is MeasureDefinition => measure.name === 'avg_salary',
+    );
+    const countMeasure = employees?.measures?.find((measure): measure is MeasureDefinition => measure.name === 'count');
 
     expect(employees).toBeDefined();
     expect(employees?.fields).toEqual(
@@ -97,22 +114,17 @@ describe('generateSemanticModel', () => {
         expect.objectContaining({ name: 'name', type: 'string' }),
         expect.objectContaining({ name: 'active', type: 'boolean' }),
         expect.objectContaining({ name: 'salary', type: 'number' }),
-        expect.objectContaining({ name: 'department', synonyms: expect.arrayContaining(['team']) }),
-        expect.objectContaining({ name: 'city', synonyms: expect.arrayContaining(['location']) }),
-        expect.objectContaining({
-          name: 'photo.jpg',
-          type: 'string',
-          synonyms: expect.arrayContaining(['image']),
-          tags: expect.arrayContaining([expect.stringContaining('image field')]),
-        }),
+        expect.objectContaining({ name: 'department' }),
+        expect.objectContaining({ name: 'city' }),
+        expect.objectContaining({ name: 'photo.jpg', type: 'string' }),
       ]),
     );
-    expect(employees?.measures).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ name: 'avg_salary', aggregation: 'AVG', field: 'salary' }),
-        expect.objectContaining({ name: 'count', aggregation: 'COUNT', field: '*' }),
-      ]),
-    );
+    expect(departmentField?.synonyms).toContain('team');
+    expect(cityField?.synonyms).toContain('location');
+    expect(photoField?.synonyms).toContain('image');
+    expect(photoField?.tags?.some((tag) => tag.includes('image field'))).toBe(true);
+    expect(avgSalary).toMatchObject({ aggregation: 'AVG', field: 'salary' });
+    expect(countMeasure).toMatchObject({ aggregation: 'COUNT', field: '*' });
     expect(prompt).toContain('values: Engineering, Sales');
     expect(prompt).toContain('values: Leuven, Gent');
     expect(prompt).toContain('image field: base64-encoded media');
