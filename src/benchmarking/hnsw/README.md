@@ -5,13 +5,15 @@ This folder contains the long-running HNSW benchmarks that exercise the wrapper 
 ## What is measured
 
 - `complexity.spec.mts` builds an `HNSWIndex` on SIFT1M and records checkpointed insert and search latency against database size.
+- `delete_complexity.spec.mts` builds an `HNSWIndex` on a capped SIFT subset, then deletes every vector in reverse order and records checkpointed delete latency against the remaining live index size.
 - `simpledbms_complexity.spec.mts` runs the same SIFT1M complexity experiment through `SimpleDbms`, so record-store, B+ tree, and HNSW overhead are all included.
 - `recall.spec.mts` measures recall on SIFT1M, GIST1M, and 1M random 128D vectors.
-- `insert_compare.spec.mts` compares the current Rust-backed `HNSWIndex` against the last TypeScript HNSW algorithm on the first 100k SIFT vectors, using the same dataset, storage, and HNSW parameters for both runs. It records only insert timings during the main loop; there are no intermediate commits inside the timed section.
+- `insert_compare.spec.mts` compares the current Rust-backed `HNSWIndex` against the last TypeScript HNSW algorithm on the first 1M SIFT vectors by default, using the same dataset, storage, and HNSW parameters for both runs. It records only insert timings during the main loop; there are no intermediate commits inside the timed section.
 
 Commits still happen so the persisted index stays valid, but commit time is not included in the reported insert timings.
 
 - `plot_complexity.py` turns the SIFT complexity JSON into the four requested graphs.
+- `plot_delete_complexity.py` turns the deletion benchmark JSON into delete-over-time and delete-vs-live-size graphs.
 - `plot_recall.py` overlays the recall curves so structured and unstructured datasets can be compared directly.
 
 ## Dataset setup
@@ -59,13 +61,21 @@ SimpleDbms complexity benchmark:
 NODE_OPTIONS="--max-old-space-size=8192" npx vitest run src/benchmarking/hnsw/simpledbms_complexity.spec.mts --reporter=verbose
 ```
 
+Deletion complexity benchmark:
+
+```powershell
+NODE_OPTIONS="--max-old-space-size=8192" npx vitest run src/benchmarking/hnsw/delete_complexity.spec.mts --reporter=verbose
+```
+
+Because the current delete path rebuilds the persisted collection-local HNSW state on every delete, this benchmark uses `HNSW_DELETE_LIMIT` with a smaller default cap than the insert/search benchmarks. Increase it explicitly if you want a longer sweep.
+
 Recall benchmarks:
 
 ```powershell
 NODE_OPTIONS="--max-old-space-size=8192" npx vitest run src/benchmarking/hnsw/recall.spec.mts --reporter=verbose
 ```
 
-Rust vs legacy TypeScript insert comparison on the first 100k SIFT vectors:
+Rust vs legacy TypeScript insert comparison on the first 1M SIFT vectors by default:
 
 ```powershell
 NODE_OPTIONS="--max-old-space-size=8192" npx vitest run src/benchmarking/hnsw/insert_compare.spec.mts --reporter=verbose
@@ -87,6 +97,7 @@ For the insert comparison benchmark, ETA is printed separately for the Rust run 
 
 ```powershell
 python src/benchmarking/hnsw/plot_complexity.py
+python src/benchmarking/hnsw/plot_delete_complexity.py
 python src/benchmarking/hnsw/plot_recall.py
 python src/benchmarking/hnsw/plot_insert_compare.py
 ```
@@ -106,7 +117,10 @@ Generated images are written to `src/benchmarking/hnsw/results/images/`.
 - `HNSW_KEEP_DB=true` keeps the generated database files under `results/db/` after the run.
 - `HNSW_SIFT_DIR`, `HNSW_GIST_DIR`, and the `HNSW_*_{BASE,QUERY,GT}_FILE` overrides let you load datasets from another folder or with different filenames.
 - `HNSW_SIFT_LIMIT`, `HNSW_GIST_LIMIT`, `HNSW_RANDOM_COUNT` cap the build size for smaller dry runs.
-- `HNSW_COMPARE_INSERT_LIMIT` caps the Rust-vs-TypeScript insert comparison size. Default is `100000`.
+- `HNSW_DELETE_LIMIT` caps the initial SIFT build size for the deletion benchmark. Default is `100000`.
+- `HNSW_DELETE_CHECKPOINT_INTERVAL` controls how often the deletion benchmark records a point. Default is `100`.
+- `HNSW_DELETE_COMMIT_INTERVAL` controls how often the deletion benchmark commits while shrinking the index. Default is `10`.
+- `HNSW_COMPARE_INSERT_LIMIT` caps the Rust-vs-TypeScript insert comparison size. Default is `1000000`.
 - `HNSW_COMPARE_CHECKPOINT_INTERVAL` controls how often the insert comparison records a point and refreshes ETA output. Default is `1000`.
 - `HNSW_RECALL_QUERY_LIMIT` caps SIFT and GIST query count for faster sweeps.
 - `HNSW_RECALL_EF_SEARCH_VALUES=8,16,32,64,128,200` overrides the sweep values.
