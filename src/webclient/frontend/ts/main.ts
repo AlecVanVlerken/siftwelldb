@@ -2,8 +2,8 @@
 // @ts-nocheck
 import { api } from './api-client.js';
 import { $, $$ } from './dom.js';
-import { buildDocumentTemplate, validateDocumentInput } from './document-editor.js';
-import { detectType, docSize, esc, fmtNum, fmtSize, isImageField } from './format.js';
+import { buildDocumentTemplate, compactDocumentImages, validateDocumentInput } from './document-editor.js';
+import { detectType, docSize, esc, fmtNum, fmtSize, imageDataUrlFromValue, isImageField } from './format.js';
 import { openModal, closeModal } from './modals.js';
 import { resetDisconnectedState, state } from './state.js';
 import { getSqlMutationKind } from './sql-ui.js';
@@ -21,6 +21,8 @@ function toast(msg, kind = '', title = '') {
 $$('[data-close]').forEach((b) => b.addEventListener('click', () => closeModal(b.dataset.close)));
 
 let documentModalMode = 'document';
+let documentModalImagePayloads = {};
+let drawerEditImagePayloads = {};
 
 // ─────────────────────────────────────────────────────────────────
 // Bootstrap
@@ -119,13 +121,61 @@ function showDocumentModalError(message) {
   err.classList.remove('hidden');
 }
 
+function resetDocumentImageAttachment() {
+  $('#doc-image-field').value = '';
+  $('#doc-image-file').value = '';
+  const preview = $('#doc-image-preview');
+  preview.classList.add('hidden');
+  preview.querySelector('img').src = '';
+  preview.querySelector('span').textContent = '';
+}
+
+function mergeImageIntoJsonText(textarea, fieldName, dataUrl, imagePayloads) {
+  const parsed = validateDocumentInput(textarea.value, { requireId: false, imagePayloads });
+  if (!parsed.ok) throw new Error(parsed.error);
+  const [, base64 = dataUrl] = dataUrl.match(/^data:image\/[a-z0-9.+-]+;base64,(.*)$/i) || [];
+  parsed.value[fieldName] = base64;
+  const compacted = compactDocumentImages(parsed.value);
+  Object.keys(imagePayloads).forEach((key) => delete imagePayloads[key]);
+  Object.assign(imagePayloads, compacted.imagePayloads);
+  textarea.value = JSON.stringify(compacted.document, null, 2);
+}
+
+async function attachImageToDocumentJson({ textarea, fieldInput, fileInput, preview, imagePayloads, error }) {
+  const file = fileInput.files?.[0];
+  if (!file) return;
+  const ext = file.type === 'image/png' ? 'png'
+    : file.type === 'image/gif' ? 'gif'
+      : file.type === 'image/webp' ? 'webp'
+        : 'jpg';
+  const fieldName = (fieldInput.value || `image.${ext}`).trim();
+  if (!isImageField(fieldName)) {
+    error(`Image field must end in .jpg, .jpeg, .png, .gif, or .webp.`);
+    fileInput.value = '';
+    return;
+  }
+  try {
+    const dataUrl = await readFileDataUrl(file);
+    mergeImageIntoJsonText(textarea, fieldName, dataUrl, imagePayloads);
+    fieldInput.value = fieldName;
+    preview.querySelector('img').src = dataUrl;
+    preview.querySelector('span').textContent = `${file.name} attached as ${fieldName}`;
+    preview.classList.remove('hidden');
+  } catch (e) {
+    error('Image attach failed: ' + e.message);
+    fileInput.value = '';
+  }
+}
+
 function openCollectionDocumentModal() {
   documentModalMode = 'collection';
   $('#doc-modal-title').firstChild.textContent = 'Add collection';
   $('#doc-modal-sub').textContent = 'Collections are created by inserting their first JSON document.';
   $('#doc-collection-wrap').classList.remove('hidden');
   $('#doc-collection').value = '';
+  documentModalImagePayloads = {};
   $('#doc-json').value = JSON.stringify({ id: 'first-document' }, null, 2);
+  resetDocumentImageAttachment();
   $('#doc-err').classList.add('hidden');
   openModal('modal-document');
   $('#doc-collection').focus();
@@ -141,7 +191,10 @@ function openAddDocumentModal() {
   $('#doc-modal-sub').textContent = `Insert one JSON document into ${state.selectedCol}.`;
   $('#doc-collection-wrap').classList.add('hidden');
   $('#doc-collection').value = state.selectedCol;
-  $('#doc-json').value = JSON.stringify(buildDocumentTemplate(state.selectedCol, state.docsByColl[state.selectedCol] || []), null, 2);
+  const compacted = compactDocumentImages(buildDocumentTemplate(state.selectedCol, state.docsByColl[state.selectedCol] || []));
+  documentModalImagePayloads = compacted.imagePayloads;
+  $('#doc-json').value = JSON.stringify(compacted.document, null, 2);
+  resetDocumentImageAttachment();
   $('#doc-err').classList.add('hidden');
   openModal('modal-document');
   $('#doc-json').focus();
@@ -158,7 +211,7 @@ async function saveDocumentModal() {
     return;
   }
 
-  const parsed = validateDocumentInput($('#doc-json').value);
+  const parsed = validateDocumentInput($('#doc-json').value, { imagePayloads: documentModalImagePayloads });
   if (!parsed.ok) {
     showDocumentModalError(parsed.error);
     return;
@@ -173,6 +226,7 @@ async function saveDocumentModal() {
     closeModal('modal-document');
     invalidateStorageCache(collection);
     await loadCollections();
+    invalidateSemanticSearch(collection);
     state.selectedCol = collection;
     state.tab = 'data';
     state.selectedDoc = null;
@@ -217,6 +271,19 @@ function getExplore(c) {
   return state.model.explores.find((e) => e.collection === c) || null;
 }
 
+function collectionFields(c) {
+  const docs = state.docsByColl[c] || [];
+  return Array.from(new Set(docs.flatMap((doc) => Object.keys(doc))))
+    .filter((key) => !key.startsWith('_'));
+}
+
+function invalidateSemanticSearch(c) {
+  if (c !== state.selectedCol) return;
+  state.search.results = null;
+  state.search.elapsedMs = null;
+  state.search.error = null;
+}
+
 const ICONS = {
   server: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
   coll: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg>`,
@@ -254,8 +321,7 @@ function renderTree() {
         <span class="x" data-del="${esc(c)}" title="Drop collection">✕</span>
       </button>`;
       if (expanded) {
-        const docs = state.docsByColl[c] || [];
-        const fieldNames = docs.length ? Object.keys(docs[0]).filter((k) => !k.startsWith('_')) : [];
+        const fieldNames = collectionFields(c);
         h += `<div class="tn" style="padding-left:24px;color:var(--t3);"><span class="ch"> </span><span class="ic field">${ICONS.field}</span><span class="name">Fields</span><span class="ct">${fieldNames.length}</span></div>`;
         for (const f of fieldNames) {
           h += `<div class="tn" style="padding-left:40px;color:var(--t2);"><span class="ch"> </span><span class="ic field">${ICONS.field}</span><span class="name">${esc(f)}</span></div>`;
@@ -374,7 +440,7 @@ function renderOverview() {
   }
 
   const docs = state.docsByColl[c] || [];
-  const fields = docs.length ? Object.keys(docs[0]).filter((k) => !k.startsWith('_')) : [];
+  const fields = collectionFields(c);
   const totalSize = docs.reduce((s, d) => s + docSize(d), 0);
   const explore = getExplore(c);
 
@@ -503,7 +569,8 @@ function renderDataGrid(docs, keys) {
         if (typeof v === 'number') return `<td class="cn">${fmtNum(v)}</td>`;
         if (typeof v === 'boolean') return `<td class="cb ${v ? 't' : 'f'}">${v}</td>`;
         if (k === 'id') return `<td class="ck">${esc(v)}</td>`;
-        if (isImageField(k) && typeof v === 'string' && v.startsWith('data:')) return `<td class="ci"><img src="${v}" alt=""></td>`;
+        const imageUrl = imageDataUrlFromValue(k, v);
+        if (imageUrl) return `<td class="ci"><img src="${esc(imageUrl)}" alt=""></td>`;
         return `<td class="cs">${esc(String(v))}</td>`;
       }).join('')}</tr>`;
     }).join('')}</tbody>
@@ -549,7 +616,7 @@ async function renderDrawer() {
       else if (typeof v === 'number') { cls = 'num'; html = fmtNum(v); }
       else if (typeof v === 'boolean') { cls = 'bool'; html = String(v); }
       else if (k === 'id') { cls = 'id'; html = esc(v); }
-      else if (isImageField(k) && typeof v === 'string' && v.startsWith('data:')) { cls = 'img'; html = `<img src="${v}" alt="">`; }
+      else if (imageDataUrlFromValue(k, v)) { cls = 'img'; html = `<img src="${esc(imageDataUrlFromValue(k, v))}" alt="">`; }
       else { html = `<span data-edit="${esc(k)}">${esc(String(v))}</span>`; }
       return `<div class="fld-row" data-k="${esc(k)}"><div class="k">${esc(k)}</div><div class="v ${cls}">${html}</div></div>`;
     }).join('')}
@@ -560,11 +627,27 @@ $('#dr-edit').addEventListener('click', () => {
   const d = state.selectedDoc; if (!d) return;
   const c = state.selectedCol;
   const cleanDoc = Object.fromEntries(Object.entries(d).filter(([k]) => !k.startsWith('_')));
-  const jsonStr = JSON.stringify(cleanDoc, null, 2);
+  const compactedDoc = compactDocumentImages(cleanDoc);
+  drawerEditImagePayloads = compactedDoc.imagePayloads;
+  const jsonStr = JSON.stringify(compactedDoc.document, null, 2);
   $('#dr-body').innerHTML = `
     <div class="dr-stats"><div class="dr-stat" style="grid-column:1/-1;"><div class="l">Editing</div><div class="v" style="font-size:13px;font-family:Consolas;color:var(--ac);">${esc(d.id)}</div></div></div>
     <div style="font-size:11px;color:var(--t3);margin-bottom:6px;line-height:1.4;">Edit as JSON. Strings need quotes; numbers and booleans don't. The <code style="font-size:11px;background:var(--bg);padding:0 4px;border-radius:2px;">id</code> field is read-only and must not change.</div>
     <textarea id="dr-edit-json" spellcheck="false" style="width:100%;min-height:320px;padding:9px 11px;font-family:Consolas,monospace;font-size:12px;line-height:1.5;border:1px solid var(--bd);border-radius:3px;background:var(--bg2);resize:vertical;">${esc(jsonStr)}</textarea>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin-top:10px;">
+      <div>
+        <label style="font-size:11px;color:var(--t3);font-weight:700;">Attach image field</label>
+        <input type="text" id="dr-image-field" placeholder="e.g. photo.jpg" style="width:100%;height:32px;border:1px solid var(--bd);border-radius:3px;background:var(--bg2);padding:0 9px;"/>
+      </div>
+      <label class="tbtn" style="border:1px solid var(--bd);background:var(--bg2);height:32px;justify-content:center;">
+        Choose image
+        <input type="file" id="dr-image-file" accept="image/*" style="display:none;"/>
+      </label>
+    </div>
+    <div id="dr-image-preview" class="hidden" style="display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px;color:var(--t3);">
+      <img alt="" style="max-width:72px;max-height:54px;border:1px solid var(--bd);border-radius:3px;object-fit:cover;"/>
+      <span></span>
+    </div>
     <div class="err hidden" id="dr-edit-err" style="margin-top:8px;padding:7px 10px;background:var(--rdb);color:var(--rd);border-radius:3px;font-size:11.5px;font-family:Consolas,monospace;white-space:pre-wrap;"></div>
     <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;">
       <button class="tbtn sec" id="edit-cancel" style="border:1px solid var(--bd);background:var(--bg2);">Cancel</button>
@@ -572,11 +655,23 @@ $('#dr-edit').addEventListener('click', () => {
     </div>
   `;
   $('#edit-cancel').addEventListener('click', () => renderDrawer());
+  $('#dr-image-file').addEventListener('change', () => attachImageToDocumentJson({
+    textarea: $('#dr-edit-json'),
+    fieldInput: $('#dr-image-field'),
+    fileInput: $('#dr-image-file'),
+    preview: $('#dr-image-preview'),
+    imagePayloads: drawerEditImagePayloads,
+    error: (message) => {
+      const errEl = $('#dr-edit-err');
+      errEl.classList.remove('hidden');
+      errEl.textContent = message;
+    },
+  }));
   $('#edit-save').addEventListener('click', async () => {
     const errEl = $('#dr-edit-err');
     errEl.classList.add('hidden');
     let parsed;
-    const validated = validateDocumentInput($('#dr-edit-json').value, { existingId: d.id });
+    const validated = validateDocumentInput($('#dr-edit-json').value, { existingId: d.id, imagePayloads: drawerEditImagePayloads });
     if (!validated.ok) {
       errEl.classList.remove('hidden'); errEl.textContent = validated.error; return;
     }
@@ -589,9 +684,12 @@ $('#dr-edit').addEventListener('click', () => {
       toast('Document updated', 'ok');
       invalidateStorageCache(c);
       await refreshDocs(c);
+      invalidateSemanticSearch(c);
       const refreshed = (state.docsByColl[c] || []).find((x) => String(x.id) === String(d.id));
       if (refreshed) { state.selectedDoc = refreshed; renderDrawer(); }
-      renderData();
+      renderTree();
+      if (state.tab === 'data') renderData();
+      else if (state.tab === 'search') renderSemanticSearch();
     } catch (e) {
       errEl.classList.remove('hidden');
       errEl.textContent = 'Save failed: ' + e.message;
@@ -608,6 +706,7 @@ $('#dr-del').addEventListener('click', () => {
       closeDrawer();
       invalidateStorageCache(state.selectedCol);
       await refreshDocs(state.selectedCol);
+      invalidateSemanticSearch(state.selectedCol);
       render();
     } catch (e) { toast('Delete failed: ' + e.message, 'err'); }
   });
@@ -920,7 +1019,7 @@ function renderSemanticSearchBody(c, s) {
       const type = c === 'id' ? 'pk' : semanticTypeBadge(sample);
       return `<th><div class="ti">${esc(c)}${type ? `<span class="tb ${type === 'pk' ? 'pk' : ''}">${type}</span>` : ''}</div></th>`;
     }).join('')}</tr></thead>
-    <tbody>${rows.map((r, i) => `<tr data-idx="${i}" title="Open document"><td class="rn">${i + 1}</td>${cols.map((c) => renderSemanticCell(r[c])).join('')}</tr>`).join('')}</tbody></table>
+    <tbody>${rows.map((r, i) => `<tr data-idx="${i}" title="Open document"><td class="rn">${i + 1}</td>${cols.map((c) => renderSemanticCell(c, r[c])).join('')}</tr>`).join('')}</tbody></table>
   </div>`;
 }
 
@@ -959,11 +1058,13 @@ function semanticTypeBadge(value) {
   return '';
 }
 
-function renderSemanticCell(value) {
+function renderSemanticCell(key, value) {
   if (value == null) return '<td class="cnu">[NULL]</td>';
   if (typeof value === 'number') return `<td class="cn">${fmtNum(value)}</td>`;
   if (typeof value === 'boolean') return `<td class="cb">${value ? 'true' : 'false'}</td>`;
   if (typeof value === 'object') return `<td class="ck">${esc(JSON.stringify(value))}</td>`;
+  const imageUrl = imageDataUrlFromValue(key, value);
+  if (imageUrl) return `<td class="ci"><img src="${esc(imageUrl)}" alt=""></td>`;
   return `<td class="cs">${esc(String(value))}</td>`;
 }
 
@@ -1334,6 +1435,14 @@ $('#cm-disconnect').addEventListener('click', async () => {
 });
 $('#sb-add-collection').addEventListener('click', openCollectionDocumentModal);
 $('#doc-save').addEventListener('click', saveDocumentModal);
+$('#doc-image-file').addEventListener('change', () => attachImageToDocumentJson({
+  textarea: $('#doc-json'),
+  fieldInput: $('#doc-image-field'),
+  fileInput: $('#doc-image-file'),
+  preview: $('#doc-image-preview'),
+  imagePayloads: documentModalImagePayloads,
+  error: showDocumentModalError,
+}));
 
 // Connect modal
 $('#connect-open').addEventListener('click', async () => {

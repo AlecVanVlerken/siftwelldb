@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { detectType, esc, fmtNum, fmtSize, isImageField } from './format.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { detectType, esc, fmtNum, fmtSize, imageDataUrlFromValue, imageMimeFromField, isImageField } from './format.js';
 
 describe('format helpers', () => {
   it('escapes HTML-sensitive characters', () => {
@@ -27,6 +29,14 @@ describe('format helpers', () => {
     expect(isImageField('cover.jpg')).toBe(true);
     expect(isImageField('avatar.png')).toBe(true);
     expect(isImageField('title')).toBe(false);
+  });
+
+  it('builds preview data URLs for raw base64 images', () => {
+    const rabbitBase64 = fs.readFileSync(path.resolve('rabbit.jpg')).toString('base64');
+
+    expect(imageMimeFromField('photo.jpg')).toBe('image/jpeg');
+    expect(imageDataUrlFromValue('photo.jpg', rabbitBase64)).toBe(`data:image/jpeg;base64,${rabbitBase64}`);
+    expect(imageDataUrlFromValue('title', rabbitBase64)).toBeNull();
   });
 });
 

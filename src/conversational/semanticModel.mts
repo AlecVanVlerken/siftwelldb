@@ -219,6 +219,11 @@ export async function generateSemanticModel(dbms: SimpleDbms): Promise<SemanticM
 const SAMPLE_ROW_LIMIT = 10;
 const VALUE_HINT_LIMIT = 8;
 
+function isImageFieldName(name: string): boolean {
+  return /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(name)
+    || /\.(jpe?g|png|gif|webp)$/i.test(name);
+}
+
 async function sampleDocuments(dbms: SimpleDbms, collection: string): Promise<Record<string, FieldValue>[]> {
   const samples: Record<string, FieldValue>[] = [];
   try {
@@ -273,11 +278,15 @@ function deterministicSynonyms(fieldName: string): string[] {
   if (normalized === 'name' || normalized.endsWith('name')) {
     add('person', 'employee', 'record name');
   }
+  if (isImageFieldName(fieldName)) {
+    add('image', 'photo', 'picture', 'visual');
+  }
 
   return [...synonyms];
 }
 
 function sampledValueHint(field: FieldDefinition, samples: Record<string, FieldValue>[]): string | undefined {
+  if (isImageFieldName(field.name)) return undefined;
   if (field.type !== 'string' && field.type !== 'boolean') return undefined;
   const values = new Set<string>();
   for (const sample of samples) {
@@ -294,10 +303,14 @@ function sampledValueHint(field: FieldDefinition, samples: Record<string, FieldV
 function enrichGeneratedField(field: FieldDefinition, samples: Record<string, FieldValue>[]): FieldDefinition {
   const synonyms = deterministicSynonyms(field.name);
   const valueHint = sampledValueHint(field, samples);
+  const imageTags = isImageFieldName(field.name)
+    ? ['image field: base64-encoded media; use semantic image search for visual similarity instead of SQL filters']
+    : [];
+  const tags = [...(field.tags ?? []), ...imageTags, ...(valueHint ? [valueHint] : [])];
   return {
     ...field,
     synonyms: synonyms.length > 0 ? synonyms : field.synonyms,
-    tags: valueHint ? [...(field.tags ?? []), valueHint] : field.tags,
+    tags: tags.length > 0 ? tags : field.tags,
   };
 }
 
@@ -313,7 +326,7 @@ type FieldStats = {
 };
 
 async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: FieldDefinition[]): Promise<FieldStats> {
-  const stringFieldNames = new Set(fields.filter((f) => f.type === 'string').map((f) => f.name));
+  const stringFieldNames = new Set(fields.filter((f) => f.type === 'string' && !isImageFieldName(f.name)).map((f) => f.name));
   const numericFieldNames = new Set(fields.filter((f) => f.type === 'number').map((f) => f.name));
 
   const sampleRows: Record<string, FieldValue>[] = [];
@@ -328,7 +341,7 @@ async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: F
     const cursor = dbms.cursor(collection, 'id', undefined);
     for await (const json of cursor) {
       const doc = JSON.parse(json) as Record<string, FieldValue>;
-      if (sampleRows.length < 10) sampleRows.push(doc);
+      if (sampleRows.length < 10) sampleRows.push(redactImageValues(doc));
       rowCount++;
       for (const n of stringFieldNames) {
         const v = doc[n];
@@ -353,6 +366,15 @@ async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: F
   }
 
   return { sampleRows, distinctStringValues, numericStats, rowCount };
+}
+
+function redactImageValues(row: Record<string, FieldValue>): Record<string, FieldValue> {
+  return Object.fromEntries(
+    Object.entries(row).map(([key, value]) => [
+      key,
+      isImageFieldName(key) && typeof value === 'string' ? `[image base64 omitted, ${value.length} chars]` : value,
+    ]),
+  ) as Record<string, FieldValue>;
 }
 
 function buildEnrichmentPrompt(model: SemanticModel, stats: Record<string, FieldStats>): string {
