@@ -33,10 +33,7 @@ export function computeAggregate(rows: QueryResultRow[], agg: AggregateExpressio
   switch (agg.func) {
     case 'COUNT':
       if (agg.field === '*') return input.length;
-      return input.reduce(
-        (n, row) => n + (row[agg.field] !== undefined && row[agg.field] !== null ? 1 : 0),
-        0,
-      );
+      return input.reduce((n, row) => n + (row[agg.field] !== undefined && row[agg.field] !== null ? 1 : 0), 0);
 
     case 'SUM': {
       let sum = 0;
@@ -170,7 +167,7 @@ export function executeGroupBy(
       // to `undefined` so the column still exists but reads as missing.
       // `evaluateIsNull` already treats both as "no value", so a
       // `HAVING ... IS NULL` predicate matches empty-group aggregates.
-      resultRow[agg.alias] = value === null ? undefined : (value);
+      resultRow[agg.alias] = value === null ? undefined : value;
     }
 
     if (having && !evaluateWhere(resultRow as Record<string, FieldValue>, having)) continue;

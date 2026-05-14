@@ -57,13 +57,14 @@ export function getEmbeddingStatus(): {
     image: { state: LoadState; error: string | null; modelId: string; dimension: number };
   };
 } {
-  const state = loadState.clip === 'error' || loadState.minilm === 'error'
-    ? 'error'
-    : loadState.clip === 'loading' || loadState.minilm === 'loading'
-      ? 'loading'
-      : loadState.clip === 'ready' && loadState.minilm === 'ready'
-        ? 'ready'
-        : 'idle';
+  const state =
+    loadState.clip === 'error' || loadState.minilm === 'error'
+      ? 'error'
+      : loadState.clip === 'loading' || loadState.minilm === 'loading'
+        ? 'loading'
+        : loadState.clip === 'ready' && loadState.minilm === 'ready'
+          ? 'ready'
+          : 'idle';
   return {
     state,
     error: loadError.clip || loadError.minilm,
@@ -72,7 +73,8 @@ export function getEmbeddingStatus(): {
       label: 'MiniLM text + CLIP images',
       dimension: CLIP_DIM,
       supportsImages: true,
-      description: 'Text search uses a MiniLM text index; photo search and image upload use a separate CLIP image index.',
+      description:
+        'Text search uses a MiniLM text index; photo search and image upload use a separate CLIP image index.',
     },
     indexes: {
       text: { state: loadState.minilm, error: loadError.minilm, modelId: MINILM_MODEL_ID, dimension: MINILM_DIM },
@@ -106,13 +108,8 @@ function loadClipModels(): Promise<ClipModels> {
     loadError.clip = null;
     modelsPromise = (async () => {
       console.log('Lazy loading huggingface transformers for semantic search...');
-      const {
-        AutoTokenizer,
-        AutoProcessor,
-        CLIPTextModelWithProjection,
-        CLIPVisionModelWithProjection,
-        RawImage,
-      } = await import('@huggingface/transformers');
+      const { AutoTokenizer, AutoProcessor, CLIPTextModelWithProjection, CLIPVisionModelWithProjection, RawImage } =
+        await import('@huggingface/transformers');
 
       console.log('Loading CLIP tokenizer & text model...');
       const tokenizer = await AutoTokenizer.from_pretrained(CLIP_MODEL_ID);

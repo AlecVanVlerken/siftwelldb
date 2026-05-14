@@ -107,10 +107,7 @@ export class QueryLanguage {
    * Joins are not part of the current query language, so this is equivalent
    * to {@link executeOnRows}.
    */
-  async executeWithPreloadedRows(
-    preloadedRows: QueryResultRow[],
-    parsed: ParsedSelect,
-  ): Promise<QueryResultRow[]> {
+  async executeWithPreloadedRows(preloadedRows: QueryResultRow[], parsed: ParsedSelect): Promise<QueryResultRow[]> {
     return executeWithPreloadedRows(this.dbms, preloadedRows, parsed);
   }
 }

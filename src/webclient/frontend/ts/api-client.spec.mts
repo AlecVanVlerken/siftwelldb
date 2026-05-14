@@ -7,12 +7,9 @@ afterEach(() => {
 
 describe('api client', () => {
   it('serializes object bodies as JSON', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response('{"ok":true}', { status: 200 }),
-    );
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
 
-    await expect(api('/api/example', { method: 'POST', body: { name: 'Ada' } }))
-      .resolves.toEqual({ ok: true });
+    await expect(api('/api/example', { method: 'POST', body: { name: 'Ada' } })).resolves.toEqual({ ok: true });
 
     const [, init] = fetchMock.mock.calls[0];
     expect(init?.body).toBe('{"name":"Ada"}');
@@ -20,11 +17,8 @@ describe('api client', () => {
   });
 
   it('throws server error messages when available', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response('{"error":"No database connected"}', { status: 400 }),
-    );
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"error":"No database connected"}', { status: 400 }));
 
     await expect(api('/api/documents/books')).rejects.toThrow('No database connected');
   });
 });
-

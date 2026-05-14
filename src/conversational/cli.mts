@@ -107,7 +107,9 @@ async function main() {
   // Interactive REPL
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   let closed = false;
-  rl.on('close', () => { closed = true; });
+  rl.on('close', () => {
+    closed = true;
+  });
 
   const ask = () => {
     if (closed) return;

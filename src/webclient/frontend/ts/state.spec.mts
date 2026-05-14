@@ -24,4 +24,3 @@ describe('frontend state', () => {
     expect(state.chatHistory).toEqual([]);
   });
 });
-

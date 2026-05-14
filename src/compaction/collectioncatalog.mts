@@ -126,11 +126,7 @@ export class CollectionCatalog {
    */
   hasHnsw(collection: string): boolean {
     const hnswMeta = this.getHnswMetaSnapshot();
-    return (
-      collection in hnswMeta ||
-      `${collection}::text` in hnswMeta ||
-      `${collection}::image` in hnswMeta
-    );
+    return collection in hnswMeta || `${collection}::text` in hnswMeta || `${collection}::image` in hnswMeta;
   }
 
   /**

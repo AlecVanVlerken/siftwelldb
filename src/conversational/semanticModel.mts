@@ -110,7 +110,7 @@ export function modelToSchemaPrompt(model: SemanticModel): string {
       : `Collection "${explore.collection}" (${explore.label})`;
     parts.push(header);
 
-      const fieldDescs = explore.fields
+    const fieldDescs = explore.fields
       .filter((f) => !f.hidden)
       .map((f) => {
         let desc = `  - ${f.name} (${f.type}, label: "${f.label}")`;
@@ -229,9 +229,15 @@ function isImageMimeMetadataField(name: string, value: unknown): boolean {
 }
 
 function isImageFieldName(name: string, samples: Record<string, FieldValue>[] = []): boolean {
-  return /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(name)
-    || /\.(jpe?g|png|gif|webp)$/i.test(name)
-    || samples.some((sample) => typeof sample[imageMimeMetadataField(name)] === 'string' && String(sample[imageMimeMetadataField(name)]).startsWith('image/'));
+  return (
+    /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(name) ||
+    /\.(jpe?g|png|gif|webp)$/i.test(name) ||
+    samples.some(
+      (sample) =>
+        typeof sample[imageMimeMetadataField(name)] === 'string' &&
+        String(sample[imageMimeMetadataField(name)]).startsWith('image/'),
+    )
+  );
 }
 
 async function sampleDocuments(dbms: SimpleDbms, collection: string): Promise<Record<string, FieldValue>[]> {
@@ -288,7 +294,10 @@ function deterministicSynonyms(fieldName: string): string[] {
   if (normalized === 'name' || normalized.endsWith('name')) {
     add('person', 'employee', 'record name');
   }
-  if (isImageFieldName(fieldName) || ['image', 'photo', 'picture', 'cover', 'avatar', 'thumbnail', 'img'].includes(normalized)) {
+  if (
+    isImageFieldName(fieldName) ||
+    ['image', 'photo', 'picture', 'cover', 'avatar', 'thumbnail', 'img'].includes(normalized)
+  ) {
     add('image', 'photo', 'picture', 'visual');
   }
 
@@ -338,7 +347,9 @@ type FieldStats = {
 async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: FieldDefinition[]): Promise<FieldStats> {
   const stringFieldNames = new Set(
     fields
-      .filter((f) => f.type === 'string' && !isImageFieldName(f.name) && !f.tags?.some((tag) => tag.includes('image field')))
+      .filter(
+        (f) => f.type === 'string' && !isImageFieldName(f.name) && !f.tags?.some((tag) => tag.includes('image field')),
+      )
       .map((f) => f.name),
   );
   const numericFieldNames = new Set(fields.filter((f) => f.type === 'number').map((f) => f.name));
@@ -365,11 +376,16 @@ async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: F
         const v = doc[n];
         if (typeof v === 'number') {
           const a = numAccum[n];
-          a.sum += v; a.min = Math.min(a.min, v); a.max = Math.max(a.max, v); a.count++;
+          a.sum += v;
+          a.min = Math.min(a.min, v);
+          a.max = Math.max(a.max, v);
+          a.count++;
         }
       }
     }
-  } catch { /* empty collection or no id index */ }
+  } catch {
+    /* empty collection or no id index */
+  }
 
   const distinctStringValues: Record<string, string[]> = {};
   for (const [k, s] of Object.entries(distinctSets)) distinctStringValues[k] = [...s].sort();
@@ -386,7 +402,9 @@ function redactImageValues(row: Record<string, FieldValue>): Record<string, Fiel
   return Object.fromEntries(
     Object.entries(row).map(([key, value]) => [
       key,
-      isImageFieldName(key, [row]) && typeof value === 'string' ? `[image base64 omitted, ${value.length} chars]` : value,
+      isImageFieldName(key, [row]) && typeof value === 'string'
+        ? `[image base64 omitted, ${value.length} chars]`
+        : value,
     ]),
   ) as Record<string, FieldValue>;
 }
@@ -488,7 +506,11 @@ function mergeEnrichedModel(original: SemanticModel, llmOutput: string): Semanti
  * and the LLM cannot invent new base fields or join relationships. Each explore is
  * single-collection by design; cross-collection analytics is a SQL-tab feature.
  */
-export async function enrichModelWithLLM(model: SemanticModel, dbms: SimpleDbms, llm: LLMProvider): Promise<SemanticModel> {
+export async function enrichModelWithLLM(
+  model: SemanticModel,
+  dbms: SimpleDbms,
+  llm: LLMProvider,
+): Promise<SemanticModel> {
   const stats: Record<string, FieldStats> = {};
   for (const explore of model.explores) {
     stats[explore.collection] = await collectFieldStats(dbms, explore.collection, explore.fields);
@@ -502,7 +524,10 @@ export async function enrichModelWithLLM(model: SemanticModel, dbms: SimpleDbms,
     const response = await llm.generate(systemPrompt, prompt);
     return mergeEnrichedModel(model, response.text);
   } catch (err) {
-    console.warn('[enrichModel] LLM enrichment failed, using unenriched model:', err instanceof Error ? err.message : err);
+    console.warn(
+      '[enrichModel] LLM enrichment failed, using unenriched model:',
+      err instanceof Error ? err.message : err,
+    );
     return model;
   }
 }

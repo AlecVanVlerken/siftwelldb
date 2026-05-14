@@ -11,4 +11,3 @@ export function getSqlMutationKind(sql: string): SqlMutationKind | null {
 export function isMutatingSql(sql: string): boolean {
   return getSqlMutationKind(sql) !== null;
 }
-

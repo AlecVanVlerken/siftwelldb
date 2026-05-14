@@ -27,9 +27,7 @@ export async function api<T = Record<string, unknown>>(path: string, opts: ApiOp
   }
 
   if (!res.ok) {
-    const message = json && typeof json === 'object' && 'error' in json
-      ? String(json.error)
-      : `HTTP ${res.status}`;
+    const message = json && typeof json === 'object' && 'error' in json ? String(json.error) : `HTTP ${res.status}`;
     throw new Error(message);
   }
 
