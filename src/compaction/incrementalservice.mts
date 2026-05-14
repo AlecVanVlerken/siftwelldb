@@ -182,6 +182,7 @@ export class IncrementalCompactionService {
           blockNumber: target.blockNumber,
           nodeId: target.nodeId,
           maxBlockExclusive: target.maxBlockExclusive,
+          hnswUnitState: target.hnswUnitState,
         };
       });
   }

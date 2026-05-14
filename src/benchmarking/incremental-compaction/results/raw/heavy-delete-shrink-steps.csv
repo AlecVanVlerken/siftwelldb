@@ -1,9 +1,9 @@
 scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-heavy-delete-shrink,1,true,9.080,196,88,108,2.2273,802816,12,49152,6,0,0,12,6,0,0,12
-heavy-delete-shrink,2,true,7.066,184,88,96,2.0909,753664,12,98304,6,0,0,12,12,0,0,24
-heavy-delete-shrink,3,true,11.343,172,88,84,1.9545,704512,12,147456,6,0,0,12,18,0,0,36
-heavy-delete-shrink,4,true,7.558,160,88,72,1.8182,655360,12,196608,6,0,0,12,24,0,0,48
-heavy-delete-shrink,5,true,6.596,148,88,60,1.6818,606208,12,245760,6,0,0,12,30,0,0,60
-heavy-delete-shrink,6,true,4.641,136,88,48,1.5455,557056,12,294912,6,0,0,12,36,0,0,72
-heavy-delete-shrink,7,true,5.297,128,88,40,1.4545,524288,8,327680,4,0,0,8,40,0,0,80
-heavy-delete-shrink,8,false,1.090,128,88,40,1.4545,524288,0,327680,0,0,0,0,40,0,0,80
+heavy-delete-shrink,1,true,4.972,196,88,108,2.2273,802816,12,49152,6,0,0,12,6,0,0,12
+heavy-delete-shrink,2,true,5.648,184,88,96,2.0909,753664,12,98304,6,0,0,12,12,0,0,24
+heavy-delete-shrink,3,true,5.088,172,88,84,1.9545,704512,12,147456,6,0,0,12,18,0,0,36
+heavy-delete-shrink,4,true,8.014,160,88,72,1.8182,655360,12,196608,6,0,0,12,24,0,0,48
+heavy-delete-shrink,5,true,3.743,148,88,60,1.6818,606208,12,245760,6,0,0,12,30,0,0,60
+heavy-delete-shrink,6,true,4.498,136,88,48,1.5455,557056,12,294912,6,0,0,12,36,0,0,72
+heavy-delete-shrink,7,true,2.746,113,88,25,1.2841,462848,23,389120,4,0,0,23,40,0,0,95
+heavy-delete-shrink,8,false,0.890,113,88,25,1.2841,462848,0,389120,0,0,0,0,40,0,0,95

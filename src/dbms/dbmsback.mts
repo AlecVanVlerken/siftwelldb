@@ -757,6 +757,12 @@ export class DbmsBack {
     }
     const iterableKeys = document.getIterableKeys();
 
+    const hnswMeta = this.getExistingHnswMeta();
+    const collectionHasHnsw = hnswMeta !== null && collection in hnswMeta;
+    if (collectionHasHnsw && !this.hnswConfig) {
+      throw new Error(`Cannot delete from HNSW-backed collection "${collection}" without hnswConfig`);
+    }
+
     // Delete from id B+ tree
     await idTree.delete(idBuffer);
     metaData[0] = idTree.getRoot().getBlockNumber();
@@ -780,17 +786,74 @@ export class DbmsBack {
       keyMetaData[0] = keyTree.getRoot().getBlockNumber();
     }
 
-    // Remove from HNSW (no-op if this collection was never indexed or the
-    // document was inserted without HNSW config active).
-    if (this.hnswConfig && this.hnswIndexCache.has(collection)) {
-      await this.hnswIndexCache.get(collection)!.delete(documentPointer);
+    let retainedRecordForSemanticTombstone = false;
+
+    if (collectionHasHnsw) {
+      const hnswIdx = await this.getOrCreateHnswIndex(collection);
+      retainedRecordForSemanticTombstone = await hnswIdx.delete(documentPointer);
     }
 
-    // Free the record blocks from the record store. HNSW deletion rebuilds its
-    // graph without the old document pointer before the pointer can be reused.
-    await this.recordStore.deleteRecord(documentPointer);
+    // HNSW currently uses physical record pointers as semantic doc ids. When a
+    // semantic entry is tombstoned, keep its record chain allocated as the
+    // durable identity anchor so RecordStore cannot reuse that pointer for a
+    // later live document in the same HNSW collection. The logical DBMS delete
+    // has already removed every B+ tree path to the document above.
+    if (!retainedRecordForSemanticTombstone) {
+      await this.recordStore.deleteRecord(documentPointer);
+    }
 
     // Note: metaWriteJSON is called in commit() to batch writes
+  }
+
+  /**
+   * HNSW tombstone primitive.
+   *
+   * This marks the existing semantic entry for a logical document as deleted
+   * inside the HNSW index while leaving the logical document and its regular
+   * B+ tree entries untouched. Normal deleteDocument() uses the same HNSWIndex
+   * tombstone primitive after removing logical B+ tree entries.
+   */
+  async tombstoneSemanticEntry(documentId: number | string, collection: string): Promise<boolean> {
+    if (!this.hnswConfig) {
+      throw new Error('Cannot tombstone semantic entry without hnswConfig');
+    }
+
+    const hnswMeta = this.getExistingHnswMeta();
+    if (!hnswMeta || !(collection in hnswMeta)) return false;
+
+    const collectionMeta = this.getCollectionMeta(collection);
+    const metaData = collectionMeta['id'];
+    if (metaData === undefined) {
+      throw new Error('No document with given id exists');
+    }
+
+    const idBuffer = toBuffer(metaData[1], documentId);
+    const idTree = await this.getOrCreateTree(collection, 'id', metaData[1], metaData[0]);
+    const documentPointerBuffer = await idTree.get(idBuffer);
+    if (!documentPointerBuffer) {
+      throw new Error('Document not found');
+    }
+
+    const documentPointer = documentPointerBuffer.readUInt32BE(0);
+    const hnswIdx = await this.getOrCreateHnswIndex(collection);
+    return await hnswIdx.tombstone(documentPointer);
+  }
+
+  /**
+   * Ensure a collection has a clean HNSW metadata/index container.
+   *
+   * Full vacuum rebuilds semantic indexes from live logical documents only.
+   * When an HNSW-backed source collection has no live semantic documents left,
+   * no copied insert will naturally create target HNSW metadata. This helper
+   * creates an empty live-only index so the rebuilt target preserves the
+   * collection's semantic capability without carrying source tombstones over.
+   */
+  async ensureHnswCollection(collection: string): Promise<void> {
+    if (!this.hnswConfig) {
+      throw new Error('Cannot ensure HNSW collection without hnswConfig');
+    }
+
+    await this.getOrCreateHnswIndex(collection);
   }
 
   /**
@@ -925,6 +988,7 @@ export class DbmsBack {
         collection,
         kind: 'hnsw-meta',
         blockNumber: metaBlock,
+        hnswUnitState: 'live',
       },
     ];
     targets.push(
@@ -933,6 +997,7 @@ export class DbmsBack {
         kind: target.kind,
         nodeId: target.nodeId,
         blockNumber: target.blockNumber,
+        hnswUnitState: target.hnswUnitState,
       })),
     );
     return targets;
@@ -1079,6 +1144,7 @@ export class DbmsBack {
           collection,
           blockNumber: target.blockNumber,
           nodeId: target.nodeId,
+          hnswUnitState: target.hnswUnitState,
         });
       }
     }

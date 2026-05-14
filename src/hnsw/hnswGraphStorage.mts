@@ -644,7 +644,9 @@ export class HNSWGraphStorage {
    *
    * The persisted graph currently uses NodeId as both identity and physical
    * location, so relocation repairs stored neighbor references and the entry
-   * point when they point at the moved node.
+   * point when they point at the moved node. Tombstoned nodes are valid
+   * retained graph units; moving them preserves the deleted flag and keeps
+   * them available as routing artifacts until a later vacuum can remove them.
    */
   async relocateNode(
     nodeId: NodeId,
@@ -652,9 +654,6 @@ export class HNSWGraphStorage {
   ): Promise<HnswGraphNodeRelocationResult> {
     const oldLocation = decodeNodeId(nodeId);
     const node = await this.getNode(nodeId);
-    if (node.deleted) {
-      throw new Error(`HNSWGraphStorage: cannot relocate deleted node ${nodeId}`);
-    }
 
     const moved = new HNSWNode({
       nodeId: 0,

@@ -32,6 +32,7 @@ describe('record to HNSW consistency after incremental compaction', () => {
       group: 'free',
       indexedFields: 2,
       semanticText: 'semantic deleted topic',
+      skipSemanticIndex: true,
     });
     await insertDocuments(db, 'articles', 'tail', 22, {
       payloadWords: 210,

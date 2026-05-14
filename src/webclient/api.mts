@@ -147,7 +147,7 @@ export class ApiRouter {
           sendError(res, 400, 'Missing collection');
           return;
         }
-        const defaults = this.db.getCompressionDefaults(collection);
+        const defaults = await this.db.getCompressionDefaults(collection);
         sendJSON(res, 200, { defaults });
         return;
       }

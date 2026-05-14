@@ -18,7 +18,7 @@
   "shrunkBlocks": 60,
   "shrunkBytes": 245760,
   "stepsTaken": 4,
-  "timeTakenMs": 31.86790000000019,
+  "timeTakenMs": 18.46430000000001,
   "relocatedDocuments": 15,
   "relocatedBtreeNodes": 0,
   "relocatedHnswUnits": 0,
@@ -28,7 +28,7 @@
       "scenario": "k-convergence",
       "step": 1,
       "didWork": true,
-      "timeMs": 9.5296000000003,
+      "timeMs": 6.53619999999998,
       "shrunkBlocksThisStep": 16,
       "cumulativeShrunkBytes": 65536,
       "stepRelocatedDocuments": 4,
@@ -49,7 +49,7 @@
       "scenario": "k-convergence",
       "step": 2,
       "didWork": true,
-      "timeMs": 7.435099999999693,
+      "timeMs": 4.818799999999982,
       "shrunkBlocksThisStep": 16,
       "cumulativeShrunkBytes": 131072,
       "stepRelocatedDocuments": 4,
@@ -70,7 +70,7 @@
       "scenario": "k-convergence",
       "step": 3,
       "didWork": true,
-      "timeMs": 10.233499999999822,
+      "timeMs": 3.757000000000005,
       "shrunkBlocksThisStep": 16,
       "cumulativeShrunkBytes": 196608,
       "stepRelocatedDocuments": 4,
@@ -91,7 +91,7 @@
       "scenario": "k-convergence",
       "step": 4,
       "didWork": true,
-      "timeMs": 3.790100000000166,
+      "timeMs": 2.865399999999994,
       "shrunkBlocksThisStep": 12,
       "cumulativeShrunkBytes": 245760,
       "stepRelocatedDocuments": 3,
@@ -110,12 +110,12 @@
     }
   ],
   "queryBefore": {
-    "idLookupMs": 6.80619999999999,
-    "cursorQueryMs": 24.120300000000043
+    "idLookupMs": 3.137599999999992,
+    "cursorQueryMs": 15.624200000000002
   },
   "queryAfter": {
-    "idLookupMs": 3.679700000000139,
-    "cursorQueryMs": 16.097899999999754
+    "idLookupMs": 2.235600000000005,
+    "cursorQueryMs": 11.309600000000017
   },
   "firstShrinkStep": 1,
   "firstShrinkReason": "record relocation + tail reclaim",

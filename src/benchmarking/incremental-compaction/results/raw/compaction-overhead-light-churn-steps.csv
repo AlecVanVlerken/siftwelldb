@@ -1,2 +1,2 @@
 scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-compaction-overhead-light-churn,1,true,0.699,29,29,0,1.0000,118784,4,16384,0,0,0,4,0,0,0,4
+compaction-overhead-light-churn,1,true,0.187,29,29,0,1.0000,118784,4,16384,0,0,0,4,0,0,0,4

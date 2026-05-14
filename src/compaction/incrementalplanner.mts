@@ -39,6 +39,10 @@ export class IncrementalPlanner {
       this.source.listHnswRelocationCandidateTargets(candidateLimit),
     ]);
 
+    // HNSW candidates carry their semantic/physical state. Tombstoned-retained
+    // units are still real physical blockers and must be relocated if they sit
+    // above the target boundary; reclaimable-dead units are not emitted by the
+    // current HNSW storage model because proven-dead storage is freed eagerly.
     const tailBlockers = [...recordCandidates, ...btreeCandidates, ...hnswCandidates]
       .filter((target) => (target.blockNumber ?? 0) >= targetBlockCount)
       .sort((a, b) => {

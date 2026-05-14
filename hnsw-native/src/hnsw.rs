@@ -261,7 +261,7 @@ impl HnswCore {
 
     /// The level assigned to this doc_id's node, or -1 if not found.
     pub fn get_level(&self, doc_id: u32) -> i32 {
-        match self.doc_to_node.get(&doc_id) {
+        match self.all_doc_to_node.get(&doc_id) {
             Some(&idx) => self.nodes[idx as usize].level as i32,
             None       => -1,
         }
@@ -270,14 +270,14 @@ impl HnswCore {
     /// Number of neighbors of `doc_id` at `layer`, or -1 if node not found
     /// or layer out of range.
     pub fn get_neighbor_count(&self, doc_id: u32, layer: usize) -> i32 {
-        let Some(&idx) = self.doc_to_node.get(&doc_id) else { return -1; };
+        let Some(&idx) = self.all_doc_to_node.get(&doc_id) else { return -1; };
         self.nodes[idx as usize].neighbors.get(layer).map_or(-1, |v| v.len() as i32)
     }
 
     /// Write up to `max_count` neighbor doc_ids of `doc_id` at `layer` into
     /// `out`.  Returns the actual count written, or -1 if node not found.
     pub fn get_neighbors(&self, doc_id: u32, layer: usize, out: &mut [u32]) -> i32 {
-        let Some(&idx) = self.doc_to_node.get(&doc_id) else { return -1; };
+        let Some(&idx) = self.all_doc_to_node.get(&doc_id) else { return -1; };
         let nb_ids = match self.nodes[idx as usize].neighbors.get(layer) {
             Some(v) => v,
             None    => return 0,
@@ -300,7 +300,7 @@ impl HnswCore {
     /// Returns total u32 values written, or -1 if node not found.
     /// Single FFI call replaces (maxLevel+1) calls to `get_neighbors`.
     pub fn get_all_neighbors(&self, doc_id: u32, out: &mut [u32]) -> i32 {
-        let Some(&idx) = self.doc_to_node.get(&doc_id) else { return -1; };
+        let Some(&idx) = self.all_doc_to_node.get(&doc_id) else { return -1; };
         let node = &self.nodes[idx as usize];
         if out.is_empty() { return 0; }
         out[0] = node.level as u32;
@@ -340,7 +340,7 @@ impl HnswCore {
 
     /// Overwrite the neighbor list for `doc_id` at `layer` with the provided
     /// doc_ids.  Called after `import_node` to restore persisted connections.
-    /// The `neighbor_doc_ids` slice must contain valid live doc_ids.
+    /// The `neighbor_doc_ids` slice must contain valid persisted doc_ids.
     pub fn import_set_neighbors(&mut self, doc_id: u32, layer: usize, neighbor_doc_ids: &[u32]) {
         let Some(&idx) = self.all_doc_to_node.get(&doc_id) else { return; };
         if layer >= self.nodes[idx as usize].neighbors.len() { return; }
@@ -353,7 +353,7 @@ impl HnswCore {
 
     /// Set the entry point and max level after all nodes have been imported.
     pub fn import_finish(&mut self, entry_doc_id: Option<u32>, max_level: usize) {
-        self.entry_point = entry_doc_id.and_then(|d| self.doc_to_node.get(&d).copied());
+        self.entry_point = entry_doc_id.and_then(|d| self.all_doc_to_node.get(&d).copied());
         self.max_level   = max_level;
     }
 

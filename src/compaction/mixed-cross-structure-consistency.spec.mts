@@ -30,6 +30,7 @@ describe('mixed cross-structure consistency after incremental compaction', () =>
       group: 'old',
       indexedFields: 4,
       semanticText: 'mixed semantic deleted article',
+      skipSemanticIndex: true,
     });
     await insertDocuments(db, 'articles', 'tail', 24, {
       payloadWords: 180,

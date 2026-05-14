@@ -12,10 +12,10 @@ import {
   type SemanticCheck,
 } from '../shared/consistency-utils.mjs';
 import {
-  DEFAULT_K,
   deleteDocuments,
   insertDocuments,
   makeBenchmarkDb,
+  makeHnswConfig,
   printScenarioResult,
   reopenBenchmarkDb,
   runIfMain,
@@ -25,21 +25,26 @@ import {
 
 export async function main(): Promise<void> {
   const scenario = 'mixed-cross-structure-durability';
-  const benchmark = await makeBenchmarkDb({ hnsw: true });
+  const benchmark = await makeBenchmarkDb({
+    hnsw: true,
+    hnswConfig: makeHnswConfig({ dimension: 900, M: 4, maxStoredLevel: 4, efConstruction: 32, efSearch: 16 }),
+  });
   const { db } = benchmark;
   const semanticChecks: SemanticCheck[] = [
     { collection: 'articles', query: 'benchmark semantic tail article', k: 5 },
     { collection: 'events', query: 'benchmark semantic event', k: 4 },
   ];
 
-  await insertDocuments(db, 'articles', 'free', 24, {
-    payloadWords: 230,
-    group: 'free',
-    indexedFields: 4,
-    semanticText: 'benchmark semantic deleted article',
+  await insertDocuments(db, 'filler', 'hole', 22, {
+    payloadWords: 250,
+    group: 'low-free-space',
+    indexedFields: 2,
+    skipSemanticIndex: true,
   });
+  await db.commit();
+
   await insertDocuments(db, 'articles', 'tail', 32, {
-    payloadWords: 230,
+    payloadWords: 170,
     group: 'tail',
     indexedFields: 4,
     semanticText: 'benchmark semantic tail article',
@@ -55,16 +60,31 @@ export async function main(): Promise<void> {
     group: 'active',
     indexedFields: 2,
   });
+  await insertDocuments(db, 'articles', 'dead', 4, {
+    payloadWords: 120,
+    group: 'deleted',
+    indexedFields: 3,
+    semanticText: 'benchmark semantic deleted tombstone',
+  });
   await db.commit();
-  await deleteDocuments(db, 'articles', 'free', 24);
+  await deleteDocuments(db, 'articles', 'dead', 4);
+  await deleteDocuments(db, 'filler', 'hole', 22);
   await db.commit();
+
+  const graphBefore = await db.inspectHnswGraphStructure('articles');
+  assert(graphBefore.some((node) => node.deleted), 'durability fixture must retain HNSW tombstones');
+  assert(
+    !(await db.semanticSearch('articles', 'benchmark semantic deleted tombstone', 5)).some((doc) =>
+      String(doc.getId()).startsWith('dead'),
+    ),
+  );
 
   const beforeSnapshot = await captureCrossStructureSnapshot(db, semanticChecks);
   const result = await runIncrementalUntilStable(
     db,
     scenario,
-    { maxAmplification: DEFAULT_K, softAmplification: DEFAULT_K, targetBatchDocuments: 5, targetBatchUnits: 5 },
-    100,
+    { maxAmplification: 1.05, softAmplification: 1.05, targetBatchDocuments: 6, targetBatchUnits: 6 },
+    150,
   );
   await db.commit();
 
@@ -76,6 +96,8 @@ export async function main(): Promise<void> {
   const reopened = await reopenBenchmarkDb(benchmark);
   const reopenedSnapshot = await captureCrossStructureSnapshot(reopened, semanticChecks);
   const reopenReport = assertCrossStructureSnapshotsEqual(compactedSnapshot, reopenedSnapshot);
+  const reopenedDeleted = await reopened.semanticSearch('articles', 'benchmark semantic deleted tombstone', 5);
+  assert(!reopenedDeleted.some((doc) => String(doc.getId()).startsWith('dead')));
 
   Object.assign(result, compactionReport, {
     postReopenChecksPassed:
@@ -88,6 +110,8 @@ export async function main(): Promise<void> {
   });
 
   assert(result.relocatedDocuments > 0 || result.relocatedBtreeNodes > 0 || result.relocatedHnswUnits > 0);
+  assert(result.relocatedHnswUnits > 0, 'durability scenario should exercise HNSW unit relocation');
+  assert(result.reclaimedTailBlocks > 0, 'durability scenario should expose real tail shrink');
   assert.strictEqual(result.postReopenChecksPassed, true);
 
   await writeScenarioArtifacts(result);

@@ -254,9 +254,14 @@ async function resetDb() {
 }
 
 async function compactDatabase() {
-  if (!confirm('Database compacten? De database is tijdelijk niet bruikbaar tot dit klaar is.')) return;
+  if (
+    !confirm(
+      'Full vacuum uitvoeren? De database is tijdelijk niet bruikbaar. Vrije ruimte en semantische tombstones worden opgeruimd.',
+    )
+  )
+    return;
   try {
-    setMaintenance(true, 'Database wordt gecompacteerd. De database is tijdelijk vergrendeld.');
+    setMaintenance(true, 'Full vacuum wordt uitgevoerd. De data en semantische index worden opnieuw opgebouwd.');
     const beforeStatus = await apiCall('/api/database/status');
     const before = beforeStatus['size'] as { totalBytes?: number } | null | undefined;
     const data = await apiCall('/api/database/vacuum', 'POST');
@@ -266,9 +271,9 @@ async function compactDatabase() {
     if (state.currentCollection) await loadDocuments(state.currentCollection);
     const savedBytes =
       before?.totalBytes !== undefined && after?.totalBytes !== undefined ? before.totalBytes - after.totalBytes : 0;
-    alert(`Database compactie klaar. Bespaard: ${formatSize(Math.max(0, savedBytes))}.`);
+    alert(`Full vacuum klaar. Bespaard: ${formatSize(Math.max(0, savedBytes))}.`);
   } catch (error) {
-    alert('Database compactie mislukt: ' + (error as Error).message);
+    alert('Full vacuum mislukt: ' + (error as Error).message);
   } finally {
     setMaintenance(false);
   }
@@ -416,7 +421,8 @@ function renderIncrementalCompaction(
   if (!incrementalCompactionStatus) return;
 
   if (!info?.enabled) {
-    incrementalCompactionStatus.textContent = 'Uitgeschakeld. Gebruik handmatige full vacuum wanneer nodig.';
+    incrementalCompactionStatus.textContent =
+      'Uitgeschakeld. Gebruik handmatige full vacuum om vrije ruimte en semantische tombstones volledig op te ruimen.';
     return;
   }
   if (info.lastError) {
@@ -424,7 +430,8 @@ function renderIncrementalCompaction(
     return;
   }
   if (info.running) {
-    incrementalCompactionStatus.textContent = 'Actief: kleine compaction-stap wordt uitgevoerd.';
+    incrementalCompactionStatus.textContent =
+      'Actief: kleine compaction-stap wordt uitgevoerd; HNSW-units kunnen worden verplaatst.';
     return;
   }
   if (info.queued) {
@@ -452,7 +459,9 @@ function renderIncrementalCompaction(
       result !== null
         ? ` Docs: ${(result.relocatedDocuments ?? 0).toString()}, B-tree: ${(result.relocatedBtreeNodes ?? 0).toString()}, HNSW: ${(result.relocatedHnswUnits ?? 0).toString()}, trim: ${(result.reclaimedTailBlocks ?? 0).toString()}.`
         : '';
-    const blocked = result?.blocked ? ' Geen veilige verdere stap gevonden; full vacuum kan nodig zijn.' : '';
+    const blocked = result?.blocked
+      ? ' Geen veilige verdere stap gevonden; full vacuum kan nodig zijn om tombstones volledig te verwijderen.'
+      : '';
     incrementalCompactionStatus.textContent =
       `Ingeschakeld. Laatste stap: ${new Date(info.lastRunAt).toLocaleTimeString()}${duration}.` + work + blocked;
     return;

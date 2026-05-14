@@ -22,12 +22,24 @@ export type BtreeRelocationTarget = {
   maxBlockExclusive?: number;
 };
 
+/**
+ * Physical compaction state for HNSW-owned units.
+ *
+ * `live` units belong to user-visible semantic entries.
+ * `tombstoned-retained` units are semantically deleted but still structurally
+ * present and must be relocated, not reclaimed, when they block the tail.
+ * `reclaimable-dead` is reserved for future maintenance/vacuum paths that can
+ * prove a dead semantic unit has no remaining references.
+ */
+export type HnswUnitCompactionState = 'live' | 'tombstoned-retained' | 'reclaimable-dead';
+
 export type HnswRelocationTarget = {
   collection: string;
   kind: 'hnsw-graph' | 'hnsw-vector' | 'hnsw-meta';
   blockNumber?: number;
   nodeId?: number;
   maxBlockExclusive?: number;
+  hnswUnitState?: HnswUnitCompactionState;
 };
 
 export type RelocationOptions = {
@@ -91,6 +103,7 @@ export type RelocationTarget = {
   field?: string;
   documentId?: string | number;
   nodeId?: number;
+  hnswUnitState?: HnswUnitCompactionState;
 };
 
 export type RelocationBatch = {

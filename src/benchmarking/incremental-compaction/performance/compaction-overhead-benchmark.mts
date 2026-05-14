@@ -4,9 +4,9 @@
 import assert from 'assert';
 
 import {
-  DEFAULT_K,
   deleteDocuments,
   insertDocuments,
+  makeHnswConfig,
   runAndWriteScenario,
   runIfMain,
 } from '../shared/benchmark-utils.mjs';
@@ -33,30 +33,38 @@ export async function main(): Promise<void> {
   const heavy = await runAndWriteScenario(
     'compaction-overhead-heavy-churn',
     async (db) => {
-      await insertDocuments(db, 'items', 'free', 60, {
-        payloadWords: 140,
-        group: 'free',
-        indexedFields: 3,
-        semanticText: 'heavy overhead free semantic',
+      await insertDocuments(db, 'filler', 'hole', 30, {
+        payloadWords: 190,
+        group: 'low-free-space',
+        indexedFields: 2,
+        skipSemanticIndex: true,
       });
       await db.commit();
       await insertDocuments(db, 'items', 'tail', 60, {
-        payloadWords: 140,
+        payloadWords: 120,
         group: 'tail',
         indexedFields: 3,
         semanticText: 'heavy overhead tail semantic',
       });
+      await insertDocuments(db, 'items', 'dead', 4, {
+        payloadWords: 100,
+        group: 'deleted',
+        indexedFields: 2,
+        semanticText: 'heavy overhead deleted tombstone',
+      });
       await db.commit();
-      await deleteDocuments(db, 'items', 'free', 60);
+      await deleteDocuments(db, 'items', 'dead', 4);
+      await deleteDocuments(db, 'filler', 'hole', 30);
       await db.commit();
     },
     {
       hnsw: true,
+      hnswConfig: makeHnswConfig({ dimension: 900, M: 4, maxStoredLevel: 4, efConstruction: 32, efSearch: 16 }),
       policy: {
-        maxAmplification: DEFAULT_K,
-        softAmplification: DEFAULT_K,
-        targetBatchDocuments: 4,
-        targetBatchUnits: 4,
+        maxAmplification: 1.05,
+        softAmplification: 1.05,
+        targetBatchDocuments: 6,
+        targetBatchUnits: 6,
       },
       maxSteps: 160,
       benchmarkQueries: true,
@@ -64,6 +72,8 @@ export async function main(): Promise<void> {
   );
   assert(heavy.timeTakenMs > 0);
   assert(heavy.status === 'converged' || heavy.status === 'plateau-no-safe-progress');
+  assert(heavy.relocatedHnswUnits > 0);
+  assert(heavy.reclaimedTailBlocks > 0);
 }
 
 runIfMain(import.meta.url, main);

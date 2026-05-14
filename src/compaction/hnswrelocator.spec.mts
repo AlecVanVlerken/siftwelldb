@@ -9,8 +9,8 @@ import { DbmsBack, type HnswConfig } from '../dbms/dbmsback.mjs';
 import { JSONtoDocument } from '../dbms/document.mjs';
 import { relocateHnswUnits } from './compaction.mjs';
 
-function makeEmbedding(text: string): Float32Array {
-  const vector = new Float32Array(4);
+function makeEmbedding(text: string, dimension = 4): Float32Array {
+  const vector = new Float32Array(dimension);
   for (let i = 0; i < text.length; i++) {
     vector[i % vector.length] += text.charCodeAt(i);
   }
@@ -104,7 +104,7 @@ describe('HnswRelocator', () => {
     await db.close();
   });
 
-  it('deletes HNSW documents without tombstones and keeps remaining live units relocatable', async () => {
+  it('relocates tombstoned HNSW graph and vector units without resurrecting deleted results', async () => {
     const { db, data, log, hnswConfig } = await makeDbmsBack();
 
     for (const doc of [
@@ -131,15 +131,24 @@ describe('HnswRelocator', () => {
     assert(!semanticBefore.includes('h1'));
 
     const graph = await db.inspectHnswGraphStructure('articles');
-    assert(!graph.some((node) => node.deleted), 'delete should rebuild without persistent HNSW tombstones');
+    const tombstone = graph.find((node) => node.deleted);
+    assert(tombstone, 'delete should leave a persistent HNSW tombstone');
+    const tombstoneDocId = tombstone.docId;
 
     const targetsAfterDelete = (await db.listHnswRelocationTargets('articles')).filter(
       (target) => target.kind !== 'hnsw-meta',
     );
-    assert.strictEqual(targetsAfterDelete.length, 6);
+    assert.strictEqual(targetsAfterDelete.length, 8);
+    assert.strictEqual(
+      targetsAfterDelete.filter((target) => target.hnswUnitState === 'tombstoned-retained').length,
+      2,
+    );
 
-    const graphTarget = targetsAfterDelete.find((target) => target.kind === 'hnsw-graph');
+    const graphTarget = targetsAfterDelete.find(
+      (target) => target.kind === 'hnsw-graph' && target.nodeId === tombstone.nodeId,
+    );
     assert(graphTarget?.nodeId !== undefined);
+    assert.strictEqual(graphTarget.hnswUnitState, 'tombstoned-retained');
 
     const graphMoved = await db.relocateHnswUnit({
       collection: 'articles',
@@ -148,12 +157,16 @@ describe('HnswRelocator', () => {
     });
     assert.strictEqual(graphMoved, true);
     const movedGraph = await db.inspectHnswGraphStructure('articles');
-    assert(!movedGraph.some((node) => node.deleted));
+    const movedTombstone = movedGraph.find((node) => node.docId === tombstoneDocId);
+    assert(movedTombstone?.deleted === true);
+    assert.notStrictEqual(movedTombstone.nodeId, tombstone.nodeId);
 
     const vectorTarget = (await db.listHnswRelocationTargets('articles')).find(
-      (target) => target.kind === 'hnsw-vector',
+      (target) => target.kind === 'hnsw-vector' && target.nodeId === movedTombstone.nodeId,
     );
     assert(vectorTarget?.nodeId !== undefined);
+    assert.strictEqual(vectorTarget.hnswUnitState, 'tombstoned-retained');
+    const oldVectorLocation = `${movedTombstone.vectorPageId.toString()}:${movedTombstone.vectorSlotId.toString()}`;
 
     const vectorMoved = await db.relocateHnswUnit({
       collection: 'articles',
@@ -162,6 +175,14 @@ describe('HnswRelocator', () => {
     });
     assert.strictEqual(vectorMoved, true);
     await db.commit();
+
+    const movedVectorGraph = await db.inspectHnswGraphStructure('articles');
+    const movedVectorTombstone = movedVectorGraph.find((node) => node.docId === tombstoneDocId);
+    assert(movedVectorTombstone?.deleted === true);
+    assert.notStrictEqual(
+      `${movedVectorTombstone.vectorPageId.toString()}:${movedVectorTombstone.vectorSlotId.toString()}`,
+      oldVectorLocation,
+    );
 
     const semanticAfter = (await db.semanticSearch('articles', 'beta delete target', 3)).map((doc) =>
       String(doc.getId()),
@@ -174,6 +195,102 @@ describe('HnswRelocator', () => {
       String(doc.getId()),
     );
     assert.deepStrictEqual(reopenedResults, semanticBefore);
+    await reopened.close();
+  });
+
+  it('incremental compaction can move tombstoned HNSW tail blockers and trim the exposed tail', async () => {
+    const data = new MockFile(4096);
+    const log = new MockFile(4096);
+    const dimension = 900;
+    const hnswConfig: HnswConfig = {
+      dimension,
+      embeddingFn: (text) => Promise.resolve(makeEmbedding(text, dimension)),
+      M: 4,
+      efConstruction: 16,
+      efSearch: 8,
+    };
+    const db = new DbmsBack(data, log, hnswConfig);
+    await db.create();
+
+    const fillerPayload = 'free low blocks for tombstone-aware hnsw compaction '.repeat(260);
+    for (let i = 0; i < 18; i++) {
+      await db.insertDocument(
+        JSONtoDocument(
+          JSON.stringify({
+            id: `filler-${i.toString()}`,
+            _payload: fillerPayload,
+          }),
+          'filler',
+        ),
+        undefined,
+        { skipSemanticIndex: true },
+      );
+    }
+    await db.commit();
+
+    for (const doc of [
+      { id: 'h1', body: 'alpha tombstone compaction live target' },
+      { id: 'h2', body: 'beta tombstone compaction live target' },
+      { id: 'h3', body: 'gamma tombstone compaction live target' },
+      { id: 'h-dead-tail', body: 'deleted tombstone compaction tail blocker' },
+    ]) {
+      await db.insertDocument(JSONtoDocument(JSON.stringify(doc), 'articles'));
+    }
+    await db.commit();
+
+    await db.deleteDocument('h-dead-tail', 'articles');
+    for (let i = 0; i < 18; i++) {
+      await db.deleteDocument(`filler-${i.toString()}`, 'filler');
+    }
+    await db.commit();
+
+    const graphBefore = await db.inspectHnswGraphStructure('articles');
+    const tombstoneBefore = graphBefore.find((node) => node.deleted);
+    assert(tombstoneBefore, 'expected a tombstoned HNSW node before compaction');
+    const beforeStats = await db.getCompactionStorageStats();
+    const targetBlockCount = Math.ceil(beforeStats.usedBlocks * 1.02);
+    const tombstoneWasTailRelevant =
+      Math.floor(tombstoneBefore.nodeId / 4294967296) >= targetBlockCount ||
+      tombstoneBefore.vectorPageId >= targetBlockCount;
+    assert(tombstoneWasTailRelevant, 'test fixture should put tombstoned HNSW storage above the target boundary');
+
+    const compacted = await db.compactIfNeeded({
+      maxAmplification: 1.02,
+      softAmplification: 1.02,
+      targetBatchDocuments: 4,
+      targetBatchUnits: 4,
+      maxStepsPerRun: 80,
+    });
+    await db.commit();
+
+    assert(compacted !== null);
+    assert((compacted.relocatedDocuments ?? 0) > 0);
+    assert((compacted.relocatedBtreeNodes ?? 0) > 0);
+    assert((compacted.relocatedHnswUnits ?? 0) > 0);
+    assert((compacted.reclaimedTailBlocks ?? 0) > 0);
+    const afterStats = await db.getCompactionStorageStats();
+    assert(afterStats.totalBlocks < beforeStats.totalBlocks);
+
+    const graphAfter = await db.inspectHnswGraphStructure('articles');
+    const tombstoneAfter = graphAfter.find((node) => node.docId === tombstoneBefore.docId);
+    assert(tombstoneAfter?.deleted === true);
+
+    const semanticAfter = (await db.semanticSearch('articles', 'deleted tombstone compaction tail blocker', 3)).map(
+      (doc) => String(doc.getId()),
+    );
+    assert(!semanticAfter.includes('h-dead-tail'));
+    assert(semanticAfter.some((id) => ['h1', 'h2', 'h3'].includes(id)));
+
+    await db.close();
+    const reopened = await DbmsBack.open(data, log, hnswConfig);
+    const reopenedGraph = await reopened.inspectHnswGraphStructure('articles');
+    const reopenedTombstone = reopenedGraph.find((node) => node.docId === tombstoneBefore.docId);
+    assert(reopenedTombstone?.deleted === true);
+    const reopenedResults = (
+      await reopened.semanticSearch('articles', 'deleted tombstone compaction tail blocker', 3)
+    ).map((doc) => String(doc.getId()));
+    assert(!reopenedResults.includes('h-dead-tail'));
+    assert(reopenedResults.some((id) => ['h1', 'h2', 'h3'].includes(id)));
     await reopened.close();
   });
 

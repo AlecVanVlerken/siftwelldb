@@ -108,18 +108,22 @@ export const resultsRootDir = join(benchmarkRootDir, 'results');
 export const resultsDir = join(resultsRootDir, 'raw');
 export const plotsDir = join(resultsRootDir, 'plots');
 
-export function makeHnswConfig(): HnswConfig {
+export function makeHnswConfig(
+  options: Partial<Pick<HnswConfig, 'dimension' | 'M' | 'maxStoredLevel' | 'efConstruction' | 'efSearch'>> = {},
+): HnswConfig {
+  const dimension = options.dimension ?? 4;
   return {
-    dimension: 4,
-    embeddingFn: (text) => Promise.resolve(makeEmbedding(text)),
-    M: 4,
-    efConstruction: 16,
-    efSearch: 10,
+    dimension,
+    embeddingFn: (text) => Promise.resolve(makeEmbedding(text, dimension)),
+    M: options.M ?? 4,
+    maxStoredLevel: options.maxStoredLevel,
+    efConstruction: options.efConstruction ?? 16,
+    efSearch: options.efSearch ?? 10,
   };
 }
 
-export function makeEmbedding(text: string): Float32Array {
-  const vector = new Float32Array(4);
+export function makeEmbedding(text: string, dimension = 4): Float32Array {
+  const vector = new Float32Array(dimension);
   for (let i = 0; i < text.length; i++) {
     vector[i % vector.length] += text.charCodeAt(i) % 31;
   }
@@ -128,11 +132,13 @@ export function makeEmbedding(text: string): Float32Array {
   return vector;
 }
 
-export async function makeBenchmarkDb(options: { hnsw?: boolean; blockSize?: number } = {}): Promise<BenchmarkDb> {
+export async function makeBenchmarkDb(
+  options: { hnsw?: boolean; blockSize?: number; hnswConfig?: HnswConfig } = {},
+): Promise<BenchmarkDb> {
   const blockSize = options.blockSize ?? DEFAULT_BLOCK_SIZE;
   const data = new MockFile(blockSize);
   const log = new MockFile(blockSize);
-  const hnswConfig = options.hnsw ? makeHnswConfig() : undefined;
+  const hnswConfig = options.hnsw ? (options.hnswConfig ?? makeHnswConfig()) : undefined;
   const db = new DbmsBack(data, log, hnswConfig);
   await db.create();
   return { db, data, log, hnswConfig };
@@ -167,6 +173,7 @@ export async function insertDocuments(
     group?: string;
     indexedFields?: number;
     semanticText?: string;
+    skipSemanticIndex?: boolean;
   } = {},
 ): Promise<void> {
   const payload = `${prefix} payload `.repeat(options.payloadWords ?? 20);
@@ -183,7 +190,9 @@ export async function insertDocuments(
     for (let field = 0; field < (options.indexedFields ?? 0); field++) {
       fields[`idx${field.toString()}`] = `${prefix}-${field.toString()}-${(i % 13).toString()}`;
     }
-    await db.insertDocument(makeDocument(collection, id, fields));
+    await db.insertDocument(makeDocument(collection, id, fields), undefined, {
+      skipSemanticIndex: options.skipSemanticIndex,
+    });
   }
 }
 
@@ -285,13 +294,14 @@ export async function runAndWriteScenario(
   build: (db: DbmsBack) => Promise<void>,
   options: {
     hnsw?: boolean;
+    hnswConfig?: HnswConfig;
     policy?: IncrementalCompactionPolicy;
     maxSteps?: number;
     assertConverged?: boolean;
     benchmarkQueries?: boolean;
   } = {},
 ): Promise<ScenarioResult> {
-  const { db } = await makeBenchmarkDb({ hnsw: options.hnsw });
+  const { db } = await makeBenchmarkDb({ hnsw: options.hnsw, hnswConfig: options.hnswConfig });
   await build(db);
   const policy = options.policy ?? { maxAmplification: DEFAULT_K, targetBatchDocuments: 4, targetBatchUnits: 4 };
   const queryBefore = options.benchmarkQueries ? await benchmarkQueries(db, options.hnsw === true) : undefined;

@@ -77,9 +77,10 @@ describe('HNSW relocation storage primitives', () => {
     assert.deepStrictEqual(reopenedSecond.neighbors[0], [result.newNodeId]);
   });
 
-  it('rejects relocation of deleted graph nodes', async () => {
+  it('relocates deleted graph nodes while preserving tombstone state and references', async () => {
     const fbf = await makeFbf(1024);
     const graph = await HNSWGraphStorage.create(fbf, 4, 2);
+    const metaBlockId = graph.metaBlockId;
 
     const deleted = makeNode({ docId: 30, level: 1, deleted: true, neighbors: [[], []] });
     await graph.insertNode(deleted);
@@ -93,9 +94,20 @@ describe('HNSW relocation storage primitives', () => {
     graph.setCurrentMaxLevel(1);
     await graph.saveMetadata();
 
-    await assert.rejects(() => graph.relocateNode(deleted.nodeId), /cannot relocate deleted node/);
+    const oldNodeId = deleted.nodeId;
+    const result = await graph.relocateNode(oldNodeId);
+
+    assert.notStrictEqual(result.newNodeId, oldNodeId);
+    await assert.rejects(() => graph.getNode(oldNodeId));
     assert.strictEqual(graph.entryPoint, live.nodeId);
-    assert.deepStrictEqual((await graph.getNode(live.nodeId)).neighbors[0], [deleted.nodeId]);
+    const relocated = await graph.getNode(result.newNodeId);
+    assert.strictEqual(relocated.deleted, true);
+    assert.deepStrictEqual((await graph.getNode(live.nodeId)).neighbors[0], [result.newNodeId]);
+
+    await fbf.commit();
+    const reopened = await HNSWGraphStorage.open(fbf, metaBlockId);
+    assert.strictEqual((await reopened.getNode(result.newNodeId)).deleted, true);
+    assert.deepStrictEqual((await reopened.getNode(live.nodeId)).neighbors[0], [result.newNodeId]);
   });
 
   it('relocates a vector slot and frees the old location', async () => {

@@ -101,6 +101,8 @@ export async function buildSemanticEquivalenceDataset(
           }),
           'articles',
         ),
+        undefined,
+        { skipSemanticIndex: true },
       );
     }
   }

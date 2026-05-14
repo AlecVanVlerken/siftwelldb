@@ -9,7 +9,9 @@
  *
  * The copier rebuilds the database by reading logical documents
  * from the source backend and reinserting them into a fresh target
- * backend.
+ * backend. For HNSW-backed collections, the target semantic index is rebuilt
+ * only from live logical documents; persisted source graph/vector tombstones
+ * are intentionally not copied.
  *
  * This module provides:
  *   • copyAll()        — copy all logical collections
@@ -134,6 +136,7 @@ export class DatabaseCopier {
     }
 
     if (!this.catalog.hasIdTree(collection)) {
+      await this.ensureCleanHnswTarget(collection);
       return 0;
     }
 
@@ -158,7 +161,17 @@ export class DatabaseCopier {
       });
     }
 
+    await this.ensureCleanHnswTarget(collection);
     return copiedDocuments;
+  }
+
+  private async ensureCleanHnswTarget(collection: string): Promise<void> {
+    if (!this.catalog.hasHnsw(collection)) return;
+
+    // Full vacuum is the semantic cleanup/reset point. The target HNSW
+    // metadata is created fresh, and only live logical documents copied above
+    // are indexed. Tombstoned source graph/vector units are never copied.
+    await this.target.ensureHnswCollection(collection);
   }
 
   /**

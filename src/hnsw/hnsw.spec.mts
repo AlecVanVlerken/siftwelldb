@@ -395,6 +395,15 @@ describe('HNSWGraphStorage', () => {
     expect(loaded.vectorPtr.slotId).toBe(node.vectorPtr.slotId);
   });
 
+  it('getNode round-trips the tombstone flag', async () => {
+    const node = makeNode({ docId: 43, level: 1, deleted: true });
+    node.neighbors = [[], []];
+    await gs.insertNode(node);
+
+    const loaded = await gs.getNode(node.nodeId);
+    expect(loaded.deleted).toBe(true);
+  });
+
   it('getNode round-trips neighbor lists at layer 0', async () => {
     const nodeA = makeNode({ docId: 10 });
     await gs.insertNode(nodeA);
@@ -565,6 +574,18 @@ describe('HNSWGraphStorage', () => {
     expect(loaded.docId).toBe(77);
     expect(loaded.level).toBe(1);
   });
+
+  it('persisted tombstone flag survives a commit + reopen', async () => {
+    const node = makeNode({ docId: 78, level: 1, deleted: false });
+    node.neighbors = [[], []];
+    await gs.insertNode(node);
+    await gs.softDeleteNode(node.nodeId);
+    await fbf.commit();
+
+    const gs2 = await HNSWGraphStorage.open(fbf, metaBlockId);
+    const loaded = await gs2.getNode(node.nodeId);
+    expect(loaded.deleted).toBe(true);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -716,11 +737,10 @@ describe('HNSWIndex', () => {
     expect(await index.search(vec(1, 0), 1)).toContain(1);
   });
 
-  it('deleted docId can be re-inserted with the same id', async () => {
+  it('tombstoned docId cannot be re-inserted with the same id without maintenance cleanup', async () => {
     await index.insert(1, vec(0, 0));
     await index.delete(1);
-    await expect(index.insert(1, vec(5, 5))).resolves.not.toThrow();
-    expect(await index.search(vec(5, 5), 1)).toContain(1);
+    await expect(index.insert(1, vec(5, 5))).rejects.toThrow(/tombstoned node/i);
   });
 
   it('deleting the only node leaves an empty index', async () => {
@@ -731,6 +751,71 @@ describe('HNSWIndex', () => {
   });
 
   // ── persistence ───────────────────────────────────────────────────────────
+
+  // Tombstones are persisted logical HNSW deletes: the graph/vector storage
+  // remains allocated, but user-visible search filters the node out.
+
+  it('tombstoned docId no longer appears in search results', async () => {
+    await index.insert(1, vec(0, 0));
+    await index.insert(2, vec(1, 0));
+    await index.insert(3, vec(2, 0));
+
+    expect(await index.tombstone(1)).toBe(true);
+
+    const results = await index.search(vec(0, 0), 2);
+    expect(results).not.toContain(1);
+    expect(results).toContain(2);
+    expect(results.length).toBe(2);
+
+    const snapshot = await index.inspectGraphStructureSnapshot();
+    const tombstoned = snapshot.nodes.find((node) => node.docId === 1);
+    expect(tombstoned?.deleted).toBe(true);
+  });
+
+  it('tombstone is idempotent for missing or already tombstoned docIds', async () => {
+    await index.insert(1, vec(0, 0));
+
+    expect(await index.tombstone(1)).toBe(true);
+    expect(await index.tombstone(1)).toBe(false);
+    expect(await index.tombstone(999)).toBe(false);
+  });
+
+  it('tombstone state and live search survive commit + reopen', async () => {
+    await index.insert(1, vec(0, 0));
+    await index.insert(2, vec(1, 0));
+    await index.insert(3, vec(2, 0));
+
+    await index.tombstone(1);
+    await index.commit();
+
+    const reopened = await reopenIndex(graphFbf, vectorFbf);
+    const results = await reopened.search(vec(0, 0), 2);
+    expect(results).not.toContain(1);
+    expect(results).toContain(2);
+    expect(results.length).toBe(2);
+
+    const snapshot = await reopened.inspectGraphStructureSnapshot();
+    const tombstoned = snapshot.nodes.find((node) => node.docId === 1);
+    expect(tombstoned?.deleted).toBe(true);
+  });
+
+  it('live entries remain searchable when a routing entry point is tombstoned', async () => {
+    for (let i = 0; i < 16; i++) {
+      await index.insert(i, vec(i, 0));
+    }
+
+    const snapshot = await index.inspectGraphStructureSnapshot();
+    const entryNode = snapshot.nodes.find((node) => node.nodeId === snapshot.entryPoint);
+    expect(entryNode).toBeDefined();
+
+    await index.tombstone(entryNode!.docId);
+    await index.commit();
+
+    const reopened = await reopenIndex(graphFbf, vectorFbf);
+    const results = await reopened.search(vec(8, 0), 5);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results).not.toContain(entryNode!.docId);
+  });
 
   it('insert survives a commit + reopen', async () => {
     await index.insert(77, vec(3, 4));
@@ -1085,13 +1170,13 @@ describe('HNSWIndex – currentMaxLevel invariant', () => {
     }
   });
 
-  it('currentMaxLevel is 0 after deleting all nodes', async () => {
+  it('currentMaxLevel still describes retained tombstone structure after deleting all nodes', async () => {
     await index.insert(1, vec(1, 0));
     await index.insert(2, vec(2, 0));
     await index.delete(1);
     await index.delete(2);
-    expect(graphStorage.currentMaxLevel).toBe(0);
-    expect(graphStorage.computedMaxLevel()).toBe(0);
+    expect(await index.search(vec(1, 0), 2)).toEqual([]);
+    expect(graphStorage.currentMaxLevel).toBe(graphStorage.computedMaxLevel());
   });
 
   it('currentMaxLevel after interleaved inserts + deletes always equals computedMaxLevel', async () => {

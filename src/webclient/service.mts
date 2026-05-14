@@ -2,6 +2,7 @@
 // @date 2026-03-31
 
 import * as fs from 'node:fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { gzipSync } from 'node:zlib';
 import {
   SimpleDbms,
@@ -145,6 +146,22 @@ export type VacuumSummary = {
   durationMs: number;
 };
 
+export type DatabaseServiceOptions = {
+  hnswConfig?: HnswConfig | (() => HnswConfig | Promise<HnswConfig>);
+  incrementalCompactionIntervalMs?: number;
+  incrementalCompactionPolicy?: IncrementalCompactionPolicy;
+};
+
+const DEFAULT_INCREMENTAL_COMPACTION_INTERVAL_MS = 5_000;
+
+const DEFAULT_INCREMENTAL_COMPACTION_POLICY: IncrementalCompactionPolicy = {
+  maxAmplification: 1.6,
+  softAmplification: 1.45,
+  targetBatchDocuments: 4,
+  targetBatchUnits: 2,
+  maxStepsPerRun: 4,
+};
+
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
@@ -170,6 +187,7 @@ export class DatabaseService {
   private dbms: SimpleDbms | null = null;
   private currentFilepath: string | null = null;
   private operationChain: Promise<void> = Promise.resolve();
+  private readonly exclusiveContext = new AsyncLocalStorage<symbol>();
   private currentOperation: string | null = null;
   private incrementalCompactionEnabled = false;
   private incrementalCompactionQueued = false;
@@ -180,20 +198,30 @@ export class DatabaseService {
   private incrementalCompactionLastError: string | null = null;
   private incrementalCompactionLastResult: IncrementalCompactionResult | null = null;
 
-  private readonly incrementalCompactionIntervalMs = 5_000;
-  private readonly incrementalCompactionPolicy: IncrementalCompactionPolicy = {
-    maxAmplification: 1.6,
-    softAmplification: 1.45,
-    targetBatchDocuments: 4,
-    targetBatchUnits: 2,
-    maxStepsPerRun: 4,
-  };
+  private readonly incrementalCompactionIntervalMs: number;
+  private readonly incrementalCompactionPolicy: IncrementalCompactionPolicy;
 
   // HNSW semantic search config
   private hnswConfigPromise: Promise<HnswConfig> | null = null;
+  private readonly providedHnswConfig?: HnswConfig | (() => HnswConfig | Promise<HnswConfig>);
+
+  constructor(options: DatabaseServiceOptions = {}) {
+    this.providedHnswConfig = options.hnswConfig;
+    this.incrementalCompactionIntervalMs =
+      options.incrementalCompactionIntervalMs ?? DEFAULT_INCREMENTAL_COMPACTION_INTERVAL_MS;
+    this.incrementalCompactionPolicy = options.incrementalCompactionPolicy ?? DEFAULT_INCREMENTAL_COMPACTION_POLICY;
+  }
 
   private getHnswConfig(): Promise<HnswConfig> {
     if (!this.hnswConfigPromise) {
+      if (this.providedHnswConfig) {
+        this.hnswConfigPromise =
+          typeof this.providedHnswConfig === 'function'
+            ? Promise.resolve(this.providedHnswConfig())
+            : Promise.resolve(this.providedHnswConfig);
+        return this.hnswConfigPromise;
+      }
+
       this.hnswConfigPromise = (async () => {
         const MODEL_ID = 'Xenova/clip-vit-base-patch32';
         const CLIP_DIM = 512;
@@ -356,13 +384,13 @@ export class DatabaseService {
 
   /** Return connection and file-size information for the current database. */
   async getStatus(): Promise<DatabaseStatus> {
-    return {
+    return this.runExclusive('status', async () => ({
       connected: this.isConnected,
       filepath: this.currentFilepath,
       busyOperation: this.busyOperation,
       size: this.currentFilepath ? await this.databaseSizeInfo(this.currentFilepath) : null,
       incrementalCompaction: this.getIncrementalCompactionStatus(),
-    };
+    }));
   }
 
   setIncrementalCompactionEnabled(enabled: boolean): IncrementalCompactionStatus {
@@ -457,9 +485,11 @@ export class DatabaseService {
 
   /** Return the list of collection names, hiding internal _-prefixed ones. */
   async getCollections(): Promise<string[]> {
-    this.ensureConnected();
-    const all = await this.dbms!.getCollections();
-    return all.filter((c) => !c.startsWith('_'));
+    return this.runExclusive('list-collections', async () => {
+      this.ensureConnected();
+      const all = await this.dbms!.getCollections();
+      return all.filter((c) => !c.startsWith('_'));
+    });
   }
 
   /** Delete an entire collection. */
@@ -476,14 +506,18 @@ export class DatabaseService {
     return this.dbms ? this.dbms.listCompressionProfiles() : listAvailableCompressionProfiles();
   }
 
-  getCompressionDefaults(collection: string): Record<string, CompressionAlgorithm> {
-    this.ensureConnected();
-    return this.dbms!.getFieldCompressionDefaults(collection);
+  async getCompressionDefaults(collection: string): Promise<Record<string, CompressionAlgorithm>> {
+    return this.runExclusive('compression-defaults', async () => {
+      this.ensureConnected();
+      return this.dbms!.getFieldCompressionDefaults(collection);
+    });
   }
 
   async recommendCompression(request: CompressionRecommendationRequest): Promise<CompressionRecommendation> {
-    this.ensureConnected();
-    return this.dbms!.recommendCompression(request);
+    return this.runExclusive('compression-recommendation', async () => {
+      this.ensureConnected();
+      return this.dbms!.recommendCompression(request);
+    });
   }
 
   /**
@@ -527,48 +561,50 @@ export class DatabaseService {
     workload?: number;
     sampleSize?: number;
   }): Promise<LabReport> {
-    this.ensureConnected();
+    return this.runExclusive('compression-lab-recommendation', async () => {
+      this.ensureConnected();
 
-    const workload = clamp01(request.workload ?? 0);
-    const sampleSize = Math.max(1, Math.floor(request.sampleSize ?? 100));
-    const documents = await this.loadLabDocuments(request.collection, sampleSize);
-    if (documents.length === 0) {
-      throw new Error(`Collection "${request.collection}" has no documents`);
-    }
+      const workload = clamp01(request.workload ?? 0);
+      const sampleSize = Math.max(1, Math.floor(request.sampleSize ?? 100));
+      const documents = await this.loadLabDocuments(request.collection, sampleSize);
+      if (documents.length === 0) {
+        throw new Error(`Collection "${request.collection}" has no documents`);
+      }
 
-    const fields = Object.keys(documents[0]).filter(
-      (field) => field !== 'id' && field !== '_order_' && !field.startsWith('_layout_'),
-    );
-    if (fields.length === 0) {
-      throw new Error(`Collection "${request.collection}" has no recommendable fields`);
-    }
+      const fields = Object.keys(documents[0]).filter(
+        (field) => field !== 'id' && field !== '_order_' && !field.startsWith('_layout_'),
+      );
+      if (fields.length === 0) {
+        throw new Error(`Collection "${request.collection}" has no recommendable fields`);
+      }
 
-    const bundles: LabRecommendationBundle[] = [];
-    for (const field of fields) {
-      const recommendation = await this.dbms!.recommendCompression({
+      const bundles: LabRecommendationBundle[] = [];
+      for (const field of fields) {
+        const recommendation = await this.dbms!.recommendCompression({
+          collection: request.collection,
+          field,
+          workload,
+          sampleSize,
+        });
+        bundles.push({
+          field,
+          recommendation,
+          forcedGzipBytesSaved: isImageField(field) ? this.estimateForcedGzipBytesSaved(field, documents) : null,
+        });
+      }
+
+      const baseline = this.labBaseline(bundles);
+      const policies = this.aggregateLabPolicies(bundles, baseline);
+
+      return {
         collection: request.collection,
-        field,
         workload,
         sampleSize,
-      });
-      bundles.push({
-        field,
-        recommendation,
-        forcedGzipBytesSaved: isImageField(field) ? this.estimateForcedGzipBytesSaved(field, documents) : null,
-      });
-    }
-
-    const baseline = this.labBaseline(bundles);
-    const policies = this.aggregateLabPolicies(bundles, baseline);
-
-    return {
-      collection: request.collection,
-      workload,
-      sampleSize,
-      baseline,
-      perField: bundles.map(({ field, recommendation }) => this.toLabFieldReport(field, recommendation)),
-      policies,
-    };
+        baseline,
+        perField: bundles.map(({ field, recommendation }) => this.toLabFieldReport(field, recommendation)),
+        policies,
+      };
+    });
   }
 
   /**
@@ -580,22 +616,24 @@ export class DatabaseService {
     workload?: number;
     sampleSize?: number;
   }): Promise<{ collection: string; defaults: Record<string, CompressionAlgorithm>; fields: number }> {
-    this.ensureConnected();
+    return this.runExclusive('compression-lab-apply', async () => {
+      this.ensureConnected();
 
-    const report = await this.recommendCollectionLab(request);
-    const defaults: Record<string, CompressionAlgorithm> = {};
-    for (const field of report.perField) {
-      defaults[field.field] = field.recommended;
-    }
+      const report = await this.recommendCollectionLab(request);
+      const defaults: Record<string, CompressionAlgorithm> = {};
+      for (const field of report.perField) {
+        defaults[field.field] = field.recommended;
+      }
 
-    this.dbms!.setFieldCompressionDefaults(request.collection, defaults);
-    await this.dbms!.commit();
+      this.dbms!.setFieldCompressionDefaults(request.collection, defaults);
+      await this.dbms!.commit();
 
-    return {
-      collection: request.collection,
-      defaults,
-      fields: Object.keys(defaults).length,
-    };
+      return {
+        collection: request.collection,
+        defaults,
+        fields: Object.keys(defaults).length,
+      };
+    });
   }
 
   // ── Documents ────────────────────────────────────────────────
@@ -607,9 +645,11 @@ export class DatabaseService {
     cursor?: string,
     limit: number = 50,
   ): Promise<{ documents: string[]; hasMore: boolean; nextCursor?: string | number }> {
-    this.ensureConnected();
-    const page = await fetchPageCursor(this.dbms!, { collection, iterableKey, limit, afterCursor: cursor });
-    return { documents: page.data, hasMore: page.hasMore, nextCursor: page.nextCursor };
+    return this.runExclusive('list-documents', async () => {
+      this.ensureConnected();
+      const page = await fetchPageCursor(this.dbms!, { collection, iterableKey, limit, afterCursor: cursor });
+      return { documents: page.data, hasMore: page.hasMore, nextCursor: page.nextCursor };
+    });
   }
 
   /** Find all articles containing a word via the persistent word index. */
@@ -619,17 +659,19 @@ export class DatabaseService {
     limit: number,
     offset: number,
   ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
-    this.ensureConnected();
-    const { docIds, total, hasMore } = await searchWordIndex(this.dbms!, word, limit, offset);
-    const documents: string[] = [];
-    for (const id of docIds) {
-      try {
-        documents.push(await this.dbms!.getDocumentById(collection, id));
-      } catch {
-        // Article deleted after indexing — skip silently
+    return this.runExclusive('word-search', async () => {
+      this.ensureConnected();
+      const { docIds, total, hasMore } = await searchWordIndex(this.dbms!, word, limit, offset);
+      const documents: string[] = [];
+      for (const id of docIds) {
+        try {
+          documents.push(await this.dbms!.getDocumentById(collection, id));
+        } catch {
+          // Article deleted after indexing — skip silently
+        }
       }
-    }
-    return { documents, total, hasMore };
+      return { documents, total, hasMore };
+    });
   }
 
   /** Find all articles whose body contains a word via the persistent content index. */
@@ -639,17 +681,19 @@ export class DatabaseService {
     limit: number,
     offset: number,
   ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
-    this.ensureConnected();
-    const { docIds, total, hasMore } = await searchContentIndex(this.dbms!, word, limit, offset);
-    const documents: string[] = [];
-    for (const id of docIds) {
-      try {
-        documents.push(await this.dbms!.getDocumentById(collection, id));
-      } catch {
-        // Article deleted after indexing — skip silently
+    return this.runExclusive('content-search', async () => {
+      this.ensureConnected();
+      const { docIds, total, hasMore } = await searchContentIndex(this.dbms!, word, limit, offset);
+      const documents: string[] = [];
+      for (const id of docIds) {
+        try {
+          documents.push(await this.dbms!.getDocumentById(collection, id));
+        } catch {
+          // Article deleted after indexing — skip silently
+        }
       }
-    }
-    return { documents, total, hasMore };
+      return { documents, total, hasMore };
+    });
   }
 
   /** Insert a document into a collection. */
@@ -671,11 +715,19 @@ export class DatabaseService {
 
   /** Retrieve a specific document by its ID. */
   async getDocumentById(collection: string, id: string, options?: { encoded?: boolean }): Promise<string> {
-    this.ensureConnected();
-    return this.dbms!.getDocumentById(collection, id, options);
+    return this.runExclusive('get-document', async () => {
+      this.ensureConnected();
+      return this.dbms!.getDocumentById(collection, id, options);
+    });
   }
 
-  /** Delete a document from a collection. */
+  /**
+   * Delete a document from a collection.
+   *
+   * For HNSW-backed collections this is a logical delete at the GUI layer: the
+   * DBMS removes normal lookup paths and tombstones the semantic entry, while
+   * full vacuum later removes the retained tombstone storage.
+   */
   async deleteDocument(collection: string, id: string): Promise<void> {
     await this.runExclusive('delete-document', async () => {
       this.ensureConnected();
@@ -695,16 +747,26 @@ export class DatabaseService {
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
-  /** Semantic text-to-text or text-to-image search */
+  /**
+   * Semantic text-to-text or text-to-image search.
+   *
+   * The storage layer filters tombstoned entries, and the service keeps this
+   * read serialized with delete/compaction/vacuum so result mapping cannot
+   * race a tombstone write or HNSW unit relocation.
+   */
   async semanticSearch(collection: string, query: string, limit: number): Promise<string[]> {
-    this.ensureConnected();
-    return this.dbms!.semanticSearch(collection, query, limit);
+    return this.runExclusive('semantic-search', async () => {
+      this.ensureConnected();
+      return this.dbms!.semanticSearch(collection, query, limit);
+    });
   }
 
   /** Semantic image-to-image search */
   async semanticImageSearch(collection: string, queryImage: Buffer, limit: number): Promise<string[]> {
-    this.ensureConnected();
-    return this.dbms!.semanticImageSearch(collection, queryImage, limit);
+    return this.runExclusive('semantic-image-search', async () => {
+      this.ensureConnected();
+      return this.dbms!.semanticImageSearch(collection, queryImage, limit);
+    });
   }
 
   // ── Internal helpers ─────────────────────────────────────────
@@ -894,6 +956,10 @@ export class DatabaseService {
       this.incrementalCompactionActive = true;
       const start = Date.now();
       try {
+        // Incremental compaction can relocate HNSW graph/vector units,
+        // including tombstoned routing artifacts. Keep it behind the same
+        // service gate as semantic search and document writes so the GUI never
+        // observes a half-relocated semantic index.
         const result = await this.dbms.compactIfNeeded(this.incrementalCompactionPolicy);
         if (result !== null) {
           this.incrementalCompactionLastRunAt = new Date();
@@ -913,6 +979,10 @@ export class DatabaseService {
   }
 
   private async runExclusive<T>(operation: string, task: () => Promise<T>): Promise<T> {
+    if (this.exclusiveContext.getStore()) {
+      return await task();
+    }
+
     const previous = this.operationChain.catch(() => undefined);
     let release: () => void = () => {};
     const current = new Promise<void>((resolve) => {
@@ -922,8 +992,9 @@ export class DatabaseService {
 
     await previous;
     this.currentOperation = operation;
+    const token = Symbol(operation);
     try {
-      return await task();
+      return await this.exclusiveContext.run(token, task);
     } finally {
       this.currentOperation = null;
       release();

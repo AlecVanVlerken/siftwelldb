@@ -51,6 +51,7 @@ export type { VacuumOptions, VacuumResult, VacuumProgress } from './vacuumtypes.
 export type {
   BtreeRelocationTarget,
   HnswRelocationTarget,
+  HnswUnitCompactionState,
   IncrementalCompactionMetrics,
   IncrementalCompactionPolicy,
   IncrementalCompactionResult,

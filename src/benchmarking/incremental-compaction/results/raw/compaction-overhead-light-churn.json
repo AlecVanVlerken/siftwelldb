@@ -18,7 +18,7 @@
   "shrunkBlocks": 4,
   "shrunkBytes": 16384,
   "stepsTaken": 1,
-  "timeTakenMs": 0.7204000000001543,
+  "timeTakenMs": 0.19669999999996435,
   "relocatedDocuments": 0,
   "relocatedBtreeNodes": 0,
   "relocatedHnswUnits": 0,
@@ -28,7 +28,7 @@
       "scenario": "compaction-overhead-light-churn",
       "step": 1,
       "didWork": true,
-      "timeMs": 0.6994999999997162,
+      "timeMs": 0.18740000000025248,
       "shrunkBlocksThisStep": 4,
       "cumulativeShrunkBytes": 16384,
       "stepRelocatedDocuments": 0,
@@ -47,12 +47,12 @@
     }
   ],
   "queryBefore": {
-    "idLookupMs": 0.7481999999999971,
-    "cursorQueryMs": 0.19059999999990396
+    "idLookupMs": 0.29910000000018044,
+    "cursorQueryMs": 0.06279999999969732
   },
   "queryAfter": {
-    "idLookupMs": 0.4337999999997919,
-    "cursorQueryMs": 0.10639999999966676
+    "idLookupMs": 0.23500000000012733,
+    "cursorQueryMs": 0.05320000000028813
   },
   "firstShrinkStep": 1,
   "firstShrinkReason": "tail reclaim",

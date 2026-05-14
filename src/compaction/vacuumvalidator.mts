@@ -123,6 +123,13 @@ export class VacuumValidator {
     }
 
     if (!targetHasIdTree) {
+      // Full vacuum is a logical rebuild, so an empty source id tree may be
+      // normalized away in the target when other collection metadata, such as
+      // a clean HNSW container, still preserves the collection itself.
+      if (sourceCount === 0) {
+        return;
+      }
+
       throw new Error(
         `Vacuum validation failed for collection "${collection}": ` + `source has an id tree but target does not.`,
       );
