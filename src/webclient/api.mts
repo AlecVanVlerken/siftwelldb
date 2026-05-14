@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseService } from './service.mjs';
 import type { ConversationalService } from './conversational-service.mjs';
-import { getEmbeddingStatus, preloadClipModels } from './clipHnswConfig.mjs';
+import { getEmbeddingStatus, preloadEmbeddingModels } from './clipHnswConfig.mjs';
 
 const ENV_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../.env');
 
@@ -115,6 +115,16 @@ export class ApiRouter {
     private readonly conv?: ConversationalService,
   ) {}
 
+  private async runDatabaseExclusive<T>(operation: string, task: () => Promise<T>): Promise<T> {
+    const maybeExclusive = this.db as DatabaseService & {
+      runExclusiveOperation?: <Result>(operation: string, task: () => Promise<Result>) => Promise<Result>;
+    };
+    if (typeof maybeExclusive.runExclusiveOperation === 'function') {
+      return maybeExclusive.runExclusiveOperation(operation, task);
+    }
+    return task();
+  }
+
   /**
    * Handle an incoming API request.
    *
@@ -152,14 +162,16 @@ export class ApiRouter {
 
       // GET /api/embeddings/status — load-state of the CLIP embedding model
       if (method === 'GET' && pathname === '/api/embeddings/status') {
-        sendJSON(res, 200, getEmbeddingStatus());
+        sendJSON(res, 200, getEmbeddingStatus() as unknown as JsonBody);
         return;
       }
 
-      // POST /api/embeddings/preload — kick off CLIP load in the background
+      // POST /api/embeddings/preload — kick off the requested embedding model load
       if (method === 'POST' && pathname === '/api/embeddings/preload') {
-        preloadClipModels();
-        sendJSON(res, 200, getEmbeddingStatus());
+        const body: JsonBody = await parseBody(req).catch(() => ({}));
+        const kind = body['kind'];
+        preloadEmbeddingModels(kind === 'text' || kind === 'image' || kind === 'all' ? kind : 'all');
+        sendJSON(res, 200, getEmbeddingStatus() as unknown as JsonBody);
         return;
       }
 
@@ -236,6 +248,12 @@ export class ApiRouter {
       if (method === 'POST' && pathname === '/api/database/vacuum') {
         const result = await this.db.vacuum();
         sendJSON(res, 200, result as unknown as JsonBody);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/database/incremental-compaction/run') {
+        const incrementalCompaction = await this.db.runIncrementalCompactionStep();
+        sendJSON(res, 200, { message: 'Incremental compaction step complete', incrementalCompaction });
         return;
       }
 
@@ -351,6 +369,28 @@ export class ApiRouter {
           message: result.skipped
             ? 'Demo employees already exist'
             : `Seeded ${result.inserted} demo employees`,
+          ...result,
+        });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/demo/semantic-knowledge') {
+        const result = await this.db.seedSemanticKnowledgeDemo();
+        sendJSON(res, 200, {
+          message: result.skipped
+            ? 'Semantic knowledge demo already exists'
+            : `Seeded ${result.inserted} semantic knowledge documents`,
+          ...result,
+        });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/demo/semantic-images') {
+        const result = await this.db.seedSemanticImageDemo();
+        sendJSON(res, 200, {
+          message: result.skipped
+            ? 'Semantic image demo already exists'
+            : `Seeded ${result.inserted} semantic image documents`,
           ...result,
         });
         return;
@@ -473,6 +513,25 @@ export class ApiRouter {
         return;
       }
 
+      // GET /api/documents/:collection/search/photos
+      const photoSearchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search\/photos$/);
+      if (method === 'GET' && photoSearchMatch) {
+        const collection = decodeURIComponent(photoSearchMatch[1]);
+        const query = url.searchParams.get('q');
+        const limit = readLimit(url, 10, 100);
+
+        if (!query) {
+          sendError(res, 400, 'Missing search query "q" parameter');
+          return;
+        }
+
+        console.log(`Semantic photo search: collection=${collection}, limit=${limit}`);
+        const documents = await this.db.semanticImageTextSearch(collection, query, limit);
+        console.log(`Semantic photo search complete: ${documents.length} result(s)`);
+        sendJSON(res, 200, { documents });
+        return;
+      }
+
       // POST /api/documents/:collection/search/image
       const searchImageMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search\/image$/);
       if (method === 'POST' && searchImageMatch) {
@@ -585,7 +644,10 @@ export class ApiRouter {
             sendError(res, 400, 'document must be a JSON object');
             return;
           }
-          await this.db.replaceDocument(collection, id, document);
+          const compression = body['compression'] as
+            | import('../dbms/compression.mts').FieldCompressionOverrides
+            | undefined;
+          await this.db.replaceDocument(collection, id, document, compression);
           sendJSON(res, 200, { message: 'Document replaced' });
           return;
         }
@@ -632,7 +694,10 @@ export class ApiRouter {
         // `enriched` in the response tells the client whether the LLM
         // contributed descriptions / synonyms / measures.
         if (method === 'POST' && pathname === '/api/conversational/model/generate') {
-          const result = await this.conv.generateModel();
+          const result = await this.runDatabaseExclusive(
+            'conversational-model-generate',
+            () => this.conv!.generateModel(),
+          );
           sendJSON(res, 200, { model: result.model, enriched: result.enriched });
           return;
         }
@@ -664,8 +729,14 @@ export class ApiRouter {
                 return { role, text: String(m.text) };
               })
             : [];
+          const collection = typeof body['collection'] === 'string' && body['collection'].length > 0
+            ? body['collection']
+            : undefined;
           console.log(`Conversational ask: ${question.slice(0, 120)}`);
-          const response = await this.conv.ask(question, history);
+          const response = await this.runDatabaseExclusive(
+            'conversational-ask',
+            () => this.conv!.ask(question, history, collection),
+          );
           console.log('Conversational ask complete');
           sendJSON(res, 200, response as unknown as Record<string, unknown>);
           return;

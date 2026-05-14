@@ -41,6 +41,47 @@ export type DemoEmployee = {
   yearsAtCompany: number;
 };
 
+export type SemanticKnowledgeDemoDocument = {
+  id: string;
+  category: string;
+  title: string;
+  body: string;
+};
+
+export const SEMANTIC_KNOWLEDGE_DEMO_DOCUMENTS: SemanticKnowledgeDemoDocument[] = [
+  { id: 'ml-01', category: 'Machine Learning', title: 'Backpropagation', body: 'Backpropagation computes gradients layer-by-layer using the chain rule to train deep neural networks.' },
+  { id: 'ml-02', category: 'Machine Learning', title: 'Gradient Descent', body: 'Gradient descent minimises the loss function by iteratively moving parameters in the direction of steepest descent.' },
+  { id: 'ml-03', category: 'Machine Learning', title: 'Overfitting', body: 'Overfitting occurs when a model memorises training examples instead of learning generalisable patterns.' },
+  { id: 'ml-04', category: 'Machine Learning', title: 'Convolutional Networks', body: 'CNNs apply learnable filters that slide over images to extract hierarchical visual features for classification.' },
+  { id: 'ml-05', category: 'Machine Learning', title: 'Transformer Architecture', body: 'Transformers rely entirely on self-attention to model long-range dependencies, replacing recurrent networks.' },
+  { id: 'ml-06', category: 'Machine Learning', title: 'Reinforcement Learning', body: 'RL agents learn optimal behaviour by maximising cumulative reward through trial and error in an environment.' },
+  { id: 'ml-07', category: 'Machine Learning', title: 'Random Forests', body: 'Random forests combine many decision trees trained on random data subsets, reducing overfitting through ensemble averaging.' },
+  { id: 'ml-08', category: 'Machine Learning', title: 'Attention Mechanism', body: 'Attention allows models to dynamically weight different parts of the input sequence when producing each output token.' },
+  { id: 'fr-01', category: 'French History', title: 'French Revolution', body: 'The French Revolution began in 1789 with the storming of the Bastille, overthrowing the monarchy.' },
+  { id: 'fr-02', category: 'French History', title: 'Eiffel Tower', body: "Built in 1889 for the Paris World's Fair, the Eiffel Tower stands 330 metres tall on the Champ de Mars." },
+  { id: 'fr-03', category: 'French History', title: 'Battle of Waterloo', body: "The Battle of Waterloo in 1815 ended Napoleon Bonaparte's rule and reshaped the map of Europe." },
+  { id: 'fr-04', category: 'French History', title: 'The Louvre', body: "The Louvre in Paris is the world's largest art museum, home to the Mona Lisa and Venus de Milo." },
+  { id: 'fr-05', category: 'French History', title: 'Napoleon Bonaparte', body: 'Napoleon rose from military general to Emperor of France, conquering much of Europe before his final exile after Waterloo.' },
+  { id: 'fr-06', category: 'French History', title: 'Palace of Versailles', body: 'The Palace of Versailles was the royal residence of French kings from Louis XIV, symbolising absolute monarchy and Baroque architecture.' },
+  { id: 'bio-01', category: 'Biology', title: 'DNA Double Helix', body: 'DNA is a double-helix polymer encoding genetic instructions in four nucleotide bases: A, T, C and G.' },
+  { id: 'bio-02', category: 'Biology', title: 'CRISPR-Cas9', body: 'CRISPR-Cas9 enables precise in-vivo editing of DNA sequences, revolutionising genetic medicine and research.' },
+  { id: 'bio-03', category: 'Biology', title: 'Photosynthesis', body: 'Plants convert sunlight, water and CO2 into glucose and oxygen through light-dependent reactions and the Calvin cycle.' },
+  { id: 'bio-04', category: 'Biology', title: 'Natural Selection', body: 'Natural selection favours organisms with traits that improve survival and reproduction, driving evolutionary change across generations.' },
+  { id: 'bio-05', category: 'Biology', title: 'Mitosis', body: 'Mitosis is the cell division process where one cell splits into two genetically identical daughter cells, enabling growth and tissue repair.' },
+  { id: 'db-01', category: 'Databases', title: 'B+ Tree Indexes', body: 'B+ trees store sorted keys in linked leaf nodes, providing O(log n) point lookups and efficient range scans.' },
+  { id: 'db-02', category: 'Databases', title: 'Write-Ahead Logging', body: 'WAL writes every change to a log before touching data pages, guaranteeing atomicity and crash recovery.' },
+  { id: 'db-03', category: 'Databases', title: 'HNSW Vector Index', body: 'HNSW builds a hierarchical navigable small world graph of embeddings, enabling approximate nearest-neighbour search in sub-linear time.' },
+  { id: 'db-04', category: 'Databases', title: 'ACID Transactions', body: 'ACID guarantees atomicity, consistency, isolation and durability, ensuring database transactions are reliably processed even after failures.' },
+  { id: 'space-01', category: 'Space & Astronomy', title: 'Black Holes', body: 'Black holes are regions where gravity is so extreme that not even light can escape, forming when massive stars collapse at the end of their life.' },
+  { id: 'space-02', category: 'Space & Astronomy', title: 'The Big Bang', body: 'The Big Bang describes the rapid expansion of the universe from an ultra-dense singularity approximately 13.8 billion years ago.' },
+  { id: 'space-03', category: 'Space & Astronomy', title: 'Mars Exploration', body: 'NASA rovers Curiosity and Perseverance study Martian geology and atmosphere, searching for signs of ancient microbial life.' },
+  { id: 'space-04', category: 'Space & Astronomy', title: 'Exoplanets', body: 'Exoplanets orbit stars outside our solar system; the James Webb Space Telescope analyses their atmospheres for potential biosignatures.' },
+  { id: 'sport-01', category: 'Sports', title: 'Formula 1', body: 'Formula 1 cars reach over 350 km/h using hybrid power units, advanced aerodynamic downforce and ultra-grippy slick tyres.' },
+  { id: 'sport-02', category: 'Sports', title: 'Football', body: 'Football is the most popular sport in the world, played by two teams of eleven players each aiming to kick the ball into the opposing goal.' },
+  { id: 'sport-03', category: 'Sports', title: 'Olympic Games', body: 'The Olympic Games unite athletes from over 200 nations every four years to compete across dozens of summer and winter sport disciplines.' },
+  { id: 'sport-04', category: 'Sports', title: 'Tennis', body: 'Tennis players score points by hitting a ball over a net so the opponent cannot return it, competing in Grand Slam tournaments worldwide.' },
+];
+
 function seededRandom(seed: number): () => number {
   let s = seed;
   return () => {
@@ -100,4 +141,8 @@ export function generateDemoEmployees(count = 200): DemoEmployee[] {
   }
 
   return employees;
+}
+
+export function generateSemanticKnowledgeDemoDocuments(): SemanticKnowledgeDemoDocument[] {
+  return SEMANTIC_KNOWLEDGE_DEMO_DOCUMENTS.map((document) => ({ ...document }));
 }

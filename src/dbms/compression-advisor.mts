@@ -287,16 +287,21 @@ function sampleRationale(
   return parts.join(' ');
 }
 
-export function compressionSampleFromValue(field: string, value: unknown): CompressionSample | null {
+export function compressionSampleFromValue(
+  field: string,
+  value: unknown,
+  options: { mime?: string | null } = {},
+): CompressionSample | null {
+  const imageLike = isImageField(field) || options.mime?.toLowerCase().startsWith('image/') === true;
   if (Buffer.isBuffer(value)) {
     return {
       raw: value,
-      kind: isImageField(field) ? 'image' : 'binary',
+      kind: imageLike ? 'image' : 'binary',
     };
   }
 
   if (typeof value === 'string') {
-    if (isImageField(field)) {
+    if (imageLike) {
       try {
         return {
           raw: Buffer.from(value, 'base64'),

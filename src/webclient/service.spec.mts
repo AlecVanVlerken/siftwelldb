@@ -34,13 +34,24 @@ describe('DatabaseService', () => {
     setFakeDbms(service, {
       cursor(collection, iterableKey, value) {
         seen.push([collection, iterableKey, value]);
-        return documents(['a', 'b', 'c']);
+        return documents([
+          JSON.stringify({ id: 'a', title: 'A' }),
+          JSON.stringify({ id: 'b', title: 'B' }),
+          JSON.stringify({ id: 'c', title: 'C' }),
+        ]);
       },
       async deleteDocumentById() {},
       async commit() {},
     });
 
-    await expect(service.getDocuments('books', 'title', 'A', 2)).resolves.toEqual(['a', 'b']);
+    await expect(service.getDocuments('books', 'title', 'A', 2)).resolves.toEqual({
+      documents: [
+        JSON.stringify({ id: 'b', title: 'B' }),
+        JSON.stringify({ id: 'c', title: 'C' }),
+      ],
+      hasMore: false,
+      nextCursor: undefined,
+    });
     expect(seen).toEqual([['books', 'title', 'A']]);
   });
 

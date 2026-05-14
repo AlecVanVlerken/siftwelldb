@@ -8,94 +8,107 @@
           "name": "id",
           "type": "string",
           "label": "Id",
-          "description": "Unique identifier for each employee.",
-          "synonyms": [
-            "employee id",
-            "employee_id",
-            "staff id"
-          ],
+          "description": "Unique identifier for each employee record.",
           "hidden": true
         },
         {
           "name": "name",
           "type": "string",
           "label": "Name",
-          "description": "Full name of the employee.",
           "synonyms": [
-            "employee name",
-            "staff name",
-            "person name"
-          ]
+            "person",
+            "employee",
+            "record name",
+            "full name"
+          ],
+          "description": "The full name of the employee."
         },
         {
           "name": "gender",
           "type": "string",
           "label": "Gender",
-          "description": "Gender of the employee (e.g., F for Female, M for Male).",
           "synonyms": [
             "sex"
-          ]
+          ],
+          "tags": [
+            "values: F, M"
+          ],
+          "description": "The gender of the employee (F for female, M for male)."
         },
         {
           "name": "department",
           "type": "string",
           "label": "Department",
-          "description": "The department or division the employee belongs to.",
           "synonyms": [
             "team",
-            "unit"
-          ]
+            "division",
+            "business unit"
+          ],
+          "tags": [
+            "values: Engineering, Finance, HR, Legal, Marketing, Operations, Sales, Support"
+          ],
+          "description": "The department or team to which the employee is assigned."
         },
         {
           "name": "seniority",
           "type": "string",
           "label": "Seniority",
-          "description": "The level of experience or rank of the employee within their role.",
           "synonyms": [
-            "job level",
+            "level",
             "rank",
-            "title"
-          ]
+            "experience level",
+            "job level"
+          ],
+          "tags": [
+            "values: Junior, Lead, Mid, Principal, Senior"
+          ],
+          "description": "The experience or leadership level of the employee within the company."
         },
         {
           "name": "salary",
           "type": "number",
           "label": "Salary",
-          "description": "The annual salary of the employee.",
           "synonyms": [
-            "compensation",
             "pay",
-            "annual salary"
-          ]
+            "wage",
+            "compensation",
+            "income",
+            "earnings"
+          ],
+          "description": "The annual salary of the employee in the local currency."
         },
         {
           "name": "age",
           "type": "number",
           "label": "Age",
-          "description": "The current age of the employee in years.",
-          "synonyms": [
-            "employee age"
-          ]
+          "description": "The current age of the employee in years."
         },
         {
           "name": "city",
           "type": "string",
           "label": "City",
-          "description": "The city where the employee is based or works.",
           "synonyms": [
-            "work city",
-            "location"
-          ]
+            "location",
+            "office",
+            "place",
+            "work location"
+          ],
+          "tags": [
+            "values: Antwerpen, Brugge, Brussel, Gent, Hasselt, Leuven, Mechelen, Namur"
+          ],
+          "description": "The primary city where the employee is based or works."
         },
         {
           "name": "yearsAtCompany",
           "type": "number",
           "label": "Years At Company",
-          "description": "The total number of years the employee has worked at the company.",
           "synonyms": [
             "tenure",
-            "years of service"
-          ]
+            "years employed",
+            "experience",
+            "length of service"
+          ],
+          "description": "The total number of years the employee has been working at the company."
         }
       ],
       "measures": [
@@ -182,81 +195,60 @@
           "label": "Headcount",
           "aggregation": "COUNT",
           "field": "*",
-          "description": "Total number of employees."
+          "description": "The total number of employees in the dataset. Synonymous with Employee Count."
         }
       ],
-      "description": "Detailed information about employees within the company, including their personal details, job roles, and compensation."
+      "description": "Comprehensive information about all employees within the organization."
     },
     {
-      "collection": "test",
-      "label": "Test",
+      "collection": "knowledge",
+      "label": "Knowledge",
       "fields": [
         {
           "name": "id",
           "type": "string",
           "label": "Id",
-          "description": "Unique identifier for each document in the test collection.",
-          "synonyms": [
-            "document id",
-            "test id"
-          ],
+          "description": "Unique identifier for each knowledge article.",
           "hidden": true
         },
         {
-          "name": "second_field",
-          "type": "number",
-          "label": "Second Field",
-          "description": "A numerical field used for testing aggregation and filtering.",
+          "name": "category",
+          "type": "string",
+          "label": "Category",
           "synonyms": [
-            "value",
-            "numeric field"
-          ]
+            "topic",
+            "subject",
+            "domain"
+          ],
+          "tags": [
+            "values: Biology, Databases, French History, Machine Learning, Space & Astronomy, Sports"
+          ],
+          "description": "The primary category or subject area of the knowledge article."
         },
         {
-          "name": "city",
+          "name": "title",
           "type": "string",
-          "label": "City",
-          "description": "A categorical field representing a city or location, used for testing grouping.",
+          "label": "Title",
           "synonyms": [
-            "location"
-          ]
+            "article name",
+            "document title"
+          ],
+          "description": "The title or headline of the knowledge article."
         },
         {
-          "name": "place",
+          "name": "body",
           "type": "string",
-          "label": "Place",
-          "description": "Another categorical field representing a place.",
+          "label": "Body",
           "synonyms": [
-            "venue",
-            "site"
-          ]
+            "content",
+            "text",
+            "description",
+            "summary"
+          ],
+          "description": "The main content or body text of the knowledge article."
         }
       ],
       "measures": [
-        {
-          "name": "avg_second_field",
-          "label": "Avg Second Field",
-          "aggregation": "AVG",
-          "field": "second_field"
-        },
-        {
-          "name": "sum_second_field",
-          "label": "Sum Second Field",
-          "aggregation": "SUM",
-          "field": "second_field"
-        },
-        {
-          "name": "min_second_field",
-          "label": "Min Second Field",
-          "aggregation": "MIN",
-          "field": "second_field"
-        },
-        {
-          "name": "max_second_field",
-          "label": "Max Second Field",
-          "aggregation": "MAX",
-          "field": "second_field"
-        },
         {
           "name": "count",
           "label": "Count",
@@ -264,7 +256,56 @@
           "field": "*"
         }
       ],
-      "description": "A sample collection for testing purposes with various data types."
+      "description": "A collection of knowledge articles covering various topics."
+    },
+    {
+      "collection": "photos",
+      "label": "Photos",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "label": "Id",
+          "description": "Unique identifier for each photo file.",
+          "hidden": true
+        },
+        {
+          "name": "label",
+          "type": "string",
+          "label": "Label",
+          "synonyms": [
+            "tag",
+            "caption",
+            "name",
+            "description"
+          ],
+          "description": "A descriptive label or tag assigned to the content of the photo."
+        },
+        {
+          "name": "image",
+          "type": "string",
+          "label": "Image",
+          "synonyms": [
+            "image",
+            "photo",
+            "picture",
+            "visual"
+          ],
+          "tags": [
+            "image field: base64-encoded media; use semantic image search for visual similarity instead of SQL filters"
+          ],
+          "description": "The base64-encoded binary data of the image itself, used for visual display and semantic search."
+        }
+      ],
+      "measures": [
+        {
+          "name": "count",
+          "label": "Count",
+          "aggregation": "COUNT",
+          "field": "*"
+        }
+      ],
+      "description": "A collection of visual assets, including images and pictures."
     }
   ]
 }

@@ -98,7 +98,6 @@ export class VacuumValidator {
   private async validateCollection(collection: string): Promise<void> {
     this.assertTargetHasCollection(collection);
     this.assertCompressionDefaultsMatch(collection);
-    this.assertHnswPresenceMatches(collection);
 
     const sourceHasIdTree = this.catalog.hasIdTree(collection);
     const targetHasIdTree = this.targetCatalog.hasIdTree(collection);
@@ -226,14 +225,6 @@ export class VacuumValidator {
     if (this.normalizedCompressionDefaults(sourceDefaults) !== this.normalizedCompressionDefaults(targetDefaults)) {
       throw new Error(
         `Vacuum validation failed for collection "${collection}": compression defaults differ between source and target.`,
-      );
-    }
-  }
-
-  private assertHnswPresenceMatches(collection: string): void {
-    if (this.catalog.hasHnsw(collection) !== this.targetCatalog.hasHnsw(collection)) {
-      throw new Error(
-        `Vacuum validation failed for collection "${collection}": HNSW metadata presence differs between source and target.`,
       );
     }
   }

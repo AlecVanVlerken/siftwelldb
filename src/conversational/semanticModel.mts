@@ -175,6 +175,7 @@ export async function generateSemanticModel(dbms: SimpleDbms): Promise<SemanticM
 
     for (const sample of samples) {
       for (const [key, value] of Object.entries(sample)) {
+        if (isImageMimeMetadataField(key, value)) continue;
         if (fieldMap.has(key)) continue;
         const type = inferType(value);
         if (type) {
@@ -219,9 +220,18 @@ export async function generateSemanticModel(dbms: SimpleDbms): Promise<SemanticM
 const SAMPLE_ROW_LIMIT = 10;
 const VALUE_HINT_LIMIT = 8;
 
-function isImageFieldName(name: string): boolean {
+function imageMimeMetadataField(name: string): string {
+  return `_${name}_mime`;
+}
+
+function isImageMimeMetadataField(name: string, value: unknown): boolean {
+  return name.startsWith('_') && name.endsWith('_mime') && typeof value === 'string' && value.startsWith('image/');
+}
+
+function isImageFieldName(name: string, samples: Record<string, FieldValue>[] = []): boolean {
   return /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(name)
-    || /\.(jpe?g|png|gif|webp)$/i.test(name);
+    || /\.(jpe?g|png|gif|webp)$/i.test(name)
+    || samples.some((sample) => typeof sample[imageMimeMetadataField(name)] === 'string' && String(sample[imageMimeMetadataField(name)]).startsWith('image/'));
 }
 
 async function sampleDocuments(dbms: SimpleDbms, collection: string): Promise<Record<string, FieldValue>[]> {
@@ -278,7 +288,7 @@ function deterministicSynonyms(fieldName: string): string[] {
   if (normalized === 'name' || normalized.endsWith('name')) {
     add('person', 'employee', 'record name');
   }
-  if (isImageFieldName(fieldName)) {
+  if (isImageFieldName(fieldName) || ['image', 'photo', 'picture', 'cover', 'avatar', 'thumbnail', 'img'].includes(normalized)) {
     add('image', 'photo', 'picture', 'visual');
   }
 
@@ -286,7 +296,7 @@ function deterministicSynonyms(fieldName: string): string[] {
 }
 
 function sampledValueHint(field: FieldDefinition, samples: Record<string, FieldValue>[]): string | undefined {
-  if (isImageFieldName(field.name)) return undefined;
+  if (isImageFieldName(field.name, samples)) return undefined;
   if (field.type !== 'string' && field.type !== 'boolean') return undefined;
   const values = new Set<string>();
   for (const sample of samples) {
@@ -303,7 +313,7 @@ function sampledValueHint(field: FieldDefinition, samples: Record<string, FieldV
 function enrichGeneratedField(field: FieldDefinition, samples: Record<string, FieldValue>[]): FieldDefinition {
   const synonyms = deterministicSynonyms(field.name);
   const valueHint = sampledValueHint(field, samples);
-  const imageTags = isImageFieldName(field.name)
+  const imageTags = isImageFieldName(field.name, samples)
     ? ['image field: base64-encoded media; use semantic image search for visual similarity instead of SQL filters']
     : [];
   const tags = [...(field.tags ?? []), ...imageTags, ...(valueHint ? [valueHint] : [])];
@@ -326,7 +336,11 @@ type FieldStats = {
 };
 
 async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: FieldDefinition[]): Promise<FieldStats> {
-  const stringFieldNames = new Set(fields.filter((f) => f.type === 'string' && !isImageFieldName(f.name)).map((f) => f.name));
+  const stringFieldNames = new Set(
+    fields
+      .filter((f) => f.type === 'string' && !isImageFieldName(f.name) && !f.tags?.some((tag) => tag.includes('image field')))
+      .map((f) => f.name),
+  );
   const numericFieldNames = new Set(fields.filter((f) => f.type === 'number').map((f) => f.name));
 
   const sampleRows: Record<string, FieldValue>[] = [];
@@ -372,7 +386,7 @@ function redactImageValues(row: Record<string, FieldValue>): Record<string, Fiel
   return Object.fromEntries(
     Object.entries(row).map(([key, value]) => [
       key,
-      isImageFieldName(key) && typeof value === 'string' ? `[image base64 omitted, ${value.length} chars]` : value,
+      isImageFieldName(key, [row]) && typeof value === 'string' ? `[image base64 omitted, ${value.length} chars]` : value,
     ]),
   ) as Record<string, FieldValue>;
 }
@@ -492,4 +506,3 @@ export async function enrichModelWithLLM(model: SemanticModel, dbms: SimpleDbms,
     return model;
   }
 }
-

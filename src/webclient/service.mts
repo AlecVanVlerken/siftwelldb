@@ -2,6 +2,7 @@
 // @date 2026-03-31
 
 import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import {
   SimpleDbms,
@@ -12,7 +13,7 @@ import {
 } from '../dbms/simpledbms.mjs';
 import { listAvailableCompressionProfiles } from '../dbms/compression-advisor.mjs';
 import { type CompressionAlgorithm } from '../dbms/compression.mjs';
-import { isImageField } from '../dbms/document.mjs';
+import { imageMimeForField, isImageField } from '../dbms/document.mjs';
 import { generateWikiArticles } from '../dbms/lab-fixtures/wiki.mjs';
 import { RealFile } from '../core/file.mjs';
 import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../compaction/compaction.mjs';
@@ -20,7 +21,7 @@ import { fetchPageCursor } from '../largedatasets/pagination.mjs';
 import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
 import { QueryLanguage, type QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
 import { getClipHnswConfig } from './clipHnswConfig.mjs';
-import { generateDemoEmployees } from './demoData.mjs';
+import { generateDemoEmployees, generateSemanticKnowledgeDemoDocuments } from './demoData.mjs';
 
 export type LabPolicyKey = 'none-uniform' | 'gzip-uniform' | 'zstd-uniform' | 'gzip-everything' | 'advisor-mix';
 
@@ -67,6 +68,7 @@ export type LabReport = {
 
 type LabRecommendationBundle = {
   field: string;
+  isImage: boolean;
   recommendation: CompressionRecommendation;
   forcedGzipBytesSaved: number | null;
 };
@@ -132,6 +134,7 @@ export type DatabaseStatus = {
   busyOperation: string | null;
   size: DatabaseSizeInfo | null;
   incrementalCompaction: IncrementalCompactionStatus;
+  semanticIndexes: string[];
 };
 
 export type IncrementalCompactionStatus = {
@@ -173,11 +176,11 @@ function rankingItem(
  * All database interaction from the HTTP layer should go through
  * this service.
  *
- * Every database the service opens is wired up with the shared CLIP
- * `HnswConfig` from {@link getClipHnswConfig}, so semantic search
- * works on the first insert without any "rebuild index" dance. The
- * CLIP weights themselves are loaded lazily on the first embedding
- * call, so opening a database is still cheap.
+ * Every database the service opens is wired up with the selected
+ * `HnswConfig`, so semantic search works on the first insert without
+ * any "rebuild index" dance. The embedding weights themselves are
+ * loaded lazily on the first embedding call, so opening a database is
+ * still cheap.
  *
  * @author Alexandre-Gatien Bienfet
  */
@@ -330,12 +333,14 @@ export class DatabaseService {
       busyOperation: this.busyOperation,
       size: this.currentFilepath ? await this.databaseSizeInfo(this.currentFilepath) : null,
       incrementalCompaction: this.getIncrementalCompactionStatus(),
+      semanticIndexes: this.dbms ? this.dbms.getHnswIndexKeys() : [],
     };
   }
 
   setIncrementalCompactionEnabled(enabled: boolean): IncrementalCompactionStatus {
     this.incrementalCompactionEnabled = enabled;
     this.incrementalCompactionLastError = null;
+    console.log(`[compaction] auto compact ${enabled ? 'enabled' : 'disabled'}`);
 
     if (enabled) {
       this.startIncrementalCompactionTimer();
@@ -346,6 +351,34 @@ export class DatabaseService {
     }
 
     return this.getIncrementalCompactionStatus();
+  }
+
+  async runIncrementalCompactionStep(): Promise<IncrementalCompactionStatus> {
+    return this.runExclusive('incremental-compaction', async () => {
+      this.ensureConnected();
+      const start = Date.now();
+      this.incrementalCompactionActive = true;
+      this.incrementalCompactionQueued = false;
+      console.log('[compaction] manual incremental step started');
+      try {
+        const result = await this.dbms!.runIncrementalCompactionStep(this.incrementalCompactionPolicy);
+        this.incrementalCompactionLastRunAt = new Date();
+        this.incrementalCompactionLastDurationMs = Date.now() - start;
+        this.incrementalCompactionLastResult = result;
+        this.incrementalCompactionLastError = null;
+        this.incrementalCompactionActive = false;
+        console.log(
+          `[compaction] manual incremental step complete in ${this.incrementalCompactionLastDurationMs}ms: ${JSON.stringify(result)}`,
+        );
+        return this.getIncrementalCompactionStatus();
+      } catch (error) {
+        this.incrementalCompactionLastError = String(error);
+        console.error('[compaction] manual incremental step failed:', error);
+        throw error;
+      } finally {
+        this.incrementalCompactionActive = false;
+      }
+    });
   }
 
   /**
@@ -366,6 +399,7 @@ export class DatabaseService {
       const backupLogPath = `${logPath}.vacuum-${stamp}.bak`;
       const started = performance.now();
       let compacted: SimpleDbms | null = null;
+      console.log(`[compaction] manual full vacuum started for ${filepath}`);
 
       try {
         compacted = await this.dbms!.vacuumCompactInto(new RealFile(tempPath), new RealFile(tempLogPath));
@@ -399,14 +433,19 @@ export class DatabaseService {
         this.onDatabaseOpened();
 
         const after = await this.databaseSizeInfo(filepath);
-        return {
+        const summary = {
           filepath,
           before,
           after,
           bytesSaved: before.totalBytes - after.totalBytes,
           durationMs: performance.now() - started,
         };
+        console.log(
+          `[compaction] manual full vacuum complete in ${summary.durationMs.toFixed(0)}ms: saved ${summary.bytesSaved} bytes (${before.totalBytes} -> ${after.totalBytes})`,
+        );
+        return summary;
       } catch (error) {
+        console.error('[compaction] manual full vacuum failed:', error);
         if (compacted) {
           try {
             await compacted.close();
@@ -425,6 +464,10 @@ export class DatabaseService {
 
   /** Return the list of collection names, hiding internal _-prefixed ones. */
   async getCollections(): Promise<string[]> {
+    return this.runExclusive('list-collections', async () => this.getCollectionsUnlocked());
+  }
+
+  private async getCollectionsUnlocked(): Promise<string[]> {
     this.ensureConnected();
     const all = await this.dbms!.getCollections();
     return all.filter((c) => !c.startsWith('_'));
@@ -451,8 +494,10 @@ export class DatabaseService {
   }
 
   async recommendCompression(request: CompressionRecommendationRequest): Promise<CompressionRecommendation> {
-    this.ensureConnected();
-    return this.dbms!.recommendCompression(request);
+    return this.runExclusive('compression-recommendation', async () => {
+      this.ensureConnected();
+      return this.dbms!.recommendCompression(request);
+    });
   }
 
   /**
@@ -496,6 +541,14 @@ export class DatabaseService {
     workload?: number;
     sampleSize?: number;
   }): Promise<LabReport> {
+    return this.runExclusive('compression-lab-report', async () => this.recommendCollectionLabUnlocked(request));
+  }
+
+  private async recommendCollectionLabUnlocked(request: {
+    collection: string;
+    workload?: number;
+    sampleSize?: number;
+  }): Promise<LabReport> {
     this.ensureConnected();
 
     const workload = clamp01(request.workload ?? 0);
@@ -514,6 +567,7 @@ export class DatabaseService {
 
     const bundles: LabRecommendationBundle[] = [];
     for (const field of fields) {
+      const isImage = this.isLabImageField(field, documents);
       const recommendation = await this.dbms!.recommendCompression({
         collection: request.collection,
         field,
@@ -522,8 +576,9 @@ export class DatabaseService {
       });
       bundles.push({
         field,
+        isImage,
         recommendation,
-        forcedGzipBytesSaved: isImageField(field) ? this.estimateForcedGzipBytesSaved(field, documents) : null,
+        forcedGzipBytesSaved: isImage ? this.estimateForcedGzipBytesSaved(field, documents) : null,
       });
     }
 
@@ -549,22 +604,24 @@ export class DatabaseService {
     workload?: number;
     sampleSize?: number;
   }): Promise<{ collection: string; defaults: Record<string, CompressionAlgorithm>; fields: number }> {
-    this.ensureConnected();
+    return this.runExclusive('compression-lab-apply-advice', async () => {
+      this.ensureConnected();
 
-    const report = await this.recommendCollectionLab(request);
-    const defaults: Record<string, CompressionAlgorithm> = {};
-    for (const field of report.perField) {
-      defaults[field.field] = field.recommended;
-    }
+      const report = await this.recommendCollectionLabUnlocked(request);
+      const defaults: Record<string, CompressionAlgorithm> = {};
+      for (const field of report.perField) {
+        defaults[field.field] = field.recommended;
+      }
 
-    this.dbms!.setFieldCompressionDefaults(request.collection, defaults);
-    await this.dbms!.commit();
+      this.dbms!.setFieldCompressionDefaults(request.collection, defaults);
+      await this.dbms!.commit();
 
-    return {
-      collection: request.collection,
-      defaults,
-      fields: Object.keys(defaults).length,
-    };
+      return {
+        collection: request.collection,
+        defaults,
+        fields: Object.keys(defaults).length,
+      };
+    });
   }
 
   /**
@@ -585,6 +642,10 @@ export class DatabaseService {
    * The records figure is cached and invalidated on writes.
    */
   async getCollectionStorage(collection: string): Promise<CollectionStorage> {
+    return this.runExclusive('collection-storage', async () => this.getCollectionStorageUnlocked(collection));
+  }
+
+  private async getCollectionStorageUnlocked(collection: string): Promise<CollectionStorage> {
     this.ensureConnected();
     const blockSize = this.dbms!.getBlockSize();
     const cached = this.recordBytesCache.get(collection);
@@ -595,7 +656,7 @@ export class DatabaseService {
       recordBytes = await this.dbms!.getCollectionRecordBytes(collection);
       this.recordBytesCache.set(collection, recordBytes);
     }
-    const docs = await this.getDocuments(collection, 'id', undefined, 100000);
+    const docs = await this.getDocumentsUnlocked(collection, 'id', undefined, 100000);
     return {
       collection,
       documentCount: docs.documents.length,
@@ -612,6 +673,17 @@ export class DatabaseService {
 
   /** Fetch a cursor-paginated page of documents from a collection. */
   async getDocuments(
+    collection: string,
+    iterableKey: string = 'id',
+    cursor?: string,
+    limit: number = 50,
+  ): Promise<{ documents: string[]; hasMore: boolean; nextCursor?: string | number }> {
+    return this.runExclusive('get-documents', async () =>
+      this.getDocumentsUnlocked(collection, iterableKey, cursor, limit),
+    );
+  }
+
+  private async getDocumentsUnlocked(
     collection: string,
     iterableKey: string = 'id',
     cursor?: string,
@@ -713,10 +785,15 @@ export class DatabaseService {
    * for the data-tab edit drawer — the underlying engine still does a
    * delete + reinsert atomically.
    */
-  async replaceDocument(collection: string, id: string, newDocument: unknown): Promise<void> {
+  async replaceDocument(
+    collection: string,
+    id: string,
+    newDocument: unknown,
+    compression?: import('../dbms/compression.mts').FieldCompressionOverrides,
+  ): Promise<void> {
     await this.runExclusive('replace-document', async () => {
       this.ensureConnected();
-      await this.dbms!.replaceDocument(collection, id, newDocument);
+      await this.dbms!.replaceDocument(collection, id, newDocument, { compression });
       await this.dbms!.commit();
     });
     this.recordBytesCache.delete(collection);
@@ -732,17 +809,19 @@ export class DatabaseService {
    * statement either fully lands on disk or doesn't.
    */
   async query(sql: string): Promise<QueryExecutionResult> {
-    this.ensureConnected();
-    const ql = new QueryLanguage(this.dbms!);
-    const parsed = ql.parse(sql);
-    const start = Date.now();
-    const rows = await ql.execute(sql);
-    const elapsedMs = Date.now() - start;
-    if (parsed.kind === 'insert' || parsed.kind === 'update' || parsed.kind === 'delete') {
-      await this.dbms!.commit();
-      this.recordBytesCache.clear();
-    }
-    return { rows, rowCount: rows.length, kind: parsed.kind, elapsedMs };
+    return this.runExclusive('query', async () => {
+      this.ensureConnected();
+      const ql = new QueryLanguage(this.dbms!);
+      const parsed = ql.parse(sql);
+      const start = Date.now();
+      const rows = await ql.execute(sql);
+      const elapsedMs = Date.now() - start;
+      if (parsed.kind === 'insert' || parsed.kind === 'update' || parsed.kind === 'delete') {
+        await this.dbms!.commit();
+        this.recordBytesCache.clear();
+      }
+      return { rows, rowCount: rows.length, kind: parsed.kind, elapsedMs };
+    });
   }
 
   /**
@@ -750,30 +829,108 @@ export class DatabaseService {
    * If the `employees` collection already contains rows, this is a no-op.
    */
   async seedDemoEmployees(count: number = 200): Promise<{ collection: string; inserted: number; skipped: boolean }> {
-    this.ensureConnected();
+    return this.runExclusive('seed-demo-employees', async () => {
+      this.ensureConnected();
+      console.log(`[seed] employees started count=${count.toString()}`);
 
-    try {
-      const existing = await this.getDocuments('employees', 'id', undefined, 1);
-      if (existing.length > 0) {
-        return { collection: 'employees', inserted: 0, skipped: true };
+      try {
+        const existing = await this.getDocumentsUnlocked('employees', 'id', undefined, 1);
+        if (existing.documents.length > 0) {
+          console.log('[seed] employees skipped: collection already has rows');
+          return { collection: 'employees', inserted: 0, skipped: true };
+        }
+      } catch {
+        // Missing collection is expected for a fresh demo database.
       }
-    } catch {
-      // Missing collection is expected for a fresh demo database.
-    }
 
-    const employees = generateDemoEmployees(count);
-    for (const employee of employees) {
-      await this.dbms!.insertDocumentObject('employees', employee);
-    }
-    await this.dbms!.commit();
-    this.recordBytesCache.delete('employees');
-    return { collection: 'employees', inserted: employees.length, skipped: false };
+      const employees = generateDemoEmployees(count);
+      for (const employee of employees) {
+        await this.dbms!.insertDocumentObject('employees', employee);
+      }
+      await this.dbms!.commit();
+      this.recordBytesCache.delete('employees');
+      console.log(`[seed] employees complete inserted=${employees.length.toString()}`);
+      return { collection: 'employees', inserted: employees.length, skipped: false };
+    });
+  }
+
+  async seedSemanticKnowledgeDemo(): Promise<{ collection: string; inserted: number; skipped: boolean }> {
+    return this.runExclusive('seed-semantic-knowledge', async () => {
+      this.ensureConnected();
+      const collection = 'knowledge';
+      console.log('[seed] semantic knowledge started');
+
+      try {
+        const existing = await this.getDocumentsUnlocked(collection, 'id', undefined, 1);
+        if (existing.documents.length > 0) {
+          console.log('[seed] semantic knowledge skipped: collection already has rows');
+          return { collection, inserted: 0, skipped: true };
+        }
+      } catch {
+        // Missing collection is expected for a fresh demo database.
+      }
+
+      const documents = generateSemanticKnowledgeDemoDocuments();
+      for (const document of documents) {
+        await this.dbms!.insertDocumentObject(collection, document);
+      }
+      await this.dbms!.commit();
+      this.recordBytesCache.delete(collection);
+      if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
+      console.log(`[seed] semantic knowledge complete inserted=${documents.length.toString()}`);
+      return { collection, inserted: documents.length, skipped: false };
+    });
+  }
+
+  async seedSemanticImageDemo(): Promise<{ collection: string; inserted: number; skipped: boolean; source: string }> {
+    return this.runExclusive('seed-semantic-images', async () => {
+      this.ensureConnected();
+      const collection = 'photos';
+      console.log('[seed] semantic images started');
+
+      try {
+        const existing = await this.getDocumentsUnlocked(collection, 'id', undefined, 1);
+        if (existing.documents.length > 0) {
+          console.log('[seed] semantic images skipped: collection already has rows');
+          return { collection, inserted: 0, skipped: true, source: 'existing collection' };
+        }
+      } catch {
+        // Missing collection is expected for a fresh demo database.
+      }
+
+      const imageFiles = await this.semanticDemoImageFiles();
+      for (const file of imageFiles) {
+        const buffer = await fs.readFile(file.path);
+        await this.dbms!.insertDocumentObject(collection, {
+          id: file.id,
+          label: file.label,
+          image: buffer.toString('base64'),
+          _image_mime: this.imageMimeFromPath(file.path),
+        });
+      }
+      await this.dbms!.commit();
+      this.recordBytesCache.delete(collection);
+      if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
+      console.log(`[seed] semantic images complete inserted=${imageFiles.length.toString()}`);
+      return {
+        collection,
+        inserted: imageFiles.length,
+        skipped: false,
+        source: imageFiles.length === 1 ? imageFiles[0]!.path : path.dirname(imageFiles[0]!.path),
+      };
+    });
   }
 
   /** Semantic text-to-text search. */
   async semanticSearch(collection: string, query: string, limit: number): Promise<string[]> {
     this.ensureConnected();
     return this.dbms!.semanticSearch(collection, query, limit);
+  }
+
+  /** CLIP text-to-image search against image-only semantic vectors. */
+  async semanticImageTextSearch(collection: string, query: string, limit: number): Promise<string[]> {
+    this.ensureConnected();
+    return this.dbms!.semanticImageTextSearch(collection, query, limit);
   }
 
   /** Semantic image-to-image search. */
@@ -808,6 +965,10 @@ export class DatabaseService {
       saved += Math.min(actualSaved, -Math.ceil(raw.length * 0.03));
     }
     return saved;
+  }
+
+  private isLabImageField(field: string, documents: Array<Record<string, unknown>>): boolean {
+    return isImageField(field) || documents.some((document) => imageMimeForField(field, document) !== null);
   }
 
   private labBaseline(bundles: LabRecommendationBundle[]): LabReport['baseline'] {
@@ -855,7 +1016,7 @@ export class DatabaseService {
         const estimate = item.storageEstimate;
         if (!estimate) continue;
 
-        if (policy === 'gzip-everything' && isImageField(bundle.field) && bundle.forcedGzipBytesSaved !== null) {
+        if (policy === 'gzip-everything' && bundle.isImage && bundle.forcedGzipBytesSaved !== null) {
           bytesSaved += bundle.forcedGzipBytesSaved;
           if (baseline.dataBytesPerBlock && bundle.forcedGzipBytesSaved < 0) {
             blocksSaved -= Math.ceil(Math.abs(bundle.forcedGzipBytesSaved) / baseline.dataBytesPerBlock);
@@ -890,7 +1051,7 @@ export class DatabaseService {
       case 'none-uniform':
         return 'none';
       case 'gzip-uniform':
-        return isImageField(bundle.field) ? 'none' : 'gzip';
+        return bundle.isImage ? 'none' : 'gzip';
       case 'zstd-uniform':
         return 'zstd';
       case 'gzip-everything':
@@ -923,6 +1084,35 @@ export class DatabaseService {
     };
   }
 
+  private async semanticDemoImageFiles(): Promise<Array<{ id: string; label: string; path: string }>> {
+    const imageDir = path.resolve('demo-db/images');
+    const fallback = path.resolve('rabbit.jpg');
+    try {
+      const entries = await fs.readdir(imageDir);
+      const images = entries
+        .filter((entry) => /\.(jpe?g|png|webp)$/i.test(entry))
+        .sort()
+        .map((entry) => ({
+          id: entry,
+          label: entry.replace(/\.(jpe?g|png|webp)$/i, '').replace(/_/g, ' '),
+          path: path.join(imageDir, entry),
+        }));
+      if (images.length > 0) return images;
+    } catch {
+      // The standalone image demo cache is optional for the webclient seed.
+    }
+
+    await fs.access(fallback);
+    return [{ id: 'rabbit.jpg', label: 'rabbit', path: fallback }];
+  }
+
+  private imageMimeFromPath(filePath: string): string {
+    const lower = filePath.toLowerCase();
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.webp')) return 'image/webp';
+    return 'image/jpeg';
+  }
+
   private ensureConnected(): void {
     if (!this.dbms) throw new Error('No database connected');
   }
@@ -950,6 +1140,7 @@ export class DatabaseService {
   private startIncrementalCompactionTimer(): void {
     if (this.incrementalCompactionTimer) return;
 
+    console.log(`[compaction] auto compact timer started (${this.incrementalCompactionIntervalMs}ms interval)`);
     this.incrementalCompactionTimer = setInterval(() => {
       this.scheduleIncrementalCompaction();
     }, this.incrementalCompactionIntervalMs);
@@ -960,6 +1151,7 @@ export class DatabaseService {
     if (!this.incrementalCompactionTimer) return;
     clearInterval(this.incrementalCompactionTimer);
     this.incrementalCompactionTimer = null;
+    console.log('[compaction] auto compact timer stopped');
   }
 
   private scheduleIncrementalCompaction(): void {
@@ -975,11 +1167,17 @@ export class DatabaseService {
       this.incrementalCompactionActive = true;
       const start = Date.now();
       try {
+        console.log('[compaction] auto incremental check started');
         const result = await this.dbms.compactIfNeeded(this.incrementalCompactionPolicy);
         if (result !== null) {
           this.incrementalCompactionLastRunAt = new Date();
           this.incrementalCompactionLastDurationMs = Date.now() - start;
           this.incrementalCompactionLastResult = result;
+          console.log(
+            `[compaction] auto incremental step complete in ${this.incrementalCompactionLastDurationMs}ms: ${JSON.stringify(result)}`,
+          );
+        } else {
+          console.log(`[compaction] auto incremental check complete in ${Date.now() - start}ms: no work needed`);
         }
         this.incrementalCompactionLastError = null;
       } finally {
@@ -1009,6 +1207,10 @@ export class DatabaseService {
       this.currentOperation = null;
       release();
     }
+  }
+
+  async runExclusiveOperation<T>(operation: string, task: () => Promise<T>): Promise<T> {
+    return this.runExclusive(operation, task);
   }
 
   private logFilepath(filepath: string): string {

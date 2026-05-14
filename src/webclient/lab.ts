@@ -1,9 +1,6 @@
 // @author Codex
 // @date 2026-05-05
 
-import { apiCall } from './api.js';
-import { formatSize, escapeHTML } from './utils.js';
-
 type CompressionAlgorithm = 'none' | 'gzip' | 'deflate' | 'brotli' | 'zstd-fast' | 'zstd';
 type LabPolicyKey = 'none-uniform' | 'gzip-uniform' | 'zstd-uniform' | 'gzip-everything' | 'advisor-mix';
 
@@ -63,6 +60,41 @@ let fieldsHost: HTMLElement;
 let totalsHost: HTMLElement;
 let debounceHandle: number | null = null;
 const lastRecommendations = new Map<string, CompressionAlgorithm>();
+
+async function apiCall(path: string, method: string = 'GET', body?: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await fetch(path, {
+    method,
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) as Record<string, unknown> : {};
+  if (!response.ok) {
+    throw new Error(typeof data['error'] === 'string' ? data['error'] : `HTTP ${response.status}`);
+  }
+  return data;
+}
+
+function escapeHTML(value: unknown): string {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function formatSize(bytes: number): string {
+  if (!Number.isFinite(bytes)) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = Math.max(0, bytes);
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
 
 export function initLab(options: LabInitOptions): void {
   opts = options;

@@ -2,6 +2,7 @@
 
 import type { LLMProvider, ChatMessage } from './llmProvider.mjs';
 import type { SemanticModel } from './semanticModel.mjs';
+import { modelToSchemaPrompt } from './semanticModel.mjs';
 import type { ParsedQuery, QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
 import { QueryLanguage } from '../dbms/querylanguage/querylanguage.mjs';
 import { QueryGenerator } from './queryGenerator.mjs';
@@ -67,12 +68,14 @@ export class ConversationalEngine {
   private queryLanguage: QueryLanguage;
   private queryGenerator: QueryGenerator;
   private llmProvider: LLMProvider;
+  private semanticModel: SemanticModel;
   private history: ChatMessage[] = [];
 
   constructor(config: ConversationalEngineConfig) {
     this.queryLanguage = new QueryLanguage(config.dbms);
     this.queryGenerator = new QueryGenerator(config.llmProvider, config.semanticModel, this.queryLanguage);
     this.llmProvider = config.llmProvider;
+    this.semanticModel = config.semanticModel;
   }
 
   /**
@@ -82,6 +85,10 @@ export class ConversationalEngine {
    */
   async ask(question: string, externalHistory?: ChatMessage[]): Promise<AnalyticsResponse> {
     const history = externalHistory ?? this.history;
+
+    if (isMutationSyntaxHelpQuestion(question)) {
+      return this.answerMutationSyntaxHelp(question, history);
+    }
 
     let query: string;
     let data: QueryResultRow[];
@@ -192,6 +199,27 @@ export class ConversationalEngine {
     while (history.length > MAX_HISTORY) history.shift();
     if (history === this.history) return;
     this.history = [...history];
+  }
+
+  private async answerMutationSyntaxHelp(question: string, history: ChatMessage[]): Promise<AnalyticsResponse> {
+    const systemPrompt = buildMutationSyntaxAdvisorPrompt(this.semanticModel);
+    try {
+      const response = await this.llmProvider.chat(systemPrompt, history, question);
+      const summary = response.text.trim();
+      this.pushHistory(history, question, summary);
+      return { question, query: '', data: [], summary, chart: null };
+    } catch (err) {
+      const fallback = mutationSyntaxFallback(question);
+      this.pushHistory(history, question, fallback);
+      return {
+        question,
+        query: '',
+        data: [],
+        summary: fallback,
+        chart: null,
+        error: `Failed to generate syntax advice: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
   }
 
   // ── Insight generation ────────────────────────────────────────────────────
@@ -347,4 +375,69 @@ Chart guidelines:
       return { summary: text, chart: null };
     }
   }
+}
+
+function isMutationSyntaxHelpQuestion(question: string): boolean {
+  const text = question.toLowerCase();
+  const mentionsMutation = /\b(delete|remove|update|insert|add|mutat(?:e|ion)|change)\b/.test(text);
+  if (!mentionsMutation) return false;
+  return /\b(how|syntax|query|write|advise|advice|example|can i|should i|what(?:'s| is)? the query)\b/.test(text);
+}
+
+function buildMutationSyntaxAdvisorPrompt(model: SemanticModel): string {
+  const schema = modelToSchemaPrompt(model);
+  return `You are a SimpleDBMS query-language syntax advisor. Explain valid syntax, examples, and limitations in plain language.
+
+The chat interface is read-only and MUST NOT execute mutations. If the user asks for INSERT, UPDATE, or DELETE, give syntax they can paste into the query editor and clearly say chat will not run it.
+
+DATABASE SCHEMA:
+${schema}
+
+SUPPORTED QUERY SYNTAX:
+  SELECT [DISTINCT] <fields|*|aggregates> FROM <collection>
+    [WHERE <conditions>]
+    [GROUP BY <fields>]
+    [HAVING <aggregate_conditions>]
+    [ORDER BY <field> [ASC|DESC], ...]
+    [LIMIT n]
+    [OFFSET k]
+
+  EXPLAIN SELECT ...
+
+  INSERT INTO <collection> VALUES {id: '...', field: ...}
+
+  UPDATE <collection> SET field = value [, field2 = value2, ...]
+    [WHERE <conditions>]
+
+  DELETE FROM <collection>
+    [WHERE <conditions>]
+    [ORDER BY <field> [ASC|DESC], ...]
+    [LIMIT n]
+    [OFFSET k]
+
+WHERE/HAVING:
+  Comparisons: =, !=, >, >=, <, <=
+  Text: field CONTAINS 'text', field LIKE 'A%', field NOT LIKE '%x'
+  Sets: field IN ('a', 'b'), field NOT IN ('a', 'b')
+  Ranges: field BETWEEN low AND high, field NOT BETWEEN low AND high
+  Missing values: field IS NULL, field IS NOT NULL
+  Logic: AND, OR, NOT (...), parentheses
+
+LIMITATION:
+  DELETE supports ORDER BY / LIMIT / OFFSET. UPDATE does not support ORDER BY, LIMIT, or OFFSET.
+
+RULES:
+  - Be concise and practical.
+  - Use exact collection and field names from the schema when possible.
+  - Do not claim the chat has executed a mutation.
+  - If the user asks to delete images and the schema has image MIME sidecars such as _image_mime, prefer DELETE FROM <collection> WHERE _image_mime IS NOT NULL ORDER BY id ASC LIMIT n.`;
+}
+
+function mutationSyntaxFallback(question: string): string {
+  if (/\bdelete|remove\b/i.test(question)) {
+    return `Chat cannot execute DELETE, but the query editor supports bounded DELETE statements. For example:
+
+DELETE FROM photos WHERE _image_mime IS NOT NULL ORDER BY id ASC LIMIT 50;`;
+  }
+  return 'Chat cannot execute mutations, but the query editor supports INSERT, UPDATE, and DELETE statements with WHERE filters.';
 }

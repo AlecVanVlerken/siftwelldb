@@ -53,6 +53,8 @@ describe('QueryGenerator', () => {
     expect(provider.calls[0]?.systemPrompt).toContain('Collection "employees"');
     expect(provider.calls[0]?.systemPrompt).toContain('Do NOT invent filter values');
     expect(provider.calls[0]?.systemPrompt).toContain('use field labels, descriptions, synonyms, and tags');
+    expect(provider.calls[0]?.systemPrompt).toContain('DELETE FROM <collection>');
+    expect(provider.calls[0]?.systemPrompt).toContain('DELETE supports ORDER BY / LIMIT / OFFSET');
   });
 
   it('strips SQL fences and a trailing semicolon', async () => {

@@ -44,7 +44,7 @@ Supported queries:
     [OFFSET k]
   INSERT INTO <collection> VALUES {id: '...', field: ...}
   UPDATE <collection> SET field = value [, ...] [WHERE <conditions>]
-  DELETE FROM <collection> [WHERE <conditions>]
+  DELETE FROM <collection> [WHERE <conditions>] [ORDER BY <field> [ASC|DESC]] [LIMIT n] [OFFSET k]
   EXPLAIN SELECT ...
 
 WHERE / HAVING:

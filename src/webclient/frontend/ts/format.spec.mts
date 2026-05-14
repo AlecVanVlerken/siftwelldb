@@ -28,6 +28,7 @@ describe('format helpers', () => {
   it('recognizes image-like field names', () => {
     expect(isImageField('cover.jpg')).toBe(true);
     expect(isImageField('avatar.png')).toBe(true);
+    expect(isImageField('photo', { photo: 'abc123', _photo_mime: 'image/png' })).toBe(true);
     expect(isImageField('title')).toBe(false);
   });
 
@@ -35,8 +36,9 @@ describe('format helpers', () => {
     const rabbitBase64 = fs.readFileSync(path.resolve('rabbit.jpg')).toString('base64');
 
     expect(imageMimeFromField('photo.jpg')).toBe('image/jpeg');
+    expect(imageMimeFromField('photo', { _photo_mime: 'image/png' })).toBe('image/png');
     expect(imageDataUrlFromValue('photo.jpg', rabbitBase64)).toBe(`data:image/jpeg;base64,${rabbitBase64}`);
+    expect(imageDataUrlFromValue('photo', rabbitBase64, { _photo_mime: 'image/png' })).toBe(`data:image/png;base64,${rabbitBase64}`);
     expect(imageDataUrlFromValue('title', rabbitBase64)).toBeNull();
   });
 });
-

@@ -92,7 +92,7 @@ export class CollectionCatalog {
     }
 
     for (const collection of Object.keys(this.getHnswMetaSnapshot())) {
-      collections.add(collection);
+      collections.add(this.logicalCollectionFromHnswKey(collection));
     }
 
     return Array.from(collections).sort();
@@ -126,7 +126,11 @@ export class CollectionCatalog {
    */
   hasHnsw(collection: string): boolean {
     const hnswMeta = this.getHnswMetaSnapshot();
-    return collection in hnswMeta;
+    return (
+      collection in hnswMeta ||
+      `${collection}::text` in hnswMeta ||
+      `${collection}::image` in hnswMeta
+    );
   }
 
   /**
@@ -138,6 +142,12 @@ export class CollectionCatalog {
    */
   hasAnyHnswCollections(): boolean {
     return Object.keys(this.getHnswMetaSnapshot()).length > 0;
+  }
+
+  private logicalCollectionFromHnswKey(indexKey: string): string {
+    if (indexKey.endsWith('::text')) return indexKey.slice(0, -'::text'.length);
+    if (indexKey.endsWith('::image')) return indexKey.slice(0, -'::image'.length);
+    return indexKey;
   }
 
   /**

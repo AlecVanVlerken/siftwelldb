@@ -147,13 +147,28 @@ export class ConversationalService {
    * `history` is the caller's copy of the chat history; the engine updates it
    * in-place via the returned response — callers should track history client-side.
    */
-  async ask(question: string, history: ChatMessage[]): Promise<AnalyticsResponse> {
+  async ask(question: string, history: ChatMessage[], collection?: string): Promise<AnalyticsResponse> {
     if (!this.engine) {
       throw new Error(
         this.model
           ? 'GEMINI_API_KEY is not set — cannot answer questions'
           : 'No semantic model found. Generate one first.',
       );
+    }
+    if (collection && this.model) {
+      const explore = this.model.explores.find((e) => e.collection === collection);
+      if (!explore) {
+        throw new Error(`No semantic model found for collection "${collection}". Generate one first.`);
+      }
+      if (!this.apiKey || !this.dbms) {
+        throw new Error('GEMINI_API_KEY is not set — cannot answer questions');
+      }
+      const scopedEngine = new ConversationalEngine({
+        dbms: this.dbms,
+        llmProvider: new GeminiProvider(this.apiKey),
+        semanticModel: { explores: [explore] },
+      });
+      return scopedEngine.ask(question, history);
     }
     return this.engine.ask(question, history);
   }

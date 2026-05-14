@@ -7,11 +7,24 @@ export type IndexPredicate = (field: string) => boolean;
 
 /** File extensions that denote binary image fields. */
 export const IMAGE_EXTENSIONS = ['.jpeg', '.jpg', '.png', '.webp'] as const;
+export const IMAGE_MIME_SUFFIX = '_mime';
 
-/** Returns `true` when `fieldName` ends with a recognised image extension. */
-export function isImageField(fieldName: string): boolean {
+export function imageMimeMetadataField(fieldName: string): string {
+  return `_${fieldName}${IMAGE_MIME_SUFFIX}`;
+}
+
+export function imageMimeForField(
+  fieldName: string,
+  fields: Record<string, unknown>,
+): string | null {
+  const value = fields[imageMimeMetadataField(fieldName)];
+  return typeof value === 'string' && value.toLowerCase().startsWith('image/') ? value : null;
+}
+
+/** Returns `true` when a field is image-like by extension or MIME sidecar. */
+export function isImageField(fieldName: string, fields?: Record<string, unknown>): boolean {
   const lower = fieldName.toLowerCase();
-  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext));
+  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext)) || (fields ? imageMimeForField(fieldName, fields) !== null : false);
 }
 
 export const defaultIndexPredicate: IndexPredicate = (field) =>
@@ -115,11 +128,12 @@ export function parseRawDocument(
 
   const iterableEntries: [string, FieldValue][] = [];
   const nonIterableEntries: [string, FieldValue][] = [];
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+  const rawRecord = raw as Record<string, unknown>;
+  for (const [key, value] of Object.entries(rawRecord)) {
     if (key === 'id') continue;
 
     let fieldValue: FieldValue;
-    if (isImageField(key) && typeof value === 'string') {
+    if (isImageField(key, rawRecord) && typeof value === 'string') {
       // Image field supplied as base64 string → decode to Buffer.
       fieldValue = Buffer.from(value, 'base64');
     } else if (!isFieldValue(value)) {
@@ -129,7 +143,7 @@ export function parseRawDocument(
     }
 
     const entry: [string, FieldValue] = [key, fieldValue];
-    if (isIndexable(key)) iterableEntries.push(entry);
+    if (!isImageField(key, rawRecord) && isIndexable(key)) iterableEntries.push(entry);
     else nonIterableEntries.push(entry);
   }
 
