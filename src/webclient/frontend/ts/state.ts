@@ -13,6 +13,7 @@ export type WebclientState = {
   selectedDoc: Record<string, unknown> | null;
   selectedDocIndex: number | null;
   dataFilter: string;
+  dataSort: { col: string; dir: 'asc' | 'desc' } | null;
   treeExpanded: Record<string, boolean>;
   modelPromptDismissed: Record<string, boolean>;
   modelGenerating: boolean;
@@ -57,6 +58,7 @@ export const state: WebclientState = {
   selectedDoc: null,
   selectedDocIndex: null,
   dataFilter: '',
+  dataSort: null,
   treeExpanded: {},
   modelPromptDismissed: {},
   modelGenerating: false,
