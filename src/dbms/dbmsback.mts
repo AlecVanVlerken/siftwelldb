@@ -1335,7 +1335,11 @@ export class DbmsBack {
    */
   async editDocumentByID(collection: string, id: string, field: string, newValue: FieldValue): Promise<void> {
     const existingDocument = (await this.getDocument(id, collection, false)) as Document;
-    const newDocumentObj = existingDocument.cloneWithUpdatedField(field, newValue);
+    let processedValue = newValue;
+    if (typeof newValue === 'string' && isImageField(field, existingDocument.getFields())) {
+      processedValue = Buffer.from(newValue, 'base64');
+    }
+    const newDocumentObj = existingDocument.cloneWithUpdatedField(field, processedValue);
 
     if (
       existingDocument.getId() !== newDocumentObj.getId() ||
@@ -1581,16 +1585,26 @@ export class DbmsBack {
     ) {
       return true;
     }
+    if (
+      (lower.endsWith('.gif') || lower === 'image/gif') &&
+      buffer[0] === 0x47 &&
+      buffer[1] === 0x49 &&
+      buffer[2] === 0x46 &&
+      buffer[3] === 0x38
+    ) {
+      return true;
+    }
     return false;
   }
 
   private async embedImages(config: HnswImageIndexConfig, images: Buffer[]): Promise<Float32Array | null> {
     const vectors = (
       await Promise.all(
-        images.map(async (image) => {
+        images.map(async (image, idx) => {
           try {
             return await config.imageEmbeddingFn(image);
-          } catch {
+          } catch (err) {
+            console.warn(`[HNSW] image embedding failed for image ${idx} (${image.length} bytes):`, err);
             return null;
           }
         }),

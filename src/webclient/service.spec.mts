@@ -60,6 +60,82 @@ describe('DatabaseService', () => {
     expect(seen).toEqual([['books', 'title', 'A']]);
   });
 
+  it('sorts documents numerically ascending when sortBy targets a number field', async () => {
+    const service = new DatabaseService();
+    setFakeDbms(service, {
+      cursor() {
+        return documents([
+          JSON.stringify({ id: 'a', salary: 4200 }),
+          JSON.stringify({ id: 'b', salary: 1000 }),
+          JSON.stringify({ id: 'c', salary: 7800 }),
+        ]);
+      },
+      deleteDocumentById() {
+        return Promise.resolve();
+      },
+      commit() {
+        return Promise.resolve();
+      },
+    });
+
+    const result = await service.getDocuments('employees', 'id', undefined, 10, 'salary', 'asc');
+
+    expect(result.hasMore).toBe(false);
+    expect(result.nextCursor).toBeUndefined();
+    expect(result.documents.map((d) => (JSON.parse(d) as Record<string, unknown>)['salary'])).toEqual([1000, 4200, 7800]);
+  });
+
+  it('sorts documents alphabetically descending when sortBy targets a string field', async () => {
+    const service = new DatabaseService();
+    setFakeDbms(service, {
+      cursor() {
+        return documents([
+          JSON.stringify({ id: 'a', name: 'Alice' }),
+          JSON.stringify({ id: 'b', name: 'Charlie' }),
+          JSON.stringify({ id: 'c', name: 'Bob' }),
+        ]);
+      },
+      deleteDocumentById() {
+        return Promise.resolve();
+      },
+      commit() {
+        return Promise.resolve();
+      },
+    });
+
+    const result = await service.getDocuments('employees', 'id', undefined, 10, 'name', 'desc');
+
+    expect(result.documents.map((d) => (JSON.parse(d) as Record<string, unknown>)['name'])).toEqual([
+      'Charlie',
+      'Bob',
+      'Alice',
+    ]);
+  });
+
+  it('places nullish values first in ascending sort and applies the limit after sorting', async () => {
+    const service = new DatabaseService();
+    setFakeDbms(service, {
+      cursor() {
+        return documents([
+          JSON.stringify({ id: 'a', salary: 4200 }),
+          JSON.stringify({ id: 'b' }),
+          JSON.stringify({ id: 'c', salary: 1000 }),
+          JSON.stringify({ id: 'd', salary: null }),
+        ]);
+      },
+      deleteDocumentById() {
+        return Promise.resolve();
+      },
+      commit() {
+        return Promise.resolve();
+      },
+    });
+
+    const result = await service.getDocuments('employees', 'id', undefined, 3, 'salary', 'asc');
+
+    expect(result.documents.map((d) => (JSON.parse(d) as Record<string, unknown>)['id'])).toEqual(['b', 'd', 'c']);
+  });
+
   it('commits document deletes and invalidates collection storage cache', async () => {
     const service = new DatabaseService();
     const calls: string[] = [];

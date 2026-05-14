@@ -414,6 +414,7 @@ function selectCollection(c) {
   state.selectedCol = c;
   state.tab = 'overview';
   state.dataFilter = '';
+  state.dataSort = null;
   state.search.query = '';
   state.search.image = null;
   state.search.busy = false;
@@ -824,14 +825,51 @@ async function refreshDocs(c) {
   }
 }
 
+function compareSortValues(a, b) {
+  if (a == null && b == null) return 0;
+  if (a == null) return -1;
+  if (b == null) return 1;
+  if (typeof a === 'number' && typeof b === 'number') return a - b;
+  if (typeof a === 'boolean' && typeof b === 'boolean') return (a ? 1 : 0) - (b ? 1 : 0);
+  if (typeof a === 'string' && typeof b === 'string') {
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+  }
+  const as = typeof a === 'string' ? a : JSON.stringify(a);
+  const bs = typeof b === 'string' ? b : JSON.stringify(b);
+  if (as < bs) return -1;
+  if (as > bs) return 1;
+  return 0;
+}
+
+function sortDocsForGrid(docs) {
+  const sort = state.dataSort;
+  if (!sort) return docs;
+  const dir = sort.dir === 'desc' ? -1 : 1;
+  return [...docs].sort((a, b) => dir * compareSortValues(a[sort.col], b[sort.col]));
+}
+
+function cycleSort(col) {
+  const cur = state.dataSort;
+  if (!cur || cur.col !== col) state.dataSort = { col, dir: 'asc' };
+  else if (cur.dir === 'asc') state.dataSort = { col, dir: 'desc' };
+  else state.dataSort = null;
+}
+
 function renderData() {
   const c = state.selectedCol;
   const allDocs = state.docsByColl[c] || [];
   const filter = (state.dataFilter || '').trim().toLowerCase();
-  const docs = filter
+  const filtered = filter
     ? allDocs.filter((d) => Object.values(d).some((v) => v != null && String(v).toLowerCase().includes(filter)))
     : allDocs;
-  const keys = allDocs.length ? Object.keys(allDocs[0]).filter((k) => !k.startsWith('_')) : [];
+  const docs = sortDocsForGrid(filtered);
+  // Column order is derived once from the unsorted, unfiltered document
+  // list so that the headers stay stable across sort and filter changes.
+  // Without this, the union-of-keys order depended on which document
+  // happened to be first after sorting.
+  const keys = Array.from(new Set(allDocs.flatMap((d) => Object.keys(d)))).filter((k) => !k.startsWith('_'));
   $('#cnt').innerHTML = `<div style="display:flex;flex-direction:column;height:100%;">
     <div class="dt-bar">
       <div class="dt-search">
@@ -878,9 +916,7 @@ function renderDataGrid(docs, keys) {
     $('#dg-host').innerHTML = `<div class="dg"><div class="loader">No documents.</div></div>`;
     return;
   }
-  const unionKeys = Array.from(new Set(docs.flatMap((d) => Object.keys(d)))).filter(
-    (k) => !k.startsWith('_') && k !== 'body',
-  );
+  const unionKeys = (keys || []).filter((k) => k !== 'body');
   const sample = (k) => {
     for (const d of docs) if (d[k] != null) return d[k];
     return null;
@@ -888,11 +924,15 @@ function renderDataGrid(docs, keys) {
   // Type badges: dim grey lowercase monospace, no badge for unknown/null-only columns.
   const typeBadge = (v) =>
     v == null ? '' : typeof v === 'number' ? 'n' : typeof v === 'boolean' ? 'b' : typeof v === 'string' ? 's' : '';
+  const sort = state.dataSort;
   $('#dg-host').innerHTML = `<table class="dg">
     <thead><tr><th class="rn">#</th>${unionKeys
       .map((k) => {
         const tb = k === 'id' ? 'pk' : typeBadge(sample(k));
-        return `<th><div class="ti">${esc(k)}${tb ? `<span class="tb ${tb === 'pk' ? 'pk' : ''}">${tb}</span>` : ''}</div></th>`;
+        const isSorted = sort && sort.col === k;
+        const arrow = isSorted ? (sort.dir === 'asc' ? '▲' : '▼') : '';
+        const sortCls = isSorted ? ` sorted ${sort.dir}` : '';
+        return `<th class="sortable${sortCls}" data-sort-key="${esc(k)}" title="Click to sort by ${esc(k)}"><div class="ti">${esc(k)}${tb ? `<span class="tb ${tb === 'pk' ? 'pk' : ''}">${tb}</span>` : ''}<span class="sort-ind">${arrow}</span></div></th>`;
       })
       .join('')}</tr></thead>
     <tbody>${docs
@@ -915,6 +955,12 @@ function renderDataGrid(docs, keys) {
   </table>`;
   $$('.dg tbody tr').forEach((tr) =>
     tr.addEventListener('click', () => openDrawer(docs[parseInt(tr.dataset.i, 10)], parseInt(tr.dataset.i, 10))),
+  );
+  $$('.dg thead th.sortable').forEach((th) =>
+    th.addEventListener('click', () => {
+      cycleSort(th.dataset.sortKey);
+      renderData();
+    }),
   );
 }
 
@@ -994,7 +1040,13 @@ $('#dr-edit').addEventListener('click', () => {
   const d = state.selectedDoc;
   if (!d) return;
   const c = state.selectedCol;
-  const cleanDoc = Object.fromEntries(Object.entries(d).filter(([k]) => !k.startsWith('_')));
+  const cleanDoc = Object.fromEntries(
+    Object.entries(d).filter(([k]) => {
+      if (!k.startsWith('_')) return true;
+      const mimeMatch = k.match(/^_(.+)_mime$/);
+      return mimeMatch !== null && d[mimeMatch[1]] !== undefined;
+    }),
+  );
   const compactedDoc = compactDocumentImages(cleanDoc);
   drawerEditImagePayloads = compactedDoc.imagePayloads;
   const jsonStr = JSON.stringify(compactedDoc.document, null, 2);
@@ -1709,7 +1761,9 @@ function renderSemanticSearch() {
   };
   const modeHelp = {
     text: 'Semantic text search uses MiniLM over text fields.',
-    image: 'Photo search uses CLIP over image fields only.',
+    image: s.image
+      ? 'Image-to-image search uses CLIP over image fields.'
+      : 'Photo search uses CLIP over image fields only.',
   };
 
   // The embedding model loads lazily on first query; we don't preload on
@@ -1726,12 +1780,16 @@ function renderSemanticSearch() {
         ${['text', 'image'].map((m) => `<button class="${mode === m ? 'on' : ''}" data-ss-mode="${m}">${m === 'text' ? 'Tekst' : 'Foto'}</button>`).join('')}
       </div>
       <input type="text" id="ss-q" placeholder="${c ? esc(placeholders[mode]) : 'Select a collection in the sidebar first…'}" value="${esc(s.query)}" ${c ? '' : 'disabled'}/>
-      <label class="attach ${s.image ? 'has-image' : ''}" title="Attach an image for image-to-image search" style="${mode === 'text' ? '' : 'display:none;'}">
+      ${
+        mode === 'image'
+          ? `<label class="attach ${s.image ? 'has-image' : ''}" title="Attach an image for image-to-image search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>
         ${s.image ? esc(s.image.name) : 'Attach image'}
         <input type="file" id="ss-img" accept="image/*" style="display:none;" ${c ? '' : 'disabled'}/>
       </label>
-      ${s.image ? `<span class="clear-img" id="ss-img-clear" title="Remove attached image">✕</span>` : ''}
+      ${s.image ? `<span class="clear-img" id="ss-img-clear" title="Remove attached image">✕</span>` : ''}`
+          : ''
+      }
       <button class="go" id="ss-go" ${c && !s.busy ? '' : 'disabled'}>Search</button>
     </div>
     <div class="ss-status">
@@ -1771,7 +1829,7 @@ function renderSemanticSearch() {
       state.search.results = null;
       state.search.error = null;
       state.search.elapsedMs = null;
-      if (state.search.mode !== 'text') state.search.image = null;
+      if (state.search.mode === 'text') state.search.image = null;
       renderSemanticSearch();
     }),
   );

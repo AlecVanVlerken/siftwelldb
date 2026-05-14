@@ -17,6 +17,7 @@ SimpleDBMS is a private Node.js and TypeScript database project for the P&O CW 2
 
 ## Repository layout
 
+- `src/core/` - real and mock file abstractions shared across the storage stack
 - `src/atomic/` - WAL records, writer, and atomic file layer
 - `src/freeblockfile/` - fixed-size block allocator and storage primitives
 - `src/btree/` - B+ tree implementation and tests
@@ -24,6 +25,7 @@ SimpleDBMS is a private Node.js and TypeScript database project for the P&O CW 2
 - `hnsw-native/` - Rust implementation used by the native HNSW backend
 - `src/dbms/` - high-level `SimpleDbms` API, query language, compression, and record logic
 - `src/compaction/` - incremental compaction and full-vacuum code
+- `src/largedatasets/` - bulk import, inverted/word/content indexes, pagination, and the Wikipedia loader
 - `src/webclient/` - HTTP daemon, API router, service layer, and frontend
 - `src/conversational/` - semantic models, query generation, LLM provider, and chat engine
 - `src/demo/` - semantic text and image search demos
@@ -88,7 +90,7 @@ npm run cli -- "SELECT * FROM cities"
 npm run cli -- --data my.db --log my.db.log "SELECT country, COUNT(*) AS n FROM cities GROUP BY country ORDER BY n DESC"
 ```
 
-Supported operations include `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `EXPLAIN`.
+Supported operations include `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `EXPLAIN`. Full grammar, operator reference, type semantics, and worked examples live in `src/dbms/querylanguage/README.md`.
 
 ## Conversational analytics
 
@@ -148,6 +150,7 @@ Semantic search is optional. If you create or reopen a database with HNSW enable
 ## Related docs
 
 - `licences.md`
+- `src/dbms/querylanguage/README.md`
 - `src/benchmarking/hnsw/README.md`
 - `src/benchmarking/incremental-compaction/README.txt`
 - `src/benchmarking/large-dataset/README.txt`
