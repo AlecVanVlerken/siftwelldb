@@ -2,6 +2,9 @@ import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { ApiRouter, readLimit } from './api.mjs';
 import type { DatabaseService } from './service.mjs';
+import type { ConversationalService } from './conversational-service.mjs';
+import type { SemanticModel } from '../conversational/semanticModel.mjs';
+import type { AnalyticsResponse } from '../conversational/conversationalEngine.mjs';
 
 class MockRequest extends Readable {
   private sent = false;
@@ -54,6 +57,45 @@ function createDbStub(overrides: Partial<DatabaseService> = {}): DatabaseService
     },
     ...overrides,
   } as unknown as DatabaseService;
+}
+
+function createConnectedDbStub(overrides: Partial<DatabaseService> = {}): DatabaseService {
+  return createDbStub({
+    get isConnected() {
+      return true;
+    },
+    get filepath() {
+      return 'data.db';
+    },
+    ...overrides,
+  } as Partial<DatabaseService>);
+}
+
+function createConversationalStub(overrides: Partial<ConversationalService> = {}): ConversationalService {
+  return {
+    get llmAvailable() {
+      return true;
+    },
+    get engineReady() {
+      return true;
+    },
+    getModel() {
+      return null;
+    },
+    hasExploreForCollection() {
+      return false;
+    },
+    async generateModel() {
+      return { model: { explores: [] } as unknown as SemanticModel, enriched: false };
+    },
+    async saveModel() {
+      return { explores: [] } as unknown as SemanticModel;
+    },
+    async ask() {
+      return { question: '', query: '', data: [], summary: '', chart: null } as AnalyticsResponse;
+    },
+    ...overrides,
+  } as unknown as ConversationalService;
 }
 
 async function handle(
@@ -123,5 +165,149 @@ describe('ApiRouter', () => {
 
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body)).toEqual({ error: 'Invalid "limit" parameter' });
+  });
+
+  it('returns 503 for conversational routes when the service is not registered', async () => {
+    const router = new ApiRouter(createConnectedDbStub());
+
+    const res = await handle(router, 'GET', '/api/conversational/model');
+
+    expect(res.statusCode).toBe(503);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Conversational features are not available' });
+  });
+
+  it('returns the conversational model and LLM availability', async () => {
+    const model: SemanticModel = {
+      explores: [{ collection: 'employees', label: 'Employees', fields: [{ name: 'id', type: 'string', label: 'ID' }] }],
+    };
+    const router = new ApiRouter(
+      createConnectedDbStub(),
+      createConversationalStub({
+        getModel() {
+          return model;
+        },
+      }),
+    );
+
+    const res = await handle(router, 'GET', '/api/conversational/model');
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ model, llmAvailable: true });
+  });
+
+  it('generates a conversational model through the service', async () => {
+    const model: SemanticModel = {
+      explores: [{ collection: 'employees', label: 'Employees', fields: [{ name: 'id', type: 'string', label: 'ID' }] }],
+    };
+    const router = new ApiRouter(
+      createConnectedDbStub(),
+      createConversationalStub({
+        async generateModel() {
+          return { model, enriched: true };
+        },
+      }),
+    );
+
+    const res = await handle(router, 'POST', '/api/conversational/model/generate');
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ model, enriched: true });
+  });
+
+  it('saves a conversational model JSON string', async () => {
+    const model: SemanticModel = {
+      explores: [{ collection: 'employees', label: 'Employees', fields: [{ name: 'id', type: 'string', label: 'ID' }] }],
+    };
+    let saved = '';
+    const router = new ApiRouter(
+      createConnectedDbStub(),
+      createConversationalStub({
+        async saveModel(json) {
+          saved = json;
+          return model;
+        },
+      }),
+    );
+
+    const res = await handle(
+      router,
+      'PUT',
+      '/api/conversational/model',
+      JSON.stringify({ model: JSON.stringify(model) }),
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(saved).toBe(JSON.stringify(model));
+    expect(JSON.parse(res.body)).toEqual({ model });
+  });
+
+  it('asks the conversational service with sanitized history', async () => {
+    const response: AnalyticsResponse = {
+      question: 'How many?',
+      query: 'SELECT COUNT(*) FROM employees',
+      data: [{ 'COUNT(*)': 2 }],
+      summary: 'There are 2 employees.',
+      chart: null,
+    };
+    let receivedHistory: unknown;
+    const router = new ApiRouter(
+      createConnectedDbStub(),
+      createConversationalStub({
+        async ask(_question, history) {
+          receivedHistory = history;
+          return response;
+        },
+      }),
+    );
+
+    const res = await handle(
+      router,
+      'POST',
+      '/api/conversational/ask',
+      JSON.stringify({
+        question: 'How many?',
+        history: [
+          { role: 'assistant', text: 'previous answer' },
+          { role: 'system', text: 'coerce me to user' },
+        ],
+      }),
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(receivedHistory).toEqual([
+      { role: 'assistant', text: 'previous answer' },
+      { role: 'user', text: 'coerce me to user' },
+    ]);
+    expect(JSON.parse(res.body)).toEqual(response);
+  });
+
+  it('validates conversational ask request bodies', async () => {
+    const router = new ApiRouter(createConnectedDbStub(), createConversationalStub());
+
+    const res = await handle(router, 'POST', '/api/conversational/ask', JSON.stringify({ question: '' }));
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Missing "question" in request body' });
+  });
+
+  it('seeds demo employees through the main API', async () => {
+    let requestedCount = 0;
+    const router = new ApiRouter(createConnectedDbStub({
+      async seedDemoEmployees(count?: number) {
+        requestedCount = count ?? 0;
+        return { collection: 'employees', inserted: 25, skipped: false };
+      },
+    } as Partial<DatabaseService>));
+
+    const res = await handle(router, 'POST', '/api/demo/employees', JSON.stringify({ count: 25 }));
+
+    expect(res.statusCode).toBe(200);
+    expect(requestedCount).toBe(25);
+    expect(JSON.parse(res.body)).toEqual({
+      message: 'Seeded 25 demo employees',
+      collection: 'employees',
+      inserted: 25,
+      skipped: false,
+    });
   });
 });

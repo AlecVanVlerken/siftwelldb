@@ -23,13 +23,12 @@
 //     [ORDER BY <field> [ASC|DESC], ...]
 //     [LIMIT n]
 //     [OFFSET k]
-//   EXPLAIN SELECT ...
 //   INSERT INTO <collection> VALUES {id: '...', field: ...}
 //   UPDATE <collection> SET f1 = v1 [, f2 = v2, ...] [WHERE <conditions>]
 //   DELETE FROM <collection> [WHERE <conditions>]
 //
 // WHERE/HAVING:
-//   - Comparisons:  =, !=, >, >=, <, <=, LIKE, NOT LIKE, CONTAINS
+//   - Comparisons:  =, !=, >, >=, <, <=, LIKE, NOT LIKE
 //   - Null check:   field IS NULL, field IS NOT NULL
 //   - Set test:     field IN (v1, v2, ...), field NOT IN (v1, ...)
 //   - Range test:   field BETWEEN low AND high, field NOT BETWEEN low AND high
@@ -101,8 +100,9 @@ export class QueryLanguage {
   }
 
   /**
-   * Compatibility alias for callers that pre-load rows before running a
-   * parsed SELECT. Joins are no longer part of the supported language.
+   * Compatibility alias for callers that already preloaded the base rows.
+   * Joins are not part of the current query language, so this is equivalent
+   * to {@link executeOnRows}.
    */
   async executeWithPreloadedRows(
     preloadedRows: QueryResultRow[],

@@ -6,15 +6,15 @@ import type { HnswConfig } from '../dbms/simpledbms.mjs';
 /**
  * A single shared `HnswConfig` for the entire process, backed by
  * Xenova's CLIP ViT-B/32 model. The CLIP weights are loaded lazily on
- * the **first** call to `embeddingFn` or `imageEmbeddingFn` — opening
+ * the first call to `embeddingFn` or `imageEmbeddingFn` - opening
  * a database with this config is therefore free, the cost is only
  * paid when the daemon actually needs to embed something.
  *
- * Why this exists: both the daemon (`service.mts`) and the seed
- * script (`seed-main-db.mts`) need to open `SimpleDbms` with the same
- * HNSW configuration so that every insert is embedded as it happens.
- * Without this, documents inserted before HNSW is turned on would be
- * silently invisible to semantic search.
+ * Why this exists: the daemon and any webclient-managed demo seeding
+ * need to open `SimpleDbms` with the same HNSW configuration so that
+ * every insert is embedded as it happens. Without this, documents
+ * inserted before HNSW is turned on would be silently invisible to
+ * semantic search.
  */
 
 const MODEL_ID = 'Xenova/clip-vit-base-patch32';
@@ -61,7 +61,7 @@ function loadClipModels(): Promise<ClipModels> {
     loadState = 'loading';
     loadError = null;
     modelsPromise = (async () => {
-      console.log('Lazy loading huggingface transformers for semantic search…');
+      console.log('Lazy loading huggingface transformers for semantic search...');
       const {
         AutoTokenizer,
         AutoProcessor,
@@ -70,11 +70,11 @@ function loadClipModels(): Promise<ClipModels> {
         RawImage,
       } = await import('@huggingface/transformers');
 
-      console.log('Loading CLIP tokenizer & text model…');
+      console.log('Loading CLIP tokenizer & text model...');
       const tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID);
       const textModel = await CLIPTextModelWithProjection.from_pretrained(MODEL_ID, { dtype: 'fp32' });
 
-      console.log('Loading CLIP processor & vision model…');
+      console.log('Loading CLIP processor & vision model...');
       const processor = await AutoProcessor.from_pretrained(MODEL_ID);
       const visionModel = await CLIPVisionModelWithProjection.from_pretrained(MODEL_ID, { dtype: 'fp32' });
 
@@ -107,7 +107,7 @@ function l2Normalize(v: Float32Array): Float32Array {
 }
 
 /**
- * Returns the shared HnswConfig. Safe to call at startup — CLIP only
+ * Returns the shared HnswConfig. Safe to call at startup - CLIP only
  * loads on the first call to `embeddingFn` / `imageEmbeddingFn`.
  */
 export function getClipHnswConfig(): HnswConfig {

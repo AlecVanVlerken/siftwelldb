@@ -1,7 +1,5 @@
 /**
- * Deterministic seed data generator — produces ~200 employees with
- * realistic distributions across departments, cities, genders,
- * seniority levels, and salary ranges.
+ * Deterministic demo data used by the main webclient.
  */
 
 const FIRST_NAMES_M = [
@@ -31,7 +29,7 @@ const DEPARTMENTS = ['Engineering','Marketing','Sales','HR','Finance','Operation
 const CITIES = ['Leuven','Gent','Antwerpen','Brussel','Brugge','Mechelen','Hasselt','Namur'];
 const SENIORITY = ['Junior','Mid','Senior','Lead','Principal'];
 
-type Employee = {
+export type DemoEmployee = {
   id: string;
   name: string;
   gender: string;
@@ -51,10 +49,10 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-export function generateEmployees(count = 200): Employee[] {
+export function generateDemoEmployees(count = 200): DemoEmployee[] {
   const rand = seededRandom(42);
   const pick = <T,>(arr: T[]): T => arr[Math.floor(rand() * arr.length)];
-  const between = (lo: number, hi: number) => Math.round(lo + rand() * (hi - lo));
+  const between = (lo: number, hi: number): number => Math.round(lo + rand() * (hi - lo));
 
   const baseSalary: Record<string, number> = {
     Engineering: 70000, Finance: 68000, Legal: 66000, Marketing: 58000,
@@ -64,7 +62,7 @@ export function generateEmployees(count = 200): Employee[] {
     Junior: 0.75, Mid: 1.0, Senior: 1.25, Lead: 1.45, Principal: 1.7,
   };
 
-  const employees: Employee[] = [];
+  const employees: DemoEmployee[] = [];
   const usedNames = new Set<string>();
 
   for (let i = 0; i < count; i++) {
@@ -80,14 +78,13 @@ export function generateEmployees(count = 200): Employee[] {
     const base = baseSalary[department] ?? 55000;
     const mult = seniorityMultiplier[seniority] ?? 1.0;
     const jitter = 1 + (rand() - 0.5) * 0.2;
-    const salary = Math.round(base * mult * jitter / 500) * 500;
+    const salary = Math.round((base * mult * jitter) / 500) * 500;
 
     const seniorityIdx = SENIORITY.indexOf(seniority);
     const minAge = 22 + seniorityIdx * 4;
     const maxAge = 30 + seniorityIdx * 8;
     const age = between(minAge, maxAge);
     const maxYears = Math.min(age - 21, 25);
-    const yearsAtCompany = between(0, maxYears);
 
     employees.push({
       id: `emp${String(i + 1).padStart(3, '0')}`,
@@ -98,7 +95,7 @@ export function generateEmployees(count = 200): Employee[] {
       salary,
       age,
       city: pick(CITIES),
-      yearsAtCompany,
+      yearsAtCompany: between(0, maxYears),
     });
   }
 

@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseService } from './service.mjs';
 import type { ConversationalService } from './conversational-service.mjs';
-import { getEmbeddingStatus, preloadClipModels } from '../conversational/clipHnswConfig.mjs';
+import { getEmbeddingStatus, preloadClipModels } from './clipHnswConfig.mjs';
 
 const ENV_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../.env');
 
@@ -336,6 +336,23 @@ export class ApiRouter {
           sampleSize: typeof sampleSize === 'number' ? sampleSize : undefined,
         });
         sendJSON(res, 200, result);
+        return;
+      }
+
+      // POST /api/demo/employees — seed deterministic demo data into the connected DB
+      if (method === 'POST' && pathname === '/api/demo/employees') {
+        const body = await parseBody(req);
+        const rawCount = body['count'];
+        const count = typeof rawCount === 'number' && Number.isInteger(rawCount) && rawCount > 0
+          ? rawCount
+          : 200;
+        const result = await this.db.seedDemoEmployees(count);
+        sendJSON(res, 200, {
+          message: result.skipped
+            ? 'Demo employees already exist'
+            : `Seeded ${result.inserted} demo employees`,
+          ...result,
+        });
         return;
       }
 

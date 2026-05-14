@@ -89,36 +89,6 @@ export type OrderByClause = {
   direction: SortDirection;
 };
 
-// ── JOIN Types ───────────────────────────────────────────────────────────────
-
-/**
- * The three join modes the parser actually emits and the executor
- * actually implements:
- *
- *   - `INNER`: explicit `JOIN ... ON left = right` (and the bare
- *     `INNER JOIN ... ON ...` synonym). Yields one merged row per
- *     matching (left, right) pair.
- *   - `NATURAL`: `NATURAL JOIN ...` (no `ON`). Matches on every field
- *     name that appears on both sides; collapses those fields into one
- *     output column per match.
- *   - `CROSS`: `CROSS JOIN ...` (no `ON`). Cartesian product —
- *     intentionally noisy syntax so it can't be requested by accident.
- *
- * `LEFT`, `RIGHT`, and `FULL OUTER` joins are intentionally not in this
- * union: the executor doesn't emit unmatched rows on either side. Add
- * them here only once that's implemented.
- */
-export type JoinType = 'INNER' | 'NATURAL' | 'CROSS';
-
-export type JoinClause = {
-  type: JoinType;
-  collection: string;
-  /** Field on the left side of an INNER `ON`. Empty for NATURAL / CROSS. */
-  leftField: string;
-  /** Field on the right side of an INNER `ON`. Empty for NATURAL / CROSS. */
-  rightField: string;
-};
-
 // ── SELECT field selectors ───────────────────────────────────────────────────
 
 /**

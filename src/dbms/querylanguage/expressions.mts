@@ -143,12 +143,6 @@ function evaluateIsNull(doc: Record<string, unknown>, expr: IsNullExpression): b
 
 function evaluateIn(doc: Record<string, unknown>, expr: InExpression): boolean {
   const actual = doc[expr.field];
-  if (!Array.isArray(expr.values)) {
-    // Subquery still holds its ParsedSelect AST — the executor must
-    // pre-resolve it before calling evaluateWhere(). If we ever reach
-    // here, the subquery wasn't lowered, which is a bug.
-    throw new Error(`IN subquery for "${expr.field}" was not pre-resolved by the executor`);
-  }
   const found = expr.values.some((v) => v === actual);
   return expr.negated ? !found : found;
 }

@@ -19,7 +19,8 @@ import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '.
 import { fetchPageCursor } from '../largedatasets/pagination.mjs';
 import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
 import { QueryLanguage, type QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
-import { getClipHnswConfig } from '../conversational/clipHnswConfig.mjs';
+import { getClipHnswConfig } from './clipHnswConfig.mjs';
+import { generateDemoEmployees } from './demoData.mjs';
 
 export type LabPolicyKey = 'none-uniform' | 'gzip-uniform' | 'zstd-uniform' | 'gzip-everything' | 'advisor-mix';
 
@@ -742,6 +743,31 @@ export class DatabaseService {
       this.recordBytesCache.clear();
     }
     return { rows, rowCount: rows.length, kind: parsed.kind, elapsedMs };
+  }
+
+  /**
+   * Seed the connected database with the built-in employee demo dataset.
+   * If the `employees` collection already contains rows, this is a no-op.
+   */
+  async seedDemoEmployees(count: number = 200): Promise<{ collection: string; inserted: number; skipped: boolean }> {
+    this.ensureConnected();
+
+    try {
+      const existing = await this.getDocuments('employees', 'id', undefined, 1);
+      if (existing.length > 0) {
+        return { collection: 'employees', inserted: 0, skipped: true };
+      }
+    } catch {
+      // Missing collection is expected for a fresh demo database.
+    }
+
+    const employees = generateDemoEmployees(count);
+    for (const employee of employees) {
+      await this.dbms!.insertDocumentObject('employees', employee);
+    }
+    await this.dbms!.commit();
+    this.recordBytesCache.delete('employees');
+    return { collection: 'employees', inserted: employees.length, skipped: false };
   }
 
   /** Semantic text-to-text search. */
