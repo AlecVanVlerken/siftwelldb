@@ -10,15 +10,15 @@ class FakeLLMProvider implements LLMProvider {
 
   constructor(private readonly responses: string[]) {}
 
-  async generate(systemPrompt: string, userMessage: string): Promise<LLMResponse> {
+  generate(systemPrompt: string, userMessage: string): Promise<LLMResponse> {
     return this.chat(systemPrompt, [], userMessage);
   }
 
-  async chat(systemPrompt: string, history: ChatMessage[], userMessage: string): Promise<LLMResponse> {
+  chat(systemPrompt: string, history: ChatMessage[], userMessage: string): Promise<LLMResponse> {
     this.calls.push({ systemPrompt, history, userMessage });
     const text = this.responses.shift();
     if (text === undefined) throw new Error('No fake LLM response queued');
-    return { text };
+    return Promise.resolve({ text });
   }
 }
 

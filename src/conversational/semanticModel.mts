@@ -455,9 +455,9 @@ function mergeEnrichedModel(original: SemanticModel, llmOutput: string): Semanti
       const ef = enrichedExplore.fields?.find((f) => f.name === origField.name);
       if (!ef) continue;
       if (typeof ef.description === 'string') origField.description = ef.description;
-      if (Array.isArray(ef.synonyms) && ef.synonyms.length > 0) origField.synonyms = ef.synonyms as string[];
+      if (Array.isArray(ef.synonyms) && ef.synonyms.length > 0) origField.synonyms = ef.synonyms;
       if (ef.hidden === true) origField.hidden = true;
-      if (Array.isArray(ef.tags) && ef.tags.length > 0) origField.tags = ef.tags as string[];
+      if (Array.isArray(ef.tags) && ef.tags.length > 0) origField.tags = ef.tags;
     }
 
     // Add new measures

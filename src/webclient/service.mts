@@ -916,7 +916,7 @@ export class DatabaseService {
         collection,
         inserted: imageFiles.length,
         skipped: false,
-        source: imageFiles.length === 1 ? imageFiles[0]!.path : path.dirname(imageFiles[0]!.path),
+        source: imageFiles.length === 1 ? imageFiles[0].path : path.dirname(imageFiles[0].path),
       };
     });
   }

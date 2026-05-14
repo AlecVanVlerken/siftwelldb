@@ -4,12 +4,7 @@
 
 import type { SimpleDbms } from '../simpledbms.mjs';
 import { type FieldValue } from '../document.mjs';
-import type {
-  OrderByClause,
-  ParsedQuery,
-  ParsedSelect,
-  QueryResultRow,
-} from './ast.mjs';
+import type { OrderByClause, ParsedQuery, ParsedSelect, QueryResultRow } from './ast.mjs';
 import { compareValues, evaluateWhere } from './expressions.mjs';
 import { executeGroupBy } from './aggregator.mjs';
 import { project } from './projection.mjs';
@@ -88,12 +83,12 @@ function dedupeRows(rows: QueryResultRow[]): QueryResultRow[] {
  * the in-memory tail of a SELECT. Joins are no longer part of the
  * supported query language, so this is now equivalent to executeOnRows().
  */
-export async function executeWithPreloadedRows(
+export function executeWithPreloadedRows(
   _dbms: SimpleDbms,
   preloadedRows: QueryResultRow[],
   parsed: ParsedSelect,
 ): Promise<QueryResultRow[]> {
-  return executeOnRows(preloadedRows, parsed);
+  return Promise.resolve(executeOnRows(preloadedRows, parsed));
 }
 
 function sliceOffsetLimit(rows: QueryResultRow[], offset?: number, limit?: number): QueryResultRow[] {
@@ -241,9 +236,13 @@ function explainSelect(dbms: SimpleDbms, parsed: ParsedSelect): QueryResultRow[]
   rows.push({ stage: 'collection', detail: parsed.collection });
   rows.push({ stage: 'scan', detail: describeScan(dbms, parsed.collection, plan) });
   if (parsed.where) rows.push({ stage: 'filter', detail: 'row predicate evaluation' });
-  if (parsed.groupBy) rows.push({ stage: 'group', detail: `in memory by ${parsed.groupBy.fields.join(', ') || '(global)'}` });
+  if (parsed.groupBy)
+    rows.push({ stage: 'group', detail: `in memory by ${parsed.groupBy.fields.join(', ') || '(global)'}` });
   if (parsed.orderBy && parsed.orderBy.length > 0) {
-    rows.push({ stage: 'sort', detail: `in memory by ${parsed.orderBy.map((o) => `${o.field} ${o.direction}`).join(', ')}` });
+    rows.push({
+      stage: 'sort',
+      detail: `in memory by ${parsed.orderBy.map((o) => `${o.field} ${o.direction}`).join(', ')}`,
+    });
   }
   if (parsed.distinct) rows.push({ stage: 'distinct', detail: 'dedupe projected rows' });
   if (parsed.limit !== undefined || parsed.offset !== undefined) {

@@ -9,21 +9,25 @@ export function esc(value: unknown): string {
   } else {
     text = JSON.stringify(value) ?? '';
   }
-  return text.replace(/[&<>"']/g, (char) => (
-    {
-      '&': '&amp;',
-      '<': '&lt;',
-      '>': '&gt;',
-      '"': '&quot;',
-      "'": '&#39;',
-    }[char] ?? char
-  ));
+  return text.replace(
+    /[&<>"']/g,
+    (char) =>
+      ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      })[char] ?? char,
+  );
 }
 
+const numberFormatter = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 2,
+});
+
 export function fmtNum(value: unknown): string {
-  return typeof value === 'number'
-    ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
-    : String(value);
+  return typeof value === 'number' ? numberFormatter.format(value) : String(value);
 }
 
 export function fmtSize(bytes: number | null | undefined): string {
@@ -47,9 +51,11 @@ export function imageMimeFromDocument(key: string, documentValue?: Record<string
 }
 
 export function isImageField(key: string, documentValue?: Record<string, unknown> | null): boolean {
-  return /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(key)
-    || /\.(jpe?g|png|gif|webp)$/i.test(key)
-    || imageMimeFromDocument(key, documentValue) !== null;
+  return (
+    /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(key) ||
+    /\.(jpe?g|png|gif|webp)$/i.test(key) ||
+    imageMimeFromDocument(key, documentValue) !== null
+  );
 }
 
 export function imageMimeFromField(key: string, documentValue?: Record<string, unknown> | null): string | null {

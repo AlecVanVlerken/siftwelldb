@@ -85,25 +85,20 @@ function createConversationalStub(overrides: Partial<ConversationalService> = {}
     hasExploreForCollection() {
       return false;
     },
-    async generateModel() {
-      return { model: { explores: [] } as unknown as SemanticModel, enriched: false };
+    generateModel() {
+      return Promise.resolve({ model: { explores: [] } as unknown as SemanticModel, enriched: false });
     },
-    async saveModel() {
-      return { explores: [] } as unknown as SemanticModel;
+    saveModel() {
+      return Promise.resolve({ explores: [] } as unknown as SemanticModel);
     },
-    async ask() {
-      return { question: '', query: '', data: [], summary: '', chart: null } as AnalyticsResponse;
+    ask() {
+      return Promise.resolve({ question: '', query: '', data: [], summary: '', chart: null } as AnalyticsResponse);
     },
     ...overrides,
   } as unknown as ConversationalService;
 }
 
-async function handle(
-  router: ApiRouter,
-  method: string,
-  path: string,
-  body = '',
-): Promise<MockResponse> {
+async function handle(router: ApiRouter, method: string, path: string, body = ''): Promise<MockResponse> {
   const req = new MockRequest(method, body);
   const res = createResponse();
   await router.handle(
@@ -124,8 +119,7 @@ describe('readLimit', () => {
   });
 
   it.each(['0', '-1', 'abc', '1.5', '10001'])('rejects invalid limit %s', (limit) => {
-    expect(() => readLimit(new URL(`http://localhost/api/documents/books?limit=${limit}`), 100, 10000))
-      .toThrow();
+    expect(() => readLimit(new URL(`http://localhost/api/documents/books?limit=${limit}`), 100, 10000)).toThrow();
   });
 });
 
@@ -170,12 +164,15 @@ describe('ApiRouter', () => {
   it('inserts a document object into a collection', async () => {
     let inserted: unknown;
     let insertedCollection = '';
-    const router = new ApiRouter(createConnectedDbStub({
-      async insertDocument(collection, document) {
-        insertedCollection = collection;
-        inserted = document;
-      },
-    } as Partial<DatabaseService>));
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        insertDocument(collection, document) {
+          insertedCollection = collection;
+          inserted = document;
+          return Promise.resolve();
+        },
+      } as Partial<DatabaseService>),
+    );
 
     const res = await handle(
       router,
@@ -193,12 +190,15 @@ describe('ApiRouter', () => {
   it('replaces a document in one edit request', async () => {
     let replaced: unknown;
     let replacedId = '';
-    const router = new ApiRouter(createConnectedDbStub({
-      async replaceDocument(_collection, id, document) {
-        replacedId = id;
-        replaced = document;
-      },
-    } as Partial<DatabaseService>));
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        replaceDocument(_collection, id, document) {
+          replacedId = id;
+          replaced = document;
+          return Promise.resolve();
+        },
+      } as Partial<DatabaseService>),
+    );
 
     const res = await handle(
       router,
@@ -238,7 +238,9 @@ describe('ApiRouter', () => {
 
   it('returns the conversational model and LLM availability', async () => {
     const model: SemanticModel = {
-      explores: [{ collection: 'employees', label: 'Employees', fields: [{ name: 'id', type: 'string', label: 'ID' }] }],
+      explores: [
+        { collection: 'employees', label: 'Employees', fields: [{ name: 'id', type: 'string', label: 'ID' }] },
+      ],
     };
     const router = new ApiRouter(
       createConnectedDbStub(),
@@ -257,13 +259,15 @@ describe('ApiRouter', () => {
 
   it('generates a conversational model through the service', async () => {
     const model: SemanticModel = {
-      explores: [{ collection: 'employees', label: 'Employees', fields: [{ name: 'id', type: 'string', label: 'ID' }] }],
+      explores: [
+        { collection: 'employees', label: 'Employees', fields: [{ name: 'id', type: 'string', label: 'ID' }] },
+      ],
     };
     const router = new ApiRouter(
       createConnectedDbStub(),
       createConversationalStub({
-        async generateModel() {
-          return { model, enriched: true };
+        generateModel() {
+          return Promise.resolve({ model, enriched: true });
         },
       }),
     );
@@ -276,15 +280,17 @@ describe('ApiRouter', () => {
 
   it('saves a conversational model JSON string', async () => {
     const model: SemanticModel = {
-      explores: [{ collection: 'employees', label: 'Employees', fields: [{ name: 'id', type: 'string', label: 'ID' }] }],
+      explores: [
+        { collection: 'employees', label: 'Employees', fields: [{ name: 'id', type: 'string', label: 'ID' }] },
+      ],
     };
     let saved = '';
     const router = new ApiRouter(
       createConnectedDbStub(),
       createConversationalStub({
-        async saveModel(json) {
+        saveModel(json) {
           saved = json;
-          return model;
+          return Promise.resolve(model);
         },
       }),
     );
@@ -313,9 +319,9 @@ describe('ApiRouter', () => {
     const router = new ApiRouter(
       createConnectedDbStub(),
       createConversationalStub({
-        async ask(_question, history) {
+        ask(_question, history) {
           receivedHistory = history;
-          return response;
+          return Promise.resolve(response);
         },
       }),
     );
@@ -352,12 +358,14 @@ describe('ApiRouter', () => {
 
   it('seeds demo employees through the main API', async () => {
     let requestedCount = 0;
-    const router = new ApiRouter(createConnectedDbStub({
-      async seedDemoEmployees(count?: number) {
-        requestedCount = count ?? 0;
-        return { collection: 'employees', inserted: 25, skipped: false };
-      },
-    } as Partial<DatabaseService>));
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        seedDemoEmployees(count?: number) {
+          requestedCount = count ?? 0;
+          return Promise.resolve({ collection: 'employees', inserted: 25, skipped: false });
+        },
+      } as Partial<DatabaseService>),
+    );
 
     const res = await handle(router, 'POST', '/api/demo/employees', JSON.stringify({ count: 25 }));
 

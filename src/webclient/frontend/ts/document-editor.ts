@@ -1,8 +1,6 @@
 export type JsonObject = Record<string, unknown>;
 
-export type JsonObjectParseResult =
-  | { ok: true; value: JsonObject }
-  | { ok: false; error: string };
+export type JsonObjectParseResult = { ok: true; value: JsonObject } | { ok: false; error: string };
 
 export type ImagePayloads = Record<string, string>;
 
@@ -16,9 +14,11 @@ function imageMimeFromDocument(key: string, document: JsonObject): string | null
 }
 
 function isImageField(key: string, document?: JsonObject): boolean {
-  return /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(key)
-    || /\.(jpe?g|png|gif|webp)$/i.test(key)
-    || (document ? imageMimeFromDocument(key, document) !== null : false);
+  return (
+    /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(key) ||
+    /\.(jpe?g|png|gif|webp)$/i.test(key) ||
+    (document ? imageMimeFromDocument(key, document) !== null : false)
+  );
 }
 
 function normalizeImageValue(value: unknown): unknown {
@@ -93,6 +93,13 @@ export function parseJsonObjectInput(raw: string): JsonObjectParseResult {
   return { ok: true, value: parsed as JsonObject };
 }
 
+function normalizeDocumentId(value: unknown): string | null {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return null;
+}
+
 export function validateDocumentInput(
   raw: string,
   options: { existingId?: unknown; requireId?: boolean; imagePayloads?: ImagePayloads } = {},
@@ -102,13 +109,14 @@ export function validateDocumentInput(
 
   const { value } = parsed;
   const hasId = Object.prototype.hasOwnProperty.call(value, 'id');
+  const normalizedId = normalizeDocumentId(value['id']);
   if (options.requireId !== false && !hasId) {
     return { ok: false, error: 'Document must include an "id" field.' };
   }
-  if (hasId && (value['id'] === null || value['id'] === undefined || String(value['id']).trim() === '')) {
+  if (hasId && (normalizedId === null || normalizedId.trim() === '')) {
     return { ok: false, error: 'Document "id" must not be empty.' };
   }
-  if (options.existingId !== undefined && String(value['id']) !== String(options.existingId)) {
+  if (options.existingId !== undefined && normalizedId !== normalizeDocumentId(options.existingId)) {
     return { ok: false, error: `The "id" field is read-only and must remain ${JSON.stringify(options.existingId)}.` };
   }
 
@@ -125,8 +133,9 @@ function placeholderFor(value: unknown): unknown {
 
 export function buildDocumentTemplate(collection: string, docs: JsonObject[] = []): JsonObject {
   const template: JsonObject = { id: `${collection || 'document'}-1` };
-  const keys = Array.from(new Set(docs.flatMap((doc) => Object.keys(doc))))
-    .filter((key) => !key.startsWith('_') && key !== 'id');
+  const keys = Array.from(new Set(docs.flatMap((doc) => Object.keys(doc)))).filter(
+    (key) => !key.startsWith('_') && key !== 'id',
+  );
 
   for (const key of keys) {
     const sample = docs.find((doc) => doc[key] !== undefined && doc[key] !== null)?.[key];

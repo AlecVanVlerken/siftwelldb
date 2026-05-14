@@ -170,7 +170,7 @@ export function executeGroupBy(
       // to `undefined` so the column still exists but reads as missing.
       // `evaluateIsNull` already treats both as "no value", so a
       // `HAVING ... IS NULL` predicate matches empty-group aggregates.
-      resultRow[agg.alias] = value === null ? undefined : (value as FieldValue);
+      resultRow[agg.alias] = value === null ? undefined : (value);
     }
 
     if (having && !evaluateWhere(resultRow as Record<string, FieldValue>, having)) continue;

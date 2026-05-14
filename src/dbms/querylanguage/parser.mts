@@ -30,7 +30,6 @@ import type {
   NotExpression,
   OrderByClause,
   ParsedQuery,
-  ParsedSelect,
   SortDirection,
   UpdateAssignment,
   WhereExpression,
@@ -92,9 +91,7 @@ export function parse(query: string): ParsedQuery {
   // Each RHS is a literal — no field-to-field references, no expressions.
   // Mutating `id` is rejected because the backend uses it as the primary
   // key; changing it would orphan all secondary-index entries.
-  const updateMatch = normalized.match(
-    /^update\s+([A-Za-z_][A-Za-z0-9_]*)\s+set\s+(.+?)(?:\s+where\s+(.+?))?$/i,
-  );
+  const updateMatch = normalized.match(/^update\s+([A-Za-z_][A-Za-z0-9_]*)\s+set\s+(.+?)(?:\s+where\s+(.+?))?$/i);
   if (updateMatch) {
     const [, collection, setPartRaw, wherePartRaw] = updateMatch;
     const assignments = parseAssignments(setPartRaw.trim());
@@ -317,7 +314,11 @@ function splitSelectTail(src: string): TailClauses {
 function validateSelectTailStart(src: string): string {
   if (!src) return src;
   if (/^(where|group\s+by|having|order\s+by|limit|offset)\b/i.test(src)) return src;
-  if (/\b(?:join|natural\s+join|cross\s+join|inner\s+join|left\s+(?:outer\s+)?join|right\s+(?:outer\s+)?join|full\s+(?:outer\s+)?join)\b/i.test(src)) {
+  if (
+    /\b(?:join|natural\s+join|cross\s+join|inner\s+join|left\s+(?:outer\s+)?join|right\s+(?:outer\s+)?join|full\s+(?:outer\s+)?join)\b/i.test(
+      src,
+    )
+  ) {
     throw new Error('JOIN is not supported; query one collection at a time.');
   }
   throw new Error(`Unsupported SELECT clause: "${src}"`);
@@ -508,9 +509,7 @@ function validateOrderByReferences(
     for (const order of orderBy) {
       const expr = aliasToExpr.get(order.field) ?? order.field;
       if (!outputs.has(order.field) && !grouped.has(expr) && !aggregates.has(expr)) {
-        throw new Error(
-          `ORDER BY field "${order.field}" must be a GROUP BY field, aggregate, or SELECT alias`,
-        );
+        throw new Error(`ORDER BY field "${order.field}" must be a GROUP BY field, aggregate, or SELECT alias`);
       }
     }
   }

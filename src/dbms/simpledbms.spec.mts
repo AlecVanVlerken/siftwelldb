@@ -1235,8 +1235,8 @@ function makeTestImageEmbeddingFn(dim: number): (imageData: Buffer) => Promise<F
     const v = new Float32Array(dim);
     for (let i = 0; i < dim; i++) {
       let sum = 0;
-      for (let j = 0; j < imageData.length; j++) {
-        sum += Math.cos((imageData[j] + i * 23) * 0.1);
+      for (const byte of imageData) {
+        sum += Math.cos((byte + i * 23) * 0.1);
       }
       v[i] = sum / (imageData.length || 1);
     }
@@ -1436,12 +1436,18 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
       await dualDb.insertDocument('people', JSON.stringify(imageOnly));
       await dualDb.insertDocument('people', JSON.stringify(mixed));
 
-      const textResults = (await dualDb.semanticSearch('people', 'engineer', 10)).map((raw) => JSON.parse(raw).id);
+      const textResults = (await dualDb.semanticSearch('people', 'engineer', 10)).map((raw) => {
+        const parsed = JSON.parse(raw) as { id: string };
+        return parsed.id;
+      });
       expect(textResults).toContain('text-only');
       expect(textResults).toContain('mixed');
       expect(textResults).not.toContain('image-only');
 
-      const imageResults = (await dualDb.semanticImageTextSearch('people', 'portrait', 10)).map((raw) => JSON.parse(raw).id);
+      const imageResults = (await dualDb.semanticImageTextSearch('people', 'portrait', 10)).map((raw) => {
+        const parsed = JSON.parse(raw) as { id: string };
+        return parsed.id;
+      });
       expect(imageResults).toContain('image-only');
       expect(imageResults).toContain('mixed');
       expect(imageResults).not.toContain('text-only');
@@ -1543,9 +1549,7 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
       const results = await db.semanticImageSearch('employees', image, 5);
       const parsed = results.map((r) => JSON.parse(r) as Record<string, unknown>);
       expect(parsed).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ id: 'e1', 'photo.jpg': image.toString('base64') }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ id: 'e1', 'photo.jpg': image.toString('base64') })]),
       );
     });
 
