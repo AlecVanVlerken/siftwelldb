@@ -73,7 +73,7 @@ type LabRecommendationBundle = {
 export type QueryExecutionResult = {
   rows: QueryResultRow[];
   rowCount: number;
-  kind: 'select' | 'insert' | 'update' | 'delete' | 'union';
+  kind: 'select' | 'insert' | 'update' | 'delete' | 'explain';
   elapsedMs: number;
 };
 

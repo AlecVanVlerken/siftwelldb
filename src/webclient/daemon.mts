@@ -12,13 +12,15 @@ import { ConversationalService } from './conversational-service.mjs';
 const port = 8000;
 const frontendDir = path.join(import.meta.dirname, 'frontend');
 const srcFrontendDir = path.join(import.meta.dirname, '../../src/webclient/frontend');
+const builtFrontendDir = path.join(process.cwd(), 'build/webclient/frontend');
 
-// MIME types mapping. The frontend is intentionally a single HTML
-// file with inline JS — no bundling step, no .ts compilation for the
-// client — so .js is not part of the served set.
+// MIME types mapping for static frontend assets. Browser JavaScript is
+// generated from TypeScript into build/webclient/frontend.
 const mimeTypes: Record<string, string> = {
   '.html': 'text/html',
   '.css': 'text/css',
+  '.js': 'text/javascript',
+  '.map': 'application/json',
   '.json': 'application/json',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
@@ -27,6 +29,19 @@ const mimeTypes: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
 };
+
+async function tryReadFrom(rootDir: string, filePath: string): Promise<{ fullPath: string; content: Buffer } | null> {
+  const fullPath = path.resolve(rootDir, `.${filePath}`);
+  const root = path.resolve(rootDir);
+  if (fullPath !== root && !fullPath.startsWith(`${root}${path.sep}`)) {
+    throw new Error('Forbidden');
+  }
+  try {
+    return { fullPath, content: await fs.readFile(fullPath) };
+  } catch {
+    return null;
+  }
+}
 
 // ── Static file serving ──────────────────────────────────────
 
@@ -49,36 +64,25 @@ async function serveStaticFile(req: http.IncomingMessage, res: http.ServerRespon
       filePath = filePath.substring(0, queryIndex);
     }
 
-    // Try local frontend/ first (dev), then src/ fallback (build)
-    let fullPath = path.join(frontendDir, filePath);
-    if (!fullPath.startsWith(frontendDir)) {
-      res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Forbidden' }));
-      return;
+    // Source assets first, then compiled frontend TypeScript output.
+    // In build output frontendDir and builtFrontendDir are usually the
+    // same path; in tsx/dev runs builtFrontendDir makes /ts/*.js available.
+    let found: { fullPath: string; content: Buffer } | null = null;
+    for (const root of [frontendDir, builtFrontendDir, srcFrontendDir]) {
+      found = await tryReadFrom(root, filePath);
+      if (found) break;
     }
+    if (!found) throw new Error('File not found');
 
-    let content: Buffer;
-    try {
-      content = await fs.readFile(fullPath);
-    } catch {
-      // Fallback to source frontend directory
-      fullPath = path.join(srcFrontendDir, filePath);
-      if (!fullPath.startsWith(srcFrontendDir)) {
-        res.writeHead(403, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Forbidden' }));
-        return;
-      }
-      content = await fs.readFile(fullPath);
-    }
-
-    const ext = path.extname(fullPath);
+    const ext = path.extname(found.fullPath);
     const mimeType = mimeTypes[ext] ?? 'application/octet-stream';
 
     res.writeHead(200, { 'Content-Type': mimeType });
-    res.end(content);
-  } catch {
-    res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'File not found' }));
+    res.end(found.content);
+  } catch (err) {
+    const forbidden = err instanceof Error && err.message === 'Forbidden';
+    res.writeHead(forbidden ? 403 : 404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: forbidden ? 'Forbidden' : 'File not found' }));
   }
 }
 

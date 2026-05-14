@@ -7,89 +7,47 @@
         {
           "name": "id",
           "type": "string",
-          "label": "Id",
-          "description": "Unique identifier for each employee.",
-          "hidden": true
+          "label": "Id"
         },
         {
           "name": "name",
           "type": "string",
-          "label": "Name",
-          "description": "The full name of the employee.",
-          "synonyms": [
-            "employee name",
-            "staff name",
-            "person's name"
-          ]
+          "label": "Name"
         },
         {
           "name": "gender",
           "type": "string",
-          "label": "Gender",
-          "description": "The gender of the employee."
+          "label": "Gender"
         },
         {
           "name": "department",
           "type": "string",
-          "label": "Department",
-          "description": "The department or division the employee belongs to.",
-          "synonyms": [
-            "team",
-            "unit",
-            "business unit"
-          ]
+          "label": "Department"
         },
         {
           "name": "seniority",
           "type": "string",
-          "label": "Seniority",
-          "description": "The level of experience, rank, or job grade of the employee within the company.",
-          "synonyms": [
-            "job level",
-            "grade",
-            "rank",
-            "experience level"
-          ]
+          "label": "Seniority"
         },
         {
           "name": "salary",
           "type": "number",
-          "label": "Salary",
-          "description": "The annual gross salary of the employee.",
-          "synonyms": [
-            "compensation",
-            "pay",
-            "annual pay",
-            "wage"
-          ]
+          "label": "Salary"
         },
         {
           "name": "age",
           "type": "number",
-          "label": "Age",
-          "description": "The age of the employee in years."
+          "label": "Age"
         },
         {
           "name": "city",
           "type": "string",
-          "label": "City",
-          "description": "The city where the employee is primarily based or works from.",
-          "synonyms": [
-            "location",
-            "work city",
-            "office location"
-          ]
+          "label": "City"
         },
         {
           "name": "yearsAtCompany",
           "type": "number",
-          "label": "Years At Company",
-          "description": "The total number of years the employee has been working for the company.",
-          "synonyms": [
-            "tenure",
-            "years of service",
-            "service years"
-          ]
+          "label": "Years At Company"
         }
       ],
       "measures": [
@@ -171,8 +129,7 @@
           "aggregation": "COUNT",
           "field": "*"
         }
-      ],
-      "description": "Detailed information about employees within the organization, including their personal details, job role, and compensation."
+      ]
     }
   ]
 }
