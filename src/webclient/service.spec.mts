@@ -82,7 +82,9 @@ describe('DatabaseService', () => {
 
     expect(result.hasMore).toBe(false);
     expect(result.nextCursor).toBeUndefined();
-    expect(result.documents.map((d) => (JSON.parse(d) as Record<string, unknown>)['salary'])).toEqual([1000, 4200, 7800]);
+    expect(result.documents.map((d) => (JSON.parse(d) as Record<string, unknown>)['salary'])).toEqual([
+      1000, 4200, 7800,
+    ]);
   });
 
   it('sorts documents alphabetically descending when sortBy targets a string field', async () => {

@@ -202,23 +202,23 @@ behave like standard SQL.
 
 ### Operators
 
-| Form                                  | Meaning                                            |
-| ------------------------------------- | -------------------------------------------------- |
-| `field = value`                       | Equality (strict, no type coercion).               |
-| `field != value`                      | Inequality.                                        |
-| `field >  value`, `>=`, `<`, `<=`     | Numeric or string range comparison.                |
-| `field LIKE 'pat'`                    | SQL pattern match (`%` = any chars, `_` = one).    |
-| `field NOT LIKE 'pat'`                | Negated SQL pattern match.                         |
-| `field CONTAINS 'sub'`                | Case-insensitive substring search.                 |
-| `field IS NULL`                       | True if the field is missing or `null`.            |
-| `field IS NOT NULL`                   | Inverse of `IS NULL`.                              |
-| `field IN (v1, v2, ...)`              | Set membership. Empty list is rejected.            |
-| `field NOT IN (v1, v2, ...)`          | Inverse of `IN`.                                   |
-| `field BETWEEN low AND high`          | Inclusive range; works on numbers **and** strings. |
-| `field NOT BETWEEN low AND high`      | Inverse of `BETWEEN`.                              |
-| `NOT (expr)`                          | Logical negation; can wrap any sub-expression.     |
-| `expr AND expr`, `expr OR expr`       | Conjunction / disjunction.                         |
-| `(expr)`                              | Parentheses to override precedence.                |
+| Form                              | Meaning                                            |
+| --------------------------------- | -------------------------------------------------- |
+| `field = value`                   | Equality (strict, no type coercion).               |
+| `field != value`                  | Inequality.                                        |
+| `field >  value`, `>=`, `<`, `<=` | Numeric or string range comparison.                |
+| `field LIKE 'pat'`                | SQL pattern match (`%` = any chars, `_` = one).    |
+| `field NOT LIKE 'pat'`            | Negated SQL pattern match.                         |
+| `field CONTAINS 'sub'`            | Case-insensitive substring search.                 |
+| `field IS NULL`                   | True if the field is missing or `null`.            |
+| `field IS NOT NULL`               | Inverse of `IS NULL`.                              |
+| `field IN (v1, v2, ...)`          | Set membership. Empty list is rejected.            |
+| `field NOT IN (v1, v2, ...)`      | Inverse of `IN`.                                   |
+| `field BETWEEN low AND high`      | Inclusive range; works on numbers **and** strings. |
+| `field NOT BETWEEN low AND high`  | Inverse of `BETWEEN`.                              |
+| `NOT (expr)`                      | Logical negation; can wrap any sub-expression.     |
+| `expr AND expr`, `expr OR expr`   | Conjunction / disjunction.                         |
+| `(expr)`                          | Parentheses to override precedence.                |
 
 `LIKE`/`CONTAINS` are **case-insensitive**. All other string comparisons
 are case-sensitive and use deterministic Unicode code-point order
@@ -270,17 +270,17 @@ SELECT * FROM cities WHERE NOT (country = 'BE' OR country = 'FR');
 
 ### Functions
 
-| Function            | Notes                                                                |
-| ------------------- | -------------------------------------------------------------------- |
-| `COUNT(*)`          | Counts every row, nulls included.                                    |
-| `COUNT(field)`      | Counts rows where `field` is not `null`/`undefined`.                 |
-| `COUNT(DISTINCT f)` | Counts unique non-null values of `f`.                                |
-| `SUM(field)`        | Sums numeric values. Non-numbers are ignored, not zero-coerced.      |
-| `SUM(DISTINCT f)`   | Sums unique numeric values of `f`.                                   |
-| `AVG(field)`        | Arithmetic mean of numeric values.                                   |
-| `AVG(DISTINCT f)`   | Mean of unique numeric values.                                       |
-| `MIN(field)`        | Smallest comparable value (string, number, boolean).                 |
-| `MAX(field)`        | Largest comparable value.                                            |
+| Function            | Notes                                                           |
+| ------------------- | --------------------------------------------------------------- |
+| `COUNT(*)`          | Counts every row, nulls included.                               |
+| `COUNT(field)`      | Counts rows where `field` is not `null`/`undefined`.            |
+| `COUNT(DISTINCT f)` | Counts unique non-null values of `f`.                           |
+| `SUM(field)`        | Sums numeric values. Non-numbers are ignored, not zero-coerced. |
+| `SUM(DISTINCT f)`   | Sums unique numeric values of `f`.                              |
+| `AVG(field)`        | Arithmetic mean of numeric values.                              |
+| `AVG(DISTINCT f)`   | Mean of unique numeric values.                                  |
+| `MIN(field)`        | Smallest comparable value (string, number, boolean).            |
+| `MAX(field)`        | Largest comparable value.                                       |
 
 Empty input (`SUM`/`AVG`/`MIN`/`MAX` over zero rows) returns `null`
 (rendered as `undefined` in the projected row), matching standard SQL.
@@ -489,7 +489,7 @@ import { QueryLanguage } from './dbms/querylanguage/querylanguage.mjs';
 const db = await SimpleDbms.open(/* ... */);
 const ql = new QueryLanguage(db);
 
-const rows = await ql.execute("SELECT country, COUNT(*) AS n FROM cities GROUP BY country");
+const rows = await ql.execute('SELECT country, COUNT(*) AS n FROM cities GROUP BY country');
 
 const parsed = ql.parse("SELECT name FROM cities WHERE country = 'BE'");
 // parsed is a ParsedQuery: { kind: 'select', collection, fields, where, ... }
