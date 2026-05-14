@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src/webclient/frontend/ts",
+    "outDir": "build/webclient/frontend/ts",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "types": ["vitest/globals"],
+    "noEmit": false
+  },
+  "include": ["src/webclient/frontend/ts/**/*.ts"],
+  "exclude": ["src/webclient/frontend/ts/**/*.spec.*"]
+}
