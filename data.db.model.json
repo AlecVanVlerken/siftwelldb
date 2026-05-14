@@ -7,47 +7,95 @@
         {
           "name": "id",
           "type": "string",
-          "label": "Id"
+          "label": "Id",
+          "description": "Unique identifier for each employee.",
+          "synonyms": [
+            "employee id",
+            "employee_id",
+            "staff id"
+          ],
+          "hidden": true
         },
         {
           "name": "name",
           "type": "string",
-          "label": "Name"
+          "label": "Name",
+          "description": "Full name of the employee.",
+          "synonyms": [
+            "employee name",
+            "staff name",
+            "person name"
+          ]
         },
         {
           "name": "gender",
           "type": "string",
-          "label": "Gender"
+          "label": "Gender",
+          "description": "Gender of the employee (e.g., F for Female, M for Male).",
+          "synonyms": [
+            "sex"
+          ]
         },
         {
           "name": "department",
           "type": "string",
-          "label": "Department"
+          "label": "Department",
+          "description": "The department or division the employee belongs to.",
+          "synonyms": [
+            "team",
+            "unit"
+          ]
         },
         {
           "name": "seniority",
           "type": "string",
-          "label": "Seniority"
+          "label": "Seniority",
+          "description": "The level of experience or rank of the employee within their role.",
+          "synonyms": [
+            "job level",
+            "rank",
+            "title"
+          ]
         },
         {
           "name": "salary",
           "type": "number",
-          "label": "Salary"
+          "label": "Salary",
+          "description": "The annual salary of the employee.",
+          "synonyms": [
+            "compensation",
+            "pay",
+            "annual salary"
+          ]
         },
         {
           "name": "age",
           "type": "number",
-          "label": "Age"
+          "label": "Age",
+          "description": "The current age of the employee in years.",
+          "synonyms": [
+            "employee age"
+          ]
         },
         {
           "name": "city",
           "type": "string",
-          "label": "City"
+          "label": "City",
+          "description": "The city where the employee is based or works.",
+          "synonyms": [
+            "work city",
+            "location"
+          ]
         },
         {
           "name": "yearsAtCompany",
           "type": "number",
-          "label": "Years At Company"
+          "label": "Years At Company",
+          "description": "The total number of years the employee has worked at the company.",
+          "synonyms": [
+            "tenure",
+            "years of service"
+          ]
         }
       ],
       "measures": [
@@ -128,8 +176,95 @@
           "label": "Count",
           "aggregation": "COUNT",
           "field": "*"
+        },
+        {
+          "name": "headcount",
+          "label": "Headcount",
+          "aggregation": "COUNT",
+          "field": "*",
+          "description": "Total number of employees."
         }
-      ]
+      ],
+      "description": "Detailed information about employees within the company, including their personal details, job roles, and compensation."
+    },
+    {
+      "collection": "test",
+      "label": "Test",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "label": "Id",
+          "description": "Unique identifier for each document in the test collection.",
+          "synonyms": [
+            "document id",
+            "test id"
+          ],
+          "hidden": true
+        },
+        {
+          "name": "second_field",
+          "type": "number",
+          "label": "Second Field",
+          "description": "A numerical field used for testing aggregation and filtering.",
+          "synonyms": [
+            "value",
+            "numeric field"
+          ]
+        },
+        {
+          "name": "city",
+          "type": "string",
+          "label": "City",
+          "description": "A categorical field representing a city or location, used for testing grouping.",
+          "synonyms": [
+            "location"
+          ]
+        },
+        {
+          "name": "place",
+          "type": "string",
+          "label": "Place",
+          "description": "Another categorical field representing a place.",
+          "synonyms": [
+            "venue",
+            "site"
+          ]
+        }
+      ],
+      "measures": [
+        {
+          "name": "avg_second_field",
+          "label": "Avg Second Field",
+          "aggregation": "AVG",
+          "field": "second_field"
+        },
+        {
+          "name": "sum_second_field",
+          "label": "Sum Second Field",
+          "aggregation": "SUM",
+          "field": "second_field"
+        },
+        {
+          "name": "min_second_field",
+          "label": "Min Second Field",
+          "aggregation": "MIN",
+          "field": "second_field"
+        },
+        {
+          "name": "max_second_field",
+          "label": "Max Second Field",
+          "aggregation": "MAX",
+          "field": "second_field"
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "aggregation": "COUNT",
+          "field": "*"
+        }
+      ],
+      "description": "A sample collection for testing purposes with various data types."
     }
   ]
 }

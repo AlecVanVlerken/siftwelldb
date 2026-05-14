@@ -142,14 +142,14 @@ export function modelToSchemaPrompt(model: SemanticModel): string {
  * Auto-generate a semantic model by introspecting the database.
  *
  * For each collection it reads the B+ tree metadata to discover indexed
- * fields and their types, then samples the first document to pick up any
- * non-indexed fields and to refine booleans (which are stored as numbers
- * in the index metadata).
+ * fields and their types, then samples a few documents to pick up
+ * non-indexed fields, refine booleans (which are stored as numbers in
+ * the index metadata), and add lightweight value hints.
  *
  * The result is a usable-but-basic model — labels are derived from field
  * names and numeric fields automatically get standard aggregation measures.
- * You can save the output to JSON and enrich it with descriptions, synonyms,
- * and join definitions by hand.
+ * You can save the output to JSON and enrich it with descriptions and
+ * synonyms by hand.
  */
 export async function generateSemanticModel(dbms: SimpleDbms): Promise<SemanticModel> {
   const collections = dbms.listCollections();
@@ -157,13 +157,13 @@ export async function generateSemanticModel(dbms: SimpleDbms): Promise<SemanticM
 
   for (const collection of collections) {
     const metaFields = dbms.describeCollection(collection);
-    const sample = await sampleDocument(dbms, collection);
+    const samples = await sampleDocuments(dbms, collection);
 
     const fieldMap = new Map<string, FieldDefinition>();
 
     for (const mf of metaFields) {
       let type: FieldType = mf.type;
-      if (sample && mf.name in sample && typeof sample[mf.name] === 'boolean') {
+      if (samples.some((sample) => mf.name in sample && typeof sample[mf.name] === 'boolean')) {
         type = 'boolean';
       }
       fieldMap.set(mf.name, {
@@ -173,7 +173,7 @@ export async function generateSemanticModel(dbms: SimpleDbms): Promise<SemanticM
       });
     }
 
-    if (sample) {
+    for (const sample of samples) {
       for (const [key, value] of Object.entries(sample)) {
         if (fieldMap.has(key)) continue;
         const type = inferType(value);
@@ -183,7 +183,7 @@ export async function generateSemanticModel(dbms: SimpleDbms): Promise<SemanticM
       }
     }
 
-    const fields = Array.from(fieldMap.values());
+    const fields = Array.from(fieldMap.values()).map((field) => enrichGeneratedField(field, samples));
 
     const measures: MeasureDefinition[] = [];
     for (const field of fields) {
@@ -216,16 +216,21 @@ export async function generateSemanticModel(dbms: SimpleDbms): Promise<SemanticM
   return { explores };
 }
 
-async function sampleDocument(dbms: SimpleDbms, collection: string): Promise<Record<string, FieldValue> | null> {
+const SAMPLE_ROW_LIMIT = 10;
+const VALUE_HINT_LIMIT = 8;
+
+async function sampleDocuments(dbms: SimpleDbms, collection: string): Promise<Record<string, FieldValue>[]> {
+  const samples: Record<string, FieldValue>[] = [];
   try {
     const cursor = dbms.cursor(collection, 'id', undefined);
     for await (const json of cursor) {
-      return JSON.parse(json) as Record<string, FieldValue>;
+      samples.push(JSON.parse(json) as Record<string, FieldValue>);
+      if (samples.length >= SAMPLE_ROW_LIMIT) break;
     }
   } catch {
     // collection might be empty or missing an 'id' index
   }
-  return null;
+  return samples;
 }
 
 function inferType(value: unknown): FieldType | null {
@@ -240,6 +245,60 @@ function humanize(name: string): string {
     .replace(/([a-z])([A-Z])/g, '$1 $2')
     .replace(/[_-]/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function deterministicSynonyms(fieldName: string): string[] {
+  const normalized = fieldName.replace(/[_-]/g, '').toLowerCase();
+  const synonyms = new Set<string>();
+  const add = (...values: string[]) => values.forEach((v) => synonyms.add(v));
+
+  if (normalized.includes('salary') || normalized.includes('wage') || normalized.includes('pay')) {
+    add('pay', 'wage', 'compensation', 'income', 'earnings');
+  }
+  if (normalized.includes('department') || normalized.includes('dept')) {
+    add('team', 'division', 'business unit');
+  }
+  if (normalized.includes('city') || normalized.includes('location') || normalized.includes('office')) {
+    add('location', 'office', 'place');
+  }
+  if (normalized.includes('yearsatcompany') || normalized.includes('tenure')) {
+    add('tenure', 'years employed', 'experience');
+  }
+  if (normalized.includes('seniority') || normalized.includes('level')) {
+    add('level', 'rank', 'experience level');
+  }
+  if (normalized.includes('gender') || normalized.includes('sex')) {
+    add('sex');
+  }
+  if (normalized === 'name' || normalized.endsWith('name')) {
+    add('person', 'employee', 'record name');
+  }
+
+  return [...synonyms];
+}
+
+function sampledValueHint(field: FieldDefinition, samples: Record<string, FieldValue>[]): string | undefined {
+  if (field.type !== 'string' && field.type !== 'boolean') return undefined;
+  const values = new Set<string>();
+  for (const sample of samples) {
+    const value = sample[field.name];
+    if (typeof value === 'string' || typeof value === 'boolean') {
+      values.add(String(value));
+      if (values.size > VALUE_HINT_LIMIT) return undefined;
+    }
+  }
+  if (values.size === 0) return undefined;
+  return `values: ${[...values].join(', ')}`;
+}
+
+function enrichGeneratedField(field: FieldDefinition, samples: Record<string, FieldValue>[]): FieldDefinition {
+  const synonyms = deterministicSynonyms(field.name);
+  const valueHint = sampledValueHint(field, samples);
+  return {
+    ...field,
+    synonyms: synonyms.length > 0 ? synonyms : field.synonyms,
+    tags: valueHint ? [...(field.tags ?? []), valueHint] : field.tags,
+  };
 }
 
 // ── LLM-powered model enrichment ─────────────────────────────────────────────

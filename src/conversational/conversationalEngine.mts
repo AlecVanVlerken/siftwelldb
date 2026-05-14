@@ -111,6 +111,18 @@ export class ConversationalEngine {
     // ── Step 3: execute ──────────────────────────────────────────────────
     try {
       data = await this.queryLanguage.execute(query);
+      if (
+        data.length === 0 &&
+        generated.parsed.kind === 'select' &&
+        generated.parsed.where
+      ) {
+        const repaired = await this.tryRepairEmptyResult(question, query, history);
+        if (repaired) {
+          query = repaired.query;
+          data = repaired.data;
+          generated = repaired.generated;
+        }
+      }
     } catch (err) {
       const errMsg = `Query execution failed: ${err instanceof Error ? err.message : String(err)}`;
       this.pushHistory(history, question, errMsg);
@@ -145,6 +157,25 @@ export class ConversationalEngine {
     this.pushHistory(history, question, assistantText);
 
     return { question, query, data, summary, chart, interpretation, suggestions, anomaly, didYouMean };
+  }
+
+  private async tryRepairEmptyResult(
+    question: string,
+    failedQuery: string,
+    history: ChatMessage[],
+  ): Promise<{
+    query: string;
+    data: QueryResultRow[];
+    generated: Awaited<ReturnType<QueryGenerator['generate']>>;
+  } | null> {
+    try {
+      const generated = await this.queryGenerator.repairEmptyResult(question, failedQuery, history);
+      if (!isReadOnlyKind(generated.parsed.kind)) return null;
+      const data = await this.queryLanguage.execute(generated.query);
+      return { query: generated.query, data, generated };
+    } catch {
+      return null;
+    }
   }
 
   clearHistory(): void {
