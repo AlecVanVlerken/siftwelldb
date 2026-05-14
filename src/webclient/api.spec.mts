@@ -167,6 +167,66 @@ describe('ApiRouter', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Invalid "limit" parameter' });
   });
 
+  it('inserts a document object into a collection', async () => {
+    let inserted: unknown;
+    let insertedCollection = '';
+    const router = new ApiRouter(createConnectedDbStub({
+      async insertDocument(collection, document) {
+        insertedCollection = collection;
+        inserted = document;
+      },
+    } as Partial<DatabaseService>));
+
+    const res = await handle(
+      router,
+      'POST',
+      '/api/documents/books',
+      JSON.stringify({ document: { id: 'b1', title: 'Dune' } }),
+    );
+
+    expect(res.statusCode).toBe(201);
+    expect(insertedCollection).toBe('books');
+    expect(inserted).toEqual({ id: 'b1', title: 'Dune' });
+    expect(JSON.parse(res.body)).toEqual({ message: 'Document inserted' });
+  });
+
+  it('replaces a document in one edit request', async () => {
+    let replaced: unknown;
+    let replacedId = '';
+    const router = new ApiRouter(createConnectedDbStub({
+      async replaceDocument(_collection, id, document) {
+        replacedId = id;
+        replaced = document;
+      },
+    } as Partial<DatabaseService>));
+
+    const res = await handle(
+      router,
+      'POST',
+      '/api/documents/books/b1/edit',
+      JSON.stringify({ document: { id: 'b1', title: 'Dune Messiah', pages: 256 } }),
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(replacedId).toBe('b1');
+    expect(replaced).toEqual({ id: 'b1', title: 'Dune Messiah', pages: 256 });
+    expect(JSON.parse(res.body)).toEqual({ message: 'Document replaced' });
+  });
+
+  it('rejects non-object full document replacements', async () => {
+    const router = new ApiRouter(createConnectedDbStub());
+
+    const res = await handle(
+      router,
+      'POST',
+      '/api/documents/books/b1/edit',
+      JSON.stringify({ document: ['not', 'object'] }),
+    );
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'document must be a JSON object' });
+  });
+
   it('returns 503 for conversational routes when the service is not registered', async () => {
     const router = new ApiRouter(createConnectedDbStub());
 

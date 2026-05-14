@@ -47,6 +47,25 @@ export class QueryGenerator {
       return { query: retryQuery, parsed };
     }
   }
+
+  /**
+   * Ask for one broader repair when a syntactically valid query returned
+   * no rows. This keeps the original generation path simple while giving
+   * over-specific filters one chance to back off.
+   */
+  async repairEmptyResult(question: string, failedQuery: string, history: ChatMessage[] = []): Promise<GeneratedQuery> {
+    const repairMsg = `The previous query returned 0 rows:
+${failedQuery}
+
+Original user question: "${question}"
+
+Generate one broader replacement SELECT query. If the previous query used a literal filter value that was not explicitly present in the user's question or chat history, remove that filter. Do not invent new filter values. Prefer a broad count/list/grouping query over a guessed condition. Respond with ONLY the corrected SELECT query.`;
+
+    const raw = await this.provider.chat(this.systemPrompt, history, repairMsg);
+    const query = extractQuery(raw.text);
+    const parsed = this.queryLanguage.parse(query);
+    return { query, parsed };
+  }
 }
 
 function buildSystemPrompt(model: SemanticModel): string {
@@ -76,7 +95,7 @@ WHERE/HAVING conditions:
       Prefer CONTAINS for natural "contains/includes" wording.
       Example: WHERE name LIKE 'A%'  (starts with A)
                WHERE city CONTAINS 'dam' (contains "dam")
-  - Set membership: field IN ('a', 'b', 'c)  /  field NOT IN ('a', 'b')
+  - Set membership: field IN ('a', 'b', 'c')  /  field NOT IN ('a', 'b')
   - Ranges: field BETWEEN low AND high  /  field NOT BETWEEN low AND high
   - Missing/unset field check: field IS NULL  /  field IS NOT NULL
   - Negation: NOT (<expression>)
@@ -93,7 +112,7 @@ Column aliases: \`SELECT expr AS name\` — usable in ORDER BY and HAVING too.
 RULES:
 1. Respond with ONLY the query. No explanation, no markdown, no code fences.
 2. Use the exact field names from the schema above.
-3. When the user asks about a concept, use the field synonyms and descriptions to find the right field.
+3. When the user asks about a concept, use field labels, descriptions, synonyms, and tags to find the right field.
 4. For "how many", use COUNT(*). For "average"/"mean" use AVG(). For "total"/"sum" use SUM().
 5. For "how many unique/distinct X" use COUNT(DISTINCT field). For "list unique X" use SELECT DISTINCT.
 6. For "highest"/"most"/"maximum" use MAX() or ORDER BY ... DESC LIMIT 1.
@@ -101,11 +120,13 @@ RULES:
 8. For substring matches ("contains", "includes"), use CONTAINS. For starts/ends-with patterns, use LIKE.
 9. For "field is one of X, Y, Z" use IN (X, Y, Z). For "between X and Y" use BETWEEN X AND Y.
    For "field is missing/empty/unset" use IS NULL.
-10. Every query MUST target a single collection. If the user's question requires data from another collection, answer with the closest single-collection query you can and let the user know in plain language (the engine will summarize). Never emit JOIN, UNION, or subqueries.
-11. UPDATE / INSERT / DELETE / EXPLAIN are NOT allowed via chat — only SELECT.
-12. If the question is ambiguous, prefer the simplest valid query.
-13. Always include the relevant fields in SELECT so the answer is understandable.
-14. IMPORTANT: If the user references a previous question (e.g. "break that down by city", "same but for Sales", "now filter those"), use the conversation history to understand what they mean and generate the appropriate new query.
+10. Do NOT invent filter values. Only use literal values that appear in the user's question, chat history, or schema tags/descriptions as sample/distinct values.
+11. If the user asks vaguely for "matching a condition", "filtered records", or a "specific condition" without naming the condition, do NOT guess one. Use a broad query such as COUNT(*) or list/group by useful fields.
+12. Every query MUST target a single collection. If the user's question requires data from another collection, answer with the closest single-collection query you can and let the user know in plain language (the engine will summarize). Never emit JOIN, UNION, or subqueries.
+13. UPDATE / INSERT / DELETE / EXPLAIN are NOT allowed via chat — only SELECT.
+14. If the question is ambiguous, prefer the broadest simple valid query over a made-up WHERE filter.
+15. Always include the relevant fields in SELECT so the answer is understandable.
+16. IMPORTANT: If the user references a previous question (e.g. "break that down by city", "same but for Sales", "now filter those"), use the conversation history to understand what they mean and generate the appropriate new query.
 
 EXAMPLES:
 - "How many employees per department?"           -> SELECT department, COUNT(*) AS n FROM employees GROUP BY department

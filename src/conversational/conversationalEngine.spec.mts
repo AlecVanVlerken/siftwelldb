@@ -116,6 +116,7 @@ describe('ConversationalEngine', () => {
   it('returns did-you-mean suggestions for empty results', async () => {
     const { engine, db } = await createEngine([
       "SELECT name FROM employees WHERE department = 'Legal'",
+      "SELECT name FROM employees WHERE department = 'AlsoMissing'",
       '["Show all departments", 123, "List all employees", "Compare departments", "Ignored extra"]',
     ]);
 
@@ -123,6 +124,22 @@ describe('ConversationalEngine', () => {
 
     expect(response.summary).toBe('No results found.');
     expect(response.didYouMean).toEqual(['Show all departments', 'List all employees', 'Compare departments']);
+    await db.close();
+  });
+
+  it('repairs an over-filtered zero-result query once before falling back', async () => {
+    const { engine, provider, db } = await createEngine([
+      "SELECT COUNT(*) FROM employees WHERE department = 'Legal'",
+      'SELECT COUNT(*) FROM employees',
+      JSON.stringify({ summary: 'There are 2 employees.', chart: null }),
+    ]);
+
+    const response = await engine.ask('Count records matching a specific condition?');
+
+    expect(response.query).toBe('SELECT COUNT(*) FROM employees');
+    expect(response.data).toEqual([{ 'COUNT(*)': 2 }]);
+    expect(response.summary).toBe('There are 2 employees.');
+    expect(provider.chatCalls[1]?.userMessage).toContain('returned 0 rows');
     await db.close();
   });
 

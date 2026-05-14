@@ -51,6 +51,8 @@ describe('QueryGenerator', () => {
     expect(generated.query).toBe('SELECT name FROM employees');
     expect(generated.parsed.kind).toBe('select');
     expect(provider.calls[0]?.systemPrompt).toContain('Collection "employees"');
+    expect(provider.calls[0]?.systemPrompt).toContain('Do NOT invent filter values');
+    expect(provider.calls[0]?.systemPrompt).toContain('use field labels, descriptions, synonyms, and tags');
   });
 
   it('strips SQL fences and a trailing semicolon', async () => {
@@ -78,5 +80,19 @@ describe('QueryGenerator', () => {
     const generator = createGenerator(provider);
 
     await expect(generator.generate('list employee names')).rejects.toThrow(/Invalid query syntax/i);
+  });
+
+  it('can request a broader query after an empty filtered result', async () => {
+    const provider = new FakeLLMProvider(['SELECT COUNT(*) FROM employees']);
+    const generator = createGenerator(provider);
+
+    const repaired = await generator.repairEmptyResult(
+      'Count records matching a specific condition?',
+      "SELECT COUNT(*) FROM employees WHERE city = 'New York'",
+    );
+
+    expect(repaired.query).toBe('SELECT COUNT(*) FROM employees');
+    expect(provider.calls[0]?.userMessage).toContain('returned 0 rows');
+    expect(provider.calls[0]?.userMessage).toContain('Do not invent new filter values');
   });
 });

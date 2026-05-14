@@ -2,6 +2,7 @@
 // @ts-nocheck
 import { api } from './api-client.js';
 import { $, $$ } from './dom.js';
+import { buildDocumentTemplate, validateDocumentInput } from './document-editor.js';
 import { detectType, docSize, esc, fmtNum, fmtSize, isImageField } from './format.js';
 import { openModal, closeModal } from './modals.js';
 import { resetDisconnectedState, state } from './state.js';
@@ -18,6 +19,8 @@ function toast(msg, kind = '', title = '') {
 }
 
 $$('[data-close]').forEach((b) => b.addEventListener('click', () => closeModal(b.dataset.close)));
+
+let documentModalMode = 'document';
 
 // ─────────────────────────────────────────────────────────────────
 // Bootstrap
@@ -106,6 +109,81 @@ async function seedDemoEmployees() {
   }
 }
 
+function isValidCollectionName(name) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
+function showDocumentModalError(message) {
+  const err = $('#doc-err');
+  err.textContent = message;
+  err.classList.remove('hidden');
+}
+
+function openCollectionDocumentModal() {
+  documentModalMode = 'collection';
+  $('#doc-modal-title').firstChild.textContent = 'Add collection';
+  $('#doc-modal-sub').textContent = 'Collections are created by inserting their first JSON document.';
+  $('#doc-collection-wrap').classList.remove('hidden');
+  $('#doc-collection').value = '';
+  $('#doc-json').value = JSON.stringify({ id: 'first-document' }, null, 2);
+  $('#doc-err').classList.add('hidden');
+  openModal('modal-document');
+  $('#doc-collection').focus();
+}
+
+function openAddDocumentModal() {
+  if (!state.selectedCol) {
+    toast('Select a collection first.', 'warn');
+    return;
+  }
+  documentModalMode = 'document';
+  $('#doc-modal-title').firstChild.textContent = 'Add document';
+  $('#doc-modal-sub').textContent = `Insert one JSON document into ${state.selectedCol}.`;
+  $('#doc-collection-wrap').classList.add('hidden');
+  $('#doc-collection').value = state.selectedCol;
+  $('#doc-json').value = JSON.stringify(buildDocumentTemplate(state.selectedCol, state.docsByColl[state.selectedCol] || []), null, 2);
+  $('#doc-err').classList.add('hidden');
+  openModal('modal-document');
+  $('#doc-json').focus();
+}
+
+async function saveDocumentModal() {
+  const collection = documentModalMode === 'collection' ? $('#doc-collection').value.trim() : state.selectedCol;
+  if (!collection) {
+    showDocumentModalError('Collection name is required.');
+    return;
+  }
+  if (!isValidCollectionName(collection)) {
+    showDocumentModalError('Collection name must start with a letter or underscore and contain only letters, numbers, and underscores.');
+    return;
+  }
+
+  const parsed = validateDocumentInput($('#doc-json').value);
+  if (!parsed.ok) {
+    showDocumentModalError(parsed.error);
+    return;
+  }
+
+  try {
+    await api(`/api/documents/${encodeURIComponent(collection)}`, {
+      method: 'POST',
+      body: { document: parsed.value },
+    });
+    toast(documentModalMode === 'collection' ? 'Collection created' : 'Document inserted', 'ok');
+    closeModal('modal-document');
+    invalidateStorageCache(collection);
+    await loadCollections();
+    state.selectedCol = collection;
+    state.tab = 'data';
+    state.selectedDoc = null;
+    render();
+    const created = (state.docsByColl[collection] || []).find((doc) => String(doc.id) === String(parsed.value.id));
+    if (created) openDrawer(created, (state.docsByColl[collection] || []).indexOf(created));
+  } catch (e) {
+    showDocumentModalError('Save failed: ' + e.message);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Selection
 // ─────────────────────────────────────────────────────────────────
@@ -165,7 +243,7 @@ function renderTree() {
   // which file is open. The explorer is just the collections list.
   let h = '';
   if (colls.length === 0) {
-    h += `<div class="empty" style="padding-left:8px;">${filter ? 'No matches.' : 'No collections yet. Use the Query Language tab to insert your first document.'}</div>`;
+    h += `<div class="empty" style="padding-left:8px;">${filter ? 'No matches.' : 'No collections yet.'}${filter ? '' : '<br><button class="tbtn pri" id="tree-add-collection" style="margin-top:10px;">Add collection</button>'}</div>`;
   } else {
     for (const c of colls) {
       const isOn = state.selectedCol === c;
@@ -186,6 +264,7 @@ function renderTree() {
     }
   }
   $('#tree').innerHTML = h;
+  $('#tree-add-collection')?.addEventListener('click', openCollectionDocumentModal);
   $$('#tree [data-c]').forEach((n) => n.addEventListener('click', (e) => {
     if (e.target.closest('[data-del]')) return;
     // The chevron-arrow is purely an expand/collapse affordance; row
@@ -272,8 +351,8 @@ function renderOverview() {
       <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(state.filepath || '—')}</span></h1>
       <p class="ovsub"><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>JSON ≈ <strong>${fmtSize(totalSize)}</strong></span></p>
       <div class="psec">
-        <h3>Collections</h3>
-        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Open the <strong>Query Language</strong> tab and run an <code>INSERT INTO &lt;name&gt; VALUES {"id": "..."}</code> statement, or seed the built-in employee demo data.</p><div style="display:flex;gap:8px;justify-content:center;"><button class="tbtn pri" data-seed-demo>Seed employee demo</button><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div></div>` :
+        <h3>Collections <span class="actions"><button class="tbtn pri" data-add-collection>Add collection</button></span></h3>
+        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Add a collection by inserting its first JSON document, open the <strong>Query Language</strong> tab, or seed the built-in employee demo data.</p><div style="display:flex;gap:8px;justify-content:center;"><button class="tbtn pri" data-add-collection>Add collection</button><button class="tbtn" data-seed-demo style="border:1px solid var(--bd);background:var(--bg2);">Seed employee demo</button><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div></div>` :
           state.collections.map((x) => {
             const ex = getExplore(x);
             const n = state.countsByColl[x];
@@ -286,6 +365,7 @@ function renderOverview() {
       renderTabs();
       renderTab();
     });
+    $$('[data-add-collection]').forEach((b) => b.addEventListener('click', openCollectionDocumentModal));
     document.querySelector('[data-seed-demo]')?.addEventListener('click', seedDemoEmployees);
     $$('[data-root-collection]').forEach((row) => row.addEventListener('click', () => {
       selectCollection(row.dataset.rootCollection);
@@ -372,12 +452,14 @@ function renderData() {
           ${filter ? `<button class="clear" id="dt-filter-clear" title="Clear">✕</button>` : ''}
         </div>
       </div>
+      <button class="tbtn pri" id="dt-add-document" title="Insert a JSON document"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Add document</button>
       <button class="tbtn" id="dt-refresh" title="Reload from server"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg>Reload</button>
       <div class="dt-meta">${filter ? `<span><strong>${docs.length}</strong> of <strong>${allDocs.length}</strong> row${allDocs.length === 1 ? '' : 's'}</span>` : `<span><strong>${allDocs.length}</strong> row${allDocs.length === 1 ? '' : 's'}</span>`}</div>
     </div>
     <div class="tw" id="dg-host"></div>
   </div>`;
   renderDataGrid(docs, keys);
+  $('#dt-add-document').addEventListener('click', openAddDocumentModal);
   $('#dt-refresh').addEventListener('click', async () => { await refreshDocs(c); render(); });
   const filterEl = $('#dt-filter');
   let filterTimer = null;
@@ -494,14 +576,11 @@ $('#dr-edit').addEventListener('click', () => {
     const errEl = $('#dr-edit-err');
     errEl.classList.add('hidden');
     let parsed;
-    try { parsed = JSON.parse($('#dr-edit-json').value); }
-    catch (e) { errEl.classList.remove('hidden'); errEl.textContent = 'Invalid JSON: ' + e.message; return; }
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      errEl.classList.remove('hidden'); errEl.textContent = 'Top-level must be a JSON object.'; return;
+    const validated = validateDocumentInput($('#dr-edit-json').value, { existingId: d.id });
+    if (!validated.ok) {
+      errEl.classList.remove('hidden'); errEl.textContent = validated.error; return;
     }
-    if (String(parsed.id) !== String(d.id)) {
-      errEl.classList.remove('hidden'); errEl.textContent = `The "id" field is read-only — must remain ${JSON.stringify(d.id)}.`; return;
-    }
+    parsed = validated.value;
     if (JSON.stringify(parsed) === JSON.stringify(cleanDoc)) {
       toast('No changes.', 'warn'); renderDrawer(); return;
     }
@@ -578,13 +657,28 @@ function renderFields() {
 // ─────────────────────────────────────────────────────────────────
 // Schema model (modal opened from AI Chat header)
 // ─────────────────────────────────────────────────────────────────
-function openModelModal() {
-  const jsonStr = state.model ? JSON.stringify(state.model, null, 2) : '';
-  $('#mdl-json').value = jsonStr;
+function modelModalJsonForCurrentContext() {
+  if (!state.model) return '';
+  if (!state.selectedCol) return JSON.stringify(state.model, null, 2);
+  return getExplore(state.selectedCol) ? JSON.stringify(state.model, null, 2) : '';
+}
+
+function modelModalStatusForCurrentContext() {
+  if (!state.model) return 'No model loaded';
+  if (state.selectedCol && !getExplore(state.selectedCol)) {
+    return `No schema model for ${state.selectedCol}. Generate from data to create one.`;
+  }
+  return `${state.model.explores.length} explore${state.model.explores.length === 1 ? '' : 's'} · ${state.model.explores.reduce((s, e) => s + e.fields.length, 0)} fields total`;
+}
+
+function refreshModelModal() {
+  $('#mdl-json').value = modelModalJsonForCurrentContext();
   $('#mdl-err').classList.add('hidden');
-  $('#mdl-status').textContent = state.model
-    ? `${state.model.explores.length} explore${state.model.explores.length === 1 ? '' : 's'} · ${state.model.explores.reduce((s, e) => s + e.fields.length, 0)} fields total`
-    : 'No model loaded';
+  $('#mdl-status').textContent = modelModalStatusForCurrentContext();
+}
+
+function openModelModal() {
+  refreshModelModal();
   openModal('modal-model');
 }
 
@@ -609,6 +703,7 @@ async function generateModel() {
   finally {
     await loadModel();
     state.modelGenerating = false;
+    if (!$('#modal-model').classList.contains('hidden')) refreshModelModal();
     render();
   }
 }
@@ -630,7 +725,7 @@ $('#mdl-save').addEventListener('click', async () => {
 });
 $('#mdl-reload').addEventListener('click', async () => {
   await loadModel();
-  $('#mdl-json').value = state.model ? JSON.stringify(state.model, null, 2) : '';
+  refreshModelModal();
   toast('Model reloaded', 'ok');
 });
 
@@ -1237,6 +1332,8 @@ $('#cm-disconnect').addEventListener('click', async () => {
     updateConnState(); openModal('modal-connect');
   } catch (e) { toast(e.message, 'err'); }
 });
+$('#sb-add-collection').addEventListener('click', openCollectionDocumentModal);
+$('#doc-save').addEventListener('click', saveDocumentModal);
 
 // Connect modal
 $('#connect-open').addEventListener('click', async () => {
