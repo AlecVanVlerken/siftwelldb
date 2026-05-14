@@ -104,13 +104,10 @@ export function parse(query: string): ParsedQuery {
   //
   // Parsing is split in two stages:
   //   1. Pull `SELECT <fields> FROM <collection>` off the front.
-  //   2. The remainder is "head joins ... + tail clauses". Peel each JOIN
-  //      from the head until we hit one of WHERE / GROUP BY / HAVING /
-  //      ORDER BY / LIMIT / OFFSET — then the rest matches a single
-  //      tail regex.
+  //   2. Parse the remaining top-level tail clauses in canonical SQL order.
   //
-  // This shape lets us support an arbitrary number of chained JOINs
-  // without inflating the SELECT regex into 14 capture groups.
+  // The tail scanner is paren-aware so keywords inside literal lists or
+  // rejected subquery text do not get mistaken for outer clauses.
   const headMatch = normalized.match(/^select\s+(.+?)\s+from\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$/is);
   if (!headMatch) {
     throw new Error('Invalid query syntax.');
@@ -133,7 +130,7 @@ export function parse(query: string): ParsedQuery {
   let selectPart = selectPartRaw.trim();
   // `SELECT DISTINCT ...` — strip the keyword and mark the parsed query.
   // The dedup is applied after projection by the executor so it works
-  // uniformly for plain selects, joins, and grouped queries.
+  // uniformly for plain selects and grouped queries.
   let distinct = false;
   const distinctMatch = selectPart.match(/^DISTINCT\s+(.+)$/is);
   if (distinctMatch) {

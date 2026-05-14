@@ -92,6 +92,20 @@ async function loadModel() {
   }
 }
 
+async function seedDemoEmployees() {
+  try {
+    const result = await api('/api/demo/employees', { method: 'POST' });
+    toast(result.message || 'Demo data ready', result.skipped ? '' : 'ok');
+    invalidateStorageCache();
+    await loadCollections();
+    await loadModel();
+    if (state.collections.includes('employees')) state.selectedCol = 'employees';
+    render();
+  } catch (e) {
+    toast('Failed to seed demo data: ' + e.message, 'err');
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Selection
 // ─────────────────────────────────────────────────────────────────
@@ -259,7 +273,7 @@ function renderOverview() {
       <p class="ovsub"><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>JSON ≈ <strong>${fmtSize(totalSize)}</strong></span></p>
       <div class="psec">
         <h3>Collections</h3>
-        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Open the <strong>Query Language</strong> tab and run an <code>INSERT INTO &lt;name&gt; VALUES {"id": "..."}</code> statement — a collection is created on first insert.</p><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div>` :
+        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Open the <strong>Query Language</strong> tab and run an <code>INSERT INTO &lt;name&gt; VALUES {"id": "..."}</code> statement, or seed the built-in employee demo data.</p><div style="display:flex;gap:8px;justify-content:center;"><button class="tbtn pri" data-seed-demo>Seed employee demo</button><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div></div>` :
           state.collections.map((x) => {
             const ex = getExplore(x);
             const n = state.countsByColl[x];
@@ -272,6 +286,7 @@ function renderOverview() {
       renderTabs();
       renderTab();
     });
+    document.querySelector('[data-seed-demo]')?.addEventListener('click', seedDemoEmployees);
     $$('[data-root-collection]').forEach((row) => row.addEventListener('click', () => {
       selectCollection(row.dataset.rootCollection);
     }));
@@ -1248,6 +1263,19 @@ $('#connect-create').addEventListener('click', async () => {
     closeModal('modal-connect');
     updateConnState();
     await loadCollections(); await loadModel(); render();
+  } catch (e) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = e.message; }
+});
+$('#connect-demo').addEventListener('click', async () => {
+  const fp = $('#connect-filepath').value.trim();
+  if (!fp) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = 'Provide a file path.'; return; }
+  $('#connect-err').classList.add('hidden');
+  try {
+    const { message } = await api('/api/create', { method: 'POST', body: { filepath: fp } });
+    state.connected = true; state.filepath = fp;
+    closeModal('modal-connect');
+    updateConnState();
+    toast(message, 'ok');
+    await seedDemoEmployees();
   } catch (e) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = e.message; }
 });
 

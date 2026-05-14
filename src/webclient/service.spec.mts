@@ -4,6 +4,7 @@ import { DatabaseService } from './service.mjs';
 type FakeDbms = {
   cursor: (collection: string, iterableKey: string, value?: string) => AsyncIterable<string>;
   deleteDocumentById: (collection: string, id: string) => Promise<void>;
+  insertDocumentObject?: (collection: string, document: unknown) => Promise<void>;
   commit: () => Promise<void>;
 };
 
@@ -65,5 +66,51 @@ describe('DatabaseService', () => {
 
     expect(calls).toEqual(['delete:books:b1', 'commit']);
     expect(internals.recordBytesCache.has('books')).toBe(false);
+  });
+
+  it('seeds deterministic demo employees when the employees collection is empty', async () => {
+    const service = new DatabaseService();
+    const inserted: unknown[] = [];
+    const internals = setFakeDbms(service, {
+      cursor() {
+        return documents([]);
+      },
+      async deleteDocumentById() {},
+      async insertDocumentObject(collection, document) {
+        expect(collection).toBe('employees');
+        inserted.push(document);
+      },
+      async commit() {},
+    });
+    internals.recordBytesCache.set('employees', 4096);
+
+    const result = await service.seedDemoEmployees(3);
+
+    expect(result).toEqual({ collection: 'employees', inserted: 3, skipped: false });
+    expect(inserted).toHaveLength(3);
+    expect(inserted[0]).toMatchObject({ id: 'emp001', department: expect.any(String) });
+    expect(internals.recordBytesCache.has('employees')).toBe(false);
+  });
+
+  it('skips demo seeding when employees already exist', async () => {
+    const service = new DatabaseService();
+    const inserted: unknown[] = [];
+    setFakeDbms(service, {
+      cursor() {
+        return documents([JSON.stringify({ id: 'emp001' })]);
+      },
+      async deleteDocumentById() {},
+      async insertDocumentObject(_collection, document) {
+        inserted.push(document);
+      },
+      async commit() {
+        throw new Error('commit should not be called');
+      },
+    });
+
+    const result = await service.seedDemoEmployees(3);
+
+    expect(result).toEqual({ collection: 'employees', inserted: 0, skipped: true });
+    expect(inserted).toHaveLength(0);
   });
 });

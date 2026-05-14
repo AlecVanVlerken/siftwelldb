@@ -12,7 +12,7 @@
 //                        the field has no index (the planner is schema-
 //                        agnostic; the executor verifies).
 //
-// Everything else (range predicates, OR, NOT, IN, BETWEEN, JOINs, …)
+// Everything else (range predicates, OR, NOT, IN, BETWEEN, …)
 // fall back to a full scan over the `id` index with the WHERE filter
 // applied row-by-row. This is correctness-preserving; the speed-up is
 // gravy.
