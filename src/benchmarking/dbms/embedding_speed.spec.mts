@@ -107,7 +107,7 @@ describe('Embedding model speed comparison', () => {
           let encode: (text: string) => Promise<unknown>;
 
           if (candidate.kind === 'mock') {
-            encode = async (text: string) => mockEmbed(text, MOCK_HNSW_DIMENSION);
+            encode = (text: string) => Promise.resolve(mockEmbed(text, MOCK_HNSW_DIMENSION));
           } else {
             const extractor = await pipeline('feature-extraction', model, { dtype });
             encode = (text: string) => extractor(text, { pooling: 'mean', normalize: true });

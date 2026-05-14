@@ -26,10 +26,7 @@ const EF_SEARCH = envNumber('HNSW_EF_SEARCH', 128);
 const BUILD_COMMIT_INTERVAL = Math.max(1, envNumber('HNSW_COMMIT_INTERVAL', 500));
 const DELETE_COMMIT_INTERVAL = Math.max(1, envNumber('HNSW_DELETE_COMMIT_INTERVAL', 10));
 const CHECKPOINT_INTERVAL = Math.max(1, envNumber('HNSW_DELETE_CHECKPOINT_INTERVAL', 100));
-const DELETE_LIMIT = Math.max(
-  1,
-  envNumber('HNSW_DELETE_LIMIT', Math.min(envNumber('HNSW_SIFT_LIMIT', 100_000), 100_000)),
-);
+const DELETE_LIMIT = Math.max(1, envNumber('HNSW_DELETE_LIMIT', Math.min(envNumber('HNSW_SIFT_LIMIT', 5_000), 5_000)));
 const KEEP_DB_FILES = envBoolean('HNSW_KEEP_DB', false);
 const STORAGE_MODE = resolveStorageMode('real');
 const DELETE_ORDER = 'reverse';
