@@ -20,6 +20,7 @@ import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '.
 import { fetchPageCursor } from '../largedatasets/pagination.mjs';
 import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
 import { QueryLanguage, type QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
+import { compareValues } from '../dbms/querylanguage/expressions.mjs';
 import { getClipHnswConfig } from './clipHnswConfig.mjs';
 import { generateDemoEmployees, generateSemanticKnowledgeDemoDocuments } from './demoData.mjs';
 
@@ -88,6 +89,32 @@ export type QueryExecutionResult = {
  *
  * @author Alexandre-Gatien Bienfet
  */
+/**
+ * Sort comparator for the data-grid sort feature.
+ *
+ * Delegates to {@link compareValues} when the two values share a comparable
+ * type and falls back to a deterministic string-coerced comparison when the
+ * types differ. This is intentionally more lenient than the query engine's
+ * ORDER BY (which surfaces type mismatches as errors): the data grid must
+ * still produce a stable, predictable order over heterogeneous documents.
+ *
+ * Null and undefined always sort first in ascending order — the caller
+ * flips the sign when descending is requested.
+ */
+export function compareDataGridValues(a: unknown, b: unknown): number {
+  if (a === null || a === undefined) return b === null || b === undefined ? 0 : -1;
+  if (b === null || b === undefined) return 1;
+  try {
+    return compareValues(a, b);
+  } catch {
+    const as = typeof a === 'string' ? a : JSON.stringify(a);
+    const bs = typeof b === 'string' ? b : JSON.stringify(b);
+    if (as < bs) return -1;
+    if (as > bs) return 1;
+    return 0;
+  }
+}
+
 async function deleteIfExists(filePath: string): Promise<void> {
   try {
     await fs.unlink(filePath);
@@ -671,15 +698,26 @@ export class DatabaseService {
 
   // ── Documents ────────────────────────────────────────────────
 
-  /** Fetch a cursor-paginated page of documents from a collection. */
+  /**
+   * Fetch a cursor-paginated page of documents from a collection.
+   *
+   * When `sortBy` is provided, the page is returned sorted by that field
+   * using {@link compareValues} (numbers numerically, strings by code point,
+   * booleans by 0/1, nulls last). Sorting is applied in memory after a full
+   * scan over the id index; this is unrelated to the cursor parameter,
+   * which still scans the primary `id` order. The `hasMore`/`nextCursor`
+   * pair is therefore always `false`/`undefined` when sorting.
+   */
   async getDocuments(
     collection: string,
     iterableKey: string = 'id',
     cursor?: string,
     limit: number = 50,
+    sortBy?: string,
+    sortDir: 'asc' | 'desc' = 'asc',
   ): Promise<{ documents: string[]; hasMore: boolean; nextCursor?: string | number }> {
     return this.runExclusive('get-documents', async () =>
-      this.getDocumentsUnlocked(collection, iterableKey, cursor, limit),
+      this.getDocumentsUnlocked(collection, iterableKey, cursor, limit, sortBy, sortDir),
     );
   }
 
@@ -688,10 +726,50 @@ export class DatabaseService {
     iterableKey: string = 'id',
     cursor?: string,
     limit: number = 50,
+    sortBy?: string,
+    sortDir: 'asc' | 'desc' = 'asc',
   ): Promise<{ documents: string[]; hasMore: boolean; nextCursor?: string | number }> {
     this.ensureConnected();
+
+    if (sortBy) {
+      const documents = await this.scanAndSortDocuments(collection, sortBy, sortDir, limit);
+      return { documents, hasMore: false, nextCursor: undefined };
+    }
+
     const page = await fetchPageCursor(this.dbms!, { collection, iterableKey, limit, afterCursor: cursor });
     return { documents: page.data, hasMore: page.hasMore, nextCursor: page.nextCursor };
+  }
+
+  /**
+   * Full-scan the collection over the primary id index, parse each document,
+   * and return up to `limit` JSON strings sorted by `sortBy` using the same
+   * deterministic comparator the query engine uses for ORDER BY.
+   *
+   * Sorting is in-memory because secondary B+ tree indexes only cover fields
+   * known at collection-create time; a generic data-grid sort cannot assume
+   * an index exists. Limiting after the sort keeps the result well-defined
+   * even when the limit truncates equal-keyed runs.
+   */
+  private async scanAndSortDocuments(
+    collection: string,
+    sortBy: string,
+    sortDir: 'asc' | 'desc',
+    limit: number,
+  ): Promise<string[]> {
+    const direction = sortDir === 'desc' ? -1 : 1;
+    const all: { json: string; key: unknown }[] = [];
+    for await (const jsonStr of this.dbms!.cursor(collection, 'id')) {
+      let key: unknown = null;
+      try {
+        const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+        key = parsed[sortBy];
+      } catch {
+        // Treat unparseable docs as nulls — they sink to the end.
+      }
+      all.push({ json: jsonStr, key });
+    }
+    all.sort((a, b) => direction * compareDataGridValues(a.key, b.key));
+    return all.slice(0, limit).map((entry) => entry.json);
   }
 
   /** Find all articles containing a word via the persistent word index. */

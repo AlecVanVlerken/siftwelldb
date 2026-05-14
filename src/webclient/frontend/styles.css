@@ -909,6 +909,23 @@ table.dg {
   color: var(--t3);
   font-weight: 600;
 }
+.dg th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.dg th.sortable:hover {
+  background: var(--bg2);
+}
+.dg th.sortable.sorted {
+  color: var(--ac);
+}
+.dg th .sort-ind {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--ac);
+  line-height: 1;
+  min-width: 8px;
+}
 .dg td {
   padding: 5px 12px;
   border-bottom: 1px solid #e5e9f0;

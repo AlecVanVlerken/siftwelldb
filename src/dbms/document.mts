@@ -6,7 +6,7 @@ export type RawId = string | number;
 export type IndexPredicate = (field: string) => boolean;
 
 /** File extensions that denote binary image fields. */
-export const IMAGE_EXTENSIONS = ['.jpeg', '.jpg', '.png', '.webp'] as const;
+export const IMAGE_EXTENSIONS = ['.jpeg', '.jpg', '.png', '.webp', '.gif'] as const;
 export const IMAGE_MIME_SUFFIX = '_mime';
 
 export function imageMimeMetadataField(fieldName: string): string {
