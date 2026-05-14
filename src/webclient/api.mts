@@ -553,14 +553,21 @@ export class ApiRouter {
         return;
       }
 
-      // GET /api/documents/:collection?cursor=...&limit=...&iterableKey=...
+      // GET /api/documents/:collection?cursor=...&limit=...&iterableKey=...&sortBy=...&sortDir=asc|desc
       if (method === 'GET' && collectionMatch) {
         const collection = decodeURIComponent(collectionMatch[1]);
         const iterableKey = url.searchParams.get('iterableKey') ?? 'id';
         const cursor = url.searchParams.get('cursor') ?? undefined;
         const limit = readLimit(url, 100, 10000);
+        const sortBy = url.searchParams.get('sortBy') ?? undefined;
+        const sortDirRaw = url.searchParams.get('sortDir');
+        if (sortDirRaw !== null && sortDirRaw !== 'asc' && sortDirRaw !== 'desc') {
+          sendError(res, 400, '"sortDir" must be "asc" or "desc"');
+          return;
+        }
+        const sortDir: 'asc' | 'desc' = sortDirRaw === 'desc' ? 'desc' : 'asc';
 
-        const result = await this.db.getDocuments(collection, iterableKey, cursor, limit);
+        const result = await this.db.getDocuments(collection, iterableKey, cursor, limit, sortBy, sortDir);
         sendJSON(res, 200, result);
         return;
       }

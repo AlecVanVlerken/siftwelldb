@@ -161,6 +161,35 @@ describe('ApiRouter', () => {
     expect(JSON.parse(res.body)).toEqual({ error: 'Invalid "limit" parameter' });
   });
 
+  it('returns 400 when sortDir is not asc or desc', async () => {
+    const router = new ApiRouter(createConnectedDbStub());
+
+    const res = await handle(router, 'GET', '/api/documents/books?sortBy=title&sortDir=sideways');
+
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: '"sortDir" must be "asc" or "desc"' });
+  });
+
+  it('passes sortBy and sortDir through to the database service', async () => {
+    let receivedSortBy: string | undefined;
+    let receivedSortDir: string | undefined;
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        getDocuments(_collection, _iterableKey, _cursor, _limit, sortBy, sortDir) {
+          receivedSortBy = sortBy;
+          receivedSortDir = sortDir;
+          return Promise.resolve({ documents: [], hasMore: false });
+        },
+      } as Partial<DatabaseService>),
+    );
+
+    const res = await handle(router, 'GET', '/api/documents/employees?sortBy=salary&sortDir=desc');
+
+    expect(res.statusCode).toBe(200);
+    expect(receivedSortBy).toBe('salary');
+    expect(receivedSortDir).toBe('desc');
+  });
+
   it('inserts a document object into a collection', async () => {
     let inserted: unknown;
     let insertedCollection = '';
