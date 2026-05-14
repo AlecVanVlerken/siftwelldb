@@ -28,9 +28,9 @@ def fit_linear(xs, ys):
 def save_single_plot(output_path, xs, ys, title, ylabel, semilogx=True):
     fig, ax = plt.subplots(figsize=(9, 5))
     if semilogx:
-        ax.semilogx(xs, ys, marker="o", linewidth=1.8)
+        ax.semilogx(xs, ys, marker="", linewidth=1.8)
     else:
-        ax.plot(xs, ys, marker="o", linewidth=1.8)
+        ax.plot(xs, ys, marker="", linewidth=1.8)
     ax.set_xlabel("Database size N")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
@@ -106,22 +106,22 @@ def main():
 
     overview, axes = plt.subplots(2, 2, figsize=(14, 10))
 
-    axes[0, 0].semilogx(xs, insert_ms, marker="o", linewidth=1.8)
+    axes[0, 0].semilogx(xs, insert_ms, marker="", linewidth=1.8)
     axes[0, 0].set_title("Insert time vs database size")
     axes[0, 0].set_xlabel("Database size N")
     axes[0, 0].set_ylabel("Milliseconds per insert")
 
-    axes[0, 1].plot(xs, insert_ratio, marker="o", linewidth=1.8)
+    axes[0, 1].plot(xs, insert_ratio, marker="", linewidth=1.8)
     axes[0, 1].set_title("Insert time / log2(N)")
     axes[0, 1].set_xlabel("Database size N")
     axes[0, 1].set_ylabel("Milliseconds per insert / log2(N)")
 
-    axes[1, 0].semilogx(xs, search_ms, marker="o", linewidth=1.8)
+    axes[1, 0].semilogx(xs, search_ms, marker="", linewidth=1.8)
     axes[1, 0].set_title("Search time vs database size")
     axes[1, 0].set_xlabel("Database size N")
     axes[1, 0].set_ylabel("Milliseconds per query")
 
-    axes[1, 1].plot(xs, search_ratio, marker="o", linewidth=1.8)
+    axes[1, 1].plot(xs, search_ratio, marker="", linewidth=1.8)
     axes[1, 1].set_title("Search time / log2(N)")
     axes[1, 1].set_xlabel("Database size N")
     axes[1, 1].set_ylabel("Milliseconds per query / log2(N)")

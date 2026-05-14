@@ -1,0 +1,311 @@
+{
+  "explores": [
+    {
+      "collection": "employees",
+      "label": "Employees",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "label": "Id",
+          "description": "Unique identifier for each employee record.",
+          "hidden": true
+        },
+        {
+          "name": "name",
+          "type": "string",
+          "label": "Name",
+          "synonyms": [
+            "person",
+            "employee",
+            "record name",
+            "full name"
+          ],
+          "description": "The full name of the employee."
+        },
+        {
+          "name": "gender",
+          "type": "string",
+          "label": "Gender",
+          "synonyms": [
+            "sex"
+          ],
+          "tags": [
+            "values: F, M"
+          ],
+          "description": "The gender of the employee (F for female, M for male)."
+        },
+        {
+          "name": "department",
+          "type": "string",
+          "label": "Department",
+          "synonyms": [
+            "team",
+            "division",
+            "business unit"
+          ],
+          "tags": [
+            "values: Engineering, Finance, HR, Legal, Marketing, Operations, Sales, Support"
+          ],
+          "description": "The department or team to which the employee is assigned."
+        },
+        {
+          "name": "seniority",
+          "type": "string",
+          "label": "Seniority",
+          "synonyms": [
+            "level",
+            "rank",
+            "experience level",
+            "job level"
+          ],
+          "tags": [
+            "values: Junior, Lead, Mid, Principal, Senior"
+          ],
+          "description": "The experience or leadership level of the employee within the company."
+        },
+        {
+          "name": "salary",
+          "type": "number",
+          "label": "Salary",
+          "synonyms": [
+            "pay",
+            "wage",
+            "compensation",
+            "income",
+            "earnings"
+          ],
+          "description": "The annual salary of the employee in the local currency."
+        },
+        {
+          "name": "age",
+          "type": "number",
+          "label": "Age",
+          "description": "The current age of the employee in years."
+        },
+        {
+          "name": "city",
+          "type": "string",
+          "label": "City",
+          "synonyms": [
+            "location",
+            "office",
+            "place",
+            "work location"
+          ],
+          "tags": [
+            "values: Antwerpen, Brugge, Brussel, Gent, Hasselt, Leuven, Mechelen, Namur"
+          ],
+          "description": "The primary city where the employee is based or works."
+        },
+        {
+          "name": "yearsAtCompany",
+          "type": "number",
+          "label": "Years At Company",
+          "synonyms": [
+            "tenure",
+            "years employed",
+            "experience",
+            "length of service"
+          ],
+          "description": "The total number of years the employee has been working at the company."
+        }
+      ],
+      "measures": [
+        {
+          "name": "avg_salary",
+          "label": "Avg Salary",
+          "aggregation": "AVG",
+          "field": "salary"
+        },
+        {
+          "name": "sum_salary",
+          "label": "Sum Salary",
+          "aggregation": "SUM",
+          "field": "salary"
+        },
+        {
+          "name": "min_salary",
+          "label": "Min Salary",
+          "aggregation": "MIN",
+          "field": "salary"
+        },
+        {
+          "name": "max_salary",
+          "label": "Max Salary",
+          "aggregation": "MAX",
+          "field": "salary"
+        },
+        {
+          "name": "avg_age",
+          "label": "Avg Age",
+          "aggregation": "AVG",
+          "field": "age"
+        },
+        {
+          "name": "sum_age",
+          "label": "Sum Age",
+          "aggregation": "SUM",
+          "field": "age"
+        },
+        {
+          "name": "min_age",
+          "label": "Min Age",
+          "aggregation": "MIN",
+          "field": "age"
+        },
+        {
+          "name": "max_age",
+          "label": "Max Age",
+          "aggregation": "MAX",
+          "field": "age"
+        },
+        {
+          "name": "avg_yearsAtCompany",
+          "label": "Avg Years At Company",
+          "aggregation": "AVG",
+          "field": "yearsAtCompany"
+        },
+        {
+          "name": "sum_yearsAtCompany",
+          "label": "Sum Years At Company",
+          "aggregation": "SUM",
+          "field": "yearsAtCompany"
+        },
+        {
+          "name": "min_yearsAtCompany",
+          "label": "Min Years At Company",
+          "aggregation": "MIN",
+          "field": "yearsAtCompany"
+        },
+        {
+          "name": "max_yearsAtCompany",
+          "label": "Max Years At Company",
+          "aggregation": "MAX",
+          "field": "yearsAtCompany"
+        },
+        {
+          "name": "count",
+          "label": "Count",
+          "aggregation": "COUNT",
+          "field": "*"
+        },
+        {
+          "name": "headcount",
+          "label": "Headcount",
+          "aggregation": "COUNT",
+          "field": "*",
+          "description": "The total number of employees in the dataset. Synonymous with Employee Count."
+        }
+      ],
+      "description": "Comprehensive information about all employees within the organization."
+    },
+    {
+      "collection": "knowledge",
+      "label": "Knowledge",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "label": "Id",
+          "description": "Unique identifier for each knowledge article.",
+          "hidden": true
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "label": "Category",
+          "synonyms": [
+            "topic",
+            "subject",
+            "domain"
+          ],
+          "tags": [
+            "values: Biology, Databases, French History, Machine Learning, Space & Astronomy, Sports"
+          ],
+          "description": "The primary category or subject area of the knowledge article."
+        },
+        {
+          "name": "title",
+          "type": "string",
+          "label": "Title",
+          "synonyms": [
+            "article name",
+            "document title"
+          ],
+          "description": "The title or headline of the knowledge article."
+        },
+        {
+          "name": "body",
+          "type": "string",
+          "label": "Body",
+          "synonyms": [
+            "content",
+            "text",
+            "description",
+            "summary"
+          ],
+          "description": "The main content or body text of the knowledge article."
+        }
+      ],
+      "measures": [
+        {
+          "name": "count",
+          "label": "Count",
+          "aggregation": "COUNT",
+          "field": "*"
+        }
+      ],
+      "description": "A collection of knowledge articles covering various topics."
+    },
+    {
+      "collection": "photos",
+      "label": "Photos",
+      "fields": [
+        {
+          "name": "id",
+          "type": "string",
+          "label": "Id",
+          "description": "Unique identifier for each photo file.",
+          "hidden": true
+        },
+        {
+          "name": "label",
+          "type": "string",
+          "label": "Label",
+          "synonyms": [
+            "tag",
+            "caption",
+            "name",
+            "description"
+          ],
+          "description": "A descriptive label or tag assigned to the content of the photo."
+        },
+        {
+          "name": "image",
+          "type": "string",
+          "label": "Image",
+          "synonyms": [
+            "image",
+            "photo",
+            "picture",
+            "visual"
+          ],
+          "tags": [
+            "image field: base64-encoded media; use semantic image search for visual similarity instead of SQL filters"
+          ],
+          "description": "The base64-encoded binary data of the image itself, used for visual display and semantic search."
+        }
+      ],
+      "measures": [
+        {
+          "name": "count",
+          "label": "Count",
+          "aggregation": "COUNT",
+          "field": "*"
+        }
+      ],
+      "description": "A collection of visual assets, including images and pictures."
+    }
+  ]
+}

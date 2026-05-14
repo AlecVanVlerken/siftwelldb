@@ -338,6 +338,50 @@ export class SimpleDbms {
   }
 
   /**
+   * Replace the entire body of an existing document. The `id` field
+   * must match the existing document; collection and id are immutable.
+   * Any fields absent from `newDocument` are dropped.
+   *
+   * @param collection - Collection that owns the document.
+   * @param id - ID of the document to replace.
+   * @param newDocument - Full replacement payload (raw object). Must include the same `id`.
+   */
+  async replaceDocument(
+    collection: string,
+    id: string,
+    newDocument: unknown,
+    options?: { compression?: FieldCompressionOverrides },
+  ): Promise<void> {
+    const doc = parseRawDocument(collection, newDocument);
+    await this.dbmsback.replaceDocumentByID(collection, id, doc, options?.compression);
+  }
+
+  /**
+   * Returns the physical on-disk byte footprint of a single document
+   * (`chainLength × blockSize`). Throws if the document does not exist.
+   */
+  async getDocumentStoredBytes(collection: string, id: string): Promise<number> {
+    return this.dbmsback.getDocumentStoredBytes(collection, id);
+  }
+
+  /**
+   * Returns the sum of physical block bytes used by every document in
+   * a collection. Excludes B+ tree index blocks and HNSW vector blocks.
+   */
+  async getCollectionRecordBytes(collection: string): Promise<number> {
+    return this.dbmsback.getCollectionRecordBytes(collection);
+  }
+
+  /**
+   * Physical block size in bytes. Useful for surfacing accurate byte
+   * accounting in UIs (every record reservation is a whole multiple of
+   * this value).
+   */
+  getBlockSize(): number {
+    return this.dbmsback.getBlockSize();
+  }
+
+  /**
    * Creates a cursor for iterating over documents in a collection.
    * @param collection - The name of the collection to query.
    * @param iterableKey - The key to iterate over.
@@ -354,6 +398,98 @@ export class SimpleDbms {
 
         for await (const document of backendCursor) {
           yield documentToJSON(document);
+        }
+      },
+    };
+  }
+
+  /**
+   * Seek the secondary index on `field` to `value` and yield matching
+   * documents — stopping as soon as the cursor crosses past entries
+   * whose `field` differs.
+   *
+   * This is the index-aware version of a `WHERE field = X` scan:
+   *
+   *   - Field **is** indexed → B+ tree seek to the matching leaf,
+   *     yield each doc, stop when the field value changes. Best case
+   *     O(log N + matches).
+   *   - Field is **not** indexed → falls back to a full scan over the
+   *     `id` index. Caller doesn't need to discriminate.
+   *
+   * The fallback path makes this method safe to call from a planner
+   * that doesn't know which fields carry an index.
+   */
+  cursorEqual(collection: string, field: string, value: string | number | boolean): AsyncIterable<string> {
+    const dbmsback = this.dbmsback;
+    const indexed = (() => {
+      try {
+        return dbmsback.describeCollection(collection).some((f) => f.name === field);
+      } catch {
+        return false;
+      }
+    })();
+
+    if (field === 'id') {
+      // For `id` equality the existing single-key cursor is already a
+      // direct seek; we keep the same wrapper so callers can treat
+      // both paths identically (they both stop after one doc here).
+      const startValue = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+      const inner = this.dbmsback.cursor(collection, 'id', startValue);
+      return {
+        async *[Symbol.asyncIterator]() {
+          const cursor = await inner;
+          for await (const document of cursor) {
+            const json = documentToJSON(document);
+            try {
+              const parsed = JSON.parse(json) as Record<string, unknown>;
+              if (parsed[field] === value) yield json;
+              else if (field === 'id') return;
+            } catch {
+              yield json;
+            }
+          }
+        },
+      };
+    }
+
+    if (!indexed) {
+      const inner = this.dbmsback.cursor(collection, 'id', undefined);
+      return {
+        async *[Symbol.asyncIterator]() {
+          const cursor = await inner;
+          for await (const document of cursor) {
+            const json = documentToJSON(document);
+            const parsed = JSON.parse(json) as Record<string, unknown>;
+            if (parsed[field] === value) yield json;
+          }
+        },
+      };
+    }
+
+    // Indexed field: prefix-seek the secondary tree, stop on first
+    // mismatching value. `cursor()` accepts the bare value as a prefix
+    // for composite keys (see toBuffer in dbmsback.mts).
+    const startValue = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+    const backendCursorPromise = this.dbmsback.cursor(collection, field, startValue);
+    return {
+      async *[Symbol.asyncIterator]() {
+        const cursor = await backendCursorPromise;
+        for await (const document of cursor) {
+          const json = documentToJSON(document);
+          try {
+            const parsed = JSON.parse(json) as Record<string, unknown>;
+            if (parsed[field] === value) {
+              yield json;
+            } else {
+              // First key past the matching prefix — done.
+              return;
+            }
+          } catch {
+            // Best effort: if a doc can't be parsed, yield it and let
+            // the caller decide. Stops the seek there.
+            yield json;
+            return;
+          }
         }
       },
     };
@@ -399,6 +535,17 @@ export class SimpleDbms {
   }
 
   /**
+   * Text-to-image semantic search against the collection's image HNSW index.
+   *
+   * Embeds `query` with the image index text encoder (for CLIP this is the
+   * CLIP text tower) and returns image-bearing documents ordered by similarity.
+   */
+  async semanticImageTextSearch(collection: string, query: string, k: number): Promise<string[]> {
+    const documents = await this.dbmsback.semanticImageTextSearch(collection, query, k);
+    return documents.map(documentToJSON);
+  }
+
+  /**
    * Image-based semantic search (image → image).
    *
    * Embeds `queryImage` with the `imageEmbeddingFn` from {@link HnswConfig}
@@ -414,6 +561,10 @@ export class SimpleDbms {
     return documents.map(documentToJSON);
   }
 
+  getHnswIndexKeys(): string[] {
+    return Object.keys(this.dbmsback.getVacuumHnswMetaSnapshot());
+  }
+
   /**
    * Rebuild this database into fresh temporary files using full vacuum compaction.
    */
@@ -424,6 +575,21 @@ export class SimpleDbms {
   ): Promise<SimpleDbms> {
     const compactedBack = await this.dbmsback.vacuumCompactInto(tempDataFile, tempLogFile, onProgress);
     return new SimpleDbms(compactedBack);
+  }
+
+  /**
+   * Return the names of all collections in the database.
+   */
+  listCollections(): string[] {
+    return this.dbmsback.listCollections();
+  }
+
+  /**
+   * Return indexed field names and their inferred types for a collection.
+   * Useful for auto-generating a semantic model config.
+   */
+  describeCollection(collection: string): { name: string; type: 'string' | 'number' }[] {
+    return this.dbmsback.describeCollection(collection);
   }
 
   private encodedDocumentToObject(document: EncodedDocument): Record<string, unknown> {

@@ -9,7 +9,8 @@
     "test": "vitest run --dir src --exclude '**/benchmarking/**' --fileParallelism=false",
     "test-build": "vitest run --dir build",
     "coverage": "vitest run --coverage --exclude '**/benchmarking/**'",
-    "build": "tsc --build",
+    "build": "tsc --build && tsc --project tsconfig.webclient-frontend.json",
+    "build:webclient-frontend": "tsc --project tsconfig.webclient-frontend.json",
     "clean": "tsc --build --clean",
     "lint": "eslint src/",
     "lint-fix": "eslint --fix src/",
@@ -20,6 +21,8 @@
     "demo": "tsx src/demo/semanticSearch.demo.mts",
     "demo:images": "tsx src/demo/semanticImageSearch.demo.mts",
     "benchmark:compression": "tsx src/benchmarking/compression-benchmark.mts",
+    "benchmark:hnsw:delete-user": "tsx src/benchmarking/hnsw/simpledbms_delete_complexity.mts",
+    "benchmark:hnsw:delete-user:plot": "python src/benchmarking/hnsw/plot_simpledbms_delete_complexity.py",
     "benchmark:incremental": "tsx src/benchmarking/incremental-compaction/run-all-benchmarks.mts",
     "benchmark:incremental:core": "tsx src/benchmarking/incremental-compaction/core/run-core-benchmarks.mts",
     "benchmark:incremental:relocation": "tsx src/benchmarking/incremental-compaction/relocation/run-relocation-benchmarks.mts",
@@ -74,7 +77,9 @@
   "dependencies": {
     "@emnapi/core": "1.10.0",
     "@emnapi/runtime": "1.10.0",
+    "@google/genai": "2.0.1",
     "@huggingface/transformers": "3.8.1",
+    "dotenv": "17.4.2",
     "koffi": "2.15.2"
   }
 }
