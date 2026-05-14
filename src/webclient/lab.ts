@@ -61,14 +61,18 @@ let totalsHost: HTMLElement;
 let debounceHandle: number | null = null;
 const lastRecommendations = new Map<string, CompressionAlgorithm>();
 
-async function apiCall(path: string, method: string = 'GET', body?: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function apiCall(
+  path: string,
+  method: string = 'GET',
+  body?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   const response = await fetch(path, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await response.text();
-  const data = text ? JSON.parse(text) as Record<string, unknown> : {};
+  const data = text ? (JSON.parse(text) as Record<string, unknown>) : {};
   if (!response.ok) {
     throw new Error(typeof data['error'] === 'string' ? data['error'] : `HTTP ${response.status}`);
   }

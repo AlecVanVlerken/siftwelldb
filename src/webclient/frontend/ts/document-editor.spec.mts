@@ -34,7 +34,9 @@ describe('document-editor helpers', () => {
       ok: true,
       value: { id: 'a', 'photo.jpg': 'abc123' },
     });
-    expect(validateDocumentInput('{"id":"a","photo":"data:image/png;base64,abc123","_photo_mime":"image/png"}')).toEqual({
+    expect(
+      validateDocumentInput('{"id":"a","photo":"data:image/png;base64,abc123","_photo_mime":"image/png"}'),
+    ).toEqual({
       ok: true,
       value: { id: 'a', photo: 'abc123', _photo_mime: 'image/png' },
     });
@@ -47,7 +49,9 @@ describe('document-editor helpers', () => {
       document: { id: 'a', title: 'Rabbit', photo: imagePlaceholder('photo', 'abc123'), _photo_mime: 'image/jpeg' },
       imagePayloads: { photo: 'abc123' },
     });
-    expect(validateDocumentInput(JSON.stringify(compacted.document), { imagePayloads: compacted.imagePayloads })).toEqual({
+    expect(
+      validateDocumentInput(JSON.stringify(compacted.document), { imagePayloads: compacted.imagePayloads }),
+    ).toEqual({
       ok: true,
       value: { id: 'a', title: 'Rabbit', photo: 'abc123', _photo_mime: 'image/jpeg' },
     });
@@ -73,9 +77,11 @@ describe('document-editor helpers', () => {
   });
 
   it('builds a template from existing document field types', () => {
-    expect(buildDocumentTemplate('employees', [
-      { id: 'e1', name: 'Alice', salary: 100, active: true, tags: ['x'], meta: { team: 'A' } },
-    ])).toEqual({
+    expect(
+      buildDocumentTemplate('employees', [
+        { id: 'e1', name: 'Alice', salary: 100, active: true, tags: ['x'], meta: { team: 'A' } },
+      ]),
+    ).toEqual({
       id: 'employees-1',
       name: '',
       salary: 0,

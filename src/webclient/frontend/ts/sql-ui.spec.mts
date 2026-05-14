@@ -22,4 +22,3 @@ describe('SQL UI helpers', () => {
     expect(getSqlMutationKind(sql)).toBeNull();
   });
 });
-

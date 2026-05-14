@@ -8,7 +8,7 @@ import { openModal, closeModal } from './modals.js';
 import { resetDisconnectedState, state } from './state.js';
 import { getSqlMutationKind } from './sql-ui.js';
 
-'use strict';
+('use strict');
 
 function toast(msg, kind = '', title = '') {
   const div = document.createElement('div');
@@ -85,7 +85,8 @@ function renderConnectionMaintenanceMenu() {
   const noteEl = $('#cm-compact-status');
   const manualEl = $('#cm-manual-compact');
   const incrementalEl = $('#cm-incremental-compact');
-  if (sizeEl) sizeEl.textContent = `Database size: ${size ? `${fmtSize(size.totalBytes)} (${fmtSize(size.dataFileBytes)} data + ${fmtSize(size.logFileBytes)} log)` : '—'}`;
+  if (sizeEl)
+    sizeEl.textContent = `Database size: ${size ? `${fmtSize(size.totalBytes)} (${fmtSize(size.dataFileBytes)} data + ${fmtSize(size.logFileBytes)} log)` : '—'}`;
   if (autoEl) {
     autoEl.disabled = !connected || !!status?.busyOperation;
     autoEl.checked = !!inc?.enabled;
@@ -95,10 +96,15 @@ function renderConnectionMaintenanceMenu() {
   if (noteEl) {
     if (!connected) noteEl.textContent = 'Open a database to compact.';
     else if (status?.busyOperation) noteEl.textContent = `Busy: ${status.busyOperation}`;
-    else if (!inc?.enabled) noteEl.textContent = 'Auto compact is off. You can still run a one-step incremental compact or a manual full vacuum.';
+    else if (!inc?.enabled)
+      noteEl.textContent =
+        'Auto compact is off. You can still run a one-step incremental compact or a manual full vacuum.';
     else if (inc.running) noteEl.textContent = 'Auto compact is running an incremental step.';
     else if (inc.lastError) noteEl.textContent = `Incremental compaction error: ${inc.lastError}`;
-    else noteEl.textContent = inc.lastRunAt ? `Auto compact on. Last incremental step ${new Date(inc.lastRunAt).toLocaleTimeString()}.` : 'Auto compact on. Incremental steps run when useful.';
+    else
+      noteEl.textContent = inc.lastRunAt
+        ? `Auto compact on. Last incremental step ${new Date(inc.lastRunAt).toLocaleTimeString()}.`
+        : 'Auto compact on. Incremental steps run when useful.';
   }
 }
 
@@ -115,16 +121,18 @@ async function loadCollections() {
     }
     state.collections = nextCollections;
     // Pre-load counts in parallel — small ops on each collection.
-    await Promise.all(state.collections.map(async (c) => {
-      try {
-        const { documents } = await api(`/api/documents/${encodeURIComponent(c)}?limit=10000`);
-        state.countsByColl[c] = (documents || []).length;
-        state.docsByColl[c] = (documents || []).map((d) => JSON.parse(d));
-      } catch {
-        state.countsByColl[c] = '?';
-        state.docsByColl[c] = [];
-      }
-    }));
+    await Promise.all(
+      state.collections.map(async (c) => {
+        try {
+          const { documents } = await api(`/api/documents/${encodeURIComponent(c)}?limit=10000`);
+          state.countsByColl[c] = (documents || []).length;
+          state.docsByColl[c] = (documents || []).map((d) => JSON.parse(d));
+        } catch {
+          state.countsByColl[c] = '?';
+          state.docsByColl[c] = [];
+        }
+      }),
+    );
   } catch (e) {
     toast('Failed to load collections: ' + e.message, 'err');
   }
@@ -179,7 +187,8 @@ async function seedSemanticKnowledgeDemo() {
     invalidateStorageCache();
     await loadCollections();
     await loadModel();
-    if (state.collections.includes(result.collection || 'knowledge')) state.selectedCol = result.collection || 'knowledge';
+    if (state.collections.includes(result.collection || 'knowledge'))
+      state.selectedCol = result.collection || 'knowledge';
     render();
   } catch (e) {
     toast('Failed to seed semantic knowledge demo: ' + e.message, 'err');
@@ -231,13 +240,19 @@ function renderDocumentCompressionControls(collection, documentValue, meta) {
       <input id="doc-cmp-workload" type="range" min="0" max="100" value="${workload}" style="width:100%;margin-bottom:8px;">
       <p style="font-size:12px;color:var(--t3);margin:0 0 8px;">Choose per-field overrides while editing. <strong>inherit</strong> keeps the collection default; <strong>off</strong> stores this write uncompressed.</p>
       <div style="display:flex;flex-direction:column;gap:6px;">
-        ${fields.map((field) => `<div style="display:grid;grid-template-columns:1fr 145px auto;gap:8px;align-items:center;border:1px solid var(--bd);background:var(--bg2);padding:7px;border-radius:4px;">
+        ${fields
+          .map(
+            (
+              field,
+            ) => `<div style="display:grid;grid-template-columns:1fr 145px auto;gap:8px;align-items:center;border:1px solid var(--bd);background:var(--bg2);padding:7px;border-radius:4px;">
           <div><strong style="font-size:12px;">${esc(field)}</strong><div style="font-size:11px;color:var(--t3);">${isImageField(field, documentValue) ? 'image field' : detectType(documentValue[field])}${current[field] ? ` · currently ${esc(current[field])}` : ''}</div></div>
           <select data-doc-compression-field="${esc(field)}" style="height:30px;border:1px solid var(--bd);background:var(--bg);color:var(--t1);border-radius:3px;">
             ${COMPRESSION_OPTIONS.map((option) => `<option value="${option}">${option}</option>`).join('')}
           </select>
           <button class="tbtn" data-doc-cmp-recommend="${esc(field)}" data-doc-cmp-collection="${esc(collection)}" style="border:1px solid var(--bd);background:var(--bg);height:30px;">Adviseer</button>
-        </div>`).join('')}
+        </div>`,
+          )
+          .join('')}
       </div>
     </div>
   </div>`;
@@ -248,27 +263,29 @@ function wireDocumentCompressionControls() {
     state.compression.workload = Number(event.target.value) / 100;
     $('#doc-cmp-workload-label').textContent = `${event.target.value}%`;
   });
-  $$('[data-doc-cmp-recommend]').forEach((button) => button.addEventListener('click', async () => {
-    const field = button.dataset.docCmpRecommend;
-    const collection = button.dataset.docCmpCollection;
-    try {
-      button.disabled = true;
-      button.textContent = '...';
-      const { recommendation } = await api('/api/compression/recommendation', {
-        method: 'POST',
-        body: { collection, field, workload: state.compression.workload, sampleSize: 100 },
-      });
-      const select = document.querySelector(`[data-doc-compression-field="${CSS.escape(field)}"]`);
-      const recommended = recommendation?.recommended ?? recommendation?.algorithm;
-      if (select && recommended) select.value = recommended;
-      toast(`${field}: ${recommended || 'no recommendation'} recommended`, recommended ? 'ok' : 'warn');
-    } catch (e) {
-      toast('Recommendation failed: ' + e.message, 'err');
-    } finally {
-      button.disabled = false;
-      button.textContent = 'Adviseer';
-    }
-  }));
+  $$('[data-doc-cmp-recommend]').forEach((button) =>
+    button.addEventListener('click', async () => {
+      const field = button.dataset.docCmpRecommend;
+      const collection = button.dataset.docCmpCollection;
+      try {
+        button.disabled = true;
+        button.textContent = '...';
+        const { recommendation } = await api('/api/compression/recommendation', {
+          method: 'POST',
+          body: { collection, field, workload: state.compression.workload, sampleSize: 100 },
+        });
+        const select = document.querySelector(`[data-doc-compression-field="${CSS.escape(field)}"]`);
+        const recommended = recommendation?.recommended ?? recommendation?.algorithm;
+        if (select && recommended) select.value = recommended;
+        toast(`${field}: ${recommended || 'no recommendation'} recommended`, recommended ? 'ok' : 'warn');
+      } catch (e) {
+        toast('Recommendation failed: ' + e.message, 'err');
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Adviseer';
+      }
+    }),
+  );
 }
 
 function resetDocumentImageAttachment() {
@@ -339,7 +356,9 @@ function openAddDocumentModal() {
   $('#doc-modal-sub').textContent = `Insert one JSON document into ${state.selectedCol}.`;
   $('#doc-collection-wrap').classList.add('hidden');
   $('#doc-collection').value = state.selectedCol;
-  const compacted = compactDocumentImages(buildDocumentTemplate(state.selectedCol, state.docsByColl[state.selectedCol] || []));
+  const compacted = compactDocumentImages(
+    buildDocumentTemplate(state.selectedCol, state.docsByColl[state.selectedCol] || []),
+  );
   documentModalImagePayloads = compacted.imagePayloads;
   $('#doc-json').value = JSON.stringify(compacted.document, null, 2);
   resetDocumentImageAttachment();
@@ -355,7 +374,9 @@ async function saveDocumentModal() {
     return;
   }
   if (!isValidCollectionName(collection)) {
-    showDocumentModalError('Collection name must start with a letter or underscore and contain only letters, numbers, and underscores.');
+    showDocumentModalError(
+      'Collection name must start with a letter or underscore and contain only letters, numbers, and underscores.',
+    );
     return;
   }
 
@@ -441,8 +462,7 @@ function getExplore(c) {
 
 function collectionFields(c) {
   const docs = state.docsByColl[c] || [];
-  return Array.from(new Set(docs.flatMap((doc) => Object.keys(doc))))
-    .filter((key) => !key.startsWith('_'));
+  return Array.from(new Set(docs.flatMap((doc) => Object.keys(doc)))).filter((key) => !key.startsWith('_'));
 }
 
 function invalidateSemanticSearch(c) {
@@ -499,31 +519,41 @@ function renderTree() {
   }
   $('#tree').innerHTML = h;
   $('#tree-add-collection')?.addEventListener('click', openCollectionDocumentModal);
-  $$('#tree [data-c]').forEach((n) => n.addEventListener('click', (e) => {
-    if (e.target.closest('[data-del]')) return;
-    // The chevron-arrow is purely an expand/collapse affordance; row
-    // body still selects.
-    if (e.target.closest('[data-toggle]')) {
+  $$('#tree [data-c]').forEach((n) =>
+    n.addEventListener('click', (e) => {
+      if (e.target.closest('[data-del]')) return;
+      // The chevron-arrow is purely an expand/collapse affordance; row
+      // body still selects.
+      if (e.target.closest('[data-toggle]')) {
+        e.stopPropagation();
+        const c = e.target.closest('[data-toggle]').dataset.toggle;
+        state.treeExpanded[c] = !isCollExpanded(c);
+        renderTree();
+        return;
+      }
+      selectCollection(n.dataset.c);
+    }),
+  );
+  $$('#tree [data-del]').forEach((b) =>
+    b.addEventListener('click', (e) => {
       e.stopPropagation();
-      const c = e.target.closest('[data-toggle]').dataset.toggle;
-      state.treeExpanded[c] = !isCollExpanded(c);
-      renderTree();
-      return;
-    }
-    selectCollection(n.dataset.c);
-  }));
-  $$('#tree [data-del]').forEach((b) => b.addEventListener('click', (e) => {
-    e.stopPropagation();
-    confirmAction(`Drop collection “${b.dataset.del}”?`, 'This permanently removes every document in it.', async () => {
-      try {
-        await api(`/api/collections/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
-        toast(`Dropped “${b.dataset.del}”`, 'ok');
-        if (state.selectedCol === b.dataset.del) state.selectedCol = null;
-        await loadCollections();
-        render();
-      } catch (err) { toast(err.message, 'err'); }
-    });
-  }));
+      confirmAction(
+        `Drop collection “${b.dataset.del}”?`,
+        'This permanently removes every document in it.',
+        async () => {
+          try {
+            await api(`/api/collections/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
+            toast(`Dropped “${b.dataset.del}”`, 'ok');
+            if (state.selectedCol === b.dataset.del) state.selectedCol = null;
+            await loadCollections();
+            render();
+          } catch (err) {
+            toast(err.message, 'err');
+          }
+        },
+      );
+    }),
+  );
 }
 
 function renderTabs() {
@@ -539,15 +569,21 @@ function renderTabs() {
     <button class="ot ${state.tab === 'ai' ? 'on' : ''}" data-t="ai"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>AI Chat</button>
     <div class="sp"></div>
     <div class="meta">${state.selectedCol ? `Selected · <strong style="color:var(--ac)">${esc(state.selectedCol)}</strong>` : `Selected · <strong>${esc(state.filepath || '—')}</strong>`}</div>`;
-  $$('.ot[data-t]').forEach((b) => b.addEventListener('click', () => {
-    if (b.hasAttribute('disabled')) return;
-    state.tab = b.dataset.t;
-    renderTabs(); renderTab();
-  }));
+  $$('.ot[data-t]').forEach((b) =>
+    b.addEventListener('click', () => {
+      if (b.hasAttribute('disabled')) return;
+      state.tab = b.dataset.t;
+      renderTabs();
+      renderTab();
+    }),
+  );
 }
 
 function renderTab() {
-  if (!state.connected) { $('#cnt').innerHTML = ''; return; }
+  if (!state.connected) {
+    $('#cnt').innerHTML = '';
+    return;
+  }
   if (state.tab === 'overview') renderOverview();
   else if (state.tab === 'data') renderData();
   else if (state.tab === 'fields') renderFields();
@@ -555,7 +591,10 @@ function renderTab() {
   else if (state.tab === 'sql') renderSql();
   else if (state.tab === 'search') renderSemanticSearch();
   else if (state.tab === 'ai') renderAi();
-  else { state.tab = 'overview'; renderOverview(); }
+  else {
+    state.tab = 'overview';
+    renderOverview();
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -571,7 +610,9 @@ async function getCollectionStorage(c) {
     const s = await api(`/api/collections/${encodeURIComponent(c)}/storage`);
     storageCache.set(c, s);
     return s;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 function invalidateStorageCache(c) {
   if (c) storageCache.delete(c);
@@ -660,8 +701,14 @@ async function wireDatabaseTools() {
 function renderOverview() {
   const c = state.selectedCol;
   if (!c) {
-    const totalDocs = state.collections.reduce((s, x) => s + (typeof state.countsByColl[x] === 'number' ? state.countsByColl[x] : 0), 0);
-    const totalSize = state.collections.reduce((s, x) => s + (state.docsByColl[x] || []).reduce((a, d) => a + docSize(d), 0), 0);
+    const totalDocs = state.collections.reduce(
+      (s, x) => s + (typeof state.countsByColl[x] === 'number' ? state.countsByColl[x] : 0),
+      0,
+    );
+    const totalSize = state.collections.reduce(
+      (s, x) => s + (state.docsByColl[x] || []).reduce((a, d) => a + docSize(d), 0),
+      0,
+    );
     $('#cnt').innerHTML = `<div class="ov">
       <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(state.filepath || '—')}</span></h1>
       <p class="ovsub"><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>JSON ≈ <strong>${fmtSize(totalSize)}</strong></span></p>
@@ -676,12 +723,17 @@ function renderOverview() {
       </div>
       <div class="psec">
         <h3>Collections <span class="actions"><button class="tbtn pri" data-add-collection>Add collection</button></span></h3>
-        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Add a collection by inserting its first JSON document, open the <strong>Query Language</strong> tab, or seed one of the built-in demo datasets.</p><div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;"><button class="tbtn pri" data-add-collection>Add collection</button><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div></div>` :
-          state.collections.map((x) => {
-            const ex = getExplore(x);
-            const n = state.countsByColl[x];
-            return `<div class="prow" data-root-collection="${esc(x)}" style="grid-template-columns:200px 80px 1fr;cursor:pointer;"><div class="k" style="color:var(--ac);font-family:Consolas,monospace;">${esc(x)}</div><div class="v num" style="text-align:right;">${n === undefined ? '…' : n}</div><div class="v" style="font-family:Segoe UI;color:var(--t2)">${ex && ex.description ? esc(ex.description) : (ex ? esc(ex.label) : '<em style="color:var(--t4);font-style:normal;">—</em>')}</div></div>`;
-          }).join('')}</div>
+        <div>${
+          state.collections.length === 0
+            ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Add a collection by inserting its first JSON document, open the <strong>Query Language</strong> tab, or seed one of the built-in demo datasets.</p><div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;"><button class="tbtn pri" data-add-collection>Add collection</button><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div></div>`
+            : state.collections
+                .map((x) => {
+                  const ex = getExplore(x);
+                  const n = state.countsByColl[x];
+                  return `<div class="prow" data-root-collection="${esc(x)}" style="grid-template-columns:200px 80px 1fr;cursor:pointer;"><div class="k" style="color:var(--ac);font-family:Consolas,monospace;">${esc(x)}</div><div class="v num" style="text-align:right;">${n === undefined ? '…' : n}</div><div class="v" style="font-family:Segoe UI;color:var(--t2)">${ex && ex.description ? esc(ex.description) : ex ? esc(ex.label) : '<em style="color:var(--t4);font-style:normal;">—</em>'}</div></div>`;
+                })
+                .join('')
+        }</div>
       </div>
     </div>`;
     document.querySelector('[data-open-sql]')?.addEventListener('click', () => {
@@ -693,12 +745,16 @@ function renderOverview() {
     document.querySelector('[data-seed-demo]')?.addEventListener('click', seedDemoEmployees);
     document.querySelector('[data-seed-semantic-text]')?.addEventListener('click', seedSemanticKnowledgeDemo);
     document.querySelector('[data-seed-semantic-images]')?.addEventListener('click', seedSemanticImageDemo);
-    $$('[data-root-collection]').forEach((row) => row.addEventListener('click', () => {
-      selectCollection(row.dataset.rootCollection);
-    }));
+    $$('[data-root-collection]').forEach((row) =>
+      row.addEventListener('click', () => {
+        selectCollection(row.dataset.rootCollection);
+      }),
+    );
     wireDatabaseTools();
     if (!state.databaseStatus) {
-      refreshDatabaseStatus().then(() => { if (!state.selectedCol && state.tab === 'overview') renderOverview(); });
+      refreshDatabaseStatus().then(() => {
+        if (!state.selectedCol && state.tab === 'overview') renderOverview();
+      });
     }
     return;
   }
@@ -736,7 +792,8 @@ function renderOverview() {
         kpi.querySelector('.v').innerHTML = `<small style="color:var(--t3)">unavailable</small>`;
       } else {
         const f = fmtSize(stored);
-        kpi.querySelector('.v').innerHTML = f.replace(/^([\d.]+)\s*/, (_, n) => `${n} <small>`) + (f.endsWith('B') ? '</small>' : '</small>');
+        kpi.querySelector('.v').innerHTML =
+          f.replace(/^([\d.]+)\s*/, (_, n) => `${n} <small>`) + (f.endsWith('B') ? '</small>' : '</small>');
         kpi.querySelector('.d').textContent = `avg ${fmtSize(docs.length ? stored / docs.length : 0)}/doc`;
         kpi.title = s.notes.records;
       }
@@ -762,7 +819,9 @@ async function refreshDocs(c) {
     const parsed = (documents || []).map((d) => JSON.parse(d));
     state.docsByColl[c] = parsed;
     state.countsByColl[c] = parsed.length;
-  } catch (e) { toast('Reload failed: ' + e.message, 'err'); }
+  } catch (e) {
+    toast('Reload failed: ' + e.message, 'err');
+  }
 }
 
 function renderData() {
@@ -790,7 +849,10 @@ function renderData() {
   </div>`;
   renderDataGrid(docs, keys);
   $('#dt-add-document').addEventListener('click', openAddDocumentModal);
-  $('#dt-refresh').addEventListener('click', async () => { await refreshDocs(c); render(); });
+  $('#dt-refresh').addEventListener('click', async () => {
+    await refreshDocs(c);
+    render();
+  });
   const filterEl = $('#dt-filter');
   let filterTimer = null;
   filterEl.addEventListener('input', () => {
@@ -799,7 +861,10 @@ function renderData() {
       state.dataFilter = filterEl.value;
       renderData();
       const newEl = $('#dt-filter');
-      if (newEl) { newEl.focus(); newEl.setSelectionRange(filterEl.value.length, filterEl.value.length); }
+      if (newEl) {
+        newEl.focus();
+        newEl.setSelectionRange(filterEl.value.length, filterEl.value.length);
+      }
     }, 150);
   });
   $('#dt-filter-clear')?.addEventListener('click', () => {
@@ -813,33 +878,44 @@ function renderDataGrid(docs, keys) {
     $('#dg-host').innerHTML = `<div class="dg"><div class="loader">No documents.</div></div>`;
     return;
   }
-  const unionKeys = Array.from(new Set(docs.flatMap((d) => Object.keys(d)))).filter((k) => !k.startsWith('_') && k !== 'body');
+  const unionKeys = Array.from(new Set(docs.flatMap((d) => Object.keys(d)))).filter(
+    (k) => !k.startsWith('_') && k !== 'body',
+  );
   const sample = (k) => {
     for (const d of docs) if (d[k] != null) return d[k];
     return null;
   };
   // Type badges: dim grey lowercase monospace, no badge for unknown/null-only columns.
-  const typeBadge = (v) => v == null ? '' : typeof v === 'number' ? 'n' : typeof v === 'boolean' ? 'b' : typeof v === 'string' ? 's' : '';
+  const typeBadge = (v) =>
+    v == null ? '' : typeof v === 'number' ? 'n' : typeof v === 'boolean' ? 'b' : typeof v === 'string' ? 's' : '';
   $('#dg-host').innerHTML = `<table class="dg">
-    <thead><tr><th class="rn">#</th>${unionKeys.map((k) => {
-      const tb = k === 'id' ? 'pk' : typeBadge(sample(k));
-      return `<th><div class="ti">${esc(k)}${tb ? `<span class="tb ${tb === 'pk' ? 'pk' : ''}">${tb}</span>` : ''}</div></th>`;
-    }).join('')}</tr></thead>
-    <tbody>${docs.map((d, i) => {
-      const isOn = state.selectedDoc && d.id === state.selectedDoc.id;
-      return `<tr data-i="${i}" data-id="${esc(d.id)}" ${isOn ? 'class="on"' : ''}><td class="rn">${i + 1}</td>${unionKeys.map((k) => {
-        const v = d[k];
-        if (v === undefined || v === null) return `<td class="cnu">[NULL]</td>`;
-        if (typeof v === 'number') return `<td class="cn">${fmtNum(v)}</td>`;
-        if (typeof v === 'boolean') return `<td class="cb ${v ? 't' : 'f'}">${v}</td>`;
-        if (k === 'id') return `<td class="ck">${esc(v)}</td>`;
-        const imageUrl = imageDataUrlFromValue(k, v, d);
-        if (imageUrl) return `<td class="ci"><img src="${esc(imageUrl)}" alt=""></td>`;
-        return `<td class="cs">${esc(String(v))}</td>`;
-      }).join('')}</tr>`;
-    }).join('')}</tbody>
+    <thead><tr><th class="rn">#</th>${unionKeys
+      .map((k) => {
+        const tb = k === 'id' ? 'pk' : typeBadge(sample(k));
+        return `<th><div class="ti">${esc(k)}${tb ? `<span class="tb ${tb === 'pk' ? 'pk' : ''}">${tb}</span>` : ''}</div></th>`;
+      })
+      .join('')}</tr></thead>
+    <tbody>${docs
+      .map((d, i) => {
+        const isOn = state.selectedDoc && d.id === state.selectedDoc.id;
+        return `<tr data-i="${i}" data-id="${esc(d.id)}" ${isOn ? 'class="on"' : ''}><td class="rn">${i + 1}</td>${unionKeys
+          .map((k) => {
+            const v = d[k];
+            if (v === undefined || v === null) return `<td class="cnu">[NULL]</td>`;
+            if (typeof v === 'number') return `<td class="cn">${fmtNum(v)}</td>`;
+            if (typeof v === 'boolean') return `<td class="cb ${v ? 't' : 'f'}">${v}</td>`;
+            if (k === 'id') return `<td class="ck">${esc(v)}</td>`;
+            const imageUrl = imageDataUrlFromValue(k, v, d);
+            if (imageUrl) return `<td class="ci"><img src="${esc(imageUrl)}" alt=""></td>`;
+            return `<td class="cs">${esc(String(v))}</td>`;
+          })
+          .join('')}</tr>`;
+      })
+      .join('')}</tbody>
   </table>`;
-  $$('.dg tbody tr').forEach((tr) => tr.addEventListener('click', () => openDrawer(docs[parseInt(tr.dataset.i, 10)], parseInt(tr.dataset.i, 10))));
+  $$('.dg tbody tr').forEach((tr) =>
+    tr.addEventListener('click', () => openDrawer(docs[parseInt(tr.dataset.i, 10)], parseInt(tr.dataset.i, 10))),
+  );
 }
 
 function openDrawer(doc, idx) {
@@ -850,22 +926,34 @@ function openDrawer(doc, idx) {
   $$('.dg tbody tr').forEach((tr) => tr.classList.remove('on'));
   $$(`.dg tbody tr[data-i="${idx}"]`).forEach((tr) => tr.classList.add('on'));
 }
-function closeDrawer() { $('#drawer').classList.remove('on'); state.selectedDoc = null; }
+function closeDrawer() {
+  $('#drawer').classList.remove('on');
+  state.selectedDoc = null;
+}
 $('#dr-close').addEventListener('click', closeDrawer);
 
 async function renderDrawer() {
-  const d = state.selectedDoc; if (!d) return;
+  const d = state.selectedDoc;
+  if (!d) return;
   $('#dr-title').textContent = String(d.id ?? '(no id)');
   const c = state.selectedCol;
   let meta = null;
-  try { meta = await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/metadata`); }
-  catch { meta = null; }
+  try {
+    meta = await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/metadata`);
+  } catch {
+    meta = null;
+  }
   const keys = Object.keys(d).filter((k) => !k.startsWith('_'));
-  const compsText = meta && meta.compressions && Object.keys(meta.compressions).length > 0
-    ? Object.entries(meta.compressions).map(([k, v]) => `${esc(k)}: <em style="font-style:normal;color:var(--ac)">${esc(v)}</em>`).join(', ')
-    : '<em style="color:var(--t3);">none</em>';
+  const compsText =
+    meta && meta.compressions && Object.keys(meta.compressions).length > 0
+      ? Object.entries(meta.compressions)
+          .map(([k, v]) => `${esc(k)}: <em style="font-style:normal;color:var(--ac)">${esc(v)}</em>`)
+          .join(', ')
+      : '<em style="color:var(--t3);">none</em>';
   const jsonSizeTip = 'Document size as JSON for client-side display. Computed from the in-memory object.';
-  const storedSizeTip = meta ? `Physical disk reservation walked from the document's block chain: chainLength × blockSize (${meta.blockSize} bytes). Excludes shared index entries.` : '';
+  const storedSizeTip = meta
+    ? `Physical disk reservation walked from the document's block chain: chainLength × blockSize (${meta.blockSize} bytes). Excludes shared index entries.`
+    : '';
   $('#dr-body').innerHTML = `
     <div class="dr-stats">
       <div class="dr-stat" title="${esc(jsonSizeTip)}"><div class="l">JSON size</div><div class="v">${fmtSize(docSize(d))}</div></div>
@@ -873,22 +961,38 @@ async function renderDrawer() {
     </div>
     <div class="prow" style="grid-template-columns:130px 1fr;padding:7px 0;border:none;font-size:12px"><div class="k">Compression</div><div class="v" style="font-family:Consolas;color:var(--t2)">${compsText}</div></div>
     <div style="margin-top:14px;font-size:10.5px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px;">Fields</div>
-    ${keys.map((k) => {
-      const v = d[k];
-      let cls = 'cs', html;
-      if (v == null) { cls = 'nu'; html = '[NULL]'; }
-      else if (typeof v === 'number') { cls = 'num'; html = fmtNum(v); }
-      else if (typeof v === 'boolean') { cls = 'bool'; html = String(v); }
-      else if (k === 'id') { cls = 'id'; html = esc(v); }
-      else if (imageDataUrlFromValue(k, v, d)) { cls = 'img'; html = `<img src="${esc(imageDataUrlFromValue(k, v, d))}" alt="">`; }
-      else { html = `<span data-edit="${esc(k)}">${esc(String(v))}</span>`; }
-      return `<div class="fld-row" data-k="${esc(k)}"><div class="k">${esc(k)}</div><div class="v ${cls}">${html}</div></div>`;
-    }).join('')}
+    ${keys
+      .map((k) => {
+        const v = d[k];
+        let cls = 'cs',
+          html;
+        if (v == null) {
+          cls = 'nu';
+          html = '[NULL]';
+        } else if (typeof v === 'number') {
+          cls = 'num';
+          html = fmtNum(v);
+        } else if (typeof v === 'boolean') {
+          cls = 'bool';
+          html = String(v);
+        } else if (k === 'id') {
+          cls = 'id';
+          html = esc(v);
+        } else if (imageDataUrlFromValue(k, v, d)) {
+          cls = 'img';
+          html = `<img src="${esc(imageDataUrlFromValue(k, v, d))}" alt="">`;
+        } else {
+          html = `<span data-edit="${esc(k)}">${esc(String(v))}</span>`;
+        }
+        return `<div class="fld-row" data-k="${esc(k)}"><div class="k">${esc(k)}</div><div class="v ${cls}">${html}</div></div>`;
+      })
+      .join('')}
   `;
 }
 
 $('#dr-edit').addEventListener('click', () => {
-  const d = state.selectedDoc; if (!d) return;
+  const d = state.selectedDoc;
+  if (!d) return;
   const c = state.selectedCol;
   const cleanDoc = Object.fromEntries(Object.entries(d).filter(([k]) => !k.startsWith('_')));
   const compactedDoc = compactDocumentImages(cleanDoc);
@@ -921,30 +1025,39 @@ $('#dr-edit').addEventListener('click', () => {
   `;
   $('#edit-cancel').addEventListener('click', () => renderDrawer());
   wireDocumentCompressionControls();
-  $('#dr-image-file').addEventListener('change', () => attachImageToDocumentJson({
-    textarea: $('#dr-edit-json'),
-    fieldInput: $('#dr-image-field'),
-    fileInput: $('#dr-image-file'),
-    preview: $('#dr-image-preview'),
-    imagePayloads: drawerEditImagePayloads,
-    error: (message) => {
-      const errEl = $('#dr-edit-err');
-      errEl.classList.remove('hidden');
-      errEl.textContent = message;
-    },
-  }));
+  $('#dr-image-file').addEventListener('change', () =>
+    attachImageToDocumentJson({
+      textarea: $('#dr-edit-json'),
+      fieldInput: $('#dr-image-field'),
+      fileInput: $('#dr-image-file'),
+      preview: $('#dr-image-preview'),
+      imagePayloads: drawerEditImagePayloads,
+      error: (message) => {
+        const errEl = $('#dr-edit-err');
+        errEl.classList.remove('hidden');
+        errEl.textContent = message;
+      },
+    }),
+  );
   $('#edit-save').addEventListener('click', async () => {
     const errEl = $('#dr-edit-err');
     errEl.classList.add('hidden');
     let parsed;
-    const validated = validateDocumentInput($('#dr-edit-json').value, { existingId: d.id, imagePayloads: drawerEditImagePayloads });
+    const validated = validateDocumentInput($('#dr-edit-json').value, {
+      existingId: d.id,
+      imagePayloads: drawerEditImagePayloads,
+    });
     if (!validated.ok) {
-      errEl.classList.remove('hidden'); errEl.textContent = validated.error; return;
+      errEl.classList.remove('hidden');
+      errEl.textContent = validated.error;
+      return;
     }
     parsed = validated.value;
     const compression = readCompressionOverrides($('#dr-body'));
     if (JSON.stringify(parsed) === JSON.stringify(cleanDoc) && !compression) {
-      toast('No changes.', 'warn'); renderDrawer(); return;
+      toast('No changes.', 'warn');
+      renderDrawer();
+      return;
     }
     try {
       await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/edit`, {
@@ -956,7 +1069,10 @@ $('#dr-edit').addEventListener('click', () => {
       await refreshDocs(c);
       invalidateSemanticSearch(c);
       const refreshed = (state.docsByColl[c] || []).find((x) => String(x.id) === String(d.id));
-      if (refreshed) { state.selectedDoc = refreshed; renderDrawer(); }
+      if (refreshed) {
+        state.selectedDoc = refreshed;
+        renderDrawer();
+      }
       renderTree();
       if (state.tab === 'data') renderData();
       else if (state.tab === 'search') renderSemanticSearch();
@@ -968,17 +1084,22 @@ $('#dr-edit').addEventListener('click', () => {
 });
 
 $('#dr-del').addEventListener('click', () => {
-  const d = state.selectedDoc; if (!d) return;
+  const d = state.selectedDoc;
+  if (!d) return;
   confirmAction(`Delete document “${d.id}”?`, 'This cannot be undone.', async () => {
     try {
-      await api(`/api/documents/${encodeURIComponent(state.selectedCol)}/${encodeURIComponent(String(d.id))}`, { method: 'DELETE' });
+      await api(`/api/documents/${encodeURIComponent(state.selectedCol)}/${encodeURIComponent(String(d.id))}`, {
+        method: 'DELETE',
+      });
       toast('Document deleted', 'ok');
       closeDrawer();
       invalidateStorageCache(state.selectedCol);
       await refreshDocs(state.selectedCol);
       invalidateSemanticSearch(state.selectedCol);
       render();
-    } catch (e) { toast('Delete failed: ' + e.message, 'err'); }
+    } catch (e) {
+      toast('Delete failed: ' + e.message, 'err');
+    }
   });
 });
 
@@ -989,22 +1110,32 @@ function renderFields() {
   const c = state.selectedCol;
   const docs = state.docsByColl[c] || [];
   if (docs.length === 0) {
-    $('#cnt').innerHTML = `<div class="flds"><div class="empty-state"><h4>No documents to introspect</h4><p>Insert a document to see what fields exist and their types.</p></div></div>`;
+    $('#cnt').innerHTML =
+      `<div class="flds"><div class="empty-state"><h4>No documents to introspect</h4><p>Insert a document to see what fields exist and their types.</p></div></div>`;
     return;
   }
   const explore = getExplore(c);
   const explored = new Map((explore?.fields || []).map((f) => [f.name, f]));
   const fieldKeys = Array.from(new Set(docs.flatMap((d) => Object.keys(d)))).filter((k) => !k.startsWith('_'));
-  const rows = fieldKeys.map((k) => {
-    const presentCount = docs.reduce((n, d) => n + (d[k] != null ? 1 : 0), 0);
-    const sample = docs.find((d) => d[k] != null)?.[k];
-    const t = detectType(sample);
-    const m = explored.get(k);
-    const sampleStr = sample == null ? '—' : typeof sample === 'string' ? `"${sample.slice(0, 60)}"` : typeof sample === 'object' ? JSON.stringify(sample).slice(0, 60) : String(sample);
-    const covLabel = presentCount === docs.length ? `${docs.length} / ${docs.length}` : `${presentCount} / ${docs.length}`;
-    const covCls = presentCount === docs.length ? '' : 'partial';
-    const hasDesc = !!(m && m.description);
-    return `<div class="fr ${hasDesc ? 'has-desc' : ''}">
+  const rows = fieldKeys
+    .map((k) => {
+      const presentCount = docs.reduce((n, d) => n + (d[k] != null ? 1 : 0), 0);
+      const sample = docs.find((d) => d[k] != null)?.[k];
+      const t = detectType(sample);
+      const m = explored.get(k);
+      const sampleStr =
+        sample == null
+          ? '—'
+          : typeof sample === 'string'
+            ? `"${sample.slice(0, 60)}"`
+            : typeof sample === 'object'
+              ? JSON.stringify(sample).slice(0, 60)
+              : String(sample);
+      const covLabel =
+        presentCount === docs.length ? `${docs.length} / ${docs.length}` : `${presentCount} / ${docs.length}`;
+      const covCls = presentCount === docs.length ? '' : 'partial';
+      const hasDesc = !!(m && m.description);
+      return `<div class="fr ${hasDesc ? 'has-desc' : ''}">
       <div class="r">
         <div class="nm">${esc(k)}${k === 'id' ? '<span class="pk">PK</span>' : ''}</div>
         <div class="ty">${t}</div>
@@ -1013,7 +1144,8 @@ function renderFields() {
       </div>
       ${hasDesc ? `<div class="desc">${esc(m.description)}</div>` : ''}
     </div>`;
-  }).join('');
+    })
+    .join('');
   $('#cnt').innerHTML = `<div class="flds">
     <h2>Fields<span class="ct">${fieldKeys.length} field${fieldKeys.length === 1 ? '' : 's'} · ${docs.length} document${docs.length === 1 ? '' : 's'}</span></h2>
     <div class="flds-table">
@@ -1082,7 +1214,13 @@ function renderRecommendationCard(field, recommendation) {
     <div class="prow" style="grid-template-columns:150px 1fr;"><div class="k">Recommended</div><div class="v"><strong style="color:var(--ac)">${esc(recommendation.recommended)}</strong> <span style="font-family:Segoe UI;color:var(--t3);">${esc(recommendation.summary)}</span></div></div>
     <div class="prow" style="grid-template-columns:150px 1fr;"><div class="k">Detected profile</div><div class="v">${esc(recommendation.activeProfile?.displayName || recommendation.detectedProfile?.displayName || '—')}</div></div>
     <table class="dg" style="margin-top:8px;"><thead><tr><th>Algorithm</th><th>Score</th><th>Blocks saved</th><th>Bytes saved</th><th>Write ms</th></tr></thead>
-      <tbody>${top.slice(0, 6).map((r) => `<tr><td class="ck">${esc(r.algorithm)}</td><td class="cn">${Number(r.score || 0).toFixed(2)}</td><td class="cn">${fmtNum(r.storageEstimate?.blocksSaved ?? r.blocksSaved ?? 0)}</td><td class="cn">${fmtSize((r.storageEstimate?.rawSerializedBytes ?? 0) - (r.storageEstimate?.compressedSerializedBytes ?? 0) || r.bytesSaved || 0)}</td><td class="cn">${Number(r.storageEstimate?.writeCost ?? r.writeCostMs ?? 0).toFixed(1)}</td></tr>`).join('')}</tbody>
+      <tbody>${top
+        .slice(0, 6)
+        .map(
+          (r) =>
+            `<tr><td class="ck">${esc(r.algorithm)}</td><td class="cn">${Number(r.score || 0).toFixed(2)}</td><td class="cn">${fmtNum(r.storageEstimate?.blocksSaved ?? r.blocksSaved ?? 0)}</td><td class="cn">${fmtSize((r.storageEstimate?.rawSerializedBytes ?? 0) - (r.storageEstimate?.compressedSerializedBytes ?? 0) || r.bytesSaved || 0)}</td><td class="cn">${Number(r.storageEstimate?.writeCost ?? r.writeCostMs ?? 0).toFixed(1)}</td></tr>`,
+        )
+        .join('')}</tbody>
     </table>
   </div>`;
 }
@@ -1090,7 +1228,8 @@ function renderRecommendationCard(field, recommendation) {
 function renderCompression() {
   const c = state.selectedCol;
   if (!c) {
-    $('#cnt').innerHTML = `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>Compression recommendations are calculated from collection fields.</p></div></div>`;
+    $('#cnt').innerHTML =
+      `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>Compression recommendations are calculated from collection fields.</p></div></div>`;
     return;
   }
   const docs = state.docsByColl[c] || [];
@@ -1110,7 +1249,12 @@ function renderCompression() {
     </div>
     <div class="psec">
       <h3>Field recommendations <span class="actions"><button class="tbtn" id="cmp-refresh-defaults" style="border:1px solid var(--bd);background:var(--bg2);">Reload defaults</button></span></h3>
-      <div>${fields.length === 0 ? `<div class="empty-state"><h4>No fields</h4><p>Add documents with non-id fields to get recommendations.</p></div>` : fields.map((field) => `
+      <div>${
+        fields.length === 0
+          ? `<div class="empty-state"><h4>No fields</h4><p>Add documents with non-id fields to get recommendations.</p></div>`
+          : fields
+              .map(
+                (field) => `
         <div style="padding:12px 16px;border-bottom:1px solid var(--bg3);">
           <div style="display:flex;align-items:center;gap:10px;">
             <strong class="mono" style="color:var(--ac);">${esc(field)}</strong>
@@ -1118,7 +1262,10 @@ function renderCompression() {
             <button class="tbtn pri" data-cmp-field="${esc(field)}" style="margin-left:auto;">Recommend</button>
           </div>
           ${renderRecommendationCard(field, state.compression.recommendations[field])}
-        </div>`).join('')}</div>
+        </div>`,
+              )
+              .join('')
+      }</div>
     </div>
   </div>`;
   $('#cmp-back')?.addEventListener('click', selectRoot);
@@ -1127,10 +1274,17 @@ function renderCompression() {
     $('#cmp-workload-label').textContent = `${e.target.value}%`;
   });
   $('#cmp-apply-all')?.addEventListener('click', applyCompressionAdvice);
-  $('#cmp-refresh-defaults')?.addEventListener('click', async () => { await loadCompressionDefaults(c); renderCompression(); });
-  $$('[data-cmp-field]').forEach((button) => button.addEventListener('click', () => recommendFieldCompression(button.dataset.cmpField)));
+  $('#cmp-refresh-defaults')?.addEventListener('click', async () => {
+    await loadCompressionDefaults(c);
+    renderCompression();
+  });
+  $$('[data-cmp-field]').forEach((button) =>
+    button.addEventListener('click', () => recommendFieldCompression(button.dataset.cmpField)),
+  );
   if (compressionDefaultsLoadedFor !== c) {
-    loadCompressionDefaults(c).then(() => { if (state.tab === 'compression' && state.selectedCol === c) renderCompression(); });
+    loadCompressionDefaults(c).then(() => {
+      if (state.tab === 'compression' && state.selectedCol === c) renderCompression();
+    });
   }
 }
 
@@ -1141,17 +1295,20 @@ function renderLabPolicyChart(report) {
   if (!report?.policies) return '';
   const policies = Object.entries(report.policies);
   const max = Math.max(...policies.map(([, p]) => p.totalBytes || 0), 1);
-  return `<div style="display:grid;gap:8px;">${policies.map(([key, policy]) => {
-    const pct = Math.max(4, Math.round(((policy.totalBytes || 0) / max) * 100));
-    return `<div>
+  return `<div style="display:grid;gap:8px;">${policies
+    .map(([key, policy]) => {
+      const pct = Math.max(4, Math.round(((policy.totalBytes || 0) / max) * 100));
+      return `<div>
       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;"><strong>${esc(key)}</strong><span>${fmtSize(policy.totalBytes)} · ${fmtNum(policy.totalBlocks)} blocks · saved ${fmtNum(policy.blocksSavedVsRaw)}</span></div>
       <div style="height:10px;background:var(--bg3);border-radius:99px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${key === 'advisor-mix' ? 'var(--gr)' : 'var(--ac)'};"></div></div>
     </div>`;
-  }).join('')}</div>`;
+    })
+    .join('')}</div>`;
 }
 
 async function seedCompressionLab() {
-  state.lab.busy = true; renderLab();
+  state.lab.busy = true;
+  renderLab();
   try {
     const result = await api('/api/compression/lab/seed-wiki', { method: 'POST', body: { count: 100 } });
     toast(`Seeded ${result.inserted} wiki_lab documents`, 'ok');
@@ -1215,7 +1372,8 @@ function renderLab() {
   const report = state.lab.report;
   const collection = state.selectedCol;
   if (!collection) {
-    $('#cnt').innerHTML = `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>The Compression Lab is collection-scoped. Pick a collection in the object explorer, then open the Lab tab.</p></div></div>`;
+    $('#cnt').innerHTML =
+      `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>The Compression Lab is collection-scoped. Pick a collection in the object explorer, then open the Lab tab.</p></div></div>`;
     return;
   }
   if (state.lab.collection !== collection) {
@@ -1237,18 +1395,26 @@ function renderLab() {
         ${state.lab.error ? `<div class="err">${esc(state.lab.error)}</div>` : ''}
       </div>
     </div>
-    ${report ? `<div class="kpis">
+    ${
+      report
+        ? `<div class="kpis">
       <div class="kpi"><div class="l">Baseline</div><div class="v">${fmtSize(report.baseline?.totalBytes)}</div><div class="d">${fmtNum(report.baseline?.totalBlocks || 0)} blocks</div></div>
       <div class="kpi"><div class="l">Advisor</div><div class="v">${fmtSize(report.policies?.['advisor-mix']?.totalBytes)}</div><div class="d">${fmtNum(report.policies?.['advisor-mix']?.blocksSavedVsRaw || 0)} blocks saved</div></div>
       <div class="kpi"><div class="l">Fields</div><div class="v">${report.perField?.length || 0}</div><div class="d">recommended defaults</div></div>
     </div>
     <div class="psec"><h3>Policy comparison</h3><div class="pbody">${renderLabPolicyChart(report)}</div></div>
-    <div class="psec"><h3>Per-field advice</h3><div>${(report.perField || []).map((field) => `
+    <div class="psec"><h3>Per-field advice</h3><div>${(report.perField || [])
+      .map(
+        (field) => `
       <div class="prow" style="grid-template-columns:170px 110px 1fr;">
         <div class="k mono">${esc(field.field)}</div>
         <div class="v"><strong style="color:var(--ac)">${esc(field.recommended)}</strong></div>
         <div class="v" style="font-family:Segoe UI;color:var(--t2);">${esc(field.rationale || field.summary || '')}</div>
-      </div>`).join('')}</div></div>` : `<div class="empty-state"><h4>No lab report yet</h4><p>Run a report for <strong>${esc(collection)}</strong>. If every recommendation is <code>none</code>, the sampled fields are probably small scalar values where compression would not save blocks.</p></div>`}
+      </div>`,
+      )
+      .join('')}</div></div>`
+        : `<div class="empty-state"><h4>No lab report yet</h4><p>Run a report for <strong>${esc(collection)}</strong>. If every recommendation is <code>none</code>, the sampled fields are probably small scalar values where compression would not save blocks.</p></div>`
+    }
   </div>`;
   $('#lab-back')?.addEventListener('click', selectRoot);
   $('#lab-seed')?.addEventListener('click', seedCompressionLab);
@@ -1295,7 +1461,11 @@ async function generateModel() {
   if (state.geminiKeySet) {
     toast('Generating schema model… this may take ~20s', '', 'Generating');
   } else {
-    toast('No Gemini key — generating a basic introspected model (no descriptions/synonyms). Set a key later to enrich it.', 'warn', 'Generating');
+    toast(
+      'No Gemini key — generating a basic introspected model (no descriptions/synonyms). Set a key later to enrich it.',
+      'warn',
+      'Generating',
+    );
   }
   try {
     const { model, enriched } = await api('/api/conversational/model/generate', { method: 'POST' });
@@ -1306,8 +1476,7 @@ async function generateModel() {
   } catch (e) {
     await loadModel();
     toast('Generation failed: ' + e.message, 'err');
-  }
-  finally {
+  } finally {
     await loadModel();
     state.modelGenerating = false;
     if (!$('#modal-model').classList.contains('hidden')) refreshModelModal();
@@ -1319,8 +1488,13 @@ async function generateModel() {
 $('#mdl-gen').addEventListener('click', generateModel);
 $('#mdl-save').addEventListener('click', async () => {
   const raw = $('#mdl-json').value;
-  try { JSON.parse(raw); }
-  catch (e) { $('#mdl-err').classList.remove('hidden'); $('#mdl-err').textContent = 'Invalid JSON: ' + e.message; return; }
+  try {
+    JSON.parse(raw);
+  } catch (e) {
+    $('#mdl-err').classList.remove('hidden');
+    $('#mdl-err').textContent = 'Invalid JSON: ' + e.message;
+    return;
+  }
   $('#mdl-err').classList.add('hidden');
   try {
     const { model } = await api('/api/conversational/model', { method: 'PUT', body: { model: raw } });
@@ -1328,7 +1502,10 @@ $('#mdl-save').addEventListener('click', async () => {
     toast('Model saved', 'ok');
     closeModal('modal-model');
     render();
-  } catch (e) { $('#mdl-err').classList.remove('hidden'); $('#mdl-err').textContent = e.message; }
+  } catch (e) {
+    $('#mdl-err').classList.remove('hidden');
+    $('#mdl-err').textContent = e.message;
+  }
 });
 $('#mdl-reload').addEventListener('click', async () => {
   await loadModel();
@@ -1350,39 +1527,68 @@ function renderSql() {
       <button class="tbtn" id="sql-example">Example: SELECT</button>
       ${state.selectedCol ? `<button class="tbtn" id="sql-prefill">SELECT * FROM ${esc(state.selectedCol)}</button>` : ''}
       <div class="meta">
-        ${last ? last.ok
-          ? `<span><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'}</span><span class="ok-pill">${esc(last.kind)} · ${last.elapsedMs} ms</span>`
-          : `<span class="err-pill">error</span>`
-        : `<span style="color:var(--t4);font-style:italic;">no query run yet</span>`}
+        ${
+          last
+            ? last.ok
+              ? `<span><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'}</span><span class="ok-pill">${esc(last.kind)} · ${last.elapsedMs} ms</span>`
+              : `<span class="err-pill">error</span>`
+            : `<span style="color:var(--t4);font-style:italic;">no query run yet</span>`
+        }
       </div>
     </div>
     <div class="sql-editor" id="sql-edit" contenteditable="true" spellcheck="false">${pendingSql ? esc(pendingSql) : ''}</div>
     <div class="sql-results" id="sql-out">${renderSqlOut(last)}${renderSqlHistory()}</div>
   </div>`;
   const editor = $('#sql-edit');
-  editor.addEventListener('input', () => { pendingSql = editor.innerText; });
+  editor.addEventListener('input', () => {
+    pendingSql = editor.innerText;
+  });
   editor.addEventListener('keydown', (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); runSql(); }
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      runSql();
+    }
   });
   $('#sql-run').addEventListener('click', runSql);
-  $('#sql-clear').addEventListener('click', () => { pendingSql = ''; editor.innerText = ''; });
-  $('#sql-example').addEventListener('click', () => { const ex = state.selectedCol ? `SELECT *\n  FROM ${state.selectedCol}\n LIMIT 25;` : 'SELECT *\n  FROM <collection>\n LIMIT 25;'; pendingSql = ex; editor.innerText = pendingSql; });
+  $('#sql-clear').addEventListener('click', () => {
+    pendingSql = '';
+    editor.innerText = '';
+  });
+  $('#sql-example').addEventListener('click', () => {
+    const ex = state.selectedCol
+      ? `SELECT *\n  FROM ${state.selectedCol}\n LIMIT 25;`
+      : 'SELECT *\n  FROM <collection>\n LIMIT 25;';
+    pendingSql = ex;
+    editor.innerText = pendingSql;
+  });
   if (state.selectedCol) {
-    $('#sql-prefill').addEventListener('click', () => { pendingSql = `SELECT * FROM ${state.selectedCol} LIMIT 100;`; editor.innerText = pendingSql; });
+    $('#sql-prefill').addEventListener('click', () => {
+      pendingSql = `SELECT * FROM ${state.selectedCol} LIMIT 100;`;
+      editor.innerText = pendingSql;
+    });
   }
   if (pendingSql) editor.innerText = pendingSql;
-  $$('#sql-out .item').forEach((el) => el.addEventListener('click', () => {
-    pendingSql = el.dataset.sql; editor.innerText = pendingSql;
-  }));
+  $$('#sql-out .item').forEach((el) =>
+    el.addEventListener('click', () => {
+      pendingSql = el.dataset.sql;
+      editor.innerText = pendingSql;
+    }),
+  );
 }
 
 async function runSql() {
   const sql = pendingSql.trim();
-  if (!sql) { toast('Type a query first.', 'warn'); return; }
+  if (!sql) {
+    toast('Type a query first.', 'warn');
+    return;
+  }
   const kind = getSqlMutationKind(sql);
   if (kind) {
     await new Promise((resolve) => {
-      confirmAction(`Run a ${kind} statement?`, `${kind} statements modify the database. Continue?`, () => { runSqlNow(sql); resolve(); });
+      confirmAction(`Run a ${kind} statement?`, `${kind} statements modify the database. Continue?`, () => {
+        runSqlNow(sql);
+        resolve();
+      });
     });
     return;
   }
@@ -1391,7 +1597,15 @@ async function runSql() {
 async function runSqlNow(sql) {
   try {
     const result = await api('/api/query', { method: 'POST', body: { sql } });
-    state.sqlHistory.unshift({ sql, ok: true, ts: Date.now(), rowCount: result.rowCount, elapsedMs: result.elapsedMs, kind: result.kind, rows: result.rows });
+    state.sqlHistory.unshift({
+      sql,
+      ok: true,
+      ts: Date.now(),
+      rowCount: result.rowCount,
+      elapsedMs: result.elapsedMs,
+      kind: result.kind,
+      rows: result.rows,
+    });
     state.sqlHistory = state.sqlHistory.slice(0, 10);
     if (result.kind !== 'select') {
       toast(`${result.kind.toUpperCase()} ok`, 'ok');
@@ -1410,21 +1624,52 @@ async function runSqlNow(sql) {
 function renderSqlOut(last) {
   if (!last) return '';
   if (!last.ok) return `<div class="err">${esc(last.error)}</div>`;
-  if (last.kind !== 'select') return `<div class="rhead"><span class="ok-pill">${esc(last.kind)}</span><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} affected · ${last.elapsedMs} ms</div>`;
+  if (last.kind !== 'select')
+    return `<div class="rhead"><span class="ok-pill">${esc(last.kind)}</span><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} affected · ${last.elapsedMs} ms</div>`;
   const rows = last.rows || [];
-  if (rows.length === 0) return `<div class="rhead"><strong>0</strong> rows · ${last.elapsedMs} ms</div><div style="padding:20px;text-align:center;color:var(--t3);font-size:12px;">No rows returned.</div>`;
+  if (rows.length === 0)
+    return `<div class="rhead"><strong>0</strong> rows · ${last.elapsedMs} ms</div><div style="padding:20px;text-align:center;color:var(--t3);font-size:12px;">No rows returned.</div>`;
   const cols = Object.keys(rows[0]);
   return `<div class="rhead"><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} · <span class="pill">${esc(last.kind)}</span> · <span class="pill">${last.elapsedMs} ms</span></div>
-  <table class="dg"><thead><tr><th class="rn">#</th>${cols.map((c) => {
-    const v = rows[0][c];
-    const tb = c === 'id' ? 'pk' : (typeof v === 'number' ? 'n' : typeof v === 'boolean' ? 'b' : typeof v === 'string' ? 's' : '');
-    return `<th><div class="ti">${esc(c)}${tb ? `<span class="tb ${tb === 'pk' ? 'pk' : ''}">${tb}</span>` : ''}</div></th>`;
-  }).join('')}</tr></thead>
-  <tbody>${rows.map((r, i) => `<tr><td class="rn">${i + 1}</td>${cols.map((c) => { const v = r[c]; if (v == null) return '<td class="cnu">[NULL]</td>'; if (typeof v === 'number') return `<td class="cn">${fmtNum(v)}</td>`; return `<td class="cs">${esc(String(v))}</td>`; }).join('')}</tr>`).join('')}</tbody></table>`;
+  <table class="dg"><thead><tr><th class="rn">#</th>${cols
+    .map((c) => {
+      const v = rows[0][c];
+      const tb =
+        c === 'id'
+          ? 'pk'
+          : typeof v === 'number'
+            ? 'n'
+            : typeof v === 'boolean'
+              ? 'b'
+              : typeof v === 'string'
+                ? 's'
+                : '';
+      return `<th><div class="ti">${esc(c)}${tb ? `<span class="tb ${tb === 'pk' ? 'pk' : ''}">${tb}</span>` : ''}</div></th>`;
+    })
+    .join('')}</tr></thead>
+  <tbody>${rows
+    .map(
+      (r, i) =>
+        `<tr><td class="rn">${i + 1}</td>${cols
+          .map((c) => {
+            const v = r[c];
+            if (v == null) return '<td class="cnu">[NULL]</td>';
+            if (typeof v === 'number') return `<td class="cn">${fmtNum(v)}</td>`;
+            return `<td class="cs">${esc(String(v))}</td>`;
+          })
+          .join('')}</tr>`,
+    )
+    .join('')}</tbody></table>`;
 }
 function renderSqlHistory() {
   if (state.sqlHistory.length <= 1) return '';
-  return `<div class="sql-history"><h4>History</h4>${state.sqlHistory.slice(1).map((h) => `<div class="item" data-sql="${esc(h.sql)}"><span class="${h.ok ? 'ok' : 'ko'}">${h.ok ? 'OK' : 'ERR'}</span><span class="qq">${esc(h.sql.replace(/\s+/g, ' '))}</span><span class="when">${h.ok ? `${h.rowCount} rows · ${h.elapsedMs}ms` : 'error'}</span></div>`).join('')}</div>`;
+  return `<div class="sql-history"><h4>History</h4>${state.sqlHistory
+    .slice(1)
+    .map(
+      (h) =>
+        `<div class="item" data-sql="${esc(h.sql)}"><span class="${h.ok ? 'ok' : 'ko'}">${h.ok ? 'OK' : 'ERR'}</span><span class="qq">${esc(h.sql.replace(/\s+/g, ' '))}</span><span class="when">${h.ok ? `${h.rowCount} rows · ${h.elapsedMs}ms` : 'error'}</span></div>`,
+    )
+    .join('')}</div>`;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1434,17 +1679,18 @@ async function pollEmbedStatus() {
   try {
     const s = await api('/api/embeddings/status');
     state.search.embedStatus = s;
-  } catch { /* leave previous status */ }
+  } catch {
+    /* leave previous status */
+  }
 }
 
 function embedStatusPill(mode = state.search.mode || 'text', hasImageUpload = !!state.search.image) {
-  const indexStatus = hasImageUpload || mode === 'image'
-    ? state.search.embedStatus.indexes?.image
-    : state.search.embedStatus.indexes?.text;
+  const indexStatus =
+    hasImageUpload || mode === 'image'
+      ? state.search.embedStatus.indexes?.image
+      : state.search.embedStatus.indexes?.text;
   const s = indexStatus?.state || state.search.embedStatus.state;
-  const label = hasImageUpload || mode === 'image'
-    ? 'CLIP image index'
-    : 'MiniLM text index';
+  const label = hasImageUpload || mode === 'image' ? 'CLIP image index' : 'MiniLM text index';
   if (s === 'ready') return { cls: 'ok', label: `${label} · ready` };
   if (s === 'loading') return { cls: 'warn', label: `${label} · loading…` };
   if (s === 'error') return { cls: 'bad', label: `${label} · error` };
@@ -1498,9 +1744,15 @@ function renderSemanticSearch() {
     <div class="ss-body" id="ss-body">${renderSemanticSearchBody(c, s)}</div>
   </div>`;
 
-  $('#ss-q')?.addEventListener('input', (e) => { state.search.query = e.target.value; });
-  $('#ss-q')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !state.search.busy) runSemanticSearch(); });
-  $('#ss-go')?.addEventListener('click', () => { if (!state.search.busy) runSemanticSearch(); });
+  $('#ss-q')?.addEventListener('input', (e) => {
+    state.search.query = e.target.value;
+  });
+  $('#ss-q')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !state.search.busy) runSemanticSearch();
+  });
+  $('#ss-go')?.addEventListener('click', () => {
+    if (!state.search.busy) runSemanticSearch();
+  });
   $('#ss-img')?.addEventListener('change', async (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
@@ -1513,22 +1765,34 @@ function renderSemanticSearch() {
     state.search.image = null;
     renderSemanticSearch();
   });
-  $$('[data-ss-mode]').forEach((button) => button.addEventListener('click', () => {
-    state.search.mode = button.dataset.ssMode;
-    state.search.results = null;
-    state.search.error = null;
-    state.search.elapsedMs = null;
-    if (state.search.mode !== 'text') state.search.image = null;
-    renderSemanticSearch();
-  }));
-  $$('#ss-body [data-idx]').forEach((el) => el.addEventListener('click', () => {
-    const i = parseInt(el.dataset.idx, 10);
-    const doc = state.search.results && state.search.results[i];
-    if (!doc) return;
-    try { openDrawer(JSON.parse(doc), i); } catch { /* invalid json */ }
-  }));
+  $$('[data-ss-mode]').forEach((button) =>
+    button.addEventListener('click', () => {
+      state.search.mode = button.dataset.ssMode;
+      state.search.results = null;
+      state.search.error = null;
+      state.search.elapsedMs = null;
+      if (state.search.mode !== 'text') state.search.image = null;
+      renderSemanticSearch();
+    }),
+  );
+  $$('#ss-body [data-idx]').forEach((el) =>
+    el.addEventListener('click', () => {
+      const i = parseInt(el.dataset.idx, 10);
+      const doc = state.search.results && state.search.results[i];
+      if (!doc) return;
+      try {
+        openDrawer(JSON.parse(doc), i);
+      } catch {
+        /* invalid json */
+      }
+    }),
+  );
   $('#ss-rebuild-indexes')?.addEventListener('click', () => {
-    confirmAction('Rebuild semantic indexes?', 'This runs manual compaction. It rewrites the database and rebuilds records, B+ trees, and semantic indexes using the current dual-index layout.', runManualCompaction);
+    confirmAction(
+      'Rebuild semantic indexes?',
+      'This runs manual compaction. It rewrites the database and rebuilds records, B+ trees, and semantic indexes using the current dual-index layout.',
+      runManualCompaction,
+    );
   });
 }
 
@@ -1564,11 +1828,13 @@ function renderSemanticSearchBody(c, s) {
   if (cols.length === 0) cols.push('result');
   return `<div class="sql-results ss-table">
     <div class="rhead"><strong>${s.results.length}</strong> result${s.results.length === 1 ? '' : 's'} · <span class="pill">semantic</span></div>
-    <table class="dg"><thead><tr><th class="rn">#</th>${cols.map((c) => {
-      const sample = rows.find((r) => r[c] != null)?.[c];
-      const type = c === 'id' ? 'pk' : semanticTypeBadge(sample);
-      return `<th><div class="ti">${esc(c)}${type ? `<span class="tb ${type === 'pk' ? 'pk' : ''}">${type}</span>` : ''}</div></th>`;
-    }).join('')}</tr></thead>
+    <table class="dg"><thead><tr><th class="rn">#</th>${cols
+      .map((c) => {
+        const sample = rows.find((r) => r[c] != null)?.[c];
+        const type = c === 'id' ? 'pk' : semanticTypeBadge(sample);
+        return `<th><div class="ti">${esc(c)}${type ? `<span class="tb ${type === 'pk' ? 'pk' : ''}">${type}</span>` : ''}</div></th>`;
+      })
+      .join('')}</tr></thead>
     <tbody>${rows.map((r, i) => `<tr data-idx="${i}" title="Open document"><td class="rn">${i + 1}</td>${cols.map((c) => renderSemanticCell(c, r[c], r)).join('')}</tr>`).join('')}</tbody></table>
   </div>`;
 }
@@ -1729,41 +1995,74 @@ function renderAi() {
       <div class="ttl"><strong>Conversational analytics</strong><div class="sub">Context: <strong style="color:var(--ac)">${esc(c || '—')}</strong></div></div>
       <div class="meta">
         <span class="dot ${state.geminiKeySet ? 'ok' : 'bad'}" title="${state.geminiKeySet ? 'A Gemini API key is configured. Validity is verified on first chat.' : 'No Gemini API key configured.'}"><strong>LLM</strong>${state.geminiKeySet ? 'key set' : 'no key'}</span>
-        <span class="dot ${exploreForCol ? 'ok' : 'warn'}" title="${exploreForCol ? 'Schema model loaded for this collection.' : 'No schema model defined for this collection yet.'}"><strong>Schema</strong>${exploreForCol ? 'ready' : (c ? 'missing' : '—')}</span>
+        <span class="dot ${exploreForCol ? 'ok' : 'warn'}" title="${exploreForCol ? 'Schema model loaded for this collection.' : 'No schema model defined for this collection yet.'}"><strong>Schema</strong>${exploreForCol ? 'ready' : c ? 'missing' : '—'}</span>
         <button class="tbtn" id="ai-model" title="View or edit the schema model JSON" style="padding:4px 10px;font-size:11px;border:1px solid var(--bd);background:var(--bg2);">Edit schema model</button>
         <button class="tbtn" id="ai-clear" style="padding:4px 10px;font-size:11px;">Clear chat</button>
       </div>
     </div>
     <div class="ai-body" id="ai-body">${
-      state.modelGenerating ? renderModelGeneratingCard(c)
-      : promptForCol ? renderModelPromptCard(c)
-      : empty ? renderAiEmpty(c, exploreForCol)
-      : state.chatHistory.map((m, i) => renderAiMessage(m, i)).join('')
+      state.modelGenerating
+        ? renderModelGeneratingCard(c)
+        : promptForCol
+          ? renderModelPromptCard(c)
+          : empty
+            ? renderAiEmpty(c, exploreForCol)
+            : state.chatHistory.map((m, i) => renderAiMessage(m, i)).join('')
     }</div>
     <div class="ai-input">
       <input id="ai-q" placeholder="${
-        schemaReady && !state.geminiKeySet ? 'Schema ready — configure Gemini API key to chat…'
-        : !state.geminiKeySet ? 'Configure Gemini API key first…'
-        : !c ? 'Select a collection in the sidebar…'
-        : !exploreForCol ? 'Generate a schema model for this collection first…'
-        : state.modelGenerating ? 'Generating schema model…'
-        : 'Ask about your data…'
+        schemaReady && !state.geminiKeySet
+          ? 'Schema ready — configure Gemini API key to chat…'
+          : !state.geminiKeySet
+            ? 'Configure Gemini API key first…'
+            : !c
+              ? 'Select a collection in the sidebar…'
+              : !exploreForCol
+                ? 'Generate a schema model for this collection first…'
+                : state.modelGenerating
+                  ? 'Generating schema model…'
+                  : 'Ask about your data…'
       }" ${canChat ? '' : 'disabled'}/>
       <button id="ai-send" ${canChat ? '' : 'disabled'}>Send</button>
     </div>
   </div>`;
-  $('#ai-clear').addEventListener('click', () => { state.chatHistory = []; renderAi(); });
+  $('#ai-clear').addEventListener('click', () => {
+    state.chatHistory = [];
+    renderAi();
+  });
   $('#ai-model').addEventListener('click', openModelModal);
-  $('#ai-q')?.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !aiBusy) sendChat(); });
-  $('#ai-send')?.addEventListener('click', () => { if (!aiBusy) sendChat(); });
-  $$('#ai-body .example').forEach((b) => b.addEventListener('click', () => { $('#ai-q').value = b.dataset.q; sendChat(); }));
-  $$('#ai-body .chip').forEach((b) => b.addEventListener('click', () => { $('#ai-q').value = b.dataset.q; sendChat(); }));
-  $$('#ai-body .didyou li').forEach((li) => li.addEventListener('click', () => { $('#ai-q').value = li.textContent; sendChat(); }));
-  $$('#ai-body .open-sql').forEach((b) => b.addEventListener('click', () => {
-    pendingSql = b.dataset.sql;
-    state.tab = 'sql';
-    renderTabs(); renderTab();
-  }));
+  $('#ai-q')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !aiBusy) sendChat();
+  });
+  $('#ai-send')?.addEventListener('click', () => {
+    if (!aiBusy) sendChat();
+  });
+  $$('#ai-body .example').forEach((b) =>
+    b.addEventListener('click', () => {
+      $('#ai-q').value = b.dataset.q;
+      sendChat();
+    }),
+  );
+  $$('#ai-body .chip').forEach((b) =>
+    b.addEventListener('click', () => {
+      $('#ai-q').value = b.dataset.q;
+      sendChat();
+    }),
+  );
+  $$('#ai-body .didyou li').forEach((li) =>
+    li.addEventListener('click', () => {
+      $('#ai-q').value = li.textContent;
+      sendChat();
+    }),
+  );
+  $$('#ai-body .open-sql').forEach((b) =>
+    b.addEventListener('click', () => {
+      pendingSql = b.dataset.sql;
+      state.tab = 'sql';
+      renderTabs();
+      renderTab();
+    }),
+  );
   $$('#ai-body .qch canvas').forEach((cv) => {
     const spec = JSON.parse(cv.dataset.chart);
     drawChart(cv, spec.chart, spec.data);
@@ -1827,7 +2126,8 @@ function renderAiMessage(m, i) {
   if (m.role === 'user') {
     return `<div class="msg u"><div class="who">You</div><div class="bub">${esc(m.text)}</div></div>`;
   }
-  if (m.thinking) return `<div class="msg a"><div class="who">AI</div><div class="bub thinking"><span class="spin"></span><span class="lbl">${esc(m.text)}</span></div></div>`;
+  if (m.thinking)
+    return `<div class="msg a"><div class="who">AI</div><div class="bub thinking"><span class="spin"></span><span class="lbl">${esc(m.text)}</span></div></div>`;
   if (m.error) return `<div class="msg a"><div class="who">AI</div><div class="bub err">${esc(m.error)}</div></div>`;
   const r = m.response;
   let h = '';
@@ -1837,7 +2137,12 @@ function renderAiMessage(m, i) {
   if (r.interpretation) h += `<div class="in">${esc(r.interpretation)}</div>`;
   if (r.data && r.data.length > 0) {
     const cols = Object.keys(r.data[0]).filter((key) => !key.startsWith('_'));
-    h += `<table class="qt"><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.data.slice(0, 30).map((row) => `<tr>${cols.map((c) => renderAiResultCell(c, row[c], row)).join('')}</tr>`).join('')}${r.data.length > 30 ? `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--t3);">+ ${r.data.length - 30} more rows</td></tr>` : ''}</tbody></table>`;
+    h += `<table class="qt"><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.data
+      .slice(0, 30)
+      .map((row) => `<tr>${cols.map((c) => renderAiResultCell(c, row[c], row)).join('')}</tr>`)
+      .join(
+        '',
+      )}${r.data.length > 30 ? `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--t3);">+ ${r.data.length - 30} more rows</td></tr>` : ''}</tbody></table>`;
   }
   if (r.chart && r.chart.type && r.chart.type !== 'none' && r.data && r.data.length > 0) {
     const id = `chart-${i}-${Date.now()}`;
@@ -1845,11 +2150,15 @@ function renderAiMessage(m, i) {
   }
   if (r.summary) h += `<div class="sum">${esc(r.summary)}</div>`;
   if (r.anomaly) h += `<div class="anom">${esc(r.anomaly)}</div>`;
-  if (r.didYouMean && r.didYouMean.length > 0) h += `<div class="didyou"><strong>Did you mean…</strong><ul>${r.didYouMean.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></div>`;
+  if (r.didYouMean && r.didYouMean.length > 0)
+    h += `<div class="didyou"><strong>Did you mean…</strong><ul>${r.didYouMean.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></div>`;
   if (r.suggestions && r.suggestions.length > 0) {
     h += `<div class="chips">${r.suggestions.map((s) => `<button class="chip" data-q="${esc(s.text)}"><span class="l">${esc(s.type)}</span>${esc(s.text)}</button>`).join('')}</div>`;
   }
-  if (r.error) h = `<div class="anom" style="border-color:var(--rd);background:var(--rdb);color:var(--rd);">${esc(r.error)}</div>` + h;
+  if (r.error)
+    h =
+      `<div class="anom" style="border-color:var(--rd);background:var(--rdb);color:var(--rd);">${esc(r.error)}</div>` +
+      h;
   return `<div class="msg a"><div class="who">AI</div><div class="bub">${h || '<em style="color:var(--t3)">(empty response)</em>'}</div></div>`;
 }
 
@@ -1860,7 +2169,10 @@ function renderAiResultCell(key, value, row = null) {
 
   const imageUrl = imageDataUrlFromValue(key, value, row);
   if (imageUrl) {
-    const bytes = Math.max(0, Math.floor((String(value).replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '').length * 3) / 4));
+    const bytes = Math.max(
+      0,
+      Math.floor((String(value).replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '').length * 3) / 4),
+    );
     return `<td class="ci"><img src="${esc(imageUrl)}" alt="${esc(key)}"><span>${fmtSize(bytes)}</span></td>`;
   }
 
@@ -1878,10 +2190,18 @@ async function sendChat() {
   state.chatHistory.push({ role: 'assistant', text: 'Thinking', thinking: true });
   renderAi();
   try {
-    const history = state.chatHistory.filter((m) => !m.thinking && (m.role === 'user' || (m.role === 'assistant' && m.response))).map((m) => ({ role: m.role, text: m.role === 'user' ? m.text : `Query: ${m.response.query}\nResult: ${m.response.summary}` }));
+    const history = state.chatHistory
+      .filter((m) => !m.thinking && (m.role === 'user' || (m.role === 'assistant' && m.response)))
+      .map((m) => ({
+        role: m.role,
+        text: m.role === 'user' ? m.text : `Query: ${m.response.query}\nResult: ${m.response.summary}`,
+      }));
     // drop the most recent user (we'll re-send via question)
     history.pop();
-    const response = await api('/api/conversational/ask', { method: 'POST', body: { question: q, history, collection: state.selectedCol } });
+    const response = await api('/api/conversational/ask', {
+      method: 'POST',
+      body: { question: q, history, collection: state.selectedCol },
+    });
     state.chatHistory = state.chatHistory.filter((m) => !m.thinking);
     state.chatHistory.push({ role: 'assistant', response });
   } catch (e) {
@@ -1920,7 +2240,10 @@ function drawChart(canvas, chart, data) {
     datasets = chart.yColumns.map((y, i) => ({
       label: y,
       data: data.map((r) => Number(r[y]) || 0),
-      backgroundColor: chart.type === 'pie' || chart.type === 'doughnut' ? data.map((_, j) => PALETTE[j % PALETTE.length]) : PALETTE[i % PALETTE.length],
+      backgroundColor:
+        chart.type === 'pie' || chart.type === 'doughnut'
+          ? data.map((_, j) => PALETTE[j % PALETTE.length])
+          : PALETTE[i % PALETTE.length],
       borderColor: PALETTE[i % PALETTE.length],
       borderWidth: 1,
     }));
@@ -1934,12 +2257,17 @@ function drawChart(canvas, chart, data) {
       maintainAspectRatio: false,
       plugins: {
         legend: { labels: { color: '#475569', font: { size: 11 } } },
-        title: chart.title ? { display: true, text: chart.title, color: '#1f2937', font: { size: 13, weight: '500' } } : { display: false },
+        title: chart.title
+          ? { display: true, text: chart.title, color: '#1f2937', font: { size: 13, weight: '500' } }
+          : { display: false },
       },
-      scales: chart.type === 'pie' || chart.type === 'doughnut' ? {} : {
-        x: { ticks: { color: '#6b7589', font: { size: 11 } }, grid: { color: '#e9eef4' } },
-        y: { ticks: { color: '#6b7589', font: { size: 11 } }, grid: { color: '#e9eef4' }, beginAtZero: true },
-      },
+      scales:
+        chart.type === 'pie' || chart.type === 'doughnut'
+          ? {}
+          : {
+              x: { ticks: { color: '#6b7589', font: { size: 11 } }, grid: { color: '#e9eef4' } },
+              y: { ticks: { color: '#6b7589', font: { size: 11 } }, grid: { color: '#e9eef4' }, beginAtZero: true },
+            },
     },
   });
 }
@@ -1956,7 +2284,11 @@ function confirmAction(title, msg, onConfirm) {
 }
 $('#confirm-ok').addEventListener('click', () => {
   closeModal('modal-confirm');
-  if (pendingConfirm) { const fn = pendingConfirm; pendingConfirm = null; fn(); }
+  if (pendingConfirm) {
+    const fn = pendingConfirm;
+    pendingConfirm = null;
+    fn();
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -1966,7 +2298,8 @@ $('#sb-filter').addEventListener('input', renderTree);
 
 // Resizable sidebar
 const SB_W_KEY = 'pgstudio.sidebar.width';
-const SB_W_MIN = 200, SB_W_MAX = 600;
+const SB_W_MIN = 200,
+  SB_W_MAX = 600;
 function applySidebarWidth(px) {
   const w = Math.max(SB_W_MIN, Math.min(SB_W_MAX, px));
   document.documentElement.style.setProperty('--sb-w', w + 'px');
@@ -2011,7 +2344,10 @@ function toggleConnMenu() {
   const open = m.classList.toggle('hidden');
   $('#conn-info').classList.toggle('open', !open);
 }
-$('#conn-info').addEventListener('click', (e) => { e.stopPropagation(); toggleConnMenu(); });
+$('#conn-info').addEventListener('click', (e) => {
+  e.stopPropagation();
+  toggleConnMenu();
+});
 document.addEventListener('click', (e) => {
   if (!$('#conn-wrap').contains(e.target)) closeConnMenu();
 });
@@ -2024,11 +2360,19 @@ $('#cm-key').addEventListener('click', () => {
 });
 $('#cm-manual-compact')?.addEventListener('click', () => {
   closeConnMenu();
-  confirmAction('Run full vacuum compaction?', 'This rewrites fresh files, rebuilds indexes, and reopens the database. It is the heaviest compaction option.', runManualCompaction);
+  confirmAction(
+    'Run full vacuum compaction?',
+    'This rewrites fresh files, rebuilds indexes, and reopens the database. It is the heaviest compaction option.',
+    runManualCompaction,
+  );
 });
 $('#cm-incremental-compact')?.addEventListener('click', () => {
   closeConnMenu();
-  confirmAction('Run one incremental compaction step?', 'This moves a small batch of records and index units without rewriting the whole database.', runIncrementalCompactionStep);
+  confirmAction(
+    'Run one incremental compaction step?',
+    'This moves a small batch of records and index units without rewriting the whole database.',
+    runIncrementalCompactionStep,
+  );
 });
 $('#cm-auto-compact')?.addEventListener('change', (event) => {
   setAutoCompaction(event.target.checked);
@@ -2039,71 +2383,114 @@ $('#cm-disconnect').addEventListener('click', async () => {
     await api('/api/disconnect', { method: 'POST' });
     resetDisconnectedState();
     toast('Disconnected', 'ok');
-    updateConnState(); openModal('modal-connect');
-  } catch (e) { toast(e.message, 'err'); }
+    updateConnState();
+    openModal('modal-connect');
+  } catch (e) {
+    toast(e.message, 'err');
+  }
 });
 $('#sb-add-collection').addEventListener('click', openCollectionDocumentModal);
 $('#doc-save').addEventListener('click', saveDocumentModal);
-$('#doc-image-file').addEventListener('change', () => attachImageToDocumentJson({
-  textarea: $('#doc-json'),
-  fieldInput: $('#doc-image-field'),
-  fileInput: $('#doc-image-file'),
-  preview: $('#doc-image-preview'),
-  imagePayloads: documentModalImagePayloads,
-  error: showDocumentModalError,
-}));
+$('#doc-image-file').addEventListener('change', () =>
+  attachImageToDocumentJson({
+    textarea: $('#doc-json'),
+    fieldInput: $('#doc-image-field'),
+    fileInput: $('#doc-image-file'),
+    preview: $('#doc-image-preview'),
+    imagePayloads: documentModalImagePayloads,
+    error: showDocumentModalError,
+  }),
+);
 
 // Connect modal
 $('#connect-open').addEventListener('click', async () => {
   const fp = $('#connect-filepath').value.trim();
-  if (!fp) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = 'Provide a file path.'; return; }
+  if (!fp) {
+    $('#connect-err').classList.remove('hidden');
+    $('#connect-err').textContent = 'Provide a file path.';
+    return;
+  }
   $('#connect-err').classList.add('hidden');
   try {
     const { message } = await api('/api/connect', { method: 'POST', body: { filepath: fp } });
-    state.connected = true; state.filepath = fp;
+    state.connected = true;
+    state.filepath = fp;
     toast(message, 'ok');
     closeModal('modal-connect');
     updateConnState();
-    await loadCollections(); await loadModel(); render();
-  } catch (e) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = e.message; }
+    await loadCollections();
+    await loadModel();
+    render();
+  } catch (e) {
+    $('#connect-err').classList.remove('hidden');
+    $('#connect-err').textContent = e.message;
+  }
 });
 $('#connect-create').addEventListener('click', async () => {
   const fp = $('#connect-filepath').value.trim();
-  if (!fp) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = 'Provide a file path.'; return; }
+  if (!fp) {
+    $('#connect-err').classList.remove('hidden');
+    $('#connect-err').textContent = 'Provide a file path.';
+    return;
+  }
   $('#connect-err').classList.add('hidden');
   try {
     const { message } = await api('/api/create', { method: 'POST', body: { filepath: fp } });
-    state.connected = true; state.filepath = fp;
+    state.connected = true;
+    state.filepath = fp;
     toast(message, 'ok');
     closeModal('modal-connect');
     updateConnState();
-    await loadCollections(); await loadModel(); render();
-  } catch (e) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = e.message; }
+    await loadCollections();
+    await loadModel();
+    render();
+  } catch (e) {
+    $('#connect-err').classList.remove('hidden');
+    $('#connect-err').textContent = e.message;
+  }
 });
 $('#connect-demo').addEventListener('click', async () => {
   const fp = $('#connect-filepath').value.trim();
-  if (!fp) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = 'Provide a file path.'; return; }
+  if (!fp) {
+    $('#connect-err').classList.remove('hidden');
+    $('#connect-err').textContent = 'Provide a file path.';
+    return;
+  }
   $('#connect-err').classList.add('hidden');
   try {
     const { message } = await api('/api/create', { method: 'POST', body: { filepath: fp } });
-    state.connected = true; state.filepath = fp;
+    state.connected = true;
+    state.filepath = fp;
     closeModal('modal-connect');
     updateConnState();
     toast(message, 'ok');
     await seedDemoEmployees();
-  } catch (e) { $('#connect-err').classList.remove('hidden'); $('#connect-err').textContent = e.message; }
+  } catch (e) {
+    $('#connect-err').classList.remove('hidden');
+    $('#connect-err').textContent = e.message;
+  }
 });
 
 // Settings modal
 $('#set-save-gemini').addEventListener('click', async () => {
   const key = $('#set-gemini-key').value.trim();
-  if (!key) { $('#set-gemini-err').classList.remove('hidden'); $('#set-gemini-err').textContent = 'Provide a key.'; return; }
+  if (!key) {
+    $('#set-gemini-err').classList.remove('hidden');
+    $('#set-gemini-err').textContent = 'Provide a key.';
+    return;
+  }
   try {
     await api('/api/settings/gemini-key', { method: 'POST', body: { key } });
     state.geminiKeySet = true;
-    $('#set-gemini-ok').classList.remove('hidden'); $('#set-gemini-err').classList.add('hidden');
-    updateConnState(); renderTabs(); renderTab();
-  } catch (e) { $('#set-gemini-err').classList.remove('hidden'); $('#set-gemini-err').textContent = e.message; }
+    $('#set-gemini-ok').classList.remove('hidden');
+    $('#set-gemini-err').classList.add('hidden');
+    updateConnState();
+    renderTabs();
+    renderTab();
+  } catch (e) {
+    $('#set-gemini-err').classList.remove('hidden');
+    $('#set-gemini-err').textContent = e.message;
+  }
 });
 // Start
 bootstrap();

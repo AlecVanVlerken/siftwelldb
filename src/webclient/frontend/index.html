@@ -1,176 +1,325 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>NotSoSimpleDBMS</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-<link rel="stylesheet" href="/styles.css" />
-</head>
-<body>
-<div class="app disconnected" id="app">
-  <header class="tb">
-    <div class="brand">NotSoSimpleDBMS</div>
-    <div class="sp"></div>
-    <div class="conn-wrap" id="conn-wrap">
-      <button class="conn-info" id="conn-info" type="button"><span class="d"></span><span id="conn-text">Disconnected</span><svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg></button>
-      <div class="conn-menu hidden" id="conn-menu">
-        <button class="cm-item" id="cm-key" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4M18 5l2 2M15 8l2 2"/></svg>Configure Gemini key…</button>
-        <div class="cm-sep"></div>
-        <div class="cm-status" id="cm-db-size">Database size: —</div>
-        <label class="cm-toggle"><input type="checkbox" id="cm-auto-compact" disabled/> Auto compact in background</label>
-        <div class="cm-note" id="cm-compact-status">Open a database to compact.</div>
-        <button class="cm-item" id="cm-incremental-compact" type="button" disabled>Run incremental compact step…</button>
-        <button class="cm-item" id="cm-manual-compact" type="button" disabled>Manual full vacuum compact…</button>
-        <div class="cm-sep"></div>
-        <button class="cm-item dn" id="cm-disconnect" type="button" disabled><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 17l5-5-5-5M21 12H9M13 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8"/></svg>Disconnect</button>
-      </div>
-    </div>
-  </header>
-
-  <div class="body">
-    <aside class="sb">
-      <div class="sbh"><span class="l">Object Explorer</span><div class="acts"><button id="sb-add-collection" title="Add collection"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button></div></div>
-      <div class="search-row"><div class="w"><svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg><input id="sb-filter" placeholder="Filter collections..."/></div></div>
-      <div class="tree" id="tree"></div>
-    </aside>
-    <div class="sb-resize" id="sb-resize" title="Drag to resize"></div>
-
-    <main class="main">
-      <div class="obj-tabs" id="otabs"></div>
-      <div class="cnt" id="cnt"></div>
-    </main>
-  </div>
-
-</div>
-
-<!-- Document drawer -->
-<div class="drawer" id="drawer">
-  <div class="dr-head">
-    <div class="ttl" id="dr-title">—</div>
-    <div class="acts">
-      <button id="dr-edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M12 20h9M16.5 3.5l4 4L7 21H3v-4z"/></svg> Edit</button>
-      <button class="del" id="dr-del"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg> Delete</button>
-    </div>
-    <button class="close" id="dr-close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-  </div>
-  <div class="dr-body" id="dr-body"></div>
-</div>
-
-<!-- JSON document modal -->
-<div class="modal-bg hidden" id="modal-document">
-  <div class="modal-box wide tall">
-    <div class="modal-head">
-      <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div>
-      <div class="ttl" id="doc-modal-title">Add document<div class="sub" id="doc-modal-sub">Enter a JSON object. Strings use normal JSON quotes.</div></div>
-      <button class="close" data-close="modal-document"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-    </div>
-    <div class="modal-body" style="display:flex;flex-direction:column;gap:10px;">
-      <div id="doc-collection-wrap">
-        <label>Collection name</label>
-        <input type="text" id="doc-collection" placeholder="e.g. employees" autocomplete="off"/>
-      </div>
-      <label>Document JSON</label>
-      <textarea id="doc-json" spellcheck="false" style="min-height:330px;font-family:Consolas,monospace;font-size:12px;"></textarea>
-      <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;">
-        <div>
-          <label>Attach image field</label>
-          <input type="text" id="doc-image-field" placeholder="e.g. photo"/>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NotSoSimpleDBMS</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app disconnected" id="app">
+      <header class="tb">
+        <div class="brand">NotSoSimpleDBMS</div>
+        <div class="sp"></div>
+        <div class="conn-wrap" id="conn-wrap">
+          <button class="conn-info" id="conn-info" type="button">
+            <span class="d"></span><span id="conn-text">Disconnected</span
+            ><svg class="caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          <div class="conn-menu hidden" id="conn-menu">
+            <button class="cm-item" id="cm-key" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="8" cy="15" r="4" />
+                <path d="M10.85 12.15 19 4M18 5l2 2M15 8l2 2" /></svg
+              >Configure Gemini key…
+            </button>
+            <div class="cm-sep"></div>
+            <div class="cm-status" id="cm-db-size">Database size: —</div>
+            <label class="cm-toggle"
+              ><input type="checkbox" id="cm-auto-compact" disabled /> Auto compact in background</label
+            >
+            <div class="cm-note" id="cm-compact-status">Open a database to compact.</div>
+            <button class="cm-item" id="cm-incremental-compact" type="button" disabled>
+              Run incremental compact step…
+            </button>
+            <button class="cm-item" id="cm-manual-compact" type="button" disabled>Manual full vacuum compact…</button>
+            <div class="cm-sep"></div>
+            <button class="cm-item dn" id="cm-disconnect" type="button" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M16 17l5-5-5-5M21 12H9M13 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8" /></svg
+              >Disconnect
+            </button>
+          </div>
         </div>
-        <label class="tbtn" style="border:1px solid var(--bd);background:var(--bg2);height:32px;justify-content:center;">
-          Choose image
-          <input type="file" id="doc-image-file" accept="image/*" style="display:none;"/>
-        </label>
+      </header>
+
+      <div class="body">
+        <aside class="sb">
+          <div class="sbh">
+            <span class="l">Object Explorer</span>
+            <div class="acts">
+              <button id="sb-add-collection" title="Add collection">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div class="search-row">
+            <div class="w">
+              <svg class="si" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8" />
+                <path d="M21 21l-4-4" /></svg
+              ><input id="sb-filter" placeholder="Filter collections..." />
+            </div>
+          </div>
+          <div class="tree" id="tree"></div>
+        </aside>
+        <div class="sb-resize" id="sb-resize" title="Drag to resize"></div>
+
+        <main class="main">
+          <div class="obj-tabs" id="otabs"></div>
+          <div class="cnt" id="cnt"></div>
+        </main>
       </div>
-      <div id="doc-image-preview" class="hidden" style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--t3);">
-        <img alt="" style="max-width:72px;max-height:54px;border:1px solid var(--bd);border-radius:3px;object-fit:cover;"/>
-        <span></span>
+    </div>
+
+    <!-- Document drawer -->
+    <div class="drawer" id="drawer">
+      <div class="dr-head">
+        <div class="ttl" id="dr-title">—</div>
+        <div class="acts">
+          <button id="dr-edit">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+              <path d="M12 20h9M16.5 3.5l4 4L7 21H3v-4z" />
+            </svg>
+            Edit
+          </button>
+          <button class="del" id="dr-del">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13">
+              <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" />
+            </svg>
+            Delete
+          </button>
+        </div>
+        <button class="close" id="dr-close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18" />
+            <line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
       </div>
-      <div class="err hidden" id="doc-err"></div>
-      <p style="margin-bottom:0;font-size:12px;">This uses the object API directly. Image fields are stored under a stable name such as <code>photo</code>, with MIME metadata kept in a hidden <code>_photo_mime</code> sidecar.</p>
+      <div class="dr-body" id="dr-body"></div>
     </div>
-    <div class="modal-foot">
-      <button class="sec" data-close="modal-document">Cancel</button>
-      <button class="pri" id="doc-save">Save</button>
-    </div>
-  </div>
-</div>
 
-<!-- Connect modal -->
-<div class="modal-bg" id="modal-connect">
-  <div class="modal-box">
-    <div class="modal-head"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/><path d="M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6"/></svg></div><div class="ttl">Open a database<div class="sub">Connect to an existing SimpleDBMS file, or create a new one.</div></div></div>
-    <div class="modal-body">
-      <label>Database file</label>
-      <input type="text" id="connect-filepath" placeholder="e.g. data.db" value="data.db" autocomplete="off"/>
-      <div class="err hidden" id="connect-err"></div>
-      <p style="margin-bottom:0;font-size:12px;">If the file exists it will be opened, otherwise <em>Create new</em> will initialize a fresh one.</p>
-    </div>
-    <div class="modal-foot">
-      <button class="sec" id="connect-demo">Create demo database</button>
-      <button class="sec" id="connect-create">Create new</button>
-      <button class="pri" id="connect-open">Open</button>
-    </div>
-  </div>
-</div>
-
-<!-- Configure Gemini key modal -->
-<div class="modal-bg hidden" id="modal-settings">
-  <div class="modal-box">
-    <div class="modal-head"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4M18 5l2 2M15 8l2 2"/></svg></div><div class="ttl">Configure Gemini key<div class="sub">Used by the AI chat to generate analytics queries.</div></div><button class="close" data-close="modal-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
-    <div class="modal-body">
-      <label>Gemini API key</label>
-      <input type="password" id="set-gemini-key" placeholder="Paste GEMINI_API_KEY..." autocomplete="off"/>
-      <div class="err hidden" id="set-gemini-err"></div>
-      <div class="ok hidden" id="set-gemini-ok">Key saved. AI features are enabled.</div>
-      <p style="margin-bottom:6px;font-size:12px;">Stored to <code>.env</code> on the daemon host. Cleared whenever the daemon restarts unless persisted there.</p>
-    </div>
-    <div class="modal-foot">
-      <button class="sec" data-close="modal-settings">Close</button>
-      <button class="pri" id="set-save-gemini">Save key</button>
-    </div>
-  </div>
-</div>
-
-<!-- Schema model modal (opened from AI chat header) -->
-<div class="modal-bg hidden" id="modal-model">
-  <div class="modal-box wide tall">
-    <div class="modal-head">
-      <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M9 9l6 6"/></svg></div>
-      <div class="ttl">Schema model<div class="sub" id="modal-model-sub">Edit the JSON model the AI uses to understand your data.</div></div>
-      <button class="close" data-close="modal-model"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-    </div>
-    <div class="modal-body" style="display:flex;flex-direction:column;gap:10px;">
-      <div style="display:flex;gap:6px;align-items:center;">
-        <button class="tbtn pri" id="mdl-gen" title="Regenerate the schema model. Step 1 introspects the data (always runs). Step 2 enriches with Gemini (only when a key is configured)."><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Generate from data</button>
-        <button class="tbtn" id="mdl-reload" style="border:1px solid var(--bd);background:var(--bg2);">Reload from server</button>
-        <div class="meta" id="mdl-status" style="margin-left:auto;font-size:11.5px;color:var(--t3);"></div>
+    <!-- JSON document modal -->
+    <div class="modal-bg hidden" id="modal-document">
+      <div class="modal-box wide tall">
+        <div class="modal-head">
+          <div class="ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6" />
+            </svg>
+          </div>
+          <div class="ttl" id="doc-modal-title">
+            Add document
+            <div class="sub" id="doc-modal-sub">Enter a JSON object. Strings use normal JSON quotes.</div>
+          </div>
+          <button class="close" data-close="modal-document">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body" style="display: flex; flex-direction: column; gap: 10px">
+          <div id="doc-collection-wrap">
+            <label>Collection name</label>
+            <input type="text" id="doc-collection" placeholder="e.g. employees" autocomplete="off" />
+          </div>
+          <label>Document JSON</label>
+          <textarea
+            id="doc-json"
+            spellcheck="false"
+            style="min-height: 330px; font-family: Consolas, monospace; font-size: 12px"
+          ></textarea>
+          <div style="display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end">
+            <div>
+              <label>Attach image field</label>
+              <input type="text" id="doc-image-field" placeholder="e.g. photo" />
+            </div>
+            <label
+              class="tbtn"
+              style="border: 1px solid var(--bd); background: var(--bg2); height: 32px; justify-content: center"
+            >
+              Choose image
+              <input type="file" id="doc-image-file" accept="image/*" style="display: none" />
+            </label>
+          </div>
+          <div
+            id="doc-image-preview"
+            class="hidden"
+            style="display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--t3)"
+          >
+            <img
+              alt=""
+              style="
+                max-width: 72px;
+                max-height: 54px;
+                border: 1px solid var(--bd);
+                border-radius: 3px;
+                object-fit: cover;
+              "
+            />
+            <span></span>
+          </div>
+          <div class="err hidden" id="doc-err"></div>
+          <p style="margin-bottom: 0; font-size: 12px">
+            This uses the object API directly. Image fields are stored under a stable name such as <code>photo</code>,
+            with MIME metadata kept in a hidden <code>_photo_mime</code> sidecar.
+          </p>
+        </div>
+        <div class="modal-foot">
+          <button class="sec" data-close="modal-document">Cancel</button>
+          <button class="pri" id="doc-save">Save</button>
+        </div>
       </div>
-      <label>Model JSON</label>
-      <textarea id="mdl-json" spellcheck="false" placeholder='{ "explores": [ ... ] }' style="min-height:340px;font-family:Consolas,monospace;font-size:12px;"></textarea>
-      <div class="err hidden" id="mdl-err"></div>
     </div>
-    <div class="modal-foot">
-      <button class="sec" data-close="modal-model">Cancel</button>
-      <button class="pri" id="mdl-save">Save changes</button>
+
+    <!-- Connect modal -->
+    <div class="modal-bg" id="modal-connect">
+      <div class="modal-box">
+        <div class="modal-head">
+          <div class="ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+              <ellipse cx="12" cy="5" rx="9" ry="3" />
+              <path d="M3 5v6c0 1.66 4.03 3 9 3s9-1.34 9-3V5" />
+              <path d="M3 11v6c0 1.66 4.03 3 9 3s9-1.34 9-3v-6" />
+            </svg>
+          </div>
+          <div class="ttl">
+            Open a database
+            <div class="sub">Connect to an existing SimpleDBMS file, or create a new one.</div>
+          </div>
+        </div>
+        <div class="modal-body">
+          <label>Database file</label>
+          <input type="text" id="connect-filepath" placeholder="e.g. data.db" value="data.db" autocomplete="off" />
+          <div class="err hidden" id="connect-err"></div>
+          <p style="margin-bottom: 0; font-size: 12px">
+            If the file exists it will be opened, otherwise <em>Create new</em> will initialize a fresh one.
+          </p>
+        </div>
+        <div class="modal-foot">
+          <button class="sec" id="connect-demo">Create demo database</button>
+          <button class="sec" id="connect-create">Create new</button>
+          <button class="pri" id="connect-open">Open</button>
+        </div>
+      </div>
     </div>
-  </div>
-</div>
 
-<!-- Confirm modal -->
-<div class="modal-bg hidden" id="modal-confirm">
-  <div class="modal-box" style="max-width:440px;">
-    <div class="modal-head"><div class="ic" style="background:var(--rd);">!</div><div class="ttl" id="confirm-title">Confirm</div></div>
-    <div class="modal-body"><p id="confirm-msg"></p></div>
-    <div class="modal-foot">
-      <button class="sec" data-close="modal-confirm">Cancel</button>
-      <button class="dn" id="confirm-ok">Confirm</button>
+    <!-- Configure Gemini key modal -->
+    <div class="modal-bg hidden" id="modal-settings">
+      <div class="modal-box">
+        <div class="modal-head">
+          <div class="ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+              <circle cx="8" cy="15" r="4" />
+              <path d="M10.85 12.15 19 4M18 5l2 2M15 8l2 2" />
+            </svg>
+          </div>
+          <div class="ttl">
+            Configure Gemini key
+            <div class="sub">Used by the AI chat to generate analytics queries.</div>
+          </div>
+          <button class="close" data-close="modal-settings">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <label>Gemini API key</label>
+          <input type="password" id="set-gemini-key" placeholder="Paste GEMINI_API_KEY..." autocomplete="off" />
+          <div class="err hidden" id="set-gemini-err"></div>
+          <div class="ok hidden" id="set-gemini-ok">Key saved. AI features are enabled.</div>
+          <p style="margin-bottom: 6px; font-size: 12px">
+            Stored to <code>.env</code> on the daemon host. Cleared whenever the daemon restarts unless persisted there.
+          </p>
+        </div>
+        <div class="modal-foot">
+          <button class="sec" data-close="modal-settings">Close</button>
+          <button class="pri" id="set-save-gemini">Save key</button>
+        </div>
+      </div>
     </div>
-  </div>
-</div>
 
-<div id="toasts"></div>
+    <!-- Schema model modal (opened from AI chat header) -->
+    <div class="modal-bg hidden" id="modal-model">
+      <div class="modal-box wide tall">
+        <div class="modal-head">
+          <div class="ic">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+              <circle cx="18" cy="6" r="3" />
+              <circle cx="6" cy="18" r="3" />
+              <path d="M9 9l6 6" />
+            </svg>
+          </div>
+          <div class="ttl">
+            Schema model
+            <div class="sub" id="modal-model-sub">Edit the JSON model the AI uses to understand your data.</div>
+          </div>
+          <button class="close" data-close="modal-model">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body" style="display: flex; flex-direction: column; gap: 10px">
+          <div style="display: flex; gap: 6px; align-items: center">
+            <button
+              class="tbtn pri"
+              id="mdl-gen"
+              title="Regenerate the schema model. Step 1 introspects the data (always runs). Step 2 enriches with Gemini (only when a key is configured)."
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg
+              >Generate from data
+            </button>
+            <button class="tbtn" id="mdl-reload" style="border: 1px solid var(--bd); background: var(--bg2)">
+              Reload from server
+            </button>
+            <div class="meta" id="mdl-status" style="margin-left: auto; font-size: 11.5px; color: var(--t3)"></div>
+          </div>
+          <label>Model JSON</label>
+          <textarea
+            id="mdl-json"
+            spellcheck="false"
+            placeholder='{ "explores": [ ... ] }'
+            style="min-height: 340px; font-family: Consolas, monospace; font-size: 12px"
+          ></textarea>
+          <div class="err hidden" id="mdl-err"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="sec" data-close="modal-model">Cancel</button>
+          <button class="pri" id="mdl-save">Save changes</button>
+        </div>
+      </div>
+    </div>
 
-<script type="module" src="/ts/main.js"></script>
-</body>
+    <!-- Confirm modal -->
+    <div class="modal-bg hidden" id="modal-confirm">
+      <div class="modal-box" style="max-width: 440px">
+        <div class="modal-head">
+          <div class="ic" style="background: var(--rd)">!</div>
+          <div class="ttl" id="confirm-title">Confirm</div>
+        </div>
+        <div class="modal-body"><p id="confirm-msg"></p></div>
+        <div class="modal-foot">
+          <button class="sec" data-close="modal-confirm">Cancel</button>
+          <button class="dn" id="confirm-ok">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toasts"></div>
+
+    <script type="module" src="/ts/main.js"></script>
+  </body>
 </html>

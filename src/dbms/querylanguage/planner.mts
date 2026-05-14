@@ -47,9 +47,7 @@ export type CursorPlan =
  * other branch could match rows with different values — seeking there
  * would skip valid matches.
  */
-function findFieldEquality(
-  where: WhereExpression | undefined,
-): { field: string; value: FieldValue } | undefined {
+function findFieldEquality(where: WhereExpression | undefined): { field: string; value: FieldValue } | undefined {
   if (!where) return undefined;
   if (where.type === 'comparison' && where.operator === '=') {
     return { field: where.field, value: where.value };

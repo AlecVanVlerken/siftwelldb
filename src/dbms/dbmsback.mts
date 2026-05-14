@@ -258,9 +258,7 @@ export class DbmsBack {
     for (const pointer of recordPointers) {
       const document = await this.recordStore.readRecord(pointer);
       if (!document || document.getCollectionName() !== collection) {
-        console.warn(
-          `Skipping stale record pointer ${pointer.toString()} while deleting collection "${collection}"`,
-        );
+        console.warn(`Skipping stale record pointer ${pointer.toString()} while deleting collection "${collection}"`);
         continue;
       }
       await this.recordStore.deleteRecord(pointer);
@@ -743,7 +741,7 @@ export class DbmsBack {
             this.hnswConfig as HnswConfig & { imageEmbeddingFn: (imageData: Buffer) => Promise<Float32Array> },
             imageData,
           );
-        if (vector) await hnswIdx.insert(documentLocation, vector);
+          if (vector) await hnswIdx.insert(documentLocation, vector);
         } else {
           const text = this.extractText(document);
           if (text !== null) {
@@ -1546,7 +1544,11 @@ export class DbmsBack {
     const images: Buffer[] = [];
     const fields = document.getFields();
     for (const [key, value] of Object.entries(fields)) {
-      if (isImageField(key, fields) && Buffer.isBuffer(value) && this.isSupportedImageBuffer(key, value, imageMimeForField(key, fields))) {
+      if (
+        isImageField(key, fields) &&
+        Buffer.isBuffer(value) &&
+        this.isSupportedImageBuffer(key, value, imageMimeForField(key, fields))
+      ) {
         images.push(value);
       }
     }
@@ -1583,13 +1585,17 @@ export class DbmsBack {
   }
 
   private async embedImages(config: HnswImageIndexConfig, images: Buffer[]): Promise<Float32Array | null> {
-    const vectors = (await Promise.all(images.map(async (image) => {
-      try {
-        return await config.imageEmbeddingFn(image);
-      } catch {
-        return null;
-      }
-    }))).filter((vector): vector is Float32Array => vector !== null);
+    const vectors = (
+      await Promise.all(
+        images.map(async (image) => {
+          try {
+            return await config.imageEmbeddingFn(image);
+          } catch {
+            return null;
+          }
+        }),
+      )
+    ).filter((vector): vector is Float32Array => vector !== null);
     if (vectors.length === 0) return null;
     if (vectors.length === 1) return vectors[0];
 

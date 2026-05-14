@@ -185,7 +185,11 @@ export class ApiRouter {
         }
         // Persist to .env (create or update GEMINI_API_KEY line)
         let envContent = '';
-        try { envContent = await fs.readFile(ENV_PATH, 'utf-8'); } catch { /* file may not exist */ }
+        try {
+          envContent = await fs.readFile(ENV_PATH, 'utf-8');
+        } catch {
+          /* file may not exist */
+        }
         const lines = envContent.split('\n').filter(Boolean);
         const idx = lines.findIndex((l) => l.trim().startsWith('GEMINI_API_KEY='));
         if (idx >= 0) lines[idx] = `GEMINI_API_KEY=${key.trim()}`;
@@ -361,14 +365,10 @@ export class ApiRouter {
       if (method === 'POST' && pathname === '/api/demo/employees') {
         const body = await parseBody(req);
         const rawCount = body['count'];
-        const count = typeof rawCount === 'number' && Number.isInteger(rawCount) && rawCount > 0
-          ? rawCount
-          : 200;
+        const count = typeof rawCount === 'number' && Number.isInteger(rawCount) && rawCount > 0 ? rawCount : 200;
         const result = await this.db.seedDemoEmployees(count);
         sendJSON(res, 200, {
-          message: result.skipped
-            ? 'Demo employees already exist'
-            : `Seeded ${result.inserted} demo employees`,
+          message: result.skipped ? 'Demo employees already exist' : `Seeded ${result.inserted} demo employees`,
           ...result,
         });
         return;
@@ -694,9 +694,8 @@ export class ApiRouter {
         // `enriched` in the response tells the client whether the LLM
         // contributed descriptions / synonyms / measures.
         if (method === 'POST' && pathname === '/api/conversational/model/generate') {
-          const result = await this.runDatabaseExclusive(
-            'conversational-model-generate',
-            () => this.conv!.generateModel(),
+          const result = await this.runDatabaseExclusive('conversational-model-generate', () =>
+            this.conv!.generateModel(),
           );
           sendJSON(res, 200, { model: result.model, enriched: result.enriched });
           return;
@@ -729,13 +728,11 @@ export class ApiRouter {
                 return { role, text: String(m.text) };
               })
             : [];
-          const collection = typeof body['collection'] === 'string' && body['collection'].length > 0
-            ? body['collection']
-            : undefined;
+          const collection =
+            typeof body['collection'] === 'string' && body['collection'].length > 0 ? body['collection'] : undefined;
           console.log(`Conversational ask: ${question.slice(0, 120)}`);
-          const response = await this.runDatabaseExclusive(
-            'conversational-ask',
-            () => this.conv!.ask(question, history, collection),
+          const response = await this.runDatabaseExclusive('conversational-ask', () =>
+            this.conv!.ask(question, history, collection),
           );
           console.log('Conversational ask complete');
           sendJSON(res, 200, response as unknown as Record<string, unknown>);

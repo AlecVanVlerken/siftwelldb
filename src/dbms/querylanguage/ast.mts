@@ -183,9 +183,4 @@ export type ParsedExplain = {
   query: ParsedSelect;
 };
 
-export type ParsedQuery =
-  | ParsedSelect
-  | ParsedInsert
-  | ParsedDelete
-  | ParsedUpdate
-  | ParsedExplain;
+export type ParsedQuery = ParsedSelect | ParsedInsert | ParsedDelete | ParsedUpdate | ParsedExplain;

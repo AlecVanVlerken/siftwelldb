@@ -3,11 +3,7 @@ import type { SimpleDbms } from '../dbms/simpledbms.mjs';
 import { ConversationalEngine } from '../conversational/conversationalEngine.mjs';
 import { GeminiProvider } from '../conversational/llmProvider.mjs';
 import type { ChatMessage } from '../conversational/llmProvider.mjs';
-import {
-  generateSemanticModel,
-  enrichModelWithLLM,
-  parseSemanticModel,
-} from '../conversational/semanticModel.mjs';
+import { generateSemanticModel, enrichModelWithLLM, parseSemanticModel } from '../conversational/semanticModel.mjs';
 import type { SemanticModel } from '../conversational/semanticModel.mjs';
 import type { AnalyticsResponse } from '../conversational/conversationalEngine.mjs';
 
@@ -122,9 +118,7 @@ export class ConversationalService {
     // The basic introspection step never adds field descriptions; only
     // the LLM enrichment does. So "any field has a description" is a
     // reliable signal that Gemini actually contributed.
-    const enriched = model.explores.some((e) =>
-      !!e.description || e.fields.some((f) => !!f.description),
-    );
+    const enriched = model.explores.some((e) => !!e.description || e.fields.some((f) => !!f.description));
     await this.persistModel(model);
     return { model, enriched };
   }

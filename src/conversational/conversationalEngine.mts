@@ -118,11 +118,7 @@ export class ConversationalEngine {
     // ── Step 3: execute ──────────────────────────────────────────────────
     try {
       data = await this.queryLanguage.execute(query);
-      if (
-        data.length === 0 &&
-        generated.parsed.kind === 'select' &&
-        generated.parsed.where
-      ) {
+      if (data.length === 0 && generated.parsed.kind === 'select' && generated.parsed.where) {
         const repaired = await this.tryRepairEmptyResult(question, query, history);
         if (repaired) {
           query = repaired.query;
@@ -254,7 +250,13 @@ Respond with ONLY a JSON array of strings: ["suggestion1", "suggestion2", ...]`;
     query: string,
     data: QueryResultRow[],
     history: ChatMessage[],
-  ): Promise<{ summary: string; chart: ChartSpec; interpretation?: string; suggestions?: Suggestion[]; anomaly?: string }> {
+  ): Promise<{
+    summary: string;
+    chart: ChartSpec;
+    interpretation?: string;
+    suggestions?: Suggestion[];
+    anomaly?: string;
+  }> {
     const preview = data.slice(0, 30);
     const cols = data.length > 0 ? Object.keys(data[0]) : [];
     const dataStr = JSON.stringify(preview, null, 2);
@@ -355,7 +357,7 @@ Chart guidelines:
 
       const validSuggestionTypes = new Set(['drill', 'compare', 'filter', 'explore']);
       const suggestions: Suggestion[] = Array.isArray(parsed.suggestions)
-        ? (parsed.suggestions)
+        ? parsed.suggestions
             .filter(
               (s): s is { type: string; text: string } =>
                 typeof s === 'object' &&
@@ -367,8 +369,7 @@ Chart guidelines:
             .map((s) => ({ type: s.type as Suggestion['type'], text: s.text }))
         : [];
 
-      const anomaly =
-        typeof parsed.anomaly === 'string' && parsed.anomaly.trim() ? parsed.anomaly.trim() : undefined;
+      const anomaly = typeof parsed.anomaly === 'string' && parsed.anomaly.trim() ? parsed.anomaly.trim() : undefined;
 
       return { summary, chart, interpretation, suggestions: suggestions.length > 0 ? suggestions : undefined, anomaly };
     } catch {

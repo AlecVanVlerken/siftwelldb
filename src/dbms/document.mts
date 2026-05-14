@@ -13,10 +13,7 @@ export function imageMimeMetadataField(fieldName: string): string {
   return `_${fieldName}${IMAGE_MIME_SUFFIX}`;
 }
 
-export function imageMimeForField(
-  fieldName: string,
-  fields: Record<string, unknown>,
-): string | null {
+export function imageMimeForField(fieldName: string, fields: Record<string, unknown>): string | null {
   const value = fields[imageMimeMetadataField(fieldName)];
   return typeof value === 'string' && value.toLowerCase().startsWith('image/') ? value : null;
 }
@@ -24,7 +21,10 @@ export function imageMimeForField(
 /** Returns `true` when a field is image-like by extension or MIME sidecar. */
 export function isImageField(fieldName: string, fields?: Record<string, unknown>): boolean {
   const lower = fieldName.toLowerCase();
-  return IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext)) || (fields ? imageMimeForField(fieldName, fields) !== null : false);
+  return (
+    IMAGE_EXTENSIONS.some((ext) => lower.endsWith(ext)) ||
+    (fields ? imageMimeForField(fieldName, fields) !== null : false)
+  );
 }
 
 export const defaultIndexPredicate: IndexPredicate = (field) =>

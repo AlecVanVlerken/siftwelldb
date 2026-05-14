@@ -38,7 +38,9 @@ describe('format helpers', () => {
     expect(imageMimeFromField('photo.jpg')).toBe('image/jpeg');
     expect(imageMimeFromField('photo', { _photo_mime: 'image/png' })).toBe('image/png');
     expect(imageDataUrlFromValue('photo.jpg', rabbitBase64)).toBe(`data:image/jpeg;base64,${rabbitBase64}`);
-    expect(imageDataUrlFromValue('photo', rabbitBase64, { _photo_mime: 'image/png' })).toBe(`data:image/png;base64,${rabbitBase64}`);
+    expect(imageDataUrlFromValue('photo', rabbitBase64, { _photo_mime: 'image/png' })).toBe(
+      `data:image/png;base64,${rabbitBase64}`,
+    );
     expect(imageDataUrlFromValue('title', rabbitBase64)).toBeNull();
   });
 });
