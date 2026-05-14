@@ -1230,6 +1230,20 @@ function makeTestEmbeddingFn(dim: number): (text: string) => Promise<Float32Arra
   };
 }
 
+function makeTestImageEmbeddingFn(dim: number): (imageData: Buffer) => Promise<Float32Array> {
+  return (imageData: Buffer): Promise<Float32Array> => {
+    const v = new Float32Array(dim);
+    for (let i = 0; i < dim; i++) {
+      let sum = 0;
+      for (const byte of imageData) {
+        sum += Math.cos((byte + i * 23) * 0.1);
+      }
+      v[i] = sum / (imageData.length || 1);
+    }
+    return Promise.resolve(v);
+  };
+}
+
 describe('SimpleDbms – semantic search (HNSW)', () => {
   /** Vector dimension kept small so tests run fast. */
   const DIM = 8;
@@ -1246,6 +1260,7 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
     hnswConfig = {
       dimension: DIM,
       embeddingFn: makeTestEmbeddingFn(DIM),
+      imageEmbeddingFn: makeTestImageEmbeddingFn(DIM),
       // Use small HNSW parameters so the tests stay fast on CI.
       M: 8,
       efConstruction: 32,
@@ -1387,6 +1402,58 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
       expect(JSON.parse(results[0])).toEqual(doc);
     });
 
+    it('supports separate text and image semantic indexes per collection', async () => {
+      const dualDb = await SimpleDbms.create(new MockFile(4096), new MockFile(4000096), {
+        dimension: DIM,
+        embeddingFn: makeTestEmbeddingFn(DIM),
+        imageEmbeddingFn: makeTestImageEmbeddingFn(DIM),
+        M: 8,
+        efConstruction: 32,
+        efSearch: 16,
+        textIndex: {
+          dimension: DIM,
+          embeddingFn: makeTestEmbeddingFn(DIM),
+          M: 8,
+          efConstruction: 32,
+          efSearch: 16,
+        },
+        imageIndex: {
+          dimension: DIM,
+          embeddingFn: makeTestEmbeddingFn(DIM),
+          imageEmbeddingFn: makeTestImageEmbeddingFn(DIM),
+          M: 8,
+          efConstruction: 32,
+          efSearch: 16,
+        },
+      });
+
+      const textOnly = { id: 'text-only', name: 'Ada Lovelace', role: 'mathematician' };
+      const imageOne = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+      const imageTwo = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+      const imageOnly = { id: 'image-only', 'photo.jpg': imageOne.toString('base64') };
+      const mixed = { id: 'mixed', name: 'Grace Hopper', role: 'engineer', 'avatar.png': imageTwo.toString('base64') };
+      await dualDb.insertDocument('people', JSON.stringify(textOnly));
+      await dualDb.insertDocument('people', JSON.stringify(imageOnly));
+      await dualDb.insertDocument('people', JSON.stringify(mixed));
+
+      const textResults = (await dualDb.semanticSearch('people', 'engineer', 10)).map((raw) => {
+        const parsed = JSON.parse(raw) as { id: string };
+        return parsed.id;
+      });
+      expect(textResults).toContain('text-only');
+      expect(textResults).toContain('mixed');
+      expect(textResults).not.toContain('image-only');
+
+      const imageResults = (await dualDb.semanticImageTextSearch('people', 'portrait', 10)).map((raw) => {
+        const parsed = JSON.parse(raw) as { id: string };
+        return parsed.id;
+      });
+      expect(imageResults).toContain('image-only');
+      expect(imageResults).toContain('mixed');
+      expect(imageResults).not.toContain('text-only');
+      await dualDb.close();
+    });
+
     it('indexes a document that mixes public text fields with underscore fields', async () => {
       /**
        * A document that has BOTH public text fields and underscore-prefixed
@@ -1466,6 +1533,24 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
       const ids = results.map((r) => (JSON.parse(r) as { id: string }).id);
       expect(ids).not.toContain('post1');
       expect(ids).toContain('post2');
+    });
+
+    it('re-indexes a replaced document when an image field is added', async () => {
+      const image = Buffer.from('rabbit image bytes');
+      await db.insertDocument('employees', JSON.stringify({ id: 'e1', name: 'Alice', department: 'Engineering' }));
+
+      await db.replaceDocument('employees', 'e1', {
+        id: 'e1',
+        name: 'Alice',
+        department: 'Engineering',
+        'photo.jpg': image.toString('base64'),
+      });
+
+      const results = await db.semanticImageSearch('employees', image, 5);
+      const parsed = results.map((r) => JSON.parse(r) as Record<string, unknown>);
+      expect(parsed).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'e1', 'photo.jpg': image.toString('base64') })]),
+      );
     });
 
     it('deleting the only document leaves the collection empty for search', async () => {

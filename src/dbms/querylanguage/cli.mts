@@ -35,12 +35,37 @@ function printHelp() {
   console.log(`Usage: node cli.mjs [--data path] [--log path] "<QUERY>"
 
 Supported queries:
-  SELECT <fields|*> FROM <collection> [WHERE field = value]
+  SELECT [DISTINCT] <fields|*> FROM <collection>
+    [WHERE <conditions>]
+    [GROUP BY <fields>]
+    [HAVING <aggregate conditions>]
+    [ORDER BY <field> [ASC|DESC], ...]
+    [LIMIT n]
+    [OFFSET k]
   INSERT INTO <collection> VALUES {id: '...', field: ...}
+  UPDATE <collection> SET field = value [, ...] [WHERE <conditions>]
+  DELETE FROM <collection> [WHERE <conditions>] [ORDER BY <field> [ASC|DESC]] [LIMIT n] [OFFSET k]
+  EXPLAIN SELECT ...
+
+WHERE / HAVING:
+  - Comparisons:  =, !=, >, >=, <, <=, LIKE, NOT LIKE, CONTAINS
+  - Null checks:  IS NULL, IS NOT NULL
+  - Sets/ranges:  IN (...), NOT IN (...), BETWEEN, NOT BETWEEN
+  - Logical:      AND, OR, NOT (...), with parentheses for precedence
+  - Values:       quoted strings, numbers, booleans (true/false)
+
+Aggregates (with or without GROUP BY):
+  COUNT(*), COUNT(field), SUM(field), AVG(field), MIN(field), MAX(field)
+  Aggregate arguments may use DISTINCT, e.g. COUNT(DISTINCT country)
 
 Examples:
   node cli.mjs "SELECT * FROM cities"
   node cli.mjs --data my.db --log my.log "SELECT name FROM users WHERE age = 18"
+  node cli.mjs "SELECT country, COUNT(*) AS n FROM cities GROUP BY country ORDER BY n DESC"
+  node cli.mjs "SELECT * FROM cities WHERE (country = 'BE' OR country = 'NL') AND population > 500000"
+  node cli.mjs "SELECT name FROM cities WHERE name LIKE 'A%'"
+  node cli.mjs "UPDATE cities SET population = 530000 WHERE id = 'antwerp'"
+  node cli.mjs "DELETE FROM cities WHERE id = 'gent'"
   node cli.mjs --data my.db --log my.log "INSERT INTO cities VALUES {id: 'Antwerp', population: 530000}"`);
 }
 

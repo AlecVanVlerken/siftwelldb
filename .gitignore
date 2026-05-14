@@ -5,7 +5,7 @@ coverage/
 src/benchmarking/large-dataset/db/
 src/benchmarking/datasets/
 uitleg/
-
+latex/
 .DS_Store
 Thumbs.db
 
@@ -17,6 +17,7 @@ Thumbs.db
 
 testdb
 demo-db/
+converse-db/
 src/benchmarking/results/
 src/benchmarking/hnsw/results/
 src/benchmarking/hnsw/datasets/gist/
@@ -25,4 +26,7 @@ src/benchmarking/hnsw/datasets/sift/
 *.tsbuildinfo
 
 .vscode/
-
+.env
+*.md
+!README.md
+!licences.md

@@ -9,7 +9,8 @@
     "test": "vitest run --dir src --exclude '**/benchmarking/**' --fileParallelism=false",
     "test-build": "vitest run --dir build",
     "coverage": "vitest run --coverage --exclude '**/benchmarking/**'",
-    "build": "tsc --build",
+    "build": "tsc --build && tsc --project tsconfig.webclient-frontend.json",
+    "build:webclient-frontend": "tsc --project tsconfig.webclient-frontend.json",
     "clean": "tsc --build --clean",
     "lint": "eslint src/",
     "lint-fix": "eslint --fix src/",
@@ -74,7 +75,9 @@
   "dependencies": {
     "@emnapi/core": "1.10.0",
     "@emnapi/runtime": "1.10.0",
+    "@google/genai": "2.0.1",
     "@huggingface/transformers": "3.8.1",
+    "dotenv": "17.4.2",
     "koffi": "2.15.2"
   }
 }

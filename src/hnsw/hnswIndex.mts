@@ -616,6 +616,11 @@ export class HNSWIndex {
     const allNodes: HNSWNode[] = [];
     const nodeIdToDocId = new Map<NodeId, number>();
 
+    if (this.graphStorage.entryPoint === null) {
+      this.rustIdx.importFinish(null, 0);
+      return;
+    }
+
     // Pass 1: import live node data into Rust.
     for await (const node of this.graphStorage.scanNodes()) {
       if (node.deleted) continue;

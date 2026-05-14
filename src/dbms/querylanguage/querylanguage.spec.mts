@@ -200,6 +200,13 @@ describe('ORDER BY', () => {
     const pops = rows.map((r) => r['population'] as number);
     expect(pops).toEqual([...pops].sort((a, b) => a - b));
   });
+
+  it('ORDER BY kan sorteren op een niet-geselecteerd veld', async () => {
+    const rows = await ql.execute('SELECT name FROM cities ORDER BY population DESC LIMIT 1');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['name']).toBe('Berlijn');
+    expect(rows[0]).not.toHaveProperty('population');
+  });
 });
 
 // ── LIMIT / OFFSET ────────────────────────────────────────────────────────────
@@ -243,6 +250,13 @@ describe('LIMIT / OFFSET', () => {
   it('LIMIT 0 geeft lege array', async () => {
     const rows = await ql.execute('SELECT * FROM cities LIMIT 0');
     expect(rows).toHaveLength(0);
+  });
+
+  it('LIMIT en OFFSET moeten niet-negatieve integers zijn', async () => {
+    await expect(ql.execute('SELECT * FROM cities LIMIT -1')).rejects.toThrow(/LIMIT must be a non-negative integer/i);
+    await expect(ql.execute('SELECT * FROM cities OFFSET 1.5')).rejects.toThrow(
+      /OFFSET must be a non-negative integer/i,
+    );
   });
 });
 
@@ -322,6 +336,10 @@ describe('Aggregaten zonder GROUP BY', () => {
     expect(rows[0]?.['MIN(population)']).toBe(260000);
     expect(rows[0]?.['MAX(population)']).toBe(3700000);
   });
+
+  it('weigert niet-gegroepeerde velden naast aggregaten', async () => {
+    await expect(ql.execute('SELECT country, COUNT(*) FROM cities')).rejects.toThrow(/GROUP BY/i);
+  });
 });
 
 // ── HAVING ────────────────────────────────────────────────────────────────────
@@ -368,42 +386,32 @@ describe('HAVING', () => {
   });
 });
 
-// ── JOIN ──────────────────────────────────────────────────────────────────────
+// ── Unsupported relational features ──────────────────────────────────────────
 
-describe('JOIN', () => {
+describe('Unsupported relational features', () => {
   let ql: QueryLanguage;
   beforeAll(async () => {
     ql = await setupDb();
   });
 
-  it('JOIN geeft gecombineerde rijen', async () => {
-    const rows = await ql.execute('SELECT * FROM cities JOIN countries ON cities.country = countries.id');
-    expect(rows).toHaveLength(11);
+  it('rejects JOIN', async () => {
+    await expect(ql.execute('SELECT * FROM cities JOIN countries ON cities.country = countries.id')).rejects.toThrow(
+      /JOIN is not supported/i,
+    );
   });
 
-  it('JOIN met WHERE', async () => {
-    // Berlijn, Parijs, Hamburg, München, Brussel = 5 steden > 1000000
-    const rows = await ql.execute(
-      'SELECT * FROM cities JOIN countries ON cities.country = countries.id WHERE population > 1000000',
-    );
-    expect(rows).toHaveLength(5);
+  it('rejects subqueries', async () => {
+    await expect(
+      ql.execute("SELECT id FROM cities WHERE country IN (SELECT id FROM countries WHERE continent = 'Europa')"),
+    ).rejects.toThrow(/Subqueries are not supported/i);
   });
 
-  it('JOIN met ORDER BY en LIMIT', async () => {
-    // name overlapt -> cities.name gebruiken
-    const rows = await ql.execute(
-      'SELECT cities.name, population FROM cities JOIN countries ON cities.country = countries.id ORDER BY population DESC LIMIT 3',
-    );
-    expect(rows).toHaveLength(3);
-    expect(rows[0]?.['cities.name']).toBe('Berlijn');
-  });
-
-  it('JOIN met GROUP BY', async () => {
-    const rows = await ql.execute(
-      'SELECT continent, COUNT(*) FROM cities JOIN countries ON cities.country = countries.id GROUP BY continent',
-    );
-    expect(rows).toHaveLength(1); // Alle landen zijn in Europa
-    expect(rows[0]?.['COUNT(*)']).toBe(11);
+  it('rejects UNION', async () => {
+    await expect(
+      ql.execute(
+        "SELECT country FROM cities WHERE country = 'BE' UNION SELECT country FROM cities WHERE country = 'NL'",
+      ),
+    ).rejects.toThrow(/UNION is not supported/i);
   });
 });
 
@@ -426,6 +434,30 @@ describe('DELETE', () => {
     await ql.execute('DELETE FROM countries');
     const rows = await ql.execute('SELECT * FROM countries');
     expect(rows).toHaveLength(0);
+  });
+
+  it('DELETE ondersteunt ORDER BY en LIMIT', async () => {
+    const ql2 = await setupDb();
+
+    const deleted = await ql2.execute("DELETE FROM cities WHERE country = 'BE' ORDER BY id ASC LIMIT 2");
+    const remainingBe = await ql2.execute("SELECT id FROM cities WHERE country = 'BE' ORDER BY id ASC");
+
+    expect(deleted.map((r) => r['id'])).toEqual(['antwerpen', 'brussel']);
+    expect(remainingBe.map((r) => r['id'])).toEqual(['gent']);
+  });
+
+  it('DELETE kan een begrensde set image rows verwijderen', async () => {
+    const ql2 = await setupDb();
+    await ql2.execute("INSERT INTO photos VALUES {id: 'p3', image: 'base64-c', _image_mime: 'image/png'}");
+    await ql2.execute("INSERT INTO photos VALUES {id: 'p1', image: 'base64-a', _image_mime: 'image/jpeg'}");
+    await ql2.execute("INSERT INTO photos VALUES {id: 'p2', title: 'not an image'}");
+    await ql2.execute("INSERT INTO photos VALUES {id: 'p4', image: 'base64-d', _image_mime: 'image/png'}");
+
+    const deleted = await ql2.execute('DELETE FROM photos WHERE _image_mime IS NOT NULL ORDER BY id ASC LIMIT 2');
+    const remaining = await ql2.execute('SELECT id FROM photos ORDER BY id ASC');
+
+    expect(deleted.map((r) => r['id'])).toEqual(['p1', 'p3']);
+    expect(remaining.map((r) => r['id'])).toEqual(['p2', 'p4']);
   });
 });
 
@@ -535,5 +567,546 @@ describe('Randgevallen', () => {
     const rows = await ql.execute("SELECT * FROM cities WHERE id = 'newcity'");
     expect(rows).toHaveLength(1);
     expect(rows[0]?.['population']).toBe(999);
+  });
+});
+
+// ── Parentheses in WHERE ──────────────────────────────────────────────────────
+
+describe('Parentheses in WHERE', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('parens override default AND-over-OR precedence', async () => {
+    // Without parens: BE (3) OR (FR AND pop > 1M) = 3 + 1 = 4 (Parijs)
+    const noParens = await ql.execute(
+      "SELECT * FROM cities WHERE country = 'BE' OR country = 'FR' AND population > 1000000",
+    );
+    expect(noParens).toHaveLength(4);
+    // With parens: (BE OR FR) AND pop > 1M = Brussel + Parijs = 2
+    const withParens = await ql.execute(
+      "SELECT * FROM cities WHERE (country = 'BE' OR country = 'FR') AND population > 1000000",
+    );
+    expect(withParens).toHaveLength(2);
+    expect(
+      withParens.every(
+        (r) => (r['country'] === 'BE' || r['country'] === 'FR') && (r['population'] as number) > 1_000_000,
+      ),
+    ).toBe(true);
+  });
+
+  it('nested parens work', async () => {
+    const rows = await ql.execute(
+      "SELECT * FROM cities WHERE ((country = 'BE' AND population > 500000) OR (country = 'NL' AND population > 700000))",
+    );
+    // BE > 500k: Brussel, Antwerpen (2). NL > 700k: Amsterdam (1). = 3
+    expect(rows).toHaveLength(3);
+  });
+
+  it('unmatched paren throws', async () => {
+    await expect(ql.execute("SELECT * FROM cities WHERE (country = 'BE'")).rejects.toThrow();
+  });
+});
+
+// ── AS aliases ────────────────────────────────────────────────────────────────
+
+describe('AS aliases', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('SELECT field AS alias renames the column', async () => {
+    const rows = await ql.execute("SELECT name AS city_name FROM cities WHERE id = 'gent'");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveProperty('city_name', 'Gent');
+    expect(rows[0]).not.toHaveProperty('name');
+  });
+
+  it('aggregate AS alias renames the aggregate column', async () => {
+    const rows = await ql.execute('SELECT country, COUNT(*) AS n FROM cities GROUP BY country');
+    expect(rows).toHaveLength(4);
+    const be = rows.find((r) => r['country'] === 'BE');
+    expect(be).toHaveProperty('n', 3);
+    expect(be).not.toHaveProperty('COUNT(*)');
+  });
+
+  it('ORDER BY can reference an aliased column', async () => {
+    const rows = await ql.execute('SELECT country, COUNT(*) AS n FROM cities GROUP BY country ORDER BY n DESC');
+    const counts = rows.map((r) => r['n'] as number);
+    expect(counts).toEqual([...counts].sort((a, b) => b - a));
+  });
+});
+
+// ── LIKE / NOT LIKE ───────────────────────────────────────────────────────────
+
+describe('LIKE / NOT LIKE', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('% matches a suffix', async () => {
+    const rows = await ql.execute("SELECT name FROM cities WHERE name LIKE 'A%'");
+    // Amsterdam, Antwerpen
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => String(r['name']).startsWith('A'))).toBe(true);
+  });
+
+  it('% matches a prefix', async () => {
+    const rows = await ql.execute("SELECT name FROM cities WHERE name LIKE '%dam'");
+    // Amsterdam, Rotterdam
+    expect(rows).toHaveLength(2);
+  });
+
+  it('_ matches one character', async () => {
+    const rows = await ql.execute("SELECT name FROM cities WHERE name LIKE 'Ly__'");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['name']).toBe('Lyon');
+  });
+
+  it('NOT LIKE inverts the match', async () => {
+    const aMatches = await ql.execute("SELECT name FROM cities WHERE name LIKE 'A%'");
+    const aNonMatches = await ql.execute("SELECT name FROM cities WHERE name NOT LIKE 'A%'");
+    expect(aMatches.length + aNonMatches.length).toBe(11);
+  });
+
+  it('LIKE is case-insensitive', async () => {
+    const rows = await ql.execute("SELECT name FROM cities WHERE name LIKE 'gent'");
+    expect(rows).toHaveLength(1);
+  });
+
+  it('CONTAINS zoekt substring case-insensitive', async () => {
+    const rows = await ql.execute("SELECT name FROM cities WHERE name CONTAINS 'dam'");
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r['name']))).toEqual(new Set(['Amsterdam', 'Rotterdam']));
+  });
+});
+
+// ── MIN/MAX on large groups (no spread overflow) ──────────────────────────────
+
+describe('MIN/MAX on large groups', () => {
+  it('handles thousands of values without RangeError', async () => {
+    const ql = await setupDb();
+    // Insert many rows into a fresh collection so the spread limit would trip.
+    const N = 5000;
+    for (let i = 0; i < N; i++) {
+      await ql.execute(`INSERT INTO bignums VALUES {id: 'r${i}', n: ${i}}`);
+    }
+    const rows = await ql.execute('SELECT MIN(n), MAX(n) FROM bignums');
+    expect(rows[0]?.['MIN(n)']).toBe(0);
+    expect(rows[0]?.['MAX(n)']).toBe(N - 1);
+  });
+});
+
+// ── IS NULL / IS NOT NULL ─────────────────────────────────────────────────────
+
+describe('IS NULL / IS NOT NULL', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+    await ql.execute("INSERT INTO drivers VALUES {id: 'd1', name: 'Alice', license: 'B'}");
+    await ql.execute("INSERT INTO drivers VALUES {id: 'd2', name: 'Bob'}");
+    await ql.execute("INSERT INTO drivers VALUES {id: 'd3', name: 'Carol', license: 'C'}");
+  });
+
+  it('IS NULL matches rows where the field is absent', async () => {
+    const rows = await ql.execute('SELECT id FROM drivers WHERE license IS NULL');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['id']).toBe('d2');
+  });
+
+  it('IS NOT NULL matches rows where the field has a value', async () => {
+    const rows = await ql.execute('SELECT id FROM drivers WHERE license IS NOT NULL');
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r['id']))).toEqual(new Set(['d1', 'd3']));
+  });
+
+  it('combines with AND/OR', async () => {
+    const rows = await ql.execute("SELECT id FROM drivers WHERE license IS NULL OR name = 'Alice'");
+    expect(rows).toHaveLength(2);
+  });
+});
+
+// ── IN / NOT IN ───────────────────────────────────────────────────────────────
+
+describe('IN / NOT IN', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('IN filters by string set', async () => {
+    const rows = await ql.execute("SELECT id FROM cities WHERE country IN ('BE', 'NL')");
+    expect(rows).toHaveLength(6);
+    expect(rows.every((r) => String(r['id']).length > 0)).toBe(true);
+  });
+
+  it('IN filters by numeric set', async () => {
+    const rows = await ql.execute('SELECT id FROM cities WHERE population IN (260000, 520000, 550000)');
+    expect(rows).toHaveLength(3);
+  });
+
+  it('NOT IN inverts the set', async () => {
+    const beNl = await ql.execute("SELECT id FROM cities WHERE country IN ('BE', 'NL')");
+    const other = await ql.execute("SELECT id FROM cities WHERE country NOT IN ('BE', 'NL')");
+    expect(beNl.length + other.length).toBe(11);
+  });
+
+  it('empty IN list is rejected', async () => {
+    await expect(ql.execute('SELECT * FROM cities WHERE country IN ()')).rejects.toThrow();
+  });
+
+  it('IN composes with other predicates via AND', async () => {
+    const rows = await ql.execute("SELECT id FROM cities WHERE country IN ('BE', 'NL') AND population > 600000");
+    // Brussel (1.2M), Amsterdam (900k), Rotterdam (650k)
+    expect(rows).toHaveLength(3);
+  });
+});
+
+// ── BETWEEN / NOT BETWEEN ─────────────────────────────────────────────────────
+
+describe('BETWEEN / NOT BETWEEN', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('BETWEEN is inclusive on both bounds', async () => {
+    const rows = await ql.execute('SELECT id FROM cities WHERE population BETWEEN 520000 AND 550000');
+    // Lyon 520k, Antwerpen 530k, Den Haag 550k
+    expect(rows).toHaveLength(3);
+  });
+
+  it('NOT BETWEEN excludes the range', async () => {
+    const within = await ql.execute('SELECT id FROM cities WHERE population BETWEEN 500000 AND 1000000');
+    const outside = await ql.execute('SELECT id FROM cities WHERE population NOT BETWEEN 500000 AND 1000000');
+    expect(within.length + outside.length).toBe(11);
+  });
+
+  it('combines with other predicates', async () => {
+    const rows = await ql.execute(
+      "SELECT id FROM cities WHERE country = 'BE' AND population BETWEEN 200000 AND 600000",
+    );
+    // Gent 260k, Antwerpen 530k
+    expect(rows).toHaveLength(2);
+  });
+});
+
+// ── NOT (prefix) ──────────────────────────────────────────────────────────────
+
+describe('NOT (prefix negation)', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('NOT (expr) negates a comparison', async () => {
+    const beRows = await ql.execute("SELECT id FROM cities WHERE country = 'BE'");
+    const notBe = await ql.execute("SELECT id FROM cities WHERE NOT (country = 'BE')");
+    expect(beRows.length + notBe.length).toBe(11);
+  });
+
+  it('NOT can wrap a compound expression', async () => {
+    const rows = await ql.execute("SELECT id FROM cities WHERE NOT (country = 'BE' OR country = 'FR')");
+    // NL (3) + DE (3) = 6
+    expect(rows).toHaveLength(6);
+  });
+
+  it('double NOT is a no-op', async () => {
+    const single = await ql.execute("SELECT id FROM cities WHERE country = 'BE'");
+    const double = await ql.execute("SELECT id FROM cities WHERE NOT (NOT (country = 'BE'))");
+    expect(double).toHaveLength(single.length);
+  });
+});
+
+// ── SELECT DISTINCT ───────────────────────────────────────────────────────────
+
+describe('SELECT DISTINCT', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('DISTINCT on a single column dedupes', async () => {
+    const rows = await ql.execute('SELECT DISTINCT country FROM cities');
+    expect(rows).toHaveLength(4);
+    expect(new Set(rows.map((r) => r['country']))).toEqual(new Set(['BE', 'NL', 'FR', 'DE']));
+  });
+
+  it('DISTINCT respects WHERE', async () => {
+    const rows = await ql.execute('SELECT DISTINCT country FROM cities WHERE population > 500000');
+    expect(new Set(rows.map((r) => r['country']))).toEqual(new Set(['BE', 'NL', 'FR', 'DE']));
+  });
+
+  it('DISTINCT on multiple columns dedupes by tuple', async () => {
+    // Each city is unique so the row count matches the underlying count.
+    const rows = await ql.execute('SELECT DISTINCT country, name FROM cities');
+    expect(rows).toHaveLength(11);
+  });
+
+  it('DISTINCT with ORDER BY sorts the deduped result', async () => {
+    const rows = await ql.execute('SELECT DISTINCT country FROM cities ORDER BY country ASC');
+    expect(rows.map((r) => r['country'])).toEqual(['BE', 'DE', 'FR', 'NL']);
+  });
+
+  it('DISTINCT with LIMIT applies after dedupe', async () => {
+    const rows = await ql.execute('SELECT DISTINCT country FROM cities ORDER BY country ASC LIMIT 2');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((r) => r['country'])).toEqual(['BE', 'DE']);
+  });
+});
+
+// ── COUNT(DISTINCT field) ────────────────────────────────────────────────────
+
+describe('AGG(DISTINCT field)', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('COUNT(DISTINCT) counts unique values', async () => {
+    const rows = await ql.execute('SELECT COUNT(DISTINCT country) FROM cities');
+    expect(rows[0]?.['COUNT(DISTINCT country)']).toBe(4);
+  });
+
+  it('COUNT(DISTINCT) ignores missing values', async () => {
+    await ql.execute("INSERT INTO partial VALUES {id: 'p1', tag: 'a'}");
+    await ql.execute("INSERT INTO partial VALUES {id: 'p2', tag: 'a'}");
+    await ql.execute("INSERT INTO partial VALUES {id: 'p3', tag: 'b'}");
+    await ql.execute("INSERT INTO partial VALUES {id: 'p4'}");
+    const rows = await ql.execute('SELECT COUNT(DISTINCT tag) FROM partial');
+    expect(rows[0]?.['COUNT(DISTINCT tag)']).toBe(2);
+  });
+
+  it('SUM(DISTINCT) sums unique values only', async () => {
+    await ql.execute("INSERT INTO dupes VALUES {id: 'a', n: 10}");
+    await ql.execute("INSERT INTO dupes VALUES {id: 'b', n: 10}");
+    await ql.execute("INSERT INTO dupes VALUES {id: 'c', n: 20}");
+    const rows = await ql.execute('SELECT SUM(DISTINCT n) FROM dupes');
+    expect(rows[0]?.['SUM(DISTINCT n)']).toBe(30);
+  });
+
+  it('COUNT(DISTINCT) per group', async () => {
+    const rows = await ql.execute(
+      'SELECT country, COUNT(DISTINCT population) FROM cities GROUP BY country ORDER BY country ASC',
+    );
+    expect(rows).toHaveLength(4);
+    expect(rows[0]?.['country']).toBe('BE');
+    expect(rows[0]?.['COUNT(DISTINCT population)']).toBe(3);
+  });
+
+  it('DISTINCT * is rejected', async () => {
+    await expect(ql.execute('SELECT COUNT(DISTINCT *) FROM cities')).rejects.toThrow();
+  });
+
+  it('COUNT(DISTINCT) with AS alias projects under the alias', async () => {
+    const rows = await ql.execute('SELECT COUNT(DISTINCT country) AS n_countries FROM cities');
+    expect(rows[0]?.['n_countries']).toBe(4);
+    expect(rows[0]).not.toHaveProperty('COUNT(DISTINCT country)');
+  });
+});
+
+// ── UPDATE ────────────────────────────────────────────────────────────────────
+
+describe('UPDATE', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('UPDATE with WHERE updates only matching rows', async () => {
+    const result = await ql.execute("UPDATE cities SET population = 999 WHERE country = 'BE'");
+    expect(result).toHaveLength(3);
+    const after = await ql.execute("SELECT population FROM cities WHERE country = 'BE'");
+    expect(after.every((r) => r['population'] === 999)).toBe(true);
+    const other = await ql.execute("SELECT population FROM cities WHERE country = 'NL'");
+    expect(other.every((r) => r['population'] !== 999)).toBe(true);
+  });
+
+  it('UPDATE without WHERE updates every row', async () => {
+    const ql2 = await setupDb();
+    const result = await ql2.execute("UPDATE cities SET country = 'XX'");
+    expect(result).toHaveLength(11);
+    const rows = await ql2.execute('SELECT country FROM cities');
+    expect(rows.every((r) => r['country'] === 'XX')).toBe(true);
+  });
+
+  it('UPDATE supports multiple SET assignments', async () => {
+    const ql2 = await setupDb();
+    await ql2.execute("UPDATE cities SET population = 1, country = 'ZZ' WHERE name = 'Gent'");
+    const row = (await ql2.execute("SELECT * FROM cities WHERE name = 'Gent'"))[0];
+    expect(row['population']).toBe(1);
+    expect(row['country']).toBe('ZZ');
+  });
+
+  it('UPDATE returns 0 rows when WHERE matches nothing', async () => {
+    const ql2 = await setupDb();
+    const result = await ql2.execute("UPDATE cities SET population = 0 WHERE country = 'ZZ'");
+    expect(result).toHaveLength(0);
+  });
+
+  it('UPDATE cannot change id', async () => {
+    const ql2 = await setupDb();
+    await expect(ql2.execute("UPDATE cities SET id = 'newgent' WHERE id = 'gent'")).rejects.toThrow(
+      /cannot change "id"/i,
+    );
+  });
+
+  it('UPDATE with IN filter', async () => {
+    const ql2 = await setupDb();
+    const result = await ql2.execute("UPDATE cities SET population = 1 WHERE country IN ('BE', 'NL')");
+    expect(result).toHaveLength(6);
+  });
+
+  it('UPDATE parses kind as "update"', () => {
+    const parsed = ql.parse("UPDATE cities SET population = 1 WHERE id = 'gent'");
+    expect(parsed.kind).toBe('update');
+  });
+
+  it('UPDATE with no SET fields is rejected', async () => {
+    await expect(ql.execute("UPDATE cities WHERE id = 'gent'")).rejects.toThrow();
+  });
+});
+
+// ── Secondary-index seek correctness ──────────────────────────────────────────
+
+describe('Secondary-index seek', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('id = X point lookup returns the right row', async () => {
+    const rows = await ql.execute("SELECT * FROM cities WHERE id = 'gent'");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['name']).toBe('Gent');
+  });
+
+  it('field = X on a secondary index returns all matches and nothing else', async () => {
+    const rows = await ql.execute("SELECT id FROM cities WHERE country = 'BE'");
+    expect(rows).toHaveLength(3);
+    expect(new Set(rows.map((r) => r['id']))).toEqual(new Set(['gent', 'brussel', 'antwerpen']));
+  });
+
+  it('field = X on a non-indexed field falls back to full scan correctly', async () => {
+    await ql.execute("INSERT INTO cities VALUES {id: 'nieuwpoort', _tag: 'coast', country: 'BE', population: 11000}");
+    const rows = await ql.execute("SELECT id FROM cities WHERE _tag = 'coast'");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['id']).toBe('nieuwpoort');
+  });
+
+  it('numeric field equality seek works', async () => {
+    const ql2 = await setupDb();
+    await ql2.execute("INSERT INTO twins VALUES {id: 'a', n: 5}");
+    await ql2.execute("INSERT INTO twins VALUES {id: 'b', n: 5}");
+    await ql2.execute("INSERT INTO twins VALUES {id: 'c', n: 7}");
+    const rows = await ql2.execute('SELECT id FROM twins WHERE n = 5');
+    expect(rows).toHaveLength(2);
+  });
+
+  it('field equality + AND combines with row-level WHERE check', async () => {
+    const rows = await ql.execute("SELECT id FROM cities WHERE country = 'BE' AND population > 500000");
+    // BE > 500k: Brussel (1.2M), Antwerpen (530k) → 2.
+    expect(rows).toHaveLength(2);
+  });
+});
+
+// ── ORDER BY / DISTINCT validation and EXPLAIN ───────────────────────────────
+
+describe('ORDER BY validation and EXPLAIN', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('weigert DISTINCT met ORDER BY op niet-geselecteerd veld', async () => {
+    await expect(ql.execute('SELECT DISTINCT country FROM cities ORDER BY population DESC')).rejects.toThrow(
+      /ORDER BY field/i,
+    );
+  });
+
+  it('EXPLAIN toont een eenvoudig uitvoeringsplan', async () => {
+    const rows = await ql.execute("EXPLAIN SELECT id FROM cities WHERE country = 'BE' ORDER BY id ASC LIMIT 2");
+    expect(rows.some((r) => r['stage'] === 'scan')).toBe(true);
+    expect(rows.some((r) => r['stage'] === 'sort')).toBe(true);
+    expect(rows.some((r) => r['stage'] === 'slice')).toBe(true);
+  });
+});
+
+// ── Type semantics ───────────────────────────────────────────────────────────
+
+describe('Type semantics', () => {
+  let ql: QueryLanguage;
+  beforeAll(async () => {
+    ql = await setupDb();
+  });
+
+  it('weigert range-vergelijkingen tussen verschillende types', async () => {
+    await expect(ql.execute("SELECT id FROM cities WHERE population > '30'")).rejects.toThrow(/different types/i);
+  });
+});
+
+// ── Aggregator semantics (post-feedback fixes) ────────────────────────────────
+
+describe('Aggregator semantics', () => {
+  it('MIN / MAX work on strings', async () => {
+    const ql = await setupDb();
+    const rows = await ql.execute('SELECT MIN(name), MAX(name) FROM cities');
+    // Code-point order: A < B < ... < R, so Amsterdam is smallest,
+    // Rotterdam is largest (München's M is code-point 0x4D, R is 0x52).
+    expect(rows[0]?.['MIN(name)']).toBe('Amsterdam');
+    expect(rows[0]?.['MAX(name)']).toBe('Rotterdam');
+  });
+
+  it('SUM on empty input returns undefined (was 0)', async () => {
+    const ql = await setupDb();
+    const rows = await ql.execute("SELECT SUM(population) FROM cities WHERE country = 'XX'");
+    expect(rows[0]?.['SUM(population)']).toBeUndefined();
+  });
+
+  it('AVG on empty input returns undefined (was 0)', async () => {
+    const ql = await setupDb();
+    const rows = await ql.execute("SELECT AVG(population) FROM cities WHERE country = 'XX'");
+    expect(rows[0]?.['AVG(population)']).toBeUndefined();
+  });
+
+  it('MIN / MAX on empty input returns undefined (was 0)', async () => {
+    const ql = await setupDb();
+    const rows = await ql.execute("SELECT MIN(population), MAX(population) FROM cities WHERE country = 'XX'");
+    expect(rows[0]?.['MIN(population)']).toBeUndefined();
+    expect(rows[0]?.['MAX(population)']).toBeUndefined();
+  });
+
+  it('HAVING ... IS NULL matches empty-group aggregates', async () => {
+    const ql = await setupDb();
+    await ql.execute("INSERT INTO partial VALUES {id: 'p1', team: 'A', score: 10}");
+    await ql.execute("INSERT INTO partial VALUES {id: 'p2', team: 'A', score: 20}");
+    await ql.execute("INSERT INTO partial VALUES {id: 'p3', team: 'B'}");
+    // Team B has no numeric scores → AVG is null → HAVING matches.
+    const rows = await ql.execute('SELECT team, AVG(score) FROM partial GROUP BY team HAVING AVG(score) IS NULL');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.['team']).toBe('B');
+  });
+
+  it('GROUP BY key distinguishes null / undefined / empty string', async () => {
+    const ql = await setupDb();
+    // Three rows with three different "missing-ish" values for `tag`.
+    await ql.execute("INSERT INTO groups VALUES {id: 'a', tag: ''}");
+    await ql.execute("INSERT INTO groups VALUES {id: 'b'}"); // tag undefined
+    await ql.execute("INSERT INTO groups VALUES {id: 'c', tag: ''}");
+    const rows = await ql.execute('SELECT tag, COUNT(*) FROM groups GROUP BY tag');
+    // Empty-string and missing must NOT collapse into one group.
+    expect(rows).toHaveLength(2);
+  });
+
+  it("GROUP BY key doesn't collide on `'a|b'` vs `'a'` + `'b'`", async () => {
+    const ql = await setupDb();
+    await ql.execute("INSERT INTO twokey VALUES {id: 'r1', a: 'a|b', b: 'c'}");
+    await ql.execute("INSERT INTO twokey VALUES {id: 'r2', a: 'a', b: 'b|c'}");
+    const rows = await ql.execute('SELECT a, b, COUNT(*) FROM twokey GROUP BY a, b');
+    // Two distinct group keys — the old `|`-joined string would collide.
+    expect(rows).toHaveLength(2);
   });
 });
