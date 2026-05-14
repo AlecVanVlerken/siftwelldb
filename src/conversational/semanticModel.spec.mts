@@ -67,6 +67,7 @@ describe('generateSemanticModel', () => {
     fs.closeSync(fs.openSync(logPath, 'w'));
 
     const db = await SimpleDbms.create(new RealFile(dataPath), new RealFile(logPath));
+    const rabbitBase64 = fs.readFileSync(path.resolve('rabbit.jpg')).toString('base64');
     await db.insertDocumentObject('employees', {
       id: 'e1',
       name: 'Alice',
@@ -74,6 +75,7 @@ describe('generateSemanticModel', () => {
       salary: 120000,
       department: 'Engineering',
       city: 'Leuven',
+      'photo.jpg': rabbitBase64,
     });
     await db.insertDocumentObject('employees', {
       id: 'e2',
@@ -97,6 +99,12 @@ describe('generateSemanticModel', () => {
         expect.objectContaining({ name: 'salary', type: 'number' }),
         expect.objectContaining({ name: 'department', synonyms: expect.arrayContaining(['team']) }),
         expect.objectContaining({ name: 'city', synonyms: expect.arrayContaining(['location']) }),
+        expect.objectContaining({
+          name: 'photo.jpg',
+          type: 'string',
+          synonyms: expect.arrayContaining(['image']),
+          tags: expect.arrayContaining([expect.stringContaining('image field')]),
+        }),
       ]),
     );
     expect(employees?.measures).toEqual(
@@ -107,6 +115,8 @@ describe('generateSemanticModel', () => {
     );
     expect(prompt).toContain('values: Engineering, Sales');
     expect(prompt).toContain('values: Leuven, Gent');
+    expect(prompt).toContain('image field: base64-encoded media');
+    expect(prompt).not.toContain(rabbitBase64.slice(0, 40));
     await db.close();
   });
 });

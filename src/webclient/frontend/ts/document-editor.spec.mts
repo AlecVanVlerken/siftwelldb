@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { buildDocumentTemplate, parseJsonObjectInput, validateDocumentInput } from './document-editor.js';
+import {
+  buildDocumentTemplate,
+  compactDocumentImages,
+  imagePlaceholder,
+  parseJsonObjectInput,
+  validateDocumentInput,
+} from './document-editor.js';
 
 describe('document-editor helpers', () => {
   it('parses only top-level JSON objects', () => {
@@ -20,6 +26,45 @@ describe('document-editor helpers', () => {
     expect(validateDocumentInput('{"id":"a","name":"Alice"}', { existingId: 'a' })).toEqual({
       ok: true,
       value: { id: 'a', name: 'Alice' },
+    });
+  });
+
+  it('normalizes image data URLs to raw base64 storage values', () => {
+    expect(validateDocumentInput('{"id":"a","photo.jpg":"data:image/jpeg;base64,abc123"}')).toEqual({
+      ok: true,
+      value: { id: 'a', 'photo.jpg': 'abc123' },
+    });
+  });
+
+  it('compacts image payloads to placeholders and restores them on validation', () => {
+    const compacted = compactDocumentImages({ id: 'a', title: 'Rabbit', 'photo.jpg': 'abc123' });
+
+    expect(compacted).toEqual({
+      document: { id: 'a', title: 'Rabbit', 'photo.jpg': imagePlaceholder('photo.jpg', 'abc123') },
+      imagePayloads: { 'photo.jpg': 'abc123' },
+    });
+    expect(validateDocumentInput(JSON.stringify(compacted.document), { imagePayloads: compacted.imagePayloads })).toEqual({
+      ok: true,
+      value: { id: 'a', title: 'Rabbit', 'photo.jpg': 'abc123' },
+    });
+  });
+
+  it('allows image fields to be deleted by removing the placeholder field', () => {
+    const compacted = compactDocumentImages({ id: 'a', 'photo.jpg': 'abc123' });
+
+    expect(validateDocumentInput('{"id":"a"}', { imagePayloads: compacted.imagePayloads })).toEqual({
+      ok: true,
+      value: { id: 'a' },
+    });
+  });
+
+  it('keeps replacement image payloads instead of stale placeholders', () => {
+    const compacted = compactDocumentImages({ id: 'a', 'photo.jpg': 'abc123' });
+    const edited = { ...compacted.document, 'photo.jpg': 'data:image/jpeg;base64,new456' };
+
+    expect(validateDocumentInput(JSON.stringify(edited), { imagePayloads: compacted.imagePayloads })).toEqual({
+      ok: true,
+      value: { id: 'a', 'photo.jpg': 'new456' },
     });
   });
 

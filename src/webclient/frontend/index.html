@@ -66,8 +66,22 @@
       </div>
       <label>Document JSON</label>
       <textarea id="doc-json" spellcheck="false" style="min-height:330px;font-family:Consolas,monospace;font-size:12px;"></textarea>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;">
+        <div>
+          <label>Attach image field</label>
+          <input type="text" id="doc-image-field" placeholder="e.g. photo.jpg"/>
+        </div>
+        <label class="tbtn" style="border:1px solid var(--bd);background:var(--bg2);height:32px;justify-content:center;">
+          Choose image
+          <input type="file" id="doc-image-file" accept="image/*" style="display:none;"/>
+        </label>
+      </div>
+      <div id="doc-image-preview" class="hidden" style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--t3);">
+        <img alt="" style="max-width:72px;max-height:54px;border:1px solid var(--bd);border-radius:3px;object-fit:cover;"/>
+        <span></span>
+      </div>
       <div class="err hidden" id="doc-err"></div>
-      <p style="margin-bottom:0;font-size:12px;">This uses the object API directly, so string escaping follows JSON rules instead of query-language literals.</p>
+      <p style="margin-bottom:0;font-size:12px;">This uses the object API directly. Image fields should end in <code>.jpg</code>, <code>.png</code>, or <code>.webp</code>; the saved JSON stores raw base64 without a data URL prefix.</p>
     </div>
     <div class="modal-foot">
       <button class="sec" data-close="modal-document">Cancel</button>

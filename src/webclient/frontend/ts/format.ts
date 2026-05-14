@@ -42,6 +42,22 @@ export function isImageField(key: string): boolean {
     || /\.(jpe?g|png|gif|webp)$/i.test(key);
 }
 
+export function imageMimeFromField(key: string): string | null {
+  const lower = key.toLowerCase();
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  return null;
+}
+
+export function imageDataUrlFromValue(key: string, value: unknown): string | null {
+  if (!isImageField(key) || typeof value !== 'string' || value.length === 0) return null;
+  if (value.startsWith('data:image/')) return value;
+  const mime = imageMimeFromField(key);
+  return mime ? `data:${mime};base64,${value}` : null;
+}
+
 export function detectType(value: unknown): 'null' | 'number' | 'boolean' | 'array' | 'object' | 'string' {
   if (value === null || value === undefined) return 'null';
   if (typeof value === 'number') return 'number';
