@@ -30,12 +30,13 @@ export class ConversationalService {
   private engine: ConversationalEngine | null = null;
 
   constructor() {
-    this.apiKey = process.env['GEMINI_API_KEY'] ?? null;
+    const raw = process.env['GEMINI_API_KEY'];
+    this.apiKey = raw && raw.trim() ? raw.trim() : null;
   }
 
-  /** True when a Gemini API key is configured. */
+  /** True when a Gemini API key is configured. Empty / whitespace-only strings count as "no key". */
   get llmAvailable(): boolean {
-    return this.apiKey !== null;
+    return this.apiKey !== null && this.apiKey.length > 0;
   }
 
   /**
@@ -43,8 +44,9 @@ export class ConversationalService {
    * Rebuilds the engine immediately if a model is already loaded.
    */
   setApiKey(key: string): void {
-    this.apiKey = key || null;
-    process.env['GEMINI_API_KEY'] = key;
+    const trimmed = key.trim();
+    this.apiKey = trimmed.length > 0 ? trimmed : null;
+    process.env['GEMINI_API_KEY'] = trimmed;
     this.rebuildEngine();
   }
 

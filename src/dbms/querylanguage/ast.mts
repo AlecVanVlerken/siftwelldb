@@ -7,7 +7,7 @@ export type QueryResultRow = Record<string, FieldValue | undefined>;
 
 // ── WHERE Expression Types ───────────────────────────────────────────────────
 
-export type ComparisonOperator = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'LIKE' | 'NOT LIKE';
+export type ComparisonOperator = '=' | '!=' | '>' | '>=' | '<' | '<=' | 'LIKE' | 'NOT LIKE' | 'CONTAINS';
 export type LogicalOperator = 'AND' | 'OR';
 
 /**
@@ -35,15 +35,12 @@ export type IsNullExpression = {
 
 /**
  * `field [NOT] IN (v1, v2, ...)` — set membership.
- *
- * Subqueries are represented by `values: ParsedSelect`; the executor
- * runs them once up-front and turns the result into a Set.
  */
 export type InExpression = {
   type: 'in';
   field: string;
   negated: boolean;
-  values: FieldValue[] | ParsedSelect;
+  values: FieldValue[];
 };
 
 /**
@@ -169,16 +166,8 @@ export type ParsedSelect = {
   kind: 'select';
   fields: '*' | FieldSelector[];
   collection: string;
-  /** `SELECT DISTINCT ...` — dedupe the projected rows after WHERE/JOIN. */
+  /** `SELECT DISTINCT ...` — dedupe the projected rows after WHERE. */
   distinct?: boolean;
-  /**
-   * Join chain. Each entry joins the running result with one new
-   * collection. Resolved left-to-right: `FROM A JOIN B JOIN C` means
-   * `(A JOIN B) JOIN C`. Always present even for a single join — the
-   * compatibility alias `.join` (singular) was removed when multi-join
-   * support landed.
-   */
-  joins?: JoinClause[];
   where?: WhereExpression;
   groupBy?: GroupByClause;
   having?: HavingExpression;
@@ -216,22 +205,9 @@ export type ParsedUpdate = {
   where?: WhereExpression;
 };
 
-/**
- * `<select> UNION [ALL] <select> [UNION ...]` — concatenation of two or
- * more SELECTs with the same column shape.
- *
- *   - `UNION` deduplicates rows (per standard SQL).
- *   - `UNION ALL` keeps duplicates.
- *
- * The mode applies to every adjacent pair; we model it as a flat array
- * of branches with one mode flag because mixing UNION and UNION ALL in
- * one statement is rare and standard-ambiguous in SQL anyway.
- */
-export type ParsedUnion = {
-  kind: 'union';
-  /** `true` for `UNION ALL` (keep duplicates), `false` for `UNION`. */
-  all: boolean;
-  branches: ParsedSelect[];
+export type ParsedExplain = {
+  kind: 'explain';
+  query: ParsedSelect;
 };
 
 export type ParsedQuery =
@@ -239,4 +215,4 @@ export type ParsedQuery =
   | ParsedInsert
   | ParsedDelete
   | ParsedUpdate
-  | ParsedUnion;
+  | ParsedExplain;

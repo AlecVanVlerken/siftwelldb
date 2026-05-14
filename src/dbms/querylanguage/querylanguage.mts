@@ -7,7 +7,6 @@
 //   parser.mts       — `parse()` and the WHERE/HAVING expression parser
 //   expressions.mts  — value parsing, WHERE evaluation, `LIKE`
 //   aggregator.mts   — GROUP BY + aggregate compute
-//   join.mts         — INNER / NATURAL / CROSS join paths
 //   projection.mts   — SELECT-list projection (with AS aliases)
 //   planner.mts      — field-equality + id-equality cursor specialisation
 //   executor.mts     — pipelines that tie everything together
@@ -18,30 +17,21 @@
 //
 // Extended SQL-like surface:
 //   SELECT [DISTINCT] <fields|*> FROM <collection>
-//     [<join-clause> ...]                 -- zero or more, chain by repeating
 //     [WHERE <conditions>]
 //     [GROUP BY <fields>]
 //     [HAVING <aggregate conditions>]
 //     [ORDER BY <field> [ASC|DESC], ...]
 //     [LIMIT n]
 //     [OFFSET k]
-//   <select> UNION [ALL] <select>         -- concatenate result sets
+//   EXPLAIN SELECT ...
 //   INSERT INTO <collection> VALUES {id: '...', field: ...}
 //   UPDATE <collection> SET f1 = v1 [, f2 = v2, ...] [WHERE <conditions>]
 //   DELETE FROM <collection> [WHERE <conditions>]
 //
-// <join-clause> ::=
-//     [INNER] JOIN <collection> ON <left> = <right>
-//   | NATURAL JOIN <collection>
-//   | CROSS JOIN <collection>
-//   (LEFT / RIGHT / FULL OUTER joins are intentionally not supported.
-//    A bare `JOIN x` with no ON is a syntax error.)
-//
 // WHERE/HAVING:
-//   - Comparisons:  =, !=, >, >=, <, <=, LIKE, NOT LIKE
+//   - Comparisons:  =, !=, >, >=, <, <=, LIKE, NOT LIKE, CONTAINS
 //   - Null check:   field IS NULL, field IS NOT NULL
 //   - Set test:     field IN (v1, v2, ...), field NOT IN (v1, ...)
-//   - Subquery:     field IN (SELECT ... FROM ...)
 //   - Range test:   field BETWEEN low AND high, field NOT BETWEEN low AND high
 //   - Negation:     NOT (expr)
 //   - Logical:      AND, OR
@@ -65,7 +55,7 @@ export type {
   ParsedInsert,
   ParsedUpdate,
   ParsedDelete,
-  ParsedUnion,
+  ParsedExplain,
   UpdateAssignment,
 } from './ast.mjs';
 export type {
@@ -79,8 +69,6 @@ export type {
   HavingExpression,
   InExpression,
   IsNullExpression,
-  JoinClause,
-  JoinType,
   LogicalOperator,
   NotExpression,
   OrderByClause,
@@ -113,9 +101,8 @@ export class QueryLanguage {
   }
 
   /**
-   * Same as {@link executeOnRows} but also loads the right side of a
-   * JOIN on demand, so the caller only has to pre-load the *left*
-   * collection.
+   * Compatibility alias for callers that pre-load rows before running a
+   * parsed SELECT. Joins are no longer part of the supported language.
    */
   async executeWithPreloadedRows(
     preloadedRows: QueryResultRow[],

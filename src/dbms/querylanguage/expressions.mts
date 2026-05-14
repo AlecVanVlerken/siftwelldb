@@ -52,10 +52,9 @@ export function parseValue(raw: string): FieldValue {
  * systems, ICU versions, and runtime locales — a query run in a Dutch
  * locale produces the same row order as one run in en_US.
  *
- * Numbers compare numerically, booleans by 0/1. Mixed types fall back
- * to a stringified compare so the engine never silently returns 0 for
- * unrelated values. Complex objects throw — indexable fields are always
- * scalar so this should never trigger in a healthy query.
+ * Numbers compare numerically, booleans by 0/1. Mixed scalar types are
+ * rejected instead of silently coerced; in a schemaless store, coercion
+ * tends to hide bad data and produce surprising analytics.
  */
 export function compareValues(a: unknown, b: unknown): number {
   if (a === null && b === null) return 0;
@@ -71,18 +70,7 @@ export function compareValues(a: unknown, b: unknown): number {
     throw new Error('Cannot compare complex objects in WHERE clause');
   }
 
-  const toComparableString = (v: unknown): string => {
-    if (typeof v === 'string') return v;
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-    try {
-      const json = JSON.stringify(v);
-      if (json !== undefined) return json;
-    } catch {
-      // fall through
-    }
-    return String(v);
-  };
-  return compareStringsByCodePoint(toComparableString(a), toComparableString(b));
+  throw new Error(`Cannot compare values of different types: ${typeof a} and ${typeof b}`);
 }
 
 /**
@@ -117,12 +105,16 @@ function evaluateComparison(doc: Record<string, unknown>, expr: ComparisonExpres
     case '!=':
       return actual !== expected;
     case '>':
+      if (actual === undefined || actual === null) return false;
       return compareValues(actual, expected) > 0;
     case '>=':
+      if (actual === undefined || actual === null) return false;
       return compareValues(actual, expected) >= 0;
     case '<':
+      if (actual === undefined || actual === null) return false;
       return compareValues(actual, expected) < 0;
     case '<=':
+      if (actual === undefined || actual === null) return false;
       return compareValues(actual, expected) <= 0;
     case 'LIKE': {
       const re = expr.regex ?? likeToRegex(String(expected));
@@ -131,6 +123,10 @@ function evaluateComparison(doc: Record<string, unknown>, expr: ComparisonExpres
     case 'NOT LIKE': {
       const re = expr.regex ?? likeToRegex(String(expected));
       return typeof actual !== 'string' || !re.test(actual);
+    }
+    case 'CONTAINS': {
+      const re = expr.regex ?? likeToRegex(`%${String(expected)}%`);
+      return typeof actual === 'string' && re.test(actual);
     }
     default: {
       const exhaustiveCheck: never = expr.operator;

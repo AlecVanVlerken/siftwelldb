@@ -13,6 +13,19 @@ const ENV_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../
 
 type JsonBody = Record<string, unknown>;
 
+const DEFAULT_JSON_BODY_LIMIT_BYTES = 5 * 1024 * 1024;
+const IMAGE_JSON_BODY_LIMIT_BYTES = 15 * 1024 * 1024;
+
+export class ApiHttpError extends Error {
+  constructor(
+    readonly statusCode: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ApiHttpError';
+  }
+}
+
 /**
  * Parse JSON body from an incoming HTTP request.
  *
@@ -21,21 +34,47 @@ type JsonBody = Record<string, unknown>;
  *
  * @author Alexandre-Gatien Bienfet
  */
-async function parseBody(req: http.IncomingMessage): Promise<JsonBody> {
+async function parseBody(
+  req: http.IncomingMessage,
+  maxBytes: number = DEFAULT_JSON_BODY_LIMIT_BYTES,
+): Promise<JsonBody> {
   return new Promise((resolve, reject) => {
     let body = '';
+    let settled = false;
     req.on('data', (chunk: Buffer) => {
+      if (settled) return;
       body += chunk.toString();
+      if (Buffer.byteLength(body, 'utf-8') > maxBytes) {
+        settled = true;
+        reject(new ApiHttpError(413, 'Request body too large'));
+      }
     });
     req.on('end', () => {
+      if (settled) return;
+      settled = true;
       try {
         resolve((body ? (JSON.parse(body) as JsonBody) : {}) satisfies JsonBody);
       } catch {
-        reject(new Error('Invalid JSON'));
+        reject(new ApiHttpError(400, 'Invalid JSON'));
       }
     });
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
+}
+
+export function readLimit(url: URL, defaultValue: number, maxValue: number): number {
+  const raw = url.searchParams.get('limit');
+  if (raw === null || raw === '') return defaultValue;
+  if (!/^\d+$/.test(raw)) throw new ApiHttpError(400, 'Invalid "limit" parameter');
+  const limit = Number.parseInt(raw, 10);
+  if (limit < 1 || limit > maxValue) {
+    throw new ApiHttpError(400, `"limit" must be between 1 and ${maxValue}`);
+  }
+  return limit;
 }
 
 /**
@@ -403,14 +442,16 @@ export class ApiRouter {
       if (method === 'GET' && searchMatch) {
         const collection = decodeURIComponent(searchMatch[1]);
         const query = url.searchParams.get('q');
-        const limit = parseInt(url.searchParams.get('limit') ?? '10', 10);
+        const limit = readLimit(url, 10, 100);
 
         if (!query) {
           sendError(res, 400, 'Missing search query "q" parameter');
           return;
         }
 
+        console.log(`Semantic text search: collection=${collection}, limit=${limit}`);
         const documents = await this.db.semanticSearch(collection, query, limit);
+        console.log(`Semantic text search complete: ${documents.length} result(s)`);
         sendJSON(res, 200, { documents });
         return;
       }
@@ -419,8 +460,8 @@ export class ApiRouter {
       const searchImageMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search\/image$/);
       if (method === 'POST' && searchImageMatch) {
         const collection = decodeURIComponent(searchImageMatch[1]);
-        const limit = parseInt(url.searchParams.get('limit') ?? '10', 10);
-        const body = await parseBody(req);
+        const limit = readLimit(url, 10, 100);
+        const body = await parseBody(req, IMAGE_JSON_BODY_LIMIT_BYTES);
         const base64Image = body['image'];
 
         if (typeof base64Image !== 'string' || !base64Image) {
@@ -429,7 +470,9 @@ export class ApiRouter {
         }
 
         const imageBuffer = Buffer.from(base64Image, 'base64');
+        console.log(`Semantic image search: collection=${collection}, limit=${limit}`);
         const documents = await this.db.semanticImageSearch(collection, imageBuffer, limit);
+        console.log(`Semantic image search complete: ${documents.length} result(s)`);
         sendJSON(res, 200, { documents });
         return;
       }
@@ -439,7 +482,7 @@ export class ApiRouter {
         const collection = decodeURIComponent(collectionMatch[1]);
         const iterableKey = url.searchParams.get('iterableKey') ?? 'id';
         const cursor = url.searchParams.get('cursor') ?? undefined;
-        const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
+        const limit = readLimit(url, 100, 10000);
 
         const result = await this.db.getDocuments(collection, iterableKey, cursor, limit);
         sendJSON(res, 200, result);
@@ -599,12 +642,14 @@ export class ApiRouter {
             return;
           }
           const history = Array.isArray(body['history'])
-            ? (body['history'] as { role: string; text: string }[]).map((m) => ({
-                role: (m.role === 'assistant' ? 'assistant' : 'user') as 'user' | 'assistant',
-                text: String(m.text),
-              }))
+            ? (body['history'] as { role: string; text: string }[]).map((m) => {
+                const role: 'user' | 'assistant' = m.role === 'assistant' ? 'assistant' : 'user';
+                return { role, text: String(m.text) };
+              })
             : [];
+          console.log(`Conversational ask: ${question.slice(0, 120)}`);
           const response = await this.conv.ask(question, history);
+          console.log('Conversational ask complete');
           sendJSON(res, 200, response as unknown as Record<string, unknown>);
           return;
         }
@@ -616,6 +661,10 @@ export class ApiRouter {
       // No route matched
       sendError(res, 404, 'API endpoint not found');
     } catch (error) {
+      if (error instanceof ApiHttpError) {
+        sendError(res, error.statusCode, error.message);
+        return;
+      }
       console.error('API Error:', error);
       sendError(res, 500, `Internal server error: ${String(error)}`);
     }

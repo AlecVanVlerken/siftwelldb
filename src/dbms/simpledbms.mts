@@ -424,7 +424,7 @@ export class SimpleDbms {
       }
     })();
 
-    if (!indexed || field === 'id') {
+    if (field === 'id') {
       // For `id` equality the existing single-key cursor is already a
       // direct seek; we keep the same wrapper so callers can treat
       // both paths identically (they both stop after one doc here).
@@ -442,6 +442,20 @@ export class SimpleDbms {
             } catch {
               yield json;
             }
+          }
+        },
+      };
+    }
+
+    if (!indexed) {
+      const inner = this.dbmsback.cursor(collection, 'id', undefined);
+      return {
+        async *[Symbol.asyncIterator]() {
+          const cursor = await inner;
+          for await (const document of cursor) {
+            const json = documentToJSON(document);
+            const parsed = JSON.parse(json) as Record<string, unknown>;
+            if (parsed[field] === value) yield json;
           }
         },
       };

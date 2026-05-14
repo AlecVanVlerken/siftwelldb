@@ -5,18 +5,15 @@
 import type { SimpleDbms } from '../simpledbms.mjs';
 import { type FieldValue } from '../document.mjs';
 import type {
-  HavingExpression,
   OrderByClause,
   ParsedQuery,
   ParsedSelect,
   QueryResultRow,
-  WhereExpression,
 } from './ast.mjs';
 import { compareValues, evaluateWhere } from './expressions.mjs';
 import { executeGroupBy } from './aggregator.mjs';
-import { executeJoinChain, loadCollection } from './join.mjs';
 import { project } from './projection.mjs';
-import { planCursor } from './planner.mjs';
+import { planCursor, type CursorPlan } from './planner.mjs';
 import { parse } from './parser.mjs';
 
 /**
@@ -33,6 +30,17 @@ export function sortResults(rows: QueryResultRow[], orderBy: OrderByClause[]): Q
   });
 }
 
+function resolveOrderField(field: string, parsed: ParsedSelect): string {
+  if (parsed.fields === '*') return field;
+  return parsed.fields.find((f) => f.alias === field)?.expr ?? field;
+}
+
+function sortForSelect(rows: QueryResultRow[], parsed: ParsedSelect): QueryResultRow[] {
+  if (!parsed.orderBy || parsed.orderBy.length === 0) return rows;
+  const resolved = parsed.orderBy.map((o) => ({ ...o, field: resolveOrderField(o.field, parsed) }));
+  return sortResults(rows, resolved);
+}
+
 /**
  * Apply the in-memory tail of the SELECT pipeline:
  * `WHERE → GROUP BY → project → ORDER BY → OFFSET/LIMIT`.
@@ -42,24 +50,7 @@ export function sortResults(rows: QueryResultRow[], orderBy: OrderByClause[]): Q
  * re-implementing the post-load stages.
  */
 export function executeOnRows(rows: QueryResultRow[], parsed: ParsedSelect): QueryResultRow[] {
-  let results = parsed.where
-    ? rows.filter((r) => evaluateWhere(r as Record<string, FieldValue>, parsed.where!))
-    : rows;
-
-  if (parsed.groupBy) {
-    results = executeGroupBy(results, parsed.groupBy, parsed.having);
-  }
-  results = results.map((row) => project(row as Record<string, FieldValue>, parsed.fields));
-
-  if (parsed.distinct) {
-    results = dedupeRows(results);
-  }
-
-  if (parsed.orderBy && parsed.orderBy.length > 0) {
-    results = sortResults(results, parsed.orderBy);
-  }
-
-  return sliceOffsetLimit(results, parsed.offset, parsed.limit);
+  return runSelectPipeline(rows, parsed);
 }
 
 /**
@@ -93,25 +84,15 @@ function dedupeRows(rows: QueryResultRow[]): QueryResultRow[] {
 }
 
 /**
- * Like {@link executeOnRows} but also handles JOIN by loading the right
- * side from the DBMS on demand. Use this when the caller has pre-loaded
- * (and possibly enriched) the *left* collection.
+ * Kept for existing callers that pre-load a collection before executing
+ * the in-memory tail of a SELECT. Joins are no longer part of the
+ * supported query language, so this is now equivalent to executeOnRows().
  */
 export async function executeWithPreloadedRows(
-  dbms: SimpleDbms,
+  _dbms: SimpleDbms,
   preloadedRows: QueryResultRow[],
   parsed: ParsedSelect,
 ): Promise<QueryResultRow[]> {
-  if (parsed.joins && parsed.joins.length > 0) {
-    // Single or chained joins go through the same path: fold every
-    // right side into the running result, then run the in-memory
-    // pipeline (WHERE → GROUP BY → project → DISTINCT → ORDER BY →
-    // OFFSET/LIMIT). A previous single-join shortcut silently dropped
-    // DISTINCT / ORDER BY / LIMIT / OFFSET — fixed by unifying the
-    // code path.
-    const merged = await executeJoinChain(dbms, parsed, preloadedRows as Record<string, FieldValue>[]);
-    return executeOnRows(merged as QueryResultRow[], parsed);
-  }
   return executeOnRows(preloadedRows, parsed);
 }
 
@@ -131,72 +112,9 @@ export async function execute(dbms: SimpleDbms, query: string): Promise<QueryRes
   return executeParsed(dbms, parsed);
 }
 
-/**
- * Walk a WHERE/HAVING tree and execute every `field IN (SELECT ...)`
- * subquery in place. The subquery's first column is collected into a
- * value list and stored on the InExpression — the per-row evaluator
- * never has to touch the database.
- *
- * This is run exactly once per query, before any filtering. The cost
- * is O(N subqueries × subquery size); each subquery is materialised in
- * full, which is the standard "uncorrelated subquery" execution model.
- *
- * Returns the same expression with every subquery resolved. The AST is
- * mutated in place — it's only consumed once per execute() call.
- */
-async function materializeSubqueries(
-  dbms: SimpleDbms,
-  expr: WhereExpression | undefined,
-): Promise<WhereExpression | undefined> {
-  if (!expr) return expr;
-  switch (expr.type) {
-    case 'in':
-      if (!Array.isArray(expr.values)) {
-        const sub = await executeParsed(dbms, expr.values);
-        const cols = sub.length > 0 ? Object.keys(sub[0]) : [];
-        if (cols.length !== 1) {
-          throw new Error(
-            `Subquery for "${expr.field} IN (...)" must project exactly one column (got ${cols.length})`,
-          );
-        }
-        const col = cols[0];
-        const values: FieldValue[] = [];
-        for (const row of sub) {
-          const v = row[col];
-          if (v === undefined || v === null) continue;
-          values.push(v);
-        }
-        expr.values = values;
-      }
-      return expr;
-    case 'not':
-      expr.expr = (await materializeSubqueries(dbms, expr.expr))!;
-      return expr;
-    case 'logical':
-      expr.left = (await materializeSubqueries(dbms, expr.left))!;
-      expr.right = (await materializeSubqueries(dbms, expr.right))!;
-      return expr;
-    case 'comparison':
-    case 'isnull':
-    case 'between':
-      return expr;
-  }
-}
-
-async function materializeAllSubqueries(dbms: SimpleDbms, parsed: ParsedSelect | { where?: WhereExpression; having?: HavingExpression }): Promise<void> {
-  const p = parsed as { where?: WhereExpression; having?: HavingExpression };
-  p.where = await materializeSubqueries(dbms, p.where);
-  p.having = (await materializeSubqueries(dbms, p.having)) as HavingExpression | undefined;
-}
-
 export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Promise<QueryResultRow[]> {
-  if (parsed.kind === 'union') {
-    const merged: QueryResultRow[] = [];
-    for (const branch of parsed.branches) {
-      const rows = await executeParsed(dbms, branch);
-      for (const row of rows) merged.push(row);
-    }
-    return parsed.all ? merged : dedupeRows(merged);
+  if (parsed.kind === 'explain') {
+    return explainSelect(dbms, parsed.query);
   }
 
   if (parsed.kind === 'insert') {
@@ -209,7 +127,6 @@ export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Prom
   }
 
   if (parsed.kind === 'delete') {
-    await materializeAllSubqueries(dbms, parsed);
     const cursor = dbms.cursor(parsed.collection, 'id', undefined);
     const idsToDelete: string[] = [];
     for await (const jsonDoc of cursor) {
@@ -231,7 +148,6 @@ export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Prom
     // O(matches × assignments) calls — acceptable for the row counts
     // SimpleDBMS targets and keeps the write path identical to the
     // existing per-field path on the back-end.
-    await materializeAllSubqueries(dbms, parsed);
     const cursor = dbms.cursor(parsed.collection, 'id', undefined);
     const idsToUpdate: string[] = [];
     for await (const jsonDoc of cursor) {
@@ -249,28 +165,16 @@ export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Prom
   }
 
   // ── SELECT ────────────────────────────────────────────────────────────────
-  await materializeAllSubqueries(dbms, parsed);
-  if (parsed.joins && parsed.joins.length > 0) {
-    const baseDocs = await loadCollection(dbms, parsed.collection);
-    const merged = await executeJoinChain(dbms, parsed, baseDocs);
-    // Run the in-memory pipeline (WHERE → GROUP BY → project → DISTINCT
-    // → ORDER BY → OFFSET/LIMIT) over the merged rows — same code path
-    // as the JOIN-less case below, so feature support is uniform.
-    return executeOnRows(merged as QueryResultRow[], parsed);
-  }
-
   const plan = planCursor(parsed.where);
   const cursor = openPlannedCursor(dbms, parsed.collection, plan);
 
   const collected: QueryResultRow[] = [];
   for await (const jsonDoc of cursor) {
     const doc = JSON.parse(jsonDoc) as Record<string, FieldValue>;
-    if (parsed.where && !evaluateWhere(doc, parsed.where)) continue;
-    // When grouping we postpone projection so aggregates can see the full row.
-    collected.push(parsed.groupBy ? doc : project(doc, parsed.fields));
+    collected.push(doc);
   }
 
-  return finalize(collected, parsed);
+  return runSelectPipeline(collected, parsed);
 }
 
 /**
@@ -301,17 +205,61 @@ function openPlannedCursor(
  * group/aggregate (if requested), project grouped rows, sort, and
  * slice for OFFSET/LIMIT.
  */
-function finalize(rows: QueryResultRow[], parsed: ParsedSelect): QueryResultRow[] {
-  let results = rows;
+function runSelectPipeline(rows: QueryResultRow[], parsed: ParsedSelect): QueryResultRow[] {
+  let filtered = parsed.where
+    ? rows.filter((r) => evaluateWhere(r as Record<string, FieldValue>, parsed.where!))
+    : rows;
+
   if (parsed.groupBy) {
-    results = executeGroupBy(results, parsed.groupBy, parsed.having);
-    results = results.map((row) => project(row as Record<string, FieldValue>, parsed.fields));
+    filtered = executeGroupBy(filtered, parsed.groupBy, parsed.having);
+    filtered = sortForSelect(filtered, parsed);
+    const projected = filtered.map((row) => project(row as Record<string, FieldValue>, parsed.fields));
+    const distinct = parsed.distinct ? dedupeRows(projected) : projected;
+    return sliceOffsetLimit(distinct, parsed.offset, parsed.limit);
   }
+
   if (parsed.distinct) {
-    results = dedupeRows(results);
+    let projected = filtered.map((row) => project(row as Record<string, FieldValue>, parsed.fields));
+    projected = dedupeRows(projected);
+    if (parsed.orderBy && parsed.orderBy.length > 0) {
+      projected = sortResults(projected, parsed.orderBy);
+    }
+    return sliceOffsetLimit(projected, parsed.offset, parsed.limit);
   }
+
+  filtered = sortForSelect(filtered, parsed);
+  filtered = sliceOffsetLimit(filtered, parsed.offset, parsed.limit);
+  return filtered.map((row) => project(row as Record<string, FieldValue>, parsed.fields));
+}
+
+function explainSelect(dbms: SimpleDbms, parsed: ParsedSelect): QueryResultRow[] {
+  const plan = planCursor(parsed.where);
+  const rows: QueryResultRow[] = [];
+  rows.push({ stage: 'collection', detail: parsed.collection });
+  rows.push({ stage: 'scan', detail: describeScan(dbms, parsed.collection, plan) });
+  if (parsed.where) rows.push({ stage: 'filter', detail: 'row predicate evaluation' });
+  if (parsed.groupBy) rows.push({ stage: 'group', detail: `in memory by ${parsed.groupBy.fields.join(', ') || '(global)'}` });
   if (parsed.orderBy && parsed.orderBy.length > 0) {
-    results = sortResults(results, parsed.orderBy);
+    rows.push({ stage: 'sort', detail: `in memory by ${parsed.orderBy.map((o) => `${o.field} ${o.direction}`).join(', ')}` });
   }
-  return sliceOffsetLimit(results, parsed.offset, parsed.limit);
+  if (parsed.distinct) rows.push({ stage: 'distinct', detail: 'dedupe projected rows' });
+  if (parsed.limit !== undefined || parsed.offset !== undefined) {
+    rows.push({ stage: 'slice', detail: `offset ${parsed.offset ?? 0}, limit ${parsed.limit ?? 'all'}` });
+  }
+  return rows;
+}
+
+function describeScan(dbms: SimpleDbms, collection: string, plan: CursorPlan): string {
+  switch (plan.kind) {
+    case 'fullScan':
+      return 'full scan over id index';
+    case 'idEquality':
+      return `primary id index equality (${String(plan.value)})`;
+    case 'fieldEquality': {
+      const indexed = dbms.describeCollection(collection).some((f) => f.name === plan.field);
+      return indexed
+        ? `secondary index equality on ${plan.field} (${String(plan.value)})`
+        : `full scan over id index; ${plan.field} is not indexed`;
+    }
+  }
 }

@@ -13,7 +13,7 @@ import { SimpleDbms } from '../dbms/simpledbms.mjs';
  * the database.
  */
 function isReadOnlyKind(kind: ParsedQuery['kind']): boolean {
-  return kind === 'select' || kind === 'union';
+  return kind === 'select' || kind === 'explain';
 }
 
 export type ChartSpec = {
@@ -100,7 +100,7 @@ export class ConversationalEngine {
     // ── Step 2: read-only guard ──────────────────────────────────────────
     // The chat interface is read-only analytics. Deny any mutating kind
     // (INSERT / UPDATE / DELETE) instead of allowlisting SELECT — that
-    // way new read-only kinds (UNION, future EXPLAIN / SHOW, …) work
+    // way new read-only kinds (EXPLAIN / future SHOW, …) work
     // automatically without another policy edit.
     if (!isReadOnlyKind(generated.parsed.kind)) {
       const errMsg = `Only read-only queries are allowed via chat (got: ${generated.parsed.kind}).`;
@@ -317,4 +317,3 @@ Chart guidelines:
     }
   }
 }
-

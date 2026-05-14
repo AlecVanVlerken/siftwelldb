@@ -66,21 +66,19 @@ QUERY SYNTAX (SQL-like):
     [LIMIT n]
     [OFFSET k]
 
-  <select> UNION [ALL] <select>          -- concatenate result sets
-
   Each query targets EXACTLY ONE collection in its FROM clause.
-  Cross-collection joins are not part of this schema — never emit JOIN.
+  Cross-collection joins, subqueries, and UNION are not supported — never emit them.
 
 WHERE/HAVING conditions:
   - Comparisons: =, !=, >, >=, <, <=
-  - Pattern matching: LIKE 'pattern' / NOT LIKE 'pattern'
+  - Pattern matching: field CONTAINS 'text', LIKE 'pattern' / NOT LIKE 'pattern'
       % matches any sequence of characters, _ matches exactly one character.
+      Prefer CONTAINS for natural "contains/includes" wording.
       Example: WHERE name LIKE 'A%'  (starts with A)
-               WHERE city LIKE '%dam%' (contains "dam")
+               WHERE city CONTAINS 'dam' (contains "dam")
   - Set membership: field IN ('a', 'b', 'c)  /  field NOT IN ('a', 'b')
-  - Subquery membership: field IN (SELECT ... FROM ...)
   - Ranges: field BETWEEN low AND high  /  field NOT BETWEEN low AND high
-  - Null check: field IS NULL  /  field IS NOT NULL
+  - Missing/unset field check: field IS NULL  /  field IS NOT NULL
   - Negation: NOT (<expression>)
   - Logical: AND, OR (combine multiple conditions)
   - Parentheses to override precedence: (a = 1 OR b = 2) AND c = 3
@@ -100,11 +98,11 @@ RULES:
 5. For "how many unique/distinct X" use COUNT(DISTINCT field). For "list unique X" use SELECT DISTINCT.
 6. For "highest"/"most"/"maximum" use MAX() or ORDER BY ... DESC LIMIT 1.
 7. For "lowest"/"least"/"minimum" use MIN() or ORDER BY ... ASC LIMIT 1.
-8. For pattern or substring matches ("starts with", "contains", "ends with"), use LIKE.
+8. For substring matches ("contains", "includes"), use CONTAINS. For starts/ends-with patterns, use LIKE.
 9. For "field is one of X, Y, Z" use IN (X, Y, Z). For "between X and Y" use BETWEEN X AND Y.
    For "field is missing/empty/unset" use IS NULL.
-10. Every query MUST target a single collection. If the user's question requires data from another collection, answer with the closest single-collection query you can and let the user know in plain language (the engine will summarize). Never emit JOIN.
-11. UPDATE / INSERT / DELETE are NOT allowed via chat — only SELECT (and UNION of SELECTs).
+10. Every query MUST target a single collection. If the user's question requires data from another collection, answer with the closest single-collection query you can and let the user know in plain language (the engine will summarize). Never emit JOIN, UNION, or subqueries.
+11. UPDATE / INSERT / DELETE / EXPLAIN are NOT allowed via chat — only SELECT.
 12. If the question is ambiguous, prefer the simplest valid query.
 13. Always include the relevant fields in SELECT so the answer is understandable.
 14. IMPORTANT: If the user references a previous question (e.g. "break that down by city", "same but for Sales", "now filter those"), use the conversation history to understand what they mean and generate the appropriate new query.
@@ -115,7 +113,8 @@ EXAMPLES:
 - "Employees in HR, Sales or Engineering"        -> SELECT * FROM employees WHERE department IN ('HR', 'Sales', 'Engineering')
 - "Employees earning between 50k and 100k"       -> SELECT * FROM employees WHERE salary BETWEEN 50000 AND 100000
 - "Employees with no manager assigned"           -> SELECT * FROM employees WHERE manager_id IS NULL
-- "Employees in Engineering OR managers anywhere" -> SELECT id, name FROM employees WHERE department = 'Engineering' UNION SELECT id, name FROM employees WHERE role = 'Manager'`;
+- "Employees whose city contains dam"             -> SELECT * FROM employees WHERE city CONTAINS 'dam'
+- "Employees in Engineering OR managers anywhere" -> SELECT id, name FROM employees WHERE department = 'Engineering' OR role = 'Manager'`;
 }
 
 function extractQuery(raw: string): string {
