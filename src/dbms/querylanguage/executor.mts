@@ -128,13 +128,16 @@ export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Prom
 
   if (parsed.kind === 'delete') {
     const cursor = dbms.cursor(parsed.collection, 'id', undefined);
-    const idsToDelete: string[] = [];
+    const rowsToDelete: QueryResultRow[] = [];
     for await (const jsonDoc of cursor) {
       const doc = JSON.parse(jsonDoc) as Record<string, FieldValue>;
       if (!parsed.where || evaluateWhere(doc, parsed.where)) {
-        if (typeof doc['id'] === 'string') idsToDelete.push(doc['id']);
+        if (typeof doc['id'] === 'string') rowsToDelete.push(doc);
       }
     }
+    const ordered = parsed.orderBy ? sortResults(rowsToDelete, parsed.orderBy) : rowsToDelete;
+    const sliced = sliceOffsetLimit(ordered, parsed.offset, parsed.limit);
+    const idsToDelete = sliced.map((row) => row['id']).filter((id): id is string => typeof id === 'string');
     for (const id of idsToDelete) {
       await dbms.deleteDocumentById(parsed.collection, id);
     }

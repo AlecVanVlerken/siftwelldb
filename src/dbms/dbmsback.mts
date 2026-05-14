@@ -5,7 +5,7 @@ import { FreeBlockFile, type FreeBlockFileStats } from '../freeblockfile/freeblo
 import { AtomicFile } from '../atomic/atomicfile.mjs';
 import { type File } from '../core/file.mjs';
 import { allocateBlock } from '../freeblockfile/freelist.mjs';
-import { Document, type FieldValue, isImageField } from '../dbms/document.mjs';
+import { Document, type FieldValue, imageMimeForField, isImageField } from '../dbms/document.mjs';
 import {
   RecordStore,
   type EncodedDocument,
@@ -52,15 +52,17 @@ import type {
  * Optional configuration block that enables per-collection HNSW semantic
  * search inside a `DbmsBack` / `SimpleDbms` instance.
  *
- * When present, every document that contains at least one non-`_`-prefixed
- * string field will have those string values concatenated and embedded into
- * the collection's HNSW index upon insertion.
+ * By default this creates one semantic index per collection. Callers can
+ * optionally provide `textIndex` and `imageIndex` to maintain two indexes per
+ * collection: one for text fields and one for image fields. This allows a
+ * text-focused model (e.g. MiniLM, 384d) and a CLIP image model (512d) to
+ * coexist without mixing incompatible vector dimensions in one HNSW graph.
  *
  * HNSW graph and vector data are stored inside the same single FreeBlockFile
  * as the rest of the database (records + B+ tree indexes), giving one unified
  * WAL domain and fully atomic commits.
  */
-export type HnswConfig = {
+export type HnswIndexConfig = {
   /** Dimensionality of the vectors produced by `embeddingFn`. */
   dimension: number;
   /**
@@ -68,15 +70,6 @@ export type HnswConfig = {
    * float32 embedding vector — supply any HuggingFace (or other) model here.
    */
   embeddingFn: (text: string) => Promise<Float32Array>;
-  /**
-   * Optional async function that converts raw image bytes (JPEG/PNG/WebP)
-   * into a float32 embedding vector.  When provided, document fields whose
-   * names end in `.jpeg`, `.jpg`, `.png` or `.webp` are automatically
-   * embedded with this function at insert time.  Must produce vectors of
-   * the **same** `dimension` as `embeddingFn` (e.g. both sides of a CLIP
-   * model) so that text-to-image semantic search works.
-   */
-  imageEmbeddingFn?: (imageData: Buffer) => Promise<Float32Array>;
   /** HNSW M parameter (max neighbours per node). Default: 16. */
   M?: number;
   /** Maximum level stored per node. Default: 4. */
@@ -85,6 +78,26 @@ export type HnswConfig = {
   efConstruction?: number;
   /** ef during search. Default: 50. */
   efSearch?: number;
+};
+
+export type HnswImageIndexConfig = HnswIndexConfig & {
+  /**
+   * Async function that converts raw image bytes (JPEG/PNG/WebP) into a
+   * vector in the same space as this config's `embeddingFn`.
+   */
+  imageEmbeddingFn: (imageData: Buffer) => Promise<Float32Array>;
+};
+
+export type HnswConfig = HnswIndexConfig & {
+  /**
+   * Legacy/single-index image encoder. Kept for the demos and callers that use
+   * one CLIP index per collection.
+   */
+  imageEmbeddingFn?: (imageData: Buffer) => Promise<Float32Array>;
+  /** Optional dedicated text index config, e.g. MiniLM. */
+  textIndex?: HnswIndexConfig;
+  /** Optional dedicated image index config, e.g. CLIP text+vision. */
+  imageIndex?: HnswImageIndexConfig;
 };
 
 /** Reserved metaCache key used to track which collections have an HNSW index. */
@@ -167,9 +180,9 @@ export class DbmsBack {
     // Re-open HNSW indices for every collection that was indexed before.
     if (hnswConfig) {
       try {
-        for (const col of Object.keys(dbmsback.getHnswMeta())) {
-          const idx = await dbmsback.openHnswIndex(col);
-          dbmsback.hnswIndexCache.set(col, idx);
+        for (const indexKey of Object.keys(dbmsback.getHnswMeta())) {
+          const idx = await dbmsback.openHnswIndex(indexKey);
+          dbmsback.hnswIndexCache.set(indexKey, idx);
         }
       } catch (err) {
         // Stored HNSW parameters don't match current config (e.g. DB was created
@@ -210,14 +223,23 @@ export class DbmsBack {
     const collectionMeta = { ...this.getCollectionMeta(collection) };
 
     const hnswMeta = this.getExistingHnswMeta();
-    if (hnswMeta && collection in hnswMeta) {
+    if (hnswMeta) {
       if (!this.hnswConfig) {
-        throw new Error(`Cannot fully delete HNSW-backed collection "${collection}" without hnswConfig`);
+        for (const indexKey of this.hnswIndexKeysForCollection(collection, hnswMeta)) {
+          console.warn(
+            `Removing stale HNSW metadata for "${indexKey}" while deleting collection "${collection}" without active hnswConfig`,
+          );
+          delete hnswMeta[indexKey];
+          this.hnswIndexCache.delete(indexKey);
+        }
+      } else {
+        for (const indexKey of this.hnswIndexKeysForCollection(collection, hnswMeta)) {
+          const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
+          await hnswIdx.dropStorage();
+          delete hnswMeta[indexKey];
+          this.hnswIndexCache.delete(indexKey);
+        }
       }
-
-      const hnswIdx = await this.getOrCreateHnswIndex(collection);
-      await hnswIdx.dropStorage();
-      delete hnswMeta[collection];
       if (Object.keys(hnswMeta).length === 0) {
         delete this.metaCache[HNSW_META_KEY];
       }
@@ -234,6 +256,13 @@ export class DbmsBack {
     }
 
     for (const pointer of recordPointers) {
+      const document = await this.recordStore.readRecord(pointer);
+      if (!document || document.getCollectionName() !== collection) {
+        console.warn(
+          `Skipping stale record pointer ${pointer.toString()} while deleting collection "${collection}"`,
+        );
+        continue;
+      }
       await this.recordStore.deleteRecord(pointer);
     }
 
@@ -275,7 +304,9 @@ export class DbmsBack {
         this.treeCache.delete(key);
       }
     }
-    this.hnswIndexCache.delete(collection);
+    for (const indexKey of this.hnswIndexKeysForCollection(collection)) {
+      this.hnswIndexCache.delete(indexKey);
+    }
   }
 
   /**
@@ -361,6 +392,45 @@ export class DbmsBack {
       return raw as Record<string, [number, string]>;
     }
     return null;
+  }
+
+  private textHnswIndexKey(collection: string): string {
+    return this.hnswConfig?.textIndex ? `${collection}::text` : collection;
+  }
+
+  private imageHnswIndexKey(collection: string): string {
+    return this.hnswConfig?.imageIndex ? `${collection}::image` : collection;
+  }
+
+  private collectionFromHnswIndexKey(indexKey: string): string {
+    return indexKey.replace(/::(?:text|image)$/, '');
+  }
+
+  private hnswIndexKeysForCollection(
+    collection: string,
+    meta: Record<string, [number, string]> | null = this.getExistingHnswMeta(),
+  ): string[] {
+    if (!meta) return [];
+    return Object.keys(meta).filter((key) => key === collection || key.startsWith(`${collection}::`));
+  }
+
+  private textHnswConfig(): HnswIndexConfig | undefined {
+    if (!this.hnswConfig) return undefined;
+    return this.hnswConfig.textIndex ?? this.hnswConfig;
+  }
+
+  private imageHnswConfig(): HnswImageIndexConfig | undefined {
+    if (!this.hnswConfig) return undefined;
+    if (this.hnswConfig.imageIndex) return this.hnswConfig.imageIndex;
+    return this.hnswConfig.imageEmbeddingFn
+      ? (this.hnswConfig as HnswConfig & { imageEmbeddingFn: (imageData: Buffer) => Promise<Float32Array> })
+      : undefined;
+  }
+
+  private hnswConfigForIndexKey(indexKey: string): HnswIndexConfig | HnswImageIndexConfig | undefined {
+    if (indexKey.endsWith('::text')) return this.textHnswConfig();
+    if (indexKey.endsWith('::image')) return this.imageHnswConfig();
+    return this.hnswConfig;
   }
 
   private getCompressionMeta(): Record<string, FieldCompressionDefaults> {
@@ -507,7 +577,9 @@ export class DbmsBack {
         const fieldValue = document.getFields()[request.field];
         if (fieldValue !== undefined) {
           fieldPresenceCount++;
-          const sample = compressionSampleFromValue(request.field, fieldValue);
+          const sample = compressionSampleFromValue(request.field, fieldValue, {
+            mime: imageMimeForField(request.field, document.getFields()),
+          });
           if (sample) {
             samples.push(sample);
           }
@@ -659,22 +731,44 @@ export class DbmsBack {
     }
     // END FOR LOOP
 
-    // HNSW: embed and index the document (image or text) if HNSW is configured.
+    // HNSW: maintain separate text/image semantic indexes when configured.
     if (this.hnswConfig && !options?.skipSemanticIndex) {
-      const imageData = this.extractImageData(document);
-      if (imageData !== null && this.hnswConfig.imageEmbeddingFn) {
-        // Document contains an image field — embed with the image encoder.
-        const hnswIdx = await this.getOrCreateHnswIndex(collectionName);
-        const vector = await this.hnswConfig.imageEmbeddingFn(imageData);
-        await hnswIdx.insert(documentLocation, vector);
-      } else {
-        // Fall back to text embedding for non-image documents.
-        const text = this.extractText(document);
-        if (text !== null) {
+      if (!this.hnswConfig.textIndex && !this.hnswConfig.imageIndex) {
+        // Legacy single-index mode used by the demos: image documents are
+        // represented by their image vector, otherwise by labelled text.
+        const imageData = this.extractImageData(document);
+        if (imageData.length > 0 && this.hnswConfig.imageEmbeddingFn) {
           const hnswIdx = await this.getOrCreateHnswIndex(collectionName);
-          const vector = await this.hnswConfig.embeddingFn(text);
-          await hnswIdx.insert(documentLocation, vector);
+          const vector = await this.embedImages(
+            this.hnswConfig as HnswConfig & { imageEmbeddingFn: (imageData: Buffer) => Promise<Float32Array> },
+            imageData,
+          );
+        if (vector) await hnswIdx.insert(documentLocation, vector);
+        } else {
+          const text = this.extractText(document);
+          if (text !== null) {
+            const hnswIdx = await this.getOrCreateHnswIndex(collectionName);
+            const vector = await this.hnswConfig.embeddingFn(text);
+            await hnswIdx.insert(documentLocation, vector);
+          }
         }
+        return;
+      }
+
+      const textConfig = this.textHnswConfig();
+      const text = this.extractText(document);
+      if (textConfig && text !== null) {
+        const hnswIdx = await this.getOrCreateHnswIndex(this.textHnswIndexKey(collectionName));
+        const vector = await textConfig.embeddingFn(text);
+        await hnswIdx.insert(documentLocation, vector);
+      }
+
+      const imageConfig = this.imageHnswConfig();
+      const imageData = this.extractImageData(document);
+      if (imageConfig && imageData.length > 0) {
+        const hnswIdx = await this.getOrCreateHnswIndex(this.imageHnswIndexKey(collectionName));
+        const vector = await this.embedImages(imageConfig, imageData);
+        if (vector) await hnswIdx.insert(documentLocation, vector);
       }
     }
 
@@ -836,10 +930,14 @@ export class DbmsBack {
       keyMetaData[0] = keyTree.getRoot().getBlockNumber();
     }
 
-    // Remove from HNSW (no-op if this collection was never indexed or the
-    // document was inserted without HNSW config active).
-    if (this.hnswConfig && this.hnswIndexCache.has(collection)) {
-      await this.hnswIndexCache.get(collection)!.delete(documentPointer);
+    // Remove from every HNSW index for this collection (text/image/legacy).
+    if (this.hnswConfig) {
+      for (const indexKey of this.hnswIndexKeysForCollection(collection)) {
+        const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
+        if (hnswIdx.hasDocument(documentPointer)) {
+          await hnswIdx.delete(documentPointer);
+        }
+      }
     }
 
     // Free the record blocks from the record store. HNSW deletion rebuilds its
@@ -1213,15 +1311,18 @@ export class DbmsBack {
 
   private async relocateHnswDocumentPointer(collection: string, oldPointer: number, newPointer: number): Promise<void> {
     const hnswMeta = this.getExistingHnswMeta();
-    if (!hnswMeta || !(collection in hnswMeta)) return;
+    const indexKeys = this.hnswIndexKeysForCollection(collection, hnswMeta);
+    if (indexKeys.length === 0) return;
     if (!this.hnswConfig) {
       throw new Error('Cannot relocate HNSW-backed document without hnswConfig');
     }
 
-    const hnswIdx = await this.getOrCreateHnswIndex(collection);
-    if (!hnswIdx.hasDocument(oldPointer)) return;
-    if (!(await hnswIdx.relabelDocument(oldPointer, newPointer))) {
-      throw new Error('Failed to relabel HNSW document pointer during document relocation');
+    for (const indexKey of indexKeys) {
+      const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
+      if (!hnswIdx.hasDocument(oldPointer)) continue;
+      if (!(await hnswIdx.relabelDocument(oldPointer, newPointer))) {
+        throw new Error('Failed to relabel HNSW document pointer during document relocation');
+      }
     }
   }
 
@@ -1260,7 +1361,12 @@ export class DbmsBack {
    * is re-embedded exactly once), but exposes a single round-trip from
    * the API layer instead of N per-field calls.
    */
-  async replaceDocumentByID(collection: string, id: string, newDocument: Document): Promise<void> {
+  async replaceDocumentByID(
+    collection: string,
+    id: string,
+    newDocument: Document,
+    compression?: FieldCompressionOverrides,
+  ): Promise<void> {
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
     }
@@ -1278,7 +1384,7 @@ export class DbmsBack {
     }
 
     await this.deleteDocument(id, collection);
-    await this.insertDocument(newDocument);
+    await this.insertDocument(newDocument, compression);
   }
 
   /**
@@ -1314,7 +1420,10 @@ export class DbmsBack {
       for await (const [, documentPointerBuffer] of asyncGenerator) {
         const documentPointer = documentPointerBuffer.readUInt32BE(0);
         const document = await this.recordStore.readRecord(documentPointer);
-        if (!document) throw new Error(`Document error: not found`);
+        // A scan should not fail completely because an older index entry points
+        // at a record block that has since been freed. Direct lookups still
+        // report not-found; cursor scans treat stale pointers as deleted rows.
+        if (!document) continue;
         yield document;
       }
     }.bind(this);
@@ -1337,14 +1446,38 @@ export class DbmsBack {
   async semanticSearch(collection: string, query: string, k: number): Promise<Document[]> {
     if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
 
-    // If the collection has never had any text documents indexed, return empty.
-    const hnswMeta = this.getHnswMeta();
-    if (!(collection in hnswMeta)) {
-      return [];
+    const textConfig = this.textHnswConfig();
+    if (!textConfig) return [];
+
+    const hnswMeta = this.getExistingHnswMeta();
+    const indexKey = this.textHnswIndexKey(collection);
+    if (!hnswMeta || !(indexKey in hnswMeta)) return [];
+
+    const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
+    const queryVector = await textConfig.embeddingFn(query);
+    const documentLocations = await hnswIdx.search(queryVector, k);
+
+    const results: Document[] = [];
+    for (const loc of documentLocations) {
+      const doc = await this.recordStore.readRecord(loc);
+      if (doc) results.push(doc);
+    }
+    return results;
+  }
+
+  async semanticImageTextSearch(collection: string, query: string, k: number): Promise<Document[]> {
+    if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
+    const imageConfig = this.imageHnswConfig();
+    if (!imageConfig) {
+      throw new Error('Text-to-image search requires an image index config with CLIP text and image encoders.');
     }
 
-    const hnswIdx = await this.getOrCreateHnswIndex(collection);
-    const queryVector = await this.hnswConfig.embeddingFn(query);
+    const hnswMeta = this.getExistingHnswMeta();
+    const indexKey = this.imageHnswIndexKey(collection);
+    if (!hnswMeta || !(indexKey in hnswMeta)) return [];
+
+    const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
+    const queryVector = await imageConfig.embeddingFn(query);
     const documentLocations = await hnswIdx.search(queryVector, k);
 
     const results: Document[] = [];
@@ -1366,16 +1499,17 @@ export class DbmsBack {
    */
   async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<Document[]> {
     if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
-    if (!this.hnswConfig.imageEmbeddingFn) {
+    const imageConfig = this.imageHnswConfig();
+    if (!imageConfig) {
       throw new Error('Image search requires imageEmbeddingFn in HnswConfig.');
     }
-    const hnswMeta = this.getHnswMeta();
-    if (!(collection in hnswMeta)) {
-      return [];
-    }
 
-    const hnswIdx = await this.getOrCreateHnswIndex(collection);
-    const queryVector = await this.hnswConfig.imageEmbeddingFn(queryImage);
+    const hnswMeta = this.getExistingHnswMeta();
+    const indexKey = this.imageHnswIndexKey(collection);
+    if (!hnswMeta || !(indexKey in hnswMeta)) return [];
+
+    const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
+    const queryVector = await imageConfig.imageEmbeddingFn(queryImage);
     const documentLocations = await hnswIdx.search(queryVector, k);
 
     const results: Document[] = [];
@@ -1389,31 +1523,91 @@ export class DbmsBack {
   // Private HNSW helpers
 
   /**
-   * Concatenate all non-`_`-prefixed string field values into a single
-   * embeddable text string.  Returns `null` if the document contains no
-   * embeddable text.
+   * Encode all non-`_`-prefixed string field values as labelled text.
+   * Field names carry important meaning in schema-less documents; e.g.
+   * `role: engineer` is more useful to an embedding model than just
+   * `engineer`. Returns `null` if the document contains no embeddable text.
    */
   private extractText(document: Document): string | null {
     const parts: string[] = [];
-    for (const [key, value] of Object.entries(document.getFields())) {
-      if (!key.startsWith('_') && typeof value === 'string') {
-        parts.push(value);
+    const fields = document.getFields();
+    for (const [key, value] of Object.entries(fields)) {
+      if (!key.startsWith('_') && !isImageField(key, fields) && typeof value === 'string') {
+        parts.push(`${key}: ${value}`);
       }
     }
     return parts.length > 0 ? parts.join(' ') : null;
   }
 
   /**
-   * Extract the raw bytes of the first image field in the document.
-   * Returns `null` when the document contains no image fields.
+   * Extract the raw bytes of every image field in the document.
    */
-  private extractImageData(document: Document): Buffer | null {
-    for (const [key, value] of Object.entries(document.getFields())) {
-      if (isImageField(key) && Buffer.isBuffer(value)) {
-        return value;
+  private extractImageData(document: Document): Buffer[] {
+    const images: Buffer[] = [];
+    const fields = document.getFields();
+    for (const [key, value] of Object.entries(fields)) {
+      if (isImageField(key, fields) && Buffer.isBuffer(value) && this.isSupportedImageBuffer(key, value, imageMimeForField(key, fields))) {
+        images.push(value);
       }
     }
-    return null;
+    return images;
+  }
+
+  private isSupportedImageBuffer(field: string, buffer: Buffer, mime: string | null = null): boolean {
+    if (buffer.length < 12) return false;
+    const lower = (mime ?? field).toLowerCase();
+    if (
+      (lower.endsWith('.jpg') || lower.endsWith('.jpeg') || lower === 'image/jpeg') &&
+      buffer[0] === 0xff &&
+      buffer[1] === 0xd8
+    ) {
+      return true;
+    }
+    if (
+      (lower.endsWith('.png') || lower === 'image/png') &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47
+    ) {
+      return true;
+    }
+    if (
+      (lower.endsWith('.webp') || lower === 'image/webp') &&
+      buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  private async embedImages(config: HnswImageIndexConfig, images: Buffer[]): Promise<Float32Array | null> {
+    const vectors = (await Promise.all(images.map(async (image) => {
+      try {
+        return await config.imageEmbeddingFn(image);
+      } catch {
+        return null;
+      }
+    }))).filter((vector): vector is Float32Array => vector !== null);
+    if (vectors.length === 0) return null;
+    if (vectors.length === 1) return vectors[0];
+
+    const combined = new Float32Array(config.dimension);
+    for (const vector of vectors) {
+      for (let i = 0; i < combined.length; i++) combined[i] += vector[i] ?? 0;
+    }
+    for (let i = 0; i < combined.length; i++) combined[i] /= vectors.length;
+    return this.l2Normalize(combined);
+  }
+
+  private l2Normalize(vector: Float32Array): Float32Array {
+    let norm = 0;
+    for (const value of vector) norm += value * value;
+    norm = Math.sqrt(norm);
+    if (norm === 0) return vector;
+    for (let i = 0; i < vector.length; i++) vector[i] /= norm;
+    return vector;
   }
 
   /**
@@ -1421,28 +1615,29 @@ export class DbmsBack {
    * its backing blocks inside the shared FreeBlockFile) if it does not yet
    * exist.
    */
-  private async getOrCreateHnswIndex(collectionName: string): Promise<HNSWIndex> {
-    const cached = this.hnswIndexCache.get(collectionName);
+  private async getOrCreateHnswIndex(indexKey: string): Promise<HNSWIndex> {
+    const cached = this.hnswIndexCache.get(indexKey);
     if (cached) return cached;
 
     const hnswMeta = this.getHnswMeta();
     let idx: HNSWIndex;
 
-    if (hnswMeta && collectionName in hnswMeta) {
-      // Blocks already exist for this collection — open them.
-      idx = await this.openHnswIndex(collectionName);
+    if (hnswMeta && indexKey in hnswMeta) {
+      // Blocks already exist for this index — open them.
+      idx = await this.openHnswIndex(indexKey);
     } else {
-      // First time this collection is seen — allocate blocks and initialise.
-      idx = await this.createHnswIndex(collectionName);
+      // First time this index is seen — allocate blocks and initialise.
+      idx = await this.createHnswIndex(indexKey);
     }
 
-    this.hnswIndexCache.set(collectionName, idx);
+    this.hnswIndexCache.set(indexKey, idx);
     return idx;
   }
 
-  /** Create brand-new HNSW structures for `collectionName` inside the shared FBF. */
-  private async createHnswIndex(collectionName: string): Promise<HNSWIndex> {
-    const cfg = this.hnswConfig!;
+  /** Create brand-new HNSW structures for `indexKey` inside the shared FBF. */
+  private async createHnswIndex(indexKey: string): Promise<HNSWIndex> {
+    const cfg = this.hnswConfigForIndexKey(indexKey);
+    if (!cfg) throw new Error(`No HNSW config available for index "${indexKey}"`);
     const M = cfg.M ?? 16;
     const maxStoredLevel = cfg.maxStoredLevel ?? 4;
     const efConstruction = cfg.efConstruction ?? 200;
@@ -1453,16 +1648,17 @@ export class DbmsBack {
     const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
 
     // Persist the metadata block number so we can reopen on next open().
-    this.getHnswMeta()[collectionName] = [graphStorage.metaBlockId, 'hnsw'];
+    this.getHnswMeta()[indexKey] = [graphStorage.metaBlockId, 'hnsw'];
 
     return HNSWIndex.create(graphStorage, vectorHeap, { M, efConstruction, efSearch });
   }
 
-  /** Open existing HNSW structures for `collectionName` from the shared FBF. */
-  private async openHnswIndex(collectionName: string): Promise<HNSWIndex> {
-    const cfg = this.hnswConfig!;
+  /** Open existing HNSW structures for `indexKey` from the shared FBF. */
+  private async openHnswIndex(indexKey: string): Promise<HNSWIndex> {
+    const cfg = this.hnswConfigForIndexKey(indexKey);
+    if (!cfg) throw new Error(`No HNSW config available for index "${indexKey}"`);
     // metaBlockId is stored in [0] of the tuple
-    const metaBlockId = this.getHnswMeta()[collectionName][0];
+    const metaBlockId = this.getHnswMeta()[indexKey][0];
 
     const efConstruction = cfg.efConstruction ?? 200;
     const efSearch = cfg.efSearch ?? 50;

@@ -156,6 +156,9 @@ export type ParsedDelete = {
   kind: 'delete';
   collection: string;
   where?: WhereExpression;
+  orderBy?: OrderByClause[];
+  limit?: number;
+  offset?: number;
 };
 
 /**

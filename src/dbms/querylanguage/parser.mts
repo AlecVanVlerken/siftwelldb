@@ -72,11 +72,19 @@ export function parse(query: string): ParsedQuery {
   }
 
   // ── DELETE ───────────────────────────────────────────────────────────────
-  const deleteMatch = normalized.match(/^delete\s+from\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:where\s+(.+?))?$/i);
+  const deleteMatch = normalized.match(/^delete\s+from\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$/is);
   if (deleteMatch) {
-    const [, collection, wherePartRaw] = deleteMatch;
-    const where = wherePartRaw ? parseWhere(wherePartRaw.trim()) : undefined;
-    return { kind: 'delete', collection, where };
+    const [, collection, restRaw] = deleteMatch;
+    const tail = validateDeleteTailStart(restRaw.trim());
+    const clauses = splitSelectTail(tail);
+    if (clauses.groupBy || clauses.having) {
+      throw new Error('DELETE supports WHERE, ORDER BY, LIMIT, and OFFSET only.');
+    }
+    const where = clauses.where ? parseWhere(clauses.where.trim()) : undefined;
+    const orderBy = clauses.orderBy ? parseOrderBy(clauses.orderBy.trim()) : undefined;
+    const limit = clauses.limit ? parseNonNegativeInteger(clauses.limit, 'LIMIT') : undefined;
+    const offset = clauses.offset ? parseNonNegativeInteger(clauses.offset, 'OFFSET') : undefined;
+    return { kind: 'delete', collection, where, orderBy, limit, offset };
   }
 
   // ── UPDATE ───────────────────────────────────────────────────────────────
@@ -313,6 +321,12 @@ function validateSelectTailStart(src: string): string {
     throw new Error('JOIN is not supported; query one collection at a time.');
   }
   throw new Error(`Unsupported SELECT clause: "${src}"`);
+}
+
+function validateDeleteTailStart(src: string): string {
+  if (!src) return src;
+  if (/^(where|order\s+by|limit|offset)\b/i.test(src)) return src;
+  throw new Error(`Unsupported DELETE clause: "${src}"`);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

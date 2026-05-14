@@ -431,6 +431,30 @@ describe('DELETE', () => {
     const rows = await ql.execute('SELECT * FROM countries');
     expect(rows).toHaveLength(0);
   });
+
+  it('DELETE ondersteunt ORDER BY en LIMIT', async () => {
+    const ql2 = await setupDb();
+
+    const deleted = await ql2.execute('DELETE FROM cities WHERE country = \'BE\' ORDER BY id ASC LIMIT 2');
+    const remainingBe = await ql2.execute("SELECT id FROM cities WHERE country = 'BE' ORDER BY id ASC");
+
+    expect(deleted.map((r) => r['id'])).toEqual(['antwerpen', 'brussel']);
+    expect(remainingBe.map((r) => r['id'])).toEqual(['gent']);
+  });
+
+  it('DELETE kan een begrensde set image rows verwijderen', async () => {
+    const ql2 = await setupDb();
+    await ql2.execute("INSERT INTO photos VALUES {id: 'p3', image: 'base64-c', _image_mime: 'image/png'}");
+    await ql2.execute("INSERT INTO photos VALUES {id: 'p1', image: 'base64-a', _image_mime: 'image/jpeg'}");
+    await ql2.execute("INSERT INTO photos VALUES {id: 'p2', title: 'not an image'}");
+    await ql2.execute("INSERT INTO photos VALUES {id: 'p4', image: 'base64-d', _image_mime: 'image/png'}");
+
+    const deleted = await ql2.execute('DELETE FROM photos WHERE _image_mime IS NOT NULL ORDER BY id ASC LIMIT 2');
+    const remaining = await ql2.execute('SELECT id FROM photos ORDER BY id ASC');
+
+    expect(deleted.map((r) => r['id'])).toEqual(['p1', 'p3']);
+    expect(remaining.map((r) => r['id'])).toEqual(['p2', 'p4']);
+  });
 });
 
 // ── Complexe combinaties ──────────────────────────────────────────────────────

@@ -23,6 +23,11 @@ $$('[data-close]').forEach((b) => b.addEventListener('click', () => closeModal(b
 let documentModalMode = 'document';
 let documentModalImagePayloads = {};
 let drawerEditImagePayloads = {};
+const COMPRESSION_OPTIONS = ['inherit', 'off', 'none', 'gzip', 'deflate', 'brotli', 'zstd-fast', 'zstd'];
+
+function imageMimeMetadataField(fieldName) {
+  return `_${fieldName}_mime`;
+}
 
 // ─────────────────────────────────────────────────────────────────
 // Bootstrap
@@ -67,12 +72,48 @@ function updateConnState() {
     $('#cm-disconnect').disabled = true;
     $('#app').classList.add('disconnected');
   }
+  renderConnectionMaintenanceMenu();
+}
+
+function renderConnectionMaintenanceMenu() {
+  const status = state.databaseStatus;
+  const size = status?.size;
+  const inc = status?.incrementalCompaction;
+  const connected = state.connected;
+  const sizeEl = $('#cm-db-size');
+  const autoEl = $('#cm-auto-compact');
+  const noteEl = $('#cm-compact-status');
+  const manualEl = $('#cm-manual-compact');
+  const incrementalEl = $('#cm-incremental-compact');
+  if (sizeEl) sizeEl.textContent = `Database size: ${size ? `${fmtSize(size.totalBytes)} (${fmtSize(size.dataFileBytes)} data + ${fmtSize(size.logFileBytes)} log)` : '—'}`;
+  if (autoEl) {
+    autoEl.disabled = !connected || !!status?.busyOperation;
+    autoEl.checked = !!inc?.enabled;
+  }
+  if (manualEl) manualEl.disabled = !connected || !!status?.busyOperation;
+  if (incrementalEl) incrementalEl.disabled = !connected || !!status?.busyOperation;
+  if (noteEl) {
+    if (!connected) noteEl.textContent = 'Open a database to compact.';
+    else if (status?.busyOperation) noteEl.textContent = `Busy: ${status.busyOperation}`;
+    else if (!inc?.enabled) noteEl.textContent = 'Auto compact is off. You can still run a one-step incremental compact or a manual full vacuum.';
+    else if (inc.running) noteEl.textContent = 'Auto compact is running an incremental step.';
+    else if (inc.lastError) noteEl.textContent = `Incremental compaction error: ${inc.lastError}`;
+    else noteEl.textContent = inc.lastRunAt ? `Auto compact on. Last incremental step ${new Date(inc.lastRunAt).toLocaleTimeString()}.` : 'Auto compact on. Incremental steps run when useful.';
+  }
 }
 
 async function loadCollections() {
   try {
     const { collections } = await api('/api/collections');
-    state.collections = collections || [];
+    const nextCollections = collections || [];
+    const live = new Set(nextCollections);
+    for (const collection of Object.keys(state.docsByColl)) {
+      if (!live.has(collection)) delete state.docsByColl[collection];
+    }
+    for (const collection of Object.keys(state.countsByColl)) {
+      if (!live.has(collection)) delete state.countsByColl[collection];
+    }
+    state.collections = nextCollections;
     // Pre-load counts in parallel — small ops on each collection.
     await Promise.all(state.collections.map(async (c) => {
       try {
@@ -81,10 +122,28 @@ async function loadCollections() {
         state.docsByColl[c] = (documents || []).map((d) => JSON.parse(d));
       } catch {
         state.countsByColl[c] = '?';
+        state.docsByColl[c] = [];
       }
     }));
   } catch (e) {
     toast('Failed to load collections: ' + e.message, 'err');
+  }
+}
+
+async function runSeedAction(label, task) {
+  if (state.seedBusy) {
+    toast('A seed operation is already running. Wait for it to finish first.', 'warn');
+    return null;
+  }
+  state.seedBusy = true;
+  render();
+  try {
+    console.info(`[seed] ${label} started`);
+    const result = await task();
+    console.info(`[seed] ${label} complete`, result);
+    return result;
+  } finally {
+    state.seedBusy = false;
   }
 }
 
@@ -99,7 +158,8 @@ async function loadModel() {
 
 async function seedDemoEmployees() {
   try {
-    const result = await api('/api/demo/employees', { method: 'POST' });
+    const result = await runSeedAction('employees', () => api('/api/demo/employees', { method: 'POST' }));
+    if (!result) return;
     toast(result.message || 'Demo data ready', result.skipped ? '' : 'ok');
     invalidateStorageCache();
     await loadCollections();
@@ -108,6 +168,36 @@ async function seedDemoEmployees() {
     render();
   } catch (e) {
     toast('Failed to seed demo data: ' + e.message, 'err');
+  }
+}
+
+async function seedSemanticKnowledgeDemo() {
+  try {
+    const result = await runSeedAction('semantic text', () => api('/api/demo/semantic-knowledge', { method: 'POST' }));
+    if (!result) return;
+    toast(result.message || 'Semantic knowledge demo ready', result.skipped ? '' : 'ok');
+    invalidateStorageCache();
+    await loadCollections();
+    await loadModel();
+    if (state.collections.includes(result.collection || 'knowledge')) state.selectedCol = result.collection || 'knowledge';
+    render();
+  } catch (e) {
+    toast('Failed to seed semantic knowledge demo: ' + e.message, 'err');
+  }
+}
+
+async function seedSemanticImageDemo() {
+  try {
+    const result = await runSeedAction('semantic images', () => api('/api/demo/semantic-images', { method: 'POST' }));
+    if (!result) return;
+    toast(result.message || 'Semantic image demo ready', result.skipped ? '' : 'ok');
+    invalidateStorageCache();
+    await loadCollections();
+    await loadModel();
+    if (state.collections.includes(result.collection || 'photos')) state.selectedCol = result.collection || 'photos';
+    render();
+  } catch (e) {
+    toast('Failed to seed semantic image demo: ' + e.message, 'err');
   }
 }
 
@@ -121,6 +211,66 @@ function showDocumentModalError(message) {
   err.classList.remove('hidden');
 }
 
+function readCompressionOverrides(root = document) {
+  const overrides = {};
+  root.querySelectorAll('[data-doc-compression-field]').forEach((select) => {
+    const value = select.value;
+    if (value && value !== 'inherit') overrides[select.dataset.docCompressionField] = value;
+  });
+  return Object.keys(overrides).length > 0 ? overrides : undefined;
+}
+
+function renderDocumentCompressionControls(collection, documentValue, meta) {
+  const fields = Object.keys(documentValue).filter((key) => key !== 'id' && !key.startsWith('_'));
+  if (!fields.length) return '<div class="empty-state" style="padding:10px;"><p>No compressible fields yet.</p></div>';
+  const current = meta?.compressions || {};
+  const workload = Math.round(state.compression.workload * 100);
+  return `<div class="psec" style="margin-top:10px;">
+    <h3>Field compression <span class="actions"><label style="font-size:11px;color:var(--t3);text-transform:none;letter-spacing:0;">Workload <span id="doc-cmp-workload-label">${workload}%</span></label></span></h3>
+    <div class="pbody">
+      <input id="doc-cmp-workload" type="range" min="0" max="100" value="${workload}" style="width:100%;margin-bottom:8px;">
+      <p style="font-size:12px;color:var(--t3);margin:0 0 8px;">Choose per-field overrides while editing. <strong>inherit</strong> keeps the collection default; <strong>off</strong> stores this write uncompressed.</p>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        ${fields.map((field) => `<div style="display:grid;grid-template-columns:1fr 145px auto;gap:8px;align-items:center;border:1px solid var(--bd);background:var(--bg2);padding:7px;border-radius:4px;">
+          <div><strong style="font-size:12px;">${esc(field)}</strong><div style="font-size:11px;color:var(--t3);">${isImageField(field, documentValue) ? 'image field' : detectType(documentValue[field])}${current[field] ? ` · currently ${esc(current[field])}` : ''}</div></div>
+          <select data-doc-compression-field="${esc(field)}" style="height:30px;border:1px solid var(--bd);background:var(--bg);color:var(--t1);border-radius:3px;">
+            ${COMPRESSION_OPTIONS.map((option) => `<option value="${option}">${option}</option>`).join('')}
+          </select>
+          <button class="tbtn" data-doc-cmp-recommend="${esc(field)}" data-doc-cmp-collection="${esc(collection)}" style="border:1px solid var(--bd);background:var(--bg);height:30px;">Adviseer</button>
+        </div>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+function wireDocumentCompressionControls() {
+  $('#doc-cmp-workload')?.addEventListener('input', (event) => {
+    state.compression.workload = Number(event.target.value) / 100;
+    $('#doc-cmp-workload-label').textContent = `${event.target.value}%`;
+  });
+  $$('[data-doc-cmp-recommend]').forEach((button) => button.addEventListener('click', async () => {
+    const field = button.dataset.docCmpRecommend;
+    const collection = button.dataset.docCmpCollection;
+    try {
+      button.disabled = true;
+      button.textContent = '...';
+      const { recommendation } = await api('/api/compression/recommendation', {
+        method: 'POST',
+        body: { collection, field, workload: state.compression.workload, sampleSize: 100 },
+      });
+      const select = document.querySelector(`[data-doc-compression-field="${CSS.escape(field)}"]`);
+      const recommended = recommendation?.recommended ?? recommendation?.algorithm;
+      if (select && recommended) select.value = recommended;
+      toast(`${field}: ${recommended || 'no recommendation'} recommended`, recommended ? 'ok' : 'warn');
+    } catch (e) {
+      toast('Recommendation failed: ' + e.message, 'err');
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Adviseer';
+    }
+  }));
+}
+
 function resetDocumentImageAttachment() {
   $('#doc-image-field').value = '';
   $('#doc-image-file').value = '';
@@ -130,11 +280,12 @@ function resetDocumentImageAttachment() {
   preview.querySelector('span').textContent = '';
 }
 
-function mergeImageIntoJsonText(textarea, fieldName, dataUrl, imagePayloads) {
+function mergeImageIntoJsonText(textarea, fieldName, dataUrl, mime, imagePayloads) {
   const parsed = validateDocumentInput(textarea.value, { requireId: false, imagePayloads });
   if (!parsed.ok) throw new Error(parsed.error);
   const [, base64 = dataUrl] = dataUrl.match(/^data:image\/[a-z0-9.+-]+;base64,(.*)$/i) || [];
   parsed.value[fieldName] = base64;
+  parsed.value[imageMimeMetadataField(fieldName)] = mime;
   const compacted = compactDocumentImages(parsed.value);
   Object.keys(imagePayloads).forEach((key) => delete imagePayloads[key]);
   Object.assign(imagePayloads, compacted.imagePayloads);
@@ -144,22 +295,19 @@ function mergeImageIntoJsonText(textarea, fieldName, dataUrl, imagePayloads) {
 async function attachImageToDocumentJson({ textarea, fieldInput, fileInput, preview, imagePayloads, error }) {
   const file = fileInput.files?.[0];
   if (!file) return;
-  const ext = file.type === 'image/png' ? 'png'
-    : file.type === 'image/gif' ? 'gif'
-      : file.type === 'image/webp' ? 'webp'
-        : 'jpg';
-  const fieldName = (fieldInput.value || `image.${ext}`).trim();
-  if (!isImageField(fieldName)) {
-    error(`Image field must end in .jpg, .jpeg, .png, .gif, or .webp.`);
+  const mime = file.type && file.type.startsWith('image/') ? file.type : 'image/jpeg';
+  const fieldName = (fieldInput.value || 'image').trim();
+  if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(fieldName) || fieldName.startsWith('_')) {
+    error('Image field must be a normal field name such as image, photo, avatar, or cover.');
     fileInput.value = '';
     return;
   }
   try {
     const dataUrl = await readFileDataUrl(file);
-    mergeImageIntoJsonText(textarea, fieldName, dataUrl, imagePayloads);
+    mergeImageIntoJsonText(textarea, fieldName, dataUrl, mime, imagePayloads);
     fieldInput.value = fieldName;
     preview.querySelector('img').src = dataUrl;
-    preview.querySelector('span').textContent = `${file.name} attached as ${fieldName}`;
+    preview.querySelector('span').textContent = `${file.name} attached as ${fieldName} (${mime})`;
     preview.classList.remove('hidden');
   } catch (e) {
     error('Image attach failed: ' + e.message);
@@ -245,7 +393,20 @@ function selectCollection(c) {
   state.selectedCol = c;
   state.tab = 'overview';
   state.dataFilter = '';
+  state.search.query = '';
+  state.search.image = null;
+  state.search.busy = false;
+  state.search.results = null;
+  state.search.error = null;
+  state.search.elapsedMs = null;
+  state.chatHistory = [];
   state.selectedDoc = null;
+  state.compression.recommendations = {};
+  state.compression.defaults = {};
+  state.lab.collection = c;
+  state.lab.report = null;
+  state.lab.error = null;
+  compressionDefaultsLoadedFor = null;
   closeDrawer();
   render();
 }
@@ -253,6 +414,13 @@ function selectRoot() {
   state.selectedCol = null;
   state.tab = 'overview';
   state.selectedDoc = null;
+  state.search.query = '';
+  state.search.image = null;
+  state.search.busy = false;
+  state.search.results = null;
+  state.search.error = null;
+  state.search.elapsedMs = null;
+  state.chatHistory = [];
   closeDrawer();
   render();
 }
@@ -365,6 +533,7 @@ function renderTabs() {
     <button class="ot ${state.tab === 'overview' ? 'on' : ''}" data-t="overview"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>Overview</button>
     <button class="ot ${state.tab === 'data' ? 'on' : ''}" data-t="data" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span>Data${state.selectedCol ? `<span class="badge">${(state.docsByColl[state.selectedCol] || []).length}</span>` : ''}</button>
     <button class="ot ${state.tab === 'fields' ? 'on' : ''}" data-t="fields" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>Fields</button>
+    <button class="ot ${state.tab === 'lab' ? 'on' : ''}" data-t="lab" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6L4 19a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3L14 8V2"/><path d="M8 14h8"/></svg></span>Lab</button>
     <button class="ot ${state.tab === 'sql' ? 'on' : ''}" data-t="sql"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>Query Language</button>
     <button class="ot ${state.tab === 'search' ? 'on' : ''}" data-t="search" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg></span>Semantic Search</button>
     <button class="ot ${state.tab === 'ai' ? 'on' : ''}" data-t="ai"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>AI Chat</button>
@@ -382,6 +551,7 @@ function renderTab() {
   if (state.tab === 'overview') renderOverview();
   else if (state.tab === 'data') renderData();
   else if (state.tab === 'fields') renderFields();
+  else if (state.tab === 'lab') renderLab();
   else if (state.tab === 'sql') renderSql();
   else if (state.tab === 'search') renderSemanticSearch();
   else if (state.tab === 'ai') renderAi();
@@ -408,6 +578,85 @@ function invalidateStorageCache(c) {
   else storageCache.clear();
 }
 
+async function refreshDatabaseStatus() {
+  try {
+    state.databaseStatus = await api('/api/database/status');
+  } catch {
+    state.databaseStatus = null;
+  }
+  renderConnectionMaintenanceMenu();
+  return state.databaseStatus;
+}
+
+async function runManualCompaction() {
+  try {
+    console.info('[compaction] manual full vacuum requested');
+    toast('Full vacuum compaction started. The UI may pause briefly.', '', 'Compaction');
+    const result = await api('/api/database/vacuum', { method: 'POST' });
+    console.info('[compaction] manual full vacuum complete', result);
+    toast(`Full vacuum compaction complete. Saved ${fmtSize(result.bytesSaved)}.`, 'ok');
+    invalidateStorageCache();
+    await refreshDatabaseStatus();
+    await loadCollections();
+    render();
+  } catch (e) {
+    toast('Full vacuum compaction failed: ' + e.message, 'err');
+  }
+}
+
+async function runIncrementalCompactionStep() {
+  try {
+    console.info('[compaction] manual incremental step requested');
+    toast('Incremental compaction step started.', '', 'Compaction');
+    const result = await api('/api/database/incremental-compaction/run', { method: 'POST' });
+    console.info('[compaction] manual incremental step complete', result.incrementalCompaction);
+    state.databaseStatus = { ...(state.databaseStatus || {}), incrementalCompaction: result.incrementalCompaction };
+    renderConnectionMaintenanceMenu();
+    toast(result.message || 'Incremental compaction step complete', 'ok');
+    if (!state.selectedCol && state.tab === 'overview') renderOverview();
+  } catch (e) {
+    toast('Incremental compaction step failed: ' + e.message, 'err');
+    await refreshDatabaseStatus();
+  }
+}
+
+async function setAutoCompaction(enabled) {
+  try {
+    console.info(`[compaction] auto compact ${enabled ? 'enabled' : 'disabled'}`);
+    const result = await api('/api/database/incremental-compaction/settings', { method: 'POST', body: { enabled } });
+    console.info('[compaction] auto compact status', result.incrementalCompaction);
+    state.databaseStatus = { ...(state.databaseStatus || {}), incrementalCompaction: result.incrementalCompaction };
+    renderConnectionMaintenanceMenu();
+    toast(result.message || 'Background incremental compaction updated', 'ok');
+    if (!state.selectedCol && state.tab === 'overview') renderOverview();
+  } catch (e) {
+    toast('Background incremental compaction setting failed: ' + e.message, 'err');
+    await refreshDatabaseStatus();
+  }
+}
+
+function renderDatabaseTools(status = state.databaseStatus) {
+  const size = status?.size;
+  return `<div class="psec">
+    <h3>Database status <span class="actions"><button class="tbtn" id="db-refresh-status" style="border:1px solid var(--bd);background:var(--bg2);">Refresh</button></span></h3>
+    <div class="pbody">
+      <div class="kpis" style="margin-bottom:12px;">
+        <div class="kpi"><div class="l">Database size</div><div class="v">${fmtSize(size?.totalBytes)}</div><div class="d">${size ? `${fmtSize(size.dataFileBytes)} data · ${fmtSize(size.logFileBytes)} log` : 'status unavailable'}</div></div>
+        <div class="kpi"><div class="l">Amplification</div><div class="v">${size?.amplification ? size.amplification.toFixed(2) : '—'}</div><div class="d">${size?.freeTailBlocks ?? 0} free tail block${size?.freeTailBlocks === 1 ? '' : 's'}</div></div>
+        <div class="kpi"><div class="l">Semantic indexes</div><div class="v" style="font-size:15px;">${status?.semanticIndexes?.length ?? 0}</div><div class="d">${status?.semanticIndexes?.length ? status.semanticIndexes.map((x) => esc(x)).join(', ') : 'none yet'}</div></div>
+      </div>
+      <p style="font-size:12px;color:var(--t3);margin:0;">Compaction controls live in the top-right connection/settings menu.</p>
+    </div>
+  </div>`;
+}
+
+async function wireDatabaseTools() {
+  $('#db-refresh-status')?.addEventListener('click', async () => {
+    await refreshDatabaseStatus();
+    renderOverview();
+  });
+}
+
 function renderOverview() {
   const c = state.selectedCol;
   if (!c) {
@@ -416,9 +665,18 @@ function renderOverview() {
     $('#cnt').innerHTML = `<div class="ov">
       <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(state.filepath || '—')}</span></h1>
       <p class="ovsub"><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>JSON ≈ <strong>${fmtSize(totalSize)}</strong></span></p>
+      ${renderDatabaseTools()}
+      <div class="psec">
+        <h3>Demo datasets</h3>
+        <div class="pbody" style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="tbtn" data-seed-demo ${state.seedBusy ? 'disabled' : ''} style="border:1px solid var(--bd);background:var(--bg2);">${state.seedBusy ? 'Seeding...' : 'Seed employees'}</button>
+          <button class="tbtn" data-seed-semantic-text ${state.seedBusy ? 'disabled' : ''} style="border:1px solid var(--bd);background:var(--bg2);">${state.seedBusy ? 'Seeding...' : 'Seed semantic text demo'}</button>
+          <button class="tbtn" data-seed-semantic-images ${state.seedBusy ? 'disabled' : ''} style="border:1px solid var(--bd);background:var(--bg2);">${state.seedBusy ? 'Seeding...' : 'Seed semantic image demo'}</button>
+        </div>
+      </div>
       <div class="psec">
         <h3>Collections <span class="actions"><button class="tbtn pri" data-add-collection>Add collection</button></span></h3>
-        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Add a collection by inserting its first JSON document, open the <strong>Query Language</strong> tab, or seed the built-in employee demo data.</p><div style="display:flex;gap:8px;justify-content:center;"><button class="tbtn pri" data-add-collection>Add collection</button><button class="tbtn" data-seed-demo style="border:1px solid var(--bd);background:var(--bg2);">Seed employee demo</button><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div></div>` :
+        <div>${state.collections.length === 0 ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Add a collection by inserting its first JSON document, open the <strong>Query Language</strong> tab, or seed one of the built-in demo datasets.</p><div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;"><button class="tbtn pri" data-add-collection>Add collection</button><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div></div>` :
           state.collections.map((x) => {
             const ex = getExplore(x);
             const n = state.countsByColl[x];
@@ -433,9 +691,15 @@ function renderOverview() {
     });
     $$('[data-add-collection]').forEach((b) => b.addEventListener('click', openCollectionDocumentModal));
     document.querySelector('[data-seed-demo]')?.addEventListener('click', seedDemoEmployees);
+    document.querySelector('[data-seed-semantic-text]')?.addEventListener('click', seedSemanticKnowledgeDemo);
+    document.querySelector('[data-seed-semantic-images]')?.addEventListener('click', seedSemanticImageDemo);
     $$('[data-root-collection]').forEach((row) => row.addEventListener('click', () => {
       selectCollection(row.dataset.rootCollection);
     }));
+    wireDatabaseTools();
+    if (!state.databaseStatus) {
+      refreshDatabaseStatus().then(() => { if (!state.selectedCol && state.tab === 'overview') renderOverview(); });
+    }
     return;
   }
 
@@ -569,7 +833,7 @@ function renderDataGrid(docs, keys) {
         if (typeof v === 'number') return `<td class="cn">${fmtNum(v)}</td>`;
         if (typeof v === 'boolean') return `<td class="cb ${v ? 't' : 'f'}">${v}</td>`;
         if (k === 'id') return `<td class="ck">${esc(v)}</td>`;
-        const imageUrl = imageDataUrlFromValue(k, v);
+        const imageUrl = imageDataUrlFromValue(k, v, d);
         if (imageUrl) return `<td class="ci"><img src="${esc(imageUrl)}" alt=""></td>`;
         return `<td class="cs">${esc(String(v))}</td>`;
       }).join('')}</tr>`;
@@ -616,7 +880,7 @@ async function renderDrawer() {
       else if (typeof v === 'number') { cls = 'num'; html = fmtNum(v); }
       else if (typeof v === 'boolean') { cls = 'bool'; html = String(v); }
       else if (k === 'id') { cls = 'id'; html = esc(v); }
-      else if (imageDataUrlFromValue(k, v)) { cls = 'img'; html = `<img src="${esc(imageDataUrlFromValue(k, v))}" alt="">`; }
+      else if (imageDataUrlFromValue(k, v, d)) { cls = 'img'; html = `<img src="${esc(imageDataUrlFromValue(k, v, d))}" alt="">`; }
       else { html = `<span data-edit="${esc(k)}">${esc(String(v))}</span>`; }
       return `<div class="fld-row" data-k="${esc(k)}"><div class="k">${esc(k)}</div><div class="v ${cls}">${html}</div></div>`;
     }).join('')}
@@ -637,7 +901,7 @@ $('#dr-edit').addEventListener('click', () => {
     <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin-top:10px;">
       <div>
         <label style="font-size:11px;color:var(--t3);font-weight:700;">Attach image field</label>
-        <input type="text" id="dr-image-field" placeholder="e.g. photo.jpg" style="width:100%;height:32px;border:1px solid var(--bd);border-radius:3px;background:var(--bg2);padding:0 9px;"/>
+        <input type="text" id="dr-image-field" placeholder="e.g. photo" style="width:100%;height:32px;border:1px solid var(--bd);border-radius:3px;background:var(--bg2);padding:0 9px;"/>
       </div>
       <label class="tbtn" style="border:1px solid var(--bd);background:var(--bg2);height:32px;justify-content:center;">
         Choose image
@@ -648,6 +912,7 @@ $('#dr-edit').addEventListener('click', () => {
       <img alt="" style="max-width:72px;max-height:54px;border:1px solid var(--bd);border-radius:3px;object-fit:cover;"/>
       <span></span>
     </div>
+    ${renderDocumentCompressionControls(c, cleanDoc, null)}
     <div class="err hidden" id="dr-edit-err" style="margin-top:8px;padding:7px 10px;background:var(--rdb);color:var(--rd);border-radius:3px;font-size:11.5px;font-family:Consolas,monospace;white-space:pre-wrap;"></div>
     <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;">
       <button class="tbtn sec" id="edit-cancel" style="border:1px solid var(--bd);background:var(--bg2);">Cancel</button>
@@ -655,6 +920,7 @@ $('#dr-edit').addEventListener('click', () => {
     </div>
   `;
   $('#edit-cancel').addEventListener('click', () => renderDrawer());
+  wireDocumentCompressionControls();
   $('#dr-image-file').addEventListener('change', () => attachImageToDocumentJson({
     textarea: $('#dr-edit-json'),
     fieldInput: $('#dr-image-field'),
@@ -676,11 +942,15 @@ $('#dr-edit').addEventListener('click', () => {
       errEl.classList.remove('hidden'); errEl.textContent = validated.error; return;
     }
     parsed = validated.value;
-    if (JSON.stringify(parsed) === JSON.stringify(cleanDoc)) {
+    const compression = readCompressionOverrides($('#dr-body'));
+    if (JSON.stringify(parsed) === JSON.stringify(cleanDoc) && !compression) {
       toast('No changes.', 'warn'); renderDrawer(); return;
     }
     try {
-      await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/edit`, { method: 'POST', body: { document: parsed } });
+      await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/edit`, {
+        method: 'POST',
+        body: { document: parsed, compression },
+      });
       toast('Document updated', 'ok');
       invalidateStorageCache(c);
       await refreshDocs(c);
@@ -754,12 +1024,250 @@ function renderFields() {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// Compression
+// ─────────────────────────────────────────────────────────────────
+let compressionDefaultsLoadedFor = null;
+
+async function loadCompressionDefaults(c) {
+  try {
+    const { defaults } = await api(`/api/compression/defaults?collection=${encodeURIComponent(c)}`);
+    state.compression.defaults = defaults || {};
+    compressionDefaultsLoadedFor = c;
+  } catch {
+    state.compression.defaults = {};
+    compressionDefaultsLoadedFor = c;
+  }
+}
+
+async function recommendFieldCompression(field) {
+  const c = state.selectedCol;
+  if (!c) return;
+  try {
+    const { recommendation } = await api('/api/compression/recommendation', {
+      method: 'POST',
+      body: {
+        collection: c,
+        field,
+        workload: state.compression.workload,
+        sampleSize: 100,
+      },
+    });
+    state.compression.recommendations[field] = recommendation;
+    renderCompression();
+  } catch (e) {
+    toast(`Compression recommendation failed for ${field}: ${e.message}`, 'err');
+  }
+}
+
+async function applyCompressionAdvice() {
+  const c = state.selectedCol;
+  if (!c) return;
+  try {
+    const result = await api('/api/compression/lab/apply-advice', {
+      method: 'POST',
+      body: { collection: c, workload: state.compression.workload, sampleSize: 100 },
+    });
+    toast(`Applied compression defaults for ${result.fields} fields. Future writes use this policy.`, 'ok');
+    await loadCompressionDefaults(c);
+    renderCompression();
+  } catch (e) {
+    toast('Apply advice failed: ' + e.message, 'err');
+  }
+}
+
+function renderRecommendationCard(field, recommendation) {
+  if (!recommendation) return `<div class="empty" style="padding:10px 0;color:var(--t3);">No recommendation yet.</div>`;
+  const top = recommendation.ranking || [];
+  return `<div style="margin-top:10px;">
+    <div class="prow" style="grid-template-columns:150px 1fr;"><div class="k">Recommended</div><div class="v"><strong style="color:var(--ac)">${esc(recommendation.recommended)}</strong> <span style="font-family:Segoe UI;color:var(--t3);">${esc(recommendation.summary)}</span></div></div>
+    <div class="prow" style="grid-template-columns:150px 1fr;"><div class="k">Detected profile</div><div class="v">${esc(recommendation.activeProfile?.displayName || recommendation.detectedProfile?.displayName || '—')}</div></div>
+    <table class="dg" style="margin-top:8px;"><thead><tr><th>Algorithm</th><th>Score</th><th>Blocks saved</th><th>Bytes saved</th><th>Write ms</th></tr></thead>
+      <tbody>${top.slice(0, 6).map((r) => `<tr><td class="ck">${esc(r.algorithm)}</td><td class="cn">${Number(r.score || 0).toFixed(2)}</td><td class="cn">${fmtNum(r.storageEstimate?.blocksSaved ?? r.blocksSaved ?? 0)}</td><td class="cn">${fmtSize((r.storageEstimate?.rawSerializedBytes ?? 0) - (r.storageEstimate?.compressedSerializedBytes ?? 0) || r.bytesSaved || 0)}</td><td class="cn">${Number(r.storageEstimate?.writeCost ?? r.writeCostMs ?? 0).toFixed(1)}</td></tr>`).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderCompression() {
+  const c = state.selectedCol;
+  if (!c) {
+    $('#cnt').innerHTML = `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>Compression recommendations are calculated from collection fields.</p></div></div>`;
+    return;
+  }
+  const docs = state.docsByColl[c] || [];
+  const fields = collectionFields(c).filter((field) => field !== 'id');
+  const defaults = state.compression.defaults || {};
+  $('#cnt').innerHTML = `<div class="ov">
+    <div class="crumb"><a id="cmp-back">All collections</a> ›</div>
+    <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h7"/></svg></span><span class="name">${esc(c)} compression</span></h1>
+    <p class="ovsub"><span><strong>${fields.length}</strong> recommendable fields</span><span><strong>${docs.length}</strong> sampled documents</span><span>Defaults affect <strong>future writes</strong></span></p>
+    <div class="psec">
+      <h3>Advisor settings <span class="actions"><button class="tbtn pri" id="cmp-apply-all">Apply advisor defaults</button></span></h3>
+      <div class="pbody">
+        <label style="font-size:11px;color:var(--t3);font-weight:700;">Workload hotness: <span id="cmp-workload-label">${Math.round(state.compression.workload * 100)}%</span></label>
+        <input id="cmp-workload" type="range" min="0" max="100" value="${Math.round(state.compression.workload * 100)}" style="width:100%;margin:8px 0 4px;">
+        <p style="font-size:12px;color:var(--t3);margin:0;">Cold workloads favor smaller files; hot workloads weigh read/write cost more heavily.</p>
+      </div>
+    </div>
+    <div class="psec">
+      <h3>Field recommendations <span class="actions"><button class="tbtn" id="cmp-refresh-defaults" style="border:1px solid var(--bd);background:var(--bg2);">Reload defaults</button></span></h3>
+      <div>${fields.length === 0 ? `<div class="empty-state"><h4>No fields</h4><p>Add documents with non-id fields to get recommendations.</p></div>` : fields.map((field) => `
+        <div style="padding:12px 16px;border-bottom:1px solid var(--bg3);">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <strong class="mono" style="color:var(--ac);">${esc(field)}</strong>
+            <span style="font-size:12px;color:var(--t3);">current default: <span class="mono">${esc(defaults[field] || 'none')}</span></span>
+            <button class="tbtn pri" data-cmp-field="${esc(field)}" style="margin-left:auto;">Recommend</button>
+          </div>
+          ${renderRecommendationCard(field, state.compression.recommendations[field])}
+        </div>`).join('')}</div>
+    </div>
+  </div>`;
+  $('#cmp-back')?.addEventListener('click', selectRoot);
+  $('#cmp-workload')?.addEventListener('input', (e) => {
+    state.compression.workload = Number(e.target.value) / 100;
+    $('#cmp-workload-label').textContent = `${e.target.value}%`;
+  });
+  $('#cmp-apply-all')?.addEventListener('click', applyCompressionAdvice);
+  $('#cmp-refresh-defaults')?.addEventListener('click', async () => { await loadCompressionDefaults(c); renderCompression(); });
+  $$('[data-cmp-field]').forEach((button) => button.addEventListener('click', () => recommendFieldCompression(button.dataset.cmpField)));
+  if (compressionDefaultsLoadedFor !== c) {
+    loadCompressionDefaults(c).then(() => { if (state.tab === 'compression' && state.selectedCol === c) renderCompression(); });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Compression Lab
+// ─────────────────────────────────────────────────────────────────
+function renderLabPolicyChart(report) {
+  if (!report?.policies) return '';
+  const policies = Object.entries(report.policies);
+  const max = Math.max(...policies.map(([, p]) => p.totalBytes || 0), 1);
+  return `<div style="display:grid;gap:8px;">${policies.map(([key, policy]) => {
+    const pct = Math.max(4, Math.round(((policy.totalBytes || 0) / max) * 100));
+    return `<div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;"><strong>${esc(key)}</strong><span>${fmtSize(policy.totalBytes)} · ${fmtNum(policy.totalBlocks)} blocks · saved ${fmtNum(policy.blocksSavedVsRaw)}</span></div>
+      <div style="height:10px;background:var(--bg3);border-radius:99px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${key === 'advisor-mix' ? 'var(--gr)' : 'var(--ac)'};"></div></div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+async function seedCompressionLab() {
+  state.lab.busy = true; renderLab();
+  try {
+    const result = await api('/api/compression/lab/seed-wiki', { method: 'POST', body: { count: 100 } });
+    toast(`Seeded ${result.inserted} wiki_lab documents`, 'ok');
+    state.lab.collection = result.collection || 'wiki_lab';
+    invalidateStorageCache(result.collection);
+    await loadCollections();
+    state.selectedCol = state.lab.collection;
+    state.tab = 'lab';
+    await runCompressionLabReport();
+  } catch (e) {
+    state.lab.error = e.message;
+    state.lab.busy = false;
+    renderLab();
+  }
+}
+
+async function runCompressionLabReport() {
+  const collection = state.selectedCol;
+  if (!collection) {
+    state.lab.error = 'Select a collection first.';
+    renderLab();
+    return;
+  }
+  state.lab.collection = collection;
+  state.lab.busy = true;
+  state.lab.error = null;
+  renderLab();
+  try {
+    const { report } = await api('/api/compression/lab/recommend-collection', {
+      method: 'POST',
+      body: { collection, workload: state.lab.workload, sampleSize: 100 },
+    });
+    state.lab.report = report;
+  } catch (e) {
+    state.lab.error = e.message;
+  } finally {
+    state.lab.busy = false;
+    renderLab();
+  }
+}
+
+async function applyLabAdvice() {
+  const collection = state.selectedCol;
+  if (!collection) {
+    toast('Select a collection first.', 'warn');
+    return;
+  }
+  try {
+    const result = await api('/api/compression/lab/apply-advice', {
+      method: 'POST',
+      body: { collection, workload: state.lab.workload, sampleSize: 100 },
+    });
+    toast(`Applied advisor defaults for ${result.fields} fields in ${collection}.`, 'ok');
+    if (collection === state.selectedCol) await loadCompressionDefaults(collection);
+  } catch (e) {
+    toast('Apply lab advice failed: ' + e.message, 'err');
+  }
+}
+
+function renderLab() {
+  const report = state.lab.report;
+  const collection = state.selectedCol;
+  if (!collection) {
+    $('#cnt').innerHTML = `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>The Compression Lab is collection-scoped. Pick a collection in the object explorer, then open the Lab tab.</p></div></div>`;
+    return;
+  }
+  if (state.lab.collection !== collection) {
+    state.lab.collection = collection;
+    state.lab.report = null;
+    state.lab.error = null;
+  }
+  $('#cnt').innerHTML = `<div class="ov">
+    <div class="crumb"><a id="lab-back">All collections</a> › <span>${esc(collection)}</span></div>
+    <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6L4 19a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3L14 8V2"/><path d="M8 14h8"/></svg></span><span class="name">${esc(collection)} lab</span></h1>
+    <p class="ovsub"><span>Compare field-level compression policies</span><span>Apply defaults for future writes in this collection</span></p>
+    <div class="psec">
+      <h3>Scenario <span class="actions"><button class="tbtn" id="lab-seed" style="border:1px solid var(--bd);background:var(--bg2);">Seed wiki_lab</button><button class="tbtn pri" id="lab-run" ${state.lab.busy ? 'disabled' : ''}>Run report</button><button class="tbtn" id="lab-apply" style="border:1px solid var(--bd);background:var(--bg2);" ${report ? '' : 'disabled'}>Apply advice</button></span></h3>
+      <div class="pbody" style="display:grid;gap:10px;">
+        <div style="display:grid;grid-template-columns:1fr;gap:10px;">
+          <div><label style="font-size:11px;color:var(--t3);font-weight:700;">Workload: <span id="lab-workload-label">${Math.round(state.lab.workload * 100)}%</span></label><input id="lab-workload" type="range" min="0" max="100" value="${Math.round(state.lab.workload * 100)}" style="width:100%;"></div>
+        </div>
+        ${state.lab.busy ? `<div class="loader">Computing compression report…</div>` : ''}
+        ${state.lab.error ? `<div class="err">${esc(state.lab.error)}</div>` : ''}
+      </div>
+    </div>
+    ${report ? `<div class="kpis">
+      <div class="kpi"><div class="l">Baseline</div><div class="v">${fmtSize(report.baseline?.totalBytes)}</div><div class="d">${fmtNum(report.baseline?.totalBlocks || 0)} blocks</div></div>
+      <div class="kpi"><div class="l">Advisor</div><div class="v">${fmtSize(report.policies?.['advisor-mix']?.totalBytes)}</div><div class="d">${fmtNum(report.policies?.['advisor-mix']?.blocksSavedVsRaw || 0)} blocks saved</div></div>
+      <div class="kpi"><div class="l">Fields</div><div class="v">${report.perField?.length || 0}</div><div class="d">recommended defaults</div></div>
+    </div>
+    <div class="psec"><h3>Policy comparison</h3><div class="pbody">${renderLabPolicyChart(report)}</div></div>
+    <div class="psec"><h3>Per-field advice</h3><div>${(report.perField || []).map((field) => `
+      <div class="prow" style="grid-template-columns:170px 110px 1fr;">
+        <div class="k mono">${esc(field.field)}</div>
+        <div class="v"><strong style="color:var(--ac)">${esc(field.recommended)}</strong></div>
+        <div class="v" style="font-family:Segoe UI;color:var(--t2);">${esc(field.rationale || field.summary || '')}</div>
+      </div>`).join('')}</div></div>` : `<div class="empty-state"><h4>No lab report yet</h4><p>Run a report for <strong>${esc(collection)}</strong>. If every recommendation is <code>none</code>, the sampled fields are probably small scalar values where compression would not save blocks.</p></div>`}
+  </div>`;
+  $('#lab-back')?.addEventListener('click', selectRoot);
+  $('#lab-seed')?.addEventListener('click', seedCompressionLab);
+  $('#lab-run')?.addEventListener('click', runCompressionLabReport);
+  $('#lab-apply')?.addEventListener('click', applyLabAdvice);
+  $('#lab-workload')?.addEventListener('input', (e) => {
+    state.lab.workload = Number(e.target.value) / 100;
+    $('#lab-workload-label').textContent = `${e.target.value}%`;
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────
 // Schema model (modal opened from AI Chat header)
 // ─────────────────────────────────────────────────────────────────
 function modelModalJsonForCurrentContext() {
   if (!state.model) return '';
   if (!state.selectedCol) return JSON.stringify(state.model, null, 2);
-  return getExplore(state.selectedCol) ? JSON.stringify(state.model, null, 2) : '';
+  const explore = getExplore(state.selectedCol);
+  return explore ? JSON.stringify({ explores: [explore] }, null, 2) : '';
 }
 
 function modelModalStatusForCurrentContext() {
@@ -929,31 +1437,50 @@ async function pollEmbedStatus() {
   } catch { /* leave previous status */ }
 }
 
-function embedStatusPill() {
-  const s = state.search.embedStatus.state;
-  if (s === 'ready') return { cls: 'ok', label: 'Embedding model · ready' };
-  if (s === 'loading') return { cls: 'warn', label: 'Embedding model · loading…' };
-  if (s === 'error') return { cls: 'bad', label: 'Embedding model · error' };
-  return { cls: '', label: 'Embedding model · not started' };
+function embedStatusPill(mode = state.search.mode || 'text', hasImageUpload = !!state.search.image) {
+  const indexStatus = hasImageUpload || mode === 'image'
+    ? state.search.embedStatus.indexes?.image
+    : state.search.embedStatus.indexes?.text;
+  const s = indexStatus?.state || state.search.embedStatus.state;
+  const label = hasImageUpload || mode === 'image'
+    ? 'CLIP image index'
+    : 'MiniLM text index';
+  if (s === 'ready') return { cls: 'ok', label: `${label} · ready` };
+  if (s === 'loading') return { cls: 'warn', label: `${label} · loading…` };
+  if (s === 'error') return { cls: 'bad', label: `${label} · error` };
+  return { cls: '', label: `${label} · loads on first search` };
 }
 
 function renderSemanticSearch() {
   const c = state.selectedCol;
   const s = state.search;
-  const pill = embedStatusPill();
+  const mode = s.mode || 'text';
+  const pill = embedStatusPill(mode, !!s.image);
+  const imageDocCount = c ? (state.docsByColl[c] || []).filter(hasImageField).length : 0;
+  const placeholders = {
+    text: 'Zoek op betekenis...',
+    image: 'Zoek foto op beschrijving...',
+  };
+  const modeHelp = {
+    text: 'Semantic text search uses MiniLM over text fields.',
+    image: 'Photo search uses CLIP over image fields only.',
+  };
 
-  // The CLIP model loads lazily on first query; we don't preload on
+  // The embedding model loads lazily on first query; we don't preload on
   // tab open because the user might just be browsing. We refresh
   // status when they actually run a query.
   $('#cnt').innerHTML = `<div class="ss">
     <div class="ss-head">
       <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg></div>
-      <div class="ttl"><strong>Semantic search</strong><span class="sub">Find documents by meaning. Powered by CLIP — accepts text, an image, or both.</span></div>
-      <div class="meta"><span class="dot ${pill.cls}" title="CLIP model state. Loads on the first query and stays warm afterwards."><strong>${esc(pill.label.split(' · ')[0])}</strong>${esc(pill.label.split(' · ')[1] || '')}</span></div>
+      <div class="ttl"><strong>Semantic search</strong><span class="sub">${esc(modeHelp[mode])}</span></div>
+      <div class="meta"><span class="dot ${pill.cls}" title="Selected model state. Loads on the first query and stays warm afterwards."><strong>${esc(pill.label.split(' · ')[0])}</strong>${esc(pill.label.split(' · ')[1] || '')}</span></div>
     </div>
     <div class="ss-bar">
-      <input type="text" id="ss-q" placeholder="${c ? 'Describe what you are looking for…' : 'Select a collection in the sidebar first…'}" value="${esc(s.query)}" ${c ? '' : 'disabled'}/>
-      <label class="attach ${s.image ? 'has-image' : ''}" title="Attach an image to search visually">
+      <div class="modes ss-modes">
+        ${['text', 'image'].map((m) => `<button class="${mode === m ? 'on' : ''}" data-ss-mode="${m}">${m === 'text' ? 'Tekst' : 'Foto'}</button>`).join('')}
+      </div>
+      <input type="text" id="ss-q" placeholder="${c ? esc(placeholders[mode]) : 'Select a collection in the sidebar first…'}" value="${esc(s.query)}" ${c ? '' : 'disabled'}/>
+      <label class="attach ${s.image ? 'has-image' : ''}" title="Attach an image for image-to-image search" style="${mode === 'text' ? '' : 'display:none;'}">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>
         ${s.image ? esc(s.image.name) : 'Attach image'}
         <input type="file" id="ss-img" accept="image/*" style="display:none;" ${c ? '' : 'disabled'}/>
@@ -963,7 +1490,8 @@ function renderSemanticSearch() {
     </div>
     <div class="ss-status">
       ${s.image ? `<span class="preview"><img src="${esc(s.image.dataUrl)}" alt=""/> using image embedding</span>` : ''}
-      ${!s.image && s.query ? `<span>using text embedding</span>` : ''}
+      ${!s.image && s.query ? `<span>${mode === 'image' ? `searching ${imageDocCount} image document${imageDocCount === 1 ? '' : 's'} by description` : 'using text embedding'}</span>` : ''}
+      ${!s.image && !s.query && mode === 'image' ? `<span>Foto mode searches image documents by typed description; ${imageDocCount} image document${imageDocCount === 1 ? '' : 's'} in this collection.</span>` : ''}
       ${s.elapsedMs != null ? `<span>· ${s.elapsedMs} ms</span>` : ''}
       ${s.results ? `<span>· ${s.results.length} result${s.results.length === 1 ? '' : 's'}</span>` : ''}
     </div>
@@ -985,17 +1513,32 @@ function renderSemanticSearch() {
     state.search.image = null;
     renderSemanticSearch();
   });
+  $$('[data-ss-mode]').forEach((button) => button.addEventListener('click', () => {
+    state.search.mode = button.dataset.ssMode;
+    state.search.results = null;
+    state.search.error = null;
+    state.search.elapsedMs = null;
+    if (state.search.mode !== 'text') state.search.image = null;
+    renderSemanticSearch();
+  }));
   $$('#ss-body [data-idx]').forEach((el) => el.addEventListener('click', () => {
     const i = parseInt(el.dataset.idx, 10);
     const doc = state.search.results && state.search.results[i];
     if (!doc) return;
     try { openDrawer(JSON.parse(doc), i); } catch { /* invalid json */ }
   }));
+  $('#ss-rebuild-indexes')?.addEventListener('click', () => {
+    confirmAction('Rebuild semantic indexes?', 'This runs manual compaction. It rewrites the database and rebuilds records, B+ trees, and semantic indexes using the current dual-index layout.', runManualCompaction);
+  });
 }
 
 function renderSemanticSearchBody(c, s) {
   if (!c) {
     return `<div class="ss-empty"><h4>Pick a collection to search</h4><p>Semantic search ranks documents in the selected collection by similarity to your query. The first search of a session loads the CLIP model and may take 10–20 seconds; subsequent searches are fast.</p></div>`;
+  }
+  const missingIndex = semanticMissingIndex(c, s.mode || 'text', !!s.image);
+  if (missingIndex) {
+    return `<div class="ss-empty"><h4>${esc(missingIndex.title)}</h4><p>${missingIndex.body}</p><button class="tbtn pri" id="ss-rebuild-indexes" style="margin-top:12px;">Rebuild semantic indexes</button></div>`;
   }
   if (s.busy) {
     return `<div class="ss-loading"><span class="spin"></span>${state.search.embedStatus.state === 'loading' ? 'Loading CLIP model…' : 'Searching…'}</div>`;
@@ -1004,13 +1547,20 @@ function renderSemanticSearchBody(c, s) {
     return `<div class="ss-empty"><h4>Search failed</h4><p style="color:var(--rd)">${esc(s.error)}</p></div>`;
   }
   if (!s.results) {
-    return `<div class="ss-empty"><h4>Ready when you are</h4><p>Type a query and press Search. You can also attach an image to find visually similar records (works on collections where image fields were indexed).</p></div>`;
+    return `<div class="ss-empty"><h4>Ready when you are</h4><p>Type a query and press Search. Tekst uses the MiniLM text index; Foto uses the CLIP image index.</p></div>`;
   }
   if (s.results.length === 0) {
+    if ((s.mode || 'text') === 'image') {
+      const imageDocCount = (state.docsByColl[c] || []).filter(hasImageField).length;
+      if (imageDocCount === 0) {
+        return `<div class="ss-empty"><h4>No image documents</h4><p>Foto mode follows main: it runs text semantic search, then keeps only documents with image fields such as <code>photo.jpg</code> or <code>avatar.png</code>. This collection currently has no detected image fields.</p></div>`;
+      }
+      return `<div class="ss-empty"><h4>No photo matches</h4><p>Foto mode found ${imageDocCount} image document${imageDocCount === 1 ? '' : 's'}, but none appeared in the semantic top results for this description. Try broader visual words, for example “person”, “portrait”, “animal”, or “outdoor”.</p></div>`;
+    }
     return `<div class="ss-empty"><h4>No results</h4><p>The collection doesn't have any documents that semantically match. Try broader keywords or a different image.</p></div>`;
   }
   const rows = s.results.map(parseSemanticResult);
-  const cols = semanticResultColumns(rows);
+  const cols = semanticResultColumns(rows, s.mode || 'text');
   if (cols.length === 0) cols.push('result');
   return `<div class="sql-results ss-table">
     <div class="rhead"><strong>${s.results.length}</strong> result${s.results.length === 1 ? '' : 's'} · <span class="pill">semantic</span></div>
@@ -1019,8 +1569,23 @@ function renderSemanticSearchBody(c, s) {
       const type = c === 'id' ? 'pk' : semanticTypeBadge(sample);
       return `<th><div class="ti">${esc(c)}${type ? `<span class="tb ${type === 'pk' ? 'pk' : ''}">${type}</span>` : ''}</div></th>`;
     }).join('')}</tr></thead>
-    <tbody>${rows.map((r, i) => `<tr data-idx="${i}" title="Open document"><td class="rn">${i + 1}</td>${cols.map((c) => renderSemanticCell(c, r[c])).join('')}</tr>`).join('')}</tbody></table>
+    <tbody>${rows.map((r, i) => `<tr data-idx="${i}" title="Open document"><td class="rn">${i + 1}</td>${cols.map((c) => renderSemanticCell(c, r[c], r)).join('')}</tr>`).join('')}</tbody></table>
   </div>`;
+}
+
+function semanticMissingIndex(collection, mode, hasImageUpload) {
+  const indexes = state.databaseStatus?.semanticIndexes;
+  if (!Array.isArray(indexes)) return null;
+  const needed = hasImageUpload || mode === 'image' ? `${collection}::image` : `${collection}::text`;
+  if (indexes.includes(needed)) return null;
+  const legacy = indexes.includes(collection);
+  const kind = needed.endsWith('::image') ? 'CLIP image' : 'MiniLM text';
+  return {
+    title: `${kind} index missing`,
+    body: legacy
+      ? `This database still has the old legacy semantic index for <code>${esc(collection)}</code>, but the new search uses <code>${esc(needed)}</code>. Run a manual compact/rebuild to recreate semantic indexes with the new layout.`
+      : `No <code>${esc(needed)}</code> index exists yet. Insert or replace matching documents, or run a manual compact/rebuild to recreate semantic indexes for existing data.`,
+  };
 }
 
 function parseSemanticResult(raw) {
@@ -1033,7 +1598,7 @@ function parseSemanticResult(raw) {
   }
 }
 
-function semanticResultColumns(rows) {
+function semanticResultColumns(rows, mode = 'text') {
   const seen = new Set();
   const cols = [];
   for (const row of rows) {
@@ -1046,6 +1611,12 @@ function semanticResultColumns(rows) {
   return cols.sort((a, b) => {
     if (a === 'id') return -1;
     if (b === 'id') return 1;
+    if (mode === 'image') {
+      const ai = rows.some((row) => isImageField(a, row));
+      const bi = rows.some((row) => isImageField(b, row));
+      if (ai && !bi) return -1;
+      if (!ai && bi) return 1;
+    }
     return 0;
   });
 }
@@ -1058,14 +1629,18 @@ function semanticTypeBadge(value) {
   return '';
 }
 
-function renderSemanticCell(key, value) {
+function renderSemanticCell(key, value, row = null) {
   if (value == null) return '<td class="cnu">[NULL]</td>';
   if (typeof value === 'number') return `<td class="cn">${fmtNum(value)}</td>`;
   if (typeof value === 'boolean') return `<td class="cb">${value ? 'true' : 'false'}</td>`;
   if (typeof value === 'object') return `<td class="ck">${esc(JSON.stringify(value))}</td>`;
-  const imageUrl = imageDataUrlFromValue(key, value);
+  const imageUrl = imageDataUrlFromValue(key, value, row);
   if (imageUrl) return `<td class="ci"><img src="${esc(imageUrl)}" alt=""></td>`;
   return `<td class="cs">${esc(String(value))}</td>`;
+}
+
+function hasImageField(doc) {
+  return !!doc && typeof doc === 'object' && Object.keys(doc).some((key) => isImageField(key, doc));
 }
 
 function readFileDataUrl(file) {
@@ -1090,9 +1665,12 @@ async function runSemanticSearch() {
   s.error = null;
   s.results = null;
   s.elapsedMs = null;
-  // Kick off the CLIP load (no-op if already in flight) so the status
-  // pill reflects what's actually happening.
-  void api('/api/embeddings/preload', { method: 'POST' }).catch(() => undefined);
+  const mode = s.mode || 'text';
+  if (mode === 'text' || mode === 'image' || s.image) {
+    const kind = s.image || mode === 'image' ? 'image' : 'text';
+    // Kick off only the model needed by this search mode.
+    void api('/api/embeddings/preload', { method: 'POST', body: { kind } }).catch(() => undefined);
+  }
   renderSemanticSearch();
   // Poll status while busy so the pill animates from "loading" to "ready".
   const statusTimer = setInterval(async () => {
@@ -1107,11 +1685,15 @@ async function runSemanticSearch() {
         method: 'POST',
         body: { image: s.image.buffer },
       });
+    } else if (mode === 'image') {
+      const q = encodeURIComponent(s.query.trim());
+      resp = await api(`/api/documents/${encodeURIComponent(c)}/search/photos?q=${q}&limit=10`);
     } else {
       const q = encodeURIComponent(s.query.trim());
       resp = await api(`/api/documents/${encodeURIComponent(c)}/search?q=${q}&limit=20`);
     }
-    s.results = Array.isArray(resp.documents) ? resp.documents : [];
+    let docs = Array.isArray(resp.documents) ? resp.documents : [];
+    s.results = docs;
     s.elapsedMs = Math.round(performance.now() - t0);
   } catch (err) {
     s.error = err.message || String(err);
@@ -1254,8 +1836,8 @@ function renderAiMessage(m, i) {
   }
   if (r.interpretation) h += `<div class="in">${esc(r.interpretation)}</div>`;
   if (r.data && r.data.length > 0) {
-    const cols = Object.keys(r.data[0]);
-    h += `<table class="qt"><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.data.slice(0, 30).map((row) => `<tr>${cols.map((c) => typeof row[c] === 'number' ? `<td class="cn">${fmtNum(row[c])}</td>` : `<td>${esc(String(row[c] ?? ''))}</td>`).join('')}</tr>`).join('')}${r.data.length > 30 ? `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--t3);">+ ${r.data.length - 30} more rows</td></tr>` : ''}</tbody></table>`;
+    const cols = Object.keys(r.data[0]).filter((key) => !key.startsWith('_'));
+    h += `<table class="qt"><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.data.slice(0, 30).map((row) => `<tr>${cols.map((c) => renderAiResultCell(c, row[c], row)).join('')}</tr>`).join('')}${r.data.length > 30 ? `<tr><td colspan="${cols.length}" style="text-align:center;color:var(--t3);">+ ${r.data.length - 30} more rows</td></tr>` : ''}</tbody></table>`;
   }
   if (r.chart && r.chart.type && r.chart.type !== 'none' && r.data && r.data.length > 0) {
     const id = `chart-${i}-${Date.now()}`;
@@ -1271,6 +1853,22 @@ function renderAiMessage(m, i) {
   return `<div class="msg a"><div class="who">AI</div><div class="bub">${h || '<em style="color:var(--t3)">(empty response)</em>'}</div></div>`;
 }
 
+function renderAiResultCell(key, value, row = null) {
+  if (value === undefined || value === null) return '<td class="cnu">[NULL]</td>';
+  if (typeof value === 'number') return `<td class="cn">${fmtNum(value)}</td>`;
+  if (typeof value === 'boolean') return `<td class="cb ${value ? 't' : 'f'}">${value}</td>`;
+
+  const imageUrl = imageDataUrlFromValue(key, value, row);
+  if (imageUrl) {
+    const bytes = Math.max(0, Math.floor((String(value).replace(/^data:image\/[a-z0-9.+-]+;base64,/i, '').length * 3) / 4));
+    return `<td class="ci"><img src="${esc(imageUrl)}" alt="${esc(key)}"><span>${fmtSize(bytes)}</span></td>`;
+  }
+
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  const compact = text && text.length > 180 ? `${text.slice(0, 177)}...` : text;
+  return `<td>${esc(compact ?? '')}</td>`;
+}
+
 async function sendChat() {
   const q = $('#ai-q').value.trim();
   if (!q || aiBusy) return;
@@ -1283,7 +1881,7 @@ async function sendChat() {
     const history = state.chatHistory.filter((m) => !m.thinking && (m.role === 'user' || (m.role === 'assistant' && m.response))).map((m) => ({ role: m.role, text: m.role === 'user' ? m.text : `Query: ${m.response.query}\nResult: ${m.response.summary}` }));
     // drop the most recent user (we'll re-send via question)
     history.pop();
-    const response = await api('/api/conversational/ask', { method: 'POST', body: { question: q, history } });
+    const response = await api('/api/conversational/ask', { method: 'POST', body: { question: q, history, collection: state.selectedCol } });
     state.chatHistory = state.chatHistory.filter((m) => !m.thinking);
     state.chatHistory.push({ role: 'assistant', response });
   } catch (e) {
@@ -1424,6 +2022,17 @@ $('#cm-key').addEventListener('click', () => {
   $('#set-gemini-ok').classList.add('hidden');
   openModal('modal-settings');
 });
+$('#cm-manual-compact')?.addEventListener('click', () => {
+  closeConnMenu();
+  confirmAction('Run full vacuum compaction?', 'This rewrites fresh files, rebuilds indexes, and reopens the database. It is the heaviest compaction option.', runManualCompaction);
+});
+$('#cm-incremental-compact')?.addEventListener('click', () => {
+  closeConnMenu();
+  confirmAction('Run one incremental compaction step?', 'This moves a small batch of records and index units without rewriting the whole database.', runIncrementalCompactionStep);
+});
+$('#cm-auto-compact')?.addEventListener('change', (event) => {
+  setAutoCompaction(event.target.checked);
+});
 $('#cm-disconnect').addEventListener('click', async () => {
   closeConnMenu();
   try {
@@ -1498,3 +2107,8 @@ $('#set-save-gemini').addEventListener('click', async () => {
 });
 // Start
 bootstrap();
+setInterval(async () => {
+  if (!state.connected) return;
+  await refreshDatabaseStatus();
+  if (!state.selectedCol && state.tab === 'overview') renderOverview();
+}, 5000);

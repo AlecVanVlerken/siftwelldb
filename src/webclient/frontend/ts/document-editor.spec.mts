@@ -34,18 +34,22 @@ describe('document-editor helpers', () => {
       ok: true,
       value: { id: 'a', 'photo.jpg': 'abc123' },
     });
+    expect(validateDocumentInput('{"id":"a","photo":"data:image/png;base64,abc123","_photo_mime":"image/png"}')).toEqual({
+      ok: true,
+      value: { id: 'a', photo: 'abc123', _photo_mime: 'image/png' },
+    });
   });
 
   it('compacts image payloads to placeholders and restores them on validation', () => {
-    const compacted = compactDocumentImages({ id: 'a', title: 'Rabbit', 'photo.jpg': 'abc123' });
+    const compacted = compactDocumentImages({ id: 'a', title: 'Rabbit', photo: 'abc123', _photo_mime: 'image/jpeg' });
 
     expect(compacted).toEqual({
-      document: { id: 'a', title: 'Rabbit', 'photo.jpg': imagePlaceholder('photo.jpg', 'abc123') },
-      imagePayloads: { 'photo.jpg': 'abc123' },
+      document: { id: 'a', title: 'Rabbit', photo: imagePlaceholder('photo', 'abc123'), _photo_mime: 'image/jpeg' },
+      imagePayloads: { photo: 'abc123' },
     });
     expect(validateDocumentInput(JSON.stringify(compacted.document), { imagePayloads: compacted.imagePayloads })).toEqual({
       ok: true,
-      value: { id: 'a', title: 'Rabbit', 'photo.jpg': 'abc123' },
+      value: { id: 'a', title: 'Rabbit', photo: 'abc123', _photo_mime: 'image/jpeg' },
     });
   });
 

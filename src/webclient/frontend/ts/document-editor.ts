@@ -6,9 +6,19 @@ export type JsonObjectParseResult =
 
 export type ImagePayloads = Record<string, string>;
 
-function isImageField(key: string): boolean {
+function imageMimeMetadataField(key: string): string {
+  return `_${key}_mime`;
+}
+
+function imageMimeFromDocument(key: string, document: JsonObject): string | null {
+  const value = document[imageMimeMetadataField(key)];
+  return typeof value === 'string' && value.toLowerCase().startsWith('image/') ? value : null;
+}
+
+function isImageField(key: string, document?: JsonObject): boolean {
   return /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(key)
-    || /\.(jpe?g|png|gif|webp)$/i.test(key);
+    || /\.(jpe?g|png|gif|webp)$/i.test(key)
+    || (document ? imageMimeFromDocument(key, document) !== null : false);
 }
 
 function normalizeImageValue(value: unknown): unknown {
@@ -21,7 +31,7 @@ export function normalizeDocumentImages(document: JsonObject): JsonObject {
   return Object.fromEntries(
     Object.entries(document).map(([key, value]) => [
       key,
-      isImageField(key) ? normalizeImageValue(value) : value,
+      isImageField(key, document) ? normalizeImageValue(value) : value,
     ]),
   );
 }
@@ -46,7 +56,7 @@ export function compactDocumentImages(document: JsonObject): { document: JsonObj
   const imagePayloads: ImagePayloads = {};
   const compacted = Object.fromEntries(
     Object.entries(document).map(([key, value]) => {
-      if (!isImageField(key) || typeof value !== 'string' || value.length === 0) return [key, value];
+      if (!isImageField(key, document) || typeof value !== 'string' || value.length === 0) return [key, value];
       const payload = String(normalizeImageValue(value));
       imagePayloads[key] = payload;
       return [key, imagePlaceholder(key, payload)];
@@ -58,7 +68,7 @@ export function compactDocumentImages(document: JsonObject): { document: JsonObj
 export function restoreCompactedDocumentImages(document: JsonObject, imagePayloads: ImagePayloads = {}): JsonObject {
   return Object.fromEntries(
     Object.entries(document).map(([key, value]) => {
-      if (!isImageField(key)) return [key, value];
+      if (!isImageField(key, document)) return [key, value];
       const existingPayload = imagePayloads[key];
       if (typeof value === 'string' && existingPayload && value === imagePlaceholder(key, existingPayload)) {
         return [key, existingPayload];

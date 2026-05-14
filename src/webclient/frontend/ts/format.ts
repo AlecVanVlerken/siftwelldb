@@ -37,12 +37,24 @@ export function docSize(document: unknown): number {
   return new Blob([JSON.stringify(document)]).size;
 }
 
-export function isImageField(key: string): boolean {
-  return /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(key)
-    || /\.(jpe?g|png|gif|webp)$/i.test(key);
+function imageMimeMetadataField(key: string): string {
+  return `_${key}_mime`;
 }
 
-export function imageMimeFromField(key: string): string | null {
+export function imageMimeFromDocument(key: string, documentValue?: Record<string, unknown> | null): string | null {
+  const value = documentValue?.[imageMimeMetadataField(key)];
+  return typeof value === 'string' && value.toLowerCase().startsWith('image/') ? value : null;
+}
+
+export function isImageField(key: string, documentValue?: Record<string, unknown> | null): boolean {
+  return /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(key)
+    || /\.(jpe?g|png|gif|webp)$/i.test(key)
+    || imageMimeFromDocument(key, documentValue) !== null;
+}
+
+export function imageMimeFromField(key: string, documentValue?: Record<string, unknown> | null): string | null {
+  const explicit = imageMimeFromDocument(key, documentValue);
+  if (explicit) return explicit;
   const lower = key.toLowerCase();
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
   if (lower.endsWith('.png')) return 'image/png';
@@ -51,10 +63,14 @@ export function imageMimeFromField(key: string): string | null {
   return null;
 }
 
-export function imageDataUrlFromValue(key: string, value: unknown): string | null {
-  if (!isImageField(key) || typeof value !== 'string' || value.length === 0) return null;
+export function imageDataUrlFromValue(
+  key: string,
+  value: unknown,
+  documentValue?: Record<string, unknown> | null,
+): string | null {
+  if (!isImageField(key, documentValue) || typeof value !== 'string' || value.length === 0) return null;
   if (value.startsWith('data:image/')) return value;
-  const mime = imageMimeFromField(key);
+  const mime = imageMimeFromField(key, documentValue);
   return mime ? `data:${mime};base64,${value}` : null;
 }
 

@@ -1402,6 +1402,52 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
       expect(JSON.parse(results[0])).toEqual(doc);
     });
 
+    it('supports separate text and image semantic indexes per collection', async () => {
+      const dualDb = await SimpleDbms.create(new MockFile(4096), new MockFile(4000096), {
+        dimension: DIM,
+        embeddingFn: makeTestEmbeddingFn(DIM),
+        imageEmbeddingFn: makeTestImageEmbeddingFn(DIM),
+        M: 8,
+        efConstruction: 32,
+        efSearch: 16,
+        textIndex: {
+          dimension: DIM,
+          embeddingFn: makeTestEmbeddingFn(DIM),
+          M: 8,
+          efConstruction: 32,
+          efSearch: 16,
+        },
+        imageIndex: {
+          dimension: DIM,
+          embeddingFn: makeTestEmbeddingFn(DIM),
+          imageEmbeddingFn: makeTestImageEmbeddingFn(DIM),
+          M: 8,
+          efConstruction: 32,
+          efSearch: 16,
+        },
+      });
+
+      const textOnly = { id: 'text-only', name: 'Ada Lovelace', role: 'mathematician' };
+      const imageOne = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+      const imageTwo = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]);
+      const imageOnly = { id: 'image-only', 'photo.jpg': imageOne.toString('base64') };
+      const mixed = { id: 'mixed', name: 'Grace Hopper', role: 'engineer', 'avatar.png': imageTwo.toString('base64') };
+      await dualDb.insertDocument('people', JSON.stringify(textOnly));
+      await dualDb.insertDocument('people', JSON.stringify(imageOnly));
+      await dualDb.insertDocument('people', JSON.stringify(mixed));
+
+      const textResults = (await dualDb.semanticSearch('people', 'engineer', 10)).map((raw) => JSON.parse(raw).id);
+      expect(textResults).toContain('text-only');
+      expect(textResults).toContain('mixed');
+      expect(textResults).not.toContain('image-only');
+
+      const imageResults = (await dualDb.semanticImageTextSearch('people', 'portrait', 10)).map((raw) => JSON.parse(raw).id);
+      expect(imageResults).toContain('image-only');
+      expect(imageResults).toContain('mixed');
+      expect(imageResults).not.toContain('text-only');
+      await dualDb.close();
+    });
+
     it('indexes a document that mixes public text fields with underscore fields', async () => {
       /**
        * A document that has BOTH public text fields and underscore-prefixed

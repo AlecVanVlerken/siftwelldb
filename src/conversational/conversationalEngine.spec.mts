@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { RealFile } from '../core/file.mjs';
 import { SimpleDbms } from '../dbms/simpledbms.mjs';
+import { QueryLanguage } from '../dbms/querylanguage/querylanguage.mjs';
 import type { ChatMessage, LLMProvider, LLMResponse } from './llmProvider.mjs';
 import type { SemanticModel } from './semanticModel.mjs';
 import { ConversationalEngine } from './conversationalEngine.mjs';
@@ -110,6 +111,24 @@ describe('ConversationalEngine', () => {
     expect(response.error).toMatch(/Only read-only queries are allowed/i);
     expect(response.query).toBe("DELETE FROM employees WHERE id = 'e1'");
     expect(provider.chatCalls).toHaveLength(1);
+    await db.close();
+  });
+
+  it('answers mutation syntax questions without executing them', async () => {
+    const { engine, provider, db } = await createEngine([
+      "Chat cannot execute DELETE. Use SELECT id ... LIMIT 50, then DELETE FROM employees WHERE id IN ('e1').",
+    ]);
+
+    const response = await engine.ask('How do I write a delete query for 50 employees?');
+    const rows = await new QueryLanguage(db).execute('SELECT id FROM employees');
+
+    expect(response.error).toBeUndefined();
+    expect(response.query).toBe('');
+    expect(response.summary).toContain('DELETE FROM employees');
+    expect(rows).toHaveLength(2);
+    expect(provider.chatCalls).toHaveLength(1);
+    expect(provider.chatCalls[0]?.systemPrompt).toContain('DELETE FROM <collection>');
+    expect(provider.chatCalls[0]?.systemPrompt).toContain('DELETE supports ORDER BY / LIMIT / OFFSET');
     await db.close();
   });
 

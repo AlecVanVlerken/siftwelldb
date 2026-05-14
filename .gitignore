@@ -5,7 +5,7 @@ coverage/
 src/benchmarking/large-dataset/db/
 src/benchmarking/datasets/
 uitleg/
-
+latex/
 .DS_Store
 Thumbs.db
 

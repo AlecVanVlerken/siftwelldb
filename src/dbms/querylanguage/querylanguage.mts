@@ -26,6 +26,9 @@
 //   INSERT INTO <collection> VALUES {id: '...', field: ...}
 //   UPDATE <collection> SET f1 = v1 [, f2 = v2, ...] [WHERE <conditions>]
 //   DELETE FROM <collection> [WHERE <conditions>]
+//     [ORDER BY <field> [ASC|DESC], ...]
+//     [LIMIT n]
+//     [OFFSET k]
 //
 // WHERE/HAVING:
 //   - Comparisons:  =, !=, >, >=, <, <=, LIKE, NOT LIKE

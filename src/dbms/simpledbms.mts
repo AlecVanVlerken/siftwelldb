@@ -346,9 +346,14 @@ export class SimpleDbms {
    * @param id - ID of the document to replace.
    * @param newDocument - Full replacement payload (raw object). Must include the same `id`.
    */
-  async replaceDocument(collection: string, id: string, newDocument: unknown): Promise<void> {
+  async replaceDocument(
+    collection: string,
+    id: string,
+    newDocument: unknown,
+    options?: { compression?: FieldCompressionOverrides },
+  ): Promise<void> {
     const doc = parseRawDocument(collection, newDocument);
-    await this.dbmsback.replaceDocumentByID(collection, id, doc);
+    await this.dbmsback.replaceDocumentByID(collection, id, doc, options?.compression);
   }
 
   /**
@@ -530,6 +535,17 @@ export class SimpleDbms {
   }
 
   /**
+   * Text-to-image semantic search against the collection's image HNSW index.
+   *
+   * Embeds `query` with the image index text encoder (for CLIP this is the
+   * CLIP text tower) and returns image-bearing documents ordered by similarity.
+   */
+  async semanticImageTextSearch(collection: string, query: string, k: number): Promise<string[]> {
+    const documents = await this.dbmsback.semanticImageTextSearch(collection, query, k);
+    return documents.map(documentToJSON);
+  }
+
+  /**
    * Image-based semantic search (image → image).
    *
    * Embeds `queryImage` with the `imageEmbeddingFn` from {@link HnswConfig}
@@ -543,6 +559,10 @@ export class SimpleDbms {
   async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<string[]> {
     const documents = await this.dbmsback.semanticImageSearch(collection, queryImage, k);
     return documents.map(documentToJSON);
+  }
+
+  getHnswIndexKeys(): string[] {
+    return Object.keys(this.dbmsback.getVacuumHnswMetaSnapshot());
   }
 
   /**
