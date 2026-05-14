@@ -161,7 +161,7 @@ async function runInsertBenchmark(args: {
 
 describe('Rust vs legacy TypeScript HNSW insert benchmark', () => {
   it(
-    'compares insert time on the first 100k SIFT vectors',
+    'compares insert time on the first 1M SIFT vectors by default',
     async () => {
       requireSiftBaseFile();
 
