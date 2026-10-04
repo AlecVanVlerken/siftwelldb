@@ -1,4 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-head-low-tail-high-record,1,true,3.509,90,56,34,1.6071,368640,16,65536,1,0,0,16,1,0,0,16
-head-low-tail-high-record,2,true,5.886,74,56,18,1.3214,303104,16,131072,1,0,0,16,2,0,0,32
-head-low-tail-high-record,3,true,2.752,58,56,2,1.0357,237568,16,196608,1,0,0,16,3,0,0,48

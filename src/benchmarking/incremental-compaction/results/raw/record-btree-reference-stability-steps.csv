@@ -1,8 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-record-btree-reference-stability,1,true,5.766,176,108,68,1.6296,720896,0,0,6,0,0,0,6,0,0,0
-record-btree-reference-stability,2,true,5.358,176,108,68,1.6296,720896,0,0,6,0,0,0,12,0,0,0
-record-btree-reference-stability,3,true,5.441,176,108,68,1.6296,720896,0,0,1,5,0,0,13,5,0,0
-record-btree-reference-stability,4,true,4.257,176,108,68,1.6296,720896,0,0,2,4,0,0,15,9,0,0
-record-btree-reference-stability,5,true,4.758,176,108,68,1.6296,720896,0,0,6,0,0,0,21,9,0,0
-record-btree-reference-stability,6,true,3.595,176,108,68,1.6296,720896,0,0,2,0,0,0,23,9,0,0
-record-btree-reference-stability,7,false,1.563,176,108,68,1.6296,720896,0,0,0,0,0,0,23,9,0,0

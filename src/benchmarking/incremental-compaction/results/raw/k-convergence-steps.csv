@@ -1,5 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-k-convergence,1,true,9.530,152,88,64,1.7273,622592,16,65536,4,0,0,16,4,0,0,16
-k-convergence,2,true,7.435,136,88,48,1.5455,557056,16,131072,4,0,0,16,8,0,0,32
-k-convergence,3,true,10.233,120,88,32,1.3636,491520,16,196608,4,0,0,16,12,0,0,48
-k-convergence,4,true,3.790,108,88,20,1.2273,442368,12,245760,3,0,0,12,15,0,0,60

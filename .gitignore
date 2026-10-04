@@ -20,6 +20,10 @@ demo-db/
 converse-db/
 src/benchmarking/results/
 src/benchmarking/hnsw/results/
+src/benchmarking/**/results/
+__pycache__/
+*.py[cod]
+*.cpuprofile
 src/benchmarking/hnsw/datasets/gist/
 src/benchmarking/hnsw/datasets/sift/
 

@@ -1,7 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-recordstore-only-shrink,1,true,5.709,164,92,72,1.7826,671744,12,49152,4,0,0,12,4,0,0,12
-recordstore-only-shrink,2,true,5.248,152,92,60,1.6522,622592,12,98304,4,0,0,12,8,0,0,24
-recordstore-only-shrink,3,true,4.789,140,92,48,1.5217,573440,12,147456,4,0,0,12,12,0,0,36
-recordstore-only-shrink,4,true,3.524,128,92,36,1.3913,524288,12,196608,4,0,0,12,16,0,0,48
-recordstore-only-shrink,5,true,3.531,116,92,24,1.2609,475136,12,245760,4,0,0,12,20,0,0,60
-recordstore-only-shrink,6,true,2.588,113,92,21,1.2283,462848,3,258048,1,0,0,3,21,0,0,63

@@ -1,9 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-btree-dominant-tail-blocker,1,true,0.831,66,19,47,3.4737,16896,1,256,0,1,0,1,0,1,0,1
-btree-dominant-tail-blocker,2,true,0.822,65,19,46,3.4211,16640,1,512,0,1,0,1,0,2,0,2
-btree-dominant-tail-blocker,3,true,0.647,64,19,45,3.3684,16384,1,768,0,1,0,1,0,3,0,3
-btree-dominant-tail-blocker,4,true,0.374,63,19,44,3.3158,16128,1,1024,0,1,0,1,0,4,0,4
-btree-dominant-tail-blocker,5,true,0.357,62,19,43,3.2632,15872,1,1280,0,1,0,1,0,5,0,5
-btree-dominant-tail-blocker,6,true,0.347,61,19,42,3.2105,15616,1,1536,0,1,0,1,0,6,0,6
-btree-dominant-tail-blocker,7,true,0.507,60,19,41,3.1579,15360,1,1792,0,1,0,1,0,7,0,7
-btree-dominant-tail-blocker,8,true,0.373,59,19,40,3.1053,15104,1,2048,0,1,0,1,0,8,0,8

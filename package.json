@@ -20,7 +20,13 @@
     "demo:map": "tsx src/visualization/semanticMap.demo.mts",
     "demo": "tsx src/demo/semanticSearch.demo.mts",
     "demo:images": "tsx src/demo/semanticImageSearch.demo.mts",
-    "benchmark:compression": "tsx src/benchmarking/compression-benchmark.mts",
+    "benchmark:compression": "tsx src/benchmarking/compression/recordstore-benchmark.mts",
+    "benchmark:pagination": "tsx src/benchmarking/large-dataset/pagination-benchmark.mts",
+    "benchmark:btree": "vitest run src/benchmarking/btree --fileParallelism=false",
+    "benchmark:dbms": "vitest run src/benchmarking/dbms/insert_overhead.spec.mts --fileParallelism=false",
+    "benchmark:embeddings": "vitest run src/benchmarking/dbms/embedding_speed.spec.mts --fileParallelism=false",
+    "benchmark:hnsw": "vitest run src/benchmarking/hnsw --fileParallelism=false",
+    "benchmark:vacuum": "tsx src/benchmarking/full-vacuum/vacuum-benchmark.mts",
     "benchmark:incremental": "tsx src/benchmarking/incremental-compaction/run-all-benchmarks.mts",
     "benchmark:incremental:core": "tsx src/benchmarking/incremental-compaction/core/run-core-benchmarks.mts",
     "benchmark:incremental:relocation": "tsx src/benchmarking/incremental-compaction/relocation/run-relocation-benchmarks.mts",
@@ -56,7 +62,6 @@
     "benchmark:incremental:performance-single": "tsx src/benchmarking/incremental-compaction/performance/performance-benchmark.mts",
     "benchmark:incremental:adversarial-single": "tsx src/benchmarking/incremental-compaction/adversarial/adversarial-benchmark.mts",
     "benchmark:incremental:plot": "python src/benchmarking/incremental-compaction/plotting/plot_incremental_compaction.py",
-    "profile": "node --cpu-prof --import tsx/esm src/benchmarking/profile-simpledbms.mts",
     "cli": "tsx src/dbms/querylanguage/cli.mts"
   },
   "devDependencies": {

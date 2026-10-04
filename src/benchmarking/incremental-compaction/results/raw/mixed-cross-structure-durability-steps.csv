@@ -1,8 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-mixed-cross-structure-durability,1,true,4.201,180,132,48,1.3636,737280,0,0,5,0,0,0,5,0,0,0
-mixed-cross-structure-durability,2,true,4.591,180,132,48,1.3636,737280,0,0,5,0,0,0,10,0,0,0
-mixed-cross-structure-durability,3,true,5.861,180,133,47,1.3534,737280,0,0,1,0,4,0,11,0,4,0
-mixed-cross-structure-durability,4,true,5.396,180,133,47,1.3534,737280,0,0,0,0,5,0,11,0,9,0
-mixed-cross-structure-durability,5,true,4.197,180,132,48,1.3636,737280,0,0,0,0,3,0,11,0,12,0
-mixed-cross-structure-durability,6,true,3.265,180,133,47,1.3534,737280,0,0,0,0,5,0,11,0,17,0
-mixed-cross-structure-durability,7,false,2.046,180,133,47,1.3534,737280,0,0,0,0,0,0,11,0,17,0

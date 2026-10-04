@@ -1,9 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-multi-index-shrink,1,true,8.510,229,134,95,1.7090,937984,8,32768,8,0,0,8,8,0,0,8
-multi-index-shrink,2,true,13.830,220,134,86,1.6418,901120,9,69632,8,0,0,9,16,0,0,17
-multi-index-shrink,3,true,13.293,212,134,78,1.5821,868352,8,102400,8,0,0,8,24,0,0,25
-multi-index-shrink,4,true,8.591,202,134,68,1.5075,827392,10,143360,8,0,0,10,32,0,0,35
-multi-index-shrink,5,true,7.779,192,134,58,1.4328,786432,10,184320,8,0,0,10,40,0,0,45
-multi-index-shrink,6,true,5.676,180,134,46,1.3433,737280,12,233472,8,0,0,12,48,0,0,57
-multi-index-shrink,7,true,5.333,168,134,34,1.2537,688128,12,282624,7,0,0,12,55,0,0,69
-multi-index-shrink,8,false,2.584,168,134,34,1.2537,688128,0,282624,0,0,0,0,55,0,0,69
