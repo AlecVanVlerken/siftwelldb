@@ -7,6 +7,8 @@ import { generateSemanticModel, enrichModelWithLLM, parseSemanticModel } from '.
 import type { SemanticModel } from '../conversational/semanticModel.mjs';
 import type { AnalyticsResponse } from '../conversational/conversationalEngine.mjs';
 
+type DatabaseSession = { version: number; dbPath: string; dbms: SimpleDbms };
+
 /**
  * Manages the conversational analytics engine for the main webclient.
  *
@@ -15,8 +17,8 @@ import type { AnalyticsResponse } from '../conversational/conversationalEngine.m
  *   - Call `onDisconnect()` when the database is closed / reset.
  *
  * The semantic model is persisted as `{dbPath}.model.json` alongside the DB file.
- * If `GEMINI_API_KEY` is not set, model generation and chat are unavailable, but
- * an existing model file can still be read and served.
+ * Model generation and editing work without `GEMINI_API_KEY`. The key is
+ * required only for optional model enrichment and conversational answers.
  */
 export class ConversationalService {
   private apiKey: string | null;
@@ -24,6 +26,7 @@ export class ConversationalService {
   private dbms: SimpleDbms | null = null;
   private model: SemanticModel | null = null;
   private engine: ConversationalEngine | null = null;
+  private sessionVersion = 0;
 
   constructor() {
     const raw = process.env['GEMINI_API_KEY'];
@@ -68,14 +71,17 @@ export class ConversationalService {
    * Tries to load an existing `{dbPath}.model.json`; rebuilds the engine if found.
    */
   async onConnect(dbPath: string, dbms: SimpleDbms): Promise<void> {
+    const version = ++this.sessionVersion;
     this.dbPath = dbPath;
     this.dbms = dbms;
     this.model = null;
     this.engine = null;
 
     try {
-      const raw = await fs.readFile(this.modelFilePath(), 'utf-8');
-      this.model = parseSemanticModel(raw);
+      const raw = await fs.readFile(`${dbPath}.model.json`, 'utf-8');
+      const model = parseSemanticModel(raw);
+      if (version !== this.sessionVersion) return;
+      this.model = model;
       this.rebuildEngine();
     } catch {
       // No model file yet — that is normal for a fresh database.
@@ -84,6 +90,7 @@ export class ConversationalService {
 
   /** Called when the database is disconnected or reset. */
   onDisconnect(): void {
+    this.sessionVersion++;
     this.dbPath = null;
     this.dbms = null;
     this.model = null;
@@ -97,7 +104,7 @@ export class ConversationalService {
    *
    * Two-stage process:
    *   1. Pure introspection — reads B+ tree metadata + a sample document
-   *      for every collection. Always runs, never fails.
+   *      for every collection. Does not require an API key.
    *   2. LLM enrichment — asks Gemini to add descriptions, synonyms,
    *      hidden flags, and analytics measures. Optional. If no API key
    *      is configured, or if the LLM call fails, this step is skipped
@@ -109,17 +116,21 @@ export class ConversationalService {
    * so the caller can show an appropriate toast.
    */
   async generateModel(): Promise<{ model: SemanticModel; enriched: boolean }> {
-    this.ensureDbConnected();
-    let model = await generateSemanticModel(this.dbms!);
+    const session = this.getSession();
+    let model = await generateSemanticModel(session.dbms);
+    this.ensureSession(session);
+    if (model.explores.length === 0) {
+      throw new Error('Add a collection before generating a schema model.');
+    }
     if (this.apiKey) {
       const llm = new GeminiProvider(this.apiKey);
-      model = await enrichModelWithLLM(model, this.dbms!, llm);
+      model = await enrichModelWithLLM(model, session.dbms, llm);
     }
     // The basic introspection step never adds field descriptions; only
     // the LLM enrichment does. So "any field has a description" is a
     // reliable signal that Gemini actually contributed.
     const enriched = model.explores.some((e) => !!e.description || e.fields.some((f) => !!f.description));
-    await this.persistModel(model);
+    await this.persistModel(model, session);
     return { model, enriched };
   }
 
@@ -128,10 +139,27 @@ export class ConversationalService {
    * Validates, persists, and rebuilds the engine.
    */
   async saveModel(json: string): Promise<SemanticModel> {
-    this.ensureDbConnected();
+    const session = this.getSession();
     const model = parseSemanticModel(json);
-    await this.persistModel(model);
+    await this.persistModel(model, session);
     return model;
+  }
+
+  /** Remove a dropped collection from the saved schema without altering other explores. */
+  async removeCollection(collection: string): Promise<void> {
+    const session = this.getSession();
+    if (!this.model?.explores.some((explore) => explore.collection === collection)) return;
+    const remaining = this.model.explores.filter((explore) => explore.collection !== collection);
+    if (remaining.length > 0) {
+      await this.persistModel({ explores: remaining }, session);
+      return;
+    }
+    await fs.unlink(`${session.dbPath}.model.json`).catch((error: unknown) => {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+    });
+    this.ensureSession(session);
+    this.model = null;
+    this.rebuildEngine();
   }
 
   // ── Querying ─────────────────────────────────────────────────
@@ -169,13 +197,18 @@ export class ConversationalService {
 
   // ── Internal helpers ─────────────────────────────────────────
 
-  private modelFilePath(): string {
-    return `${this.dbPath}.model.json`;
-  }
-
-  private async persistModel(model: SemanticModel): Promise<void> {
-    await fs.writeFile(this.modelFilePath(), JSON.stringify(model, null, 2), 'utf-8');
-    this.model = model;
+  private async persistModel(model: SemanticModel, session: DatabaseSession): Promise<void> {
+    this.ensureSession(session);
+    const validated = parseSemanticModel(JSON.stringify(model));
+    const collections = new Set(session.dbms.listCollections());
+    for (const explore of validated.explores) {
+      if (!collections.has(explore.collection)) {
+        throw new Error(`Collection "${explore.collection}" does not exist in the connected database.`);
+      }
+    }
+    await fs.writeFile(`${session.dbPath}.model.json`, JSON.stringify(validated, null, 2), 'utf-8');
+    this.ensureSession(session);
+    this.model = validated;
     this.rebuildEngine();
   }
 
@@ -192,7 +225,14 @@ export class ConversationalService {
     });
   }
 
-  private ensureDbConnected(): void {
+  private getSession(): DatabaseSession {
     if (!this.dbms || !this.dbPath) throw new Error('No database connected');
+    return { version: this.sessionVersion, dbPath: this.dbPath, dbms: this.dbms };
+  }
+
+  private ensureSession(session: DatabaseSession): void {
+    if (session.version !== this.sessionVersion) {
+      throw new Error('The database connection changed. Try again on the current database.');
+    }
   }
 }

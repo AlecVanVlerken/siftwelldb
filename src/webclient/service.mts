@@ -12,15 +12,19 @@ import {
   type CompressionRecommendationRequest,
 } from '../dbms/simpledbms.mjs';
 import { listAvailableCompressionProfiles } from '../dbms/compression-advisor.mjs';
-import { type CompressionAlgorithm } from '../dbms/compression.mjs';
-import { imageMimeForField, isImageField } from '../dbms/document.mjs';
+import {
+  COMPRESSION_ALGORITHMS,
+  type CompressionAlgorithm,
+  type FieldCompressionDefaults,
+} from '../dbms/compression.mjs';
+import { imageMimeForField, isImageField, JSONtoDocument, parseRawDocument, type Document } from '../dbms/document.mjs';
 import { generateWikiArticles } from '../dbms/lab-fixtures/wiki.mjs';
 import { RealFile } from '../core/file.mjs';
 import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../compaction/compaction.mjs';
 import { fetchPageCursor } from '../largedatasets/pagination.mjs';
 import { searchWordIndex, searchContentIndex } from '../largedatasets/wordindex.mjs';
 import { QueryLanguage, type QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
-import { compareValues } from '../dbms/querylanguage/expressions.mjs';
+import { compareValues, evaluateWhere } from '../dbms/querylanguage/expressions.mjs';
 import { getClipHnswConfig } from './clipHnswConfig.mjs';
 import { generateDemoEmployees, generateSemanticKnowledgeDemoDocuments } from './demoData.mjs';
 
@@ -118,8 +122,8 @@ export function compareDataGridValues(a: unknown, b: unknown): number {
 async function deleteIfExists(filePath: string): Promise<void> {
   try {
     await fs.unlink(filePath);
-  } catch {
-    // File doesn't exist — that's fine
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 }
 
@@ -145,6 +149,7 @@ async function sizeOrZero(filePath: string): Promise<number> {
 export type DatabaseSizeInfo = {
   dataFileBytes: number;
   logFileBytes: number;
+  /** Physical database data-file bytes. The WAL is reported separately. */
   totalBytes: number;
   activeDataBytes?: number;
   freeDataBytes?: number;
@@ -163,6 +168,13 @@ export type DatabaseStatus = {
   incrementalCompaction: IncrementalCompactionStatus;
   semanticIndexes: string[];
 };
+
+export class DatabaseInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DatabaseInputError';
+  }
+}
 
 export type IncrementalCompactionStatus = {
   enabled: boolean;
@@ -216,6 +228,7 @@ export type CollectionStorage = {
   documentCount: number;
   blockSize: number;
   recordBytes: number;
+  indexedFields: string[];
   /** Methodology used per category. Each entry describes what was measured and what was excluded. */
   notes: { records: string; indexes: string };
 };
@@ -245,6 +258,7 @@ export class DatabaseService {
 
   /** Per-collection cache of `getCollectionRecordBytes`. Invalidated on inserts/edits/deletes. */
   private recordBytesCache: Map<string, number> = new Map();
+  private documentCountCache: Map<string, number> = new Map();
 
   // ── Lifecycle ────────────────────────────────────────────────
 
@@ -279,21 +293,20 @@ export class DatabaseService {
       try {
         await fs.access(filepath);
         fileExists = true;
-      } catch {
-        fileExists = false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
 
       const dataFile = new RealFile(filepath);
       const logFile = new RealFile(this.logFilepath(filepath));
 
       if (fileExists) {
-        this.dbms = await SimpleDbms.open(dataFile, logFile, hnswConfig);
+        this.dbms = await this.openDatabaseFiles(dataFile, logFile, hnswConfig);
         this.currentFilepath = filepath;
         this.onDatabaseOpened();
         return 'Connected to existing database';
       } else {
-        this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
-        await this.dbms.commit();
+        this.dbms = await this.openDatabaseFiles(dataFile, logFile, hnswConfig, true);
         this.currentFilepath = filepath;
         this.onDatabaseOpened();
         return 'Created new database';
@@ -315,8 +328,7 @@ export class DatabaseService {
       const logFile = new RealFile(this.logFilepath(filepath));
       const hnswConfig = getClipHnswConfig();
 
-      this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
-      await this.dbms.commit();
+      this.dbms = await this.openDatabaseFiles(dataFile, logFile, hnswConfig, true);
       this.currentFilepath = filepath;
       this.onDatabaseOpened();
       return 'Created new database';
@@ -332,10 +344,9 @@ export class DatabaseService {
    * Reset the database by dropping all data and re-creating from scratch.
    */
   async reset(): Promise<void> {
-    const filepath = this.currentFilepath;
-    if (!filepath) throw new Error('No filepath available');
-
     await this.runExclusive('reset', async () => {
+      const filepath = this.currentFilepath;
+      if (!filepath) throw new Error('No filepath available');
       await this.closeInternal();
 
       await deleteIfExists(filepath);
@@ -345,8 +356,7 @@ export class DatabaseService {
       const logFile = new RealFile(this.logFilepath(filepath));
       const hnswConfig = getClipHnswConfig();
 
-      this.dbms = await SimpleDbms.create(dataFile, logFile, hnswConfig);
-      await this.dbms.commit();
+      this.dbms = await this.openDatabaseFiles(dataFile, logFile, hnswConfig, true);
       this.currentFilepath = filepath;
       this.onDatabaseOpened();
     });
@@ -354,20 +364,19 @@ export class DatabaseService {
 
   /** Return connection and file-size information for the current database. */
   async getStatus(): Promise<DatabaseStatus> {
-    return {
+    return this.runExclusive('database-status', async () => ({
       connected: this.isConnected,
       filepath: this.currentFilepath,
-      busyOperation: this.busyOperation,
+      busyOperation: null,
       size: this.currentFilepath ? await this.databaseSizeInfo(this.currentFilepath) : null,
       incrementalCompaction: this.getIncrementalCompactionStatus(),
       semanticIndexes: this.dbms ? this.dbms.getHnswIndexKeys() : [],
-    };
+    }));
   }
 
   setIncrementalCompactionEnabled(enabled: boolean): IncrementalCompactionStatus {
     this.incrementalCompactionEnabled = enabled;
     this.incrementalCompactionLastError = null;
-    console.log(`[compaction] auto compact ${enabled ? 'enabled' : 'disabled'}`);
 
     if (enabled) {
       this.startIncrementalCompactionTimer();
@@ -386,7 +395,7 @@ export class DatabaseService {
       const start = Date.now();
       this.incrementalCompactionActive = true;
       this.incrementalCompactionQueued = false;
-      console.log('[compaction] manual incremental step started');
+
       try {
         const result = await this.dbms!.runIncrementalCompactionStep(this.incrementalCompactionPolicy);
         this.incrementalCompactionLastRunAt = new Date();
@@ -394,9 +403,7 @@ export class DatabaseService {
         this.incrementalCompactionLastResult = result;
         this.incrementalCompactionLastError = null;
         this.incrementalCompactionActive = false;
-        console.log(
-          `[compaction] manual incremental step complete in ${this.incrementalCompactionLastDurationMs}ms: ${JSON.stringify(result)}`,
-        );
+
         return this.getIncrementalCompactionStatus();
       } catch (error) {
         this.incrementalCompactionLastError = String(error);
@@ -424,42 +431,46 @@ export class DatabaseService {
       const tempLogPath = `${logPath}.vacuum-${stamp}.tmp`;
       const backupPath = `${filepath}.vacuum-${stamp}.bak`;
       const backupLogPath = `${logPath}.vacuum-${stamp}.bak`;
+      const tempDataFile = new RealFile(tempPath);
+      const tempLogFile = new RealFile(tempLogPath);
       const started = performance.now();
       let compacted: SimpleDbms | null = null;
-      console.log(`[compaction] manual full vacuum started for ${filepath}`);
+      let originalClosed = false;
+      let dataBackedUp = false;
+      let logBackedUp = false;
+      let dataInstalled = false;
+      let logInstalled = false;
 
       try {
-        compacted = await this.dbms!.vacuumCompactInto(new RealFile(tempPath), new RealFile(tempLogPath));
+        compacted = await this.dbms!.vacuumCompactInto(tempDataFile, tempLogFile);
         await compacted.close();
         compacted = null;
 
         await this.closeInternal();
+        originalClosed = true;
 
-        const dataBackedUp = await renameIfExists(filepath, backupPath);
-        const logBackedUp = await renameIfExists(logPath, backupLogPath);
+        await fs.rename(filepath, backupPath);
+        dataBackedUp = true;
+        logBackedUp = await renameIfExists(logPath, backupLogPath);
 
-        try {
-          await fs.rename(tempPath, filepath);
-          if (!(await renameIfExists(tempLogPath, logPath))) {
-            await fs.writeFile(logPath, '');
-          }
-        } catch (error) {
-          if (dataBackedUp) await renameIfExists(backupPath, filepath);
-          if (logBackedUp) await renameIfExists(backupLogPath, logPath);
-          throw error;
-        }
-
-        await deleteIfExists(backupPath);
-        await deleteIfExists(backupLogPath);
-        await deleteIfExists(tempPath);
-        await deleteIfExists(tempLogPath);
+        await fs.rename(tempPath, filepath);
+        dataInstalled = true;
+        await fs.rename(tempLogPath, logPath);
+        logInstalled = true;
 
         const hnswConfig = getClipHnswConfig();
-        this.dbms = await SimpleDbms.open(new RealFile(filepath), new RealFile(logPath), hnswConfig);
+        this.dbms = await this.openDatabaseFiles(new RealFile(filepath), new RealFile(logPath), hnswConfig);
         this.currentFilepath = filepath;
         this.onDatabaseOpened();
 
         const after = await this.databaseSizeInfo(filepath);
+        // Keep the original pair until the replacement has reopened successfully.
+        // A cleanup failure leaves a recoverable backup, not a failed database swap.
+        for (const backup of [backupPath, backupLogPath]) {
+          await deleteIfExists(backup).catch((error: unknown) => {
+            console.warn(`Vacuum completed, but could not remove backup ${backup}:`, error);
+          });
+        }
         const summary = {
           filepath,
           before,
@@ -467,9 +478,7 @@ export class DatabaseService {
           bytesSaved: before.totalBytes - after.totalBytes,
           durationMs: performance.now() - started,
         };
-        console.log(
-          `[compaction] manual full vacuum complete in ${summary.durationMs.toFixed(0)}ms: saved ${summary.bytesSaved} bytes (${before.totalBytes} -> ${after.totalBytes})`,
-        );
+
         return summary;
       } catch (error) {
         console.error('[compaction] manual full vacuum failed:', error);
@@ -478,6 +487,30 @@ export class DatabaseService {
             await compacted.close();
           } catch (closeError) {
             console.error('Failed to close compacted database after vacuum error:', closeError);
+          }
+        }
+        // The engine can fail while copying, before returning a target instance.
+        // Retain access to both raw handles so those temporary files can still close.
+        await Promise.allSettled([tempDataFile.close(), tempLogFile.close()]);
+        if (originalClosed) {
+          try {
+            await this.closeInternal();
+            if (dataInstalled) await deleteIfExists(filepath);
+            if (logInstalled) await deleteIfExists(logPath);
+            if (dataBackedUp) await fs.rename(backupPath, filepath);
+            if (logBackedUp) await fs.rename(backupLogPath, logPath);
+            this.dbms = await this.openDatabaseFiles(
+              new RealFile(filepath),
+              new RealFile(logPath),
+              getClipHnswConfig(),
+            );
+            this.currentFilepath = filepath;
+            this.onDatabaseOpened();
+          } catch (restoreError) {
+            throw new AggregateError(
+              [error, restoreError],
+              'Vacuum failed and the original database could not be reopened. Backup files were retained.',
+            );
           }
         }
         await deleteIfExists(tempPath);
@@ -501,13 +534,14 @@ export class DatabaseService {
   }
 
   /** Delete an entire collection. */
-  async deleteCollection(collection: string): Promise<void> {
+  async deleteCollection(collection: string, afterDelete?: () => Promise<void>): Promise<void> {
     await this.runExclusive('delete-collection', async () => {
       this.ensureConnected();
       await this.dbms!.deleteCollection(collection);
       await this.dbms!.commit();
+      this.invalidateCollectionStorage(collection);
+      if (afterDelete) await afterDelete();
     });
-    this.recordBytesCache.delete(collection);
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
@@ -518,6 +552,32 @@ export class DatabaseService {
   getCompressionDefaults(collection: string): Record<string, CompressionAlgorithm> {
     this.ensureConnected();
     return this.dbms!.getFieldCompressionDefaults(collection);
+  }
+
+  async setCompressionDefaults(collection: string, defaults: FieldCompressionDefaults): Promise<void> {
+    await this.runExclusive('compression-defaults', async () => {
+      this.ensureConnected();
+      if (!(await this.dbms!.getCollections()).includes(collection)) {
+        throw new DatabaseInputError('Collection does not exist');
+      }
+      if (
+        defaults === null ||
+        typeof defaults !== 'object' ||
+        Array.isArray(defaults) ||
+        Object.entries(defaults).some(
+          ([field, codec]) =>
+            !field.trim() ||
+            field === 'id' ||
+            field === '_order_' ||
+            field.startsWith('_layout_') ||
+            !COMPRESSION_ALGORITHMS.includes(codec),
+        )
+      ) {
+        throw new DatabaseInputError('Invalid compression defaults');
+      }
+      this.dbms!.setFieldCompressionDefaults(collection, defaults);
+      await this.dbms!.commit();
+    });
   }
 
   async recommendCompression(request: CompressionRecommendationRequest): Promise<CompressionRecommendation> {
@@ -554,6 +614,7 @@ export class DatabaseService {
       }
       await this.dbms!.commit();
       inserted = articles.length;
+      this.invalidateCollectionStorage(collection);
     });
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
 
@@ -585,7 +646,7 @@ export class DatabaseService {
       throw new Error(`Collection "${request.collection}" has no documents`);
     }
 
-    const fields = Object.keys(documents[0]).filter(
+    const fields = [...new Set(documents.flatMap((document) => Object.keys(document)))].filter(
       (field) => field !== 'id' && field !== '_order_' && !field.startsWith('_layout_'),
     );
     if (fields.length === 0) {
@@ -657,8 +718,31 @@ export class DatabaseService {
    * index entries shared across the collection.
    */
   async getDocumentStoredBytes(collection: string, id: string): Promise<number> {
-    this.ensureConnected();
-    return this.dbms!.getDocumentStoredBytes(collection, id);
+    return this.runExclusive('document-storage', async () => {
+      this.ensureConnected();
+      return this.dbms!.getDocumentStoredBytes(collection, id);
+    });
+  }
+
+  async getDocumentMetadata(
+    collection: string,
+    id: string,
+  ): Promise<{ storedSize: number; blockSize: number; compressions: Record<string, string> }> {
+    return this.runExclusive('document-metadata', async () => {
+      this.ensureConnected();
+      const storedSize = await this.dbms!.getDocumentStoredBytes(collection, id);
+      const encoded = JSON.parse(await this.dbms!.getDocumentById(collection, id, { encoded: true })) as Record<
+        string,
+        unknown
+      >;
+      const compressions: Record<string, string> = {};
+      for (const [key, value] of Object.entries(encoded)) {
+        if (key === 'id' || value === null || typeof value !== 'object' || !('payloadBase64' in value)) continue;
+        const compression = (value as { compression?: string }).compression;
+        if (compression && compression !== 'none') compressions[key] = compression;
+      }
+      return { storedSize, blockSize: this.dbms!.getBlockSize(), compressions };
+    });
   }
 
   /**
@@ -683,12 +767,13 @@ export class DatabaseService {
       recordBytes = await this.dbms!.getCollectionRecordBytes(collection);
       this.recordBytesCache.set(collection, recordBytes);
     }
-    const docs = await this.getDocumentsUnlocked(collection, 'id', undefined, 100000);
+    const documentCount = await this.getDocumentCountUnlocked(collection);
     return {
       collection,
-      documentCount: docs.documents.length,
+      documentCount,
       blockSize,
       recordBytes,
+      indexedFields: this.dbms!.describeCollection(collection).map((field) => field.name),
       notes: {
         records: `Sum of (chainLength × blockSize) across all documents in this collection. Block size is ${blockSize} bytes.`,
         indexes: 'B+ tree indexes and the HNSW vector index are not yet accounted for in this number.',
@@ -703,10 +788,8 @@ export class DatabaseService {
    *
    * When `sortBy` is provided, the page is returned sorted by that field
    * using {@link compareValues} (numbers numerically, strings by code point,
-   * booleans by 0/1, nulls last). Sorting is applied in memory after a full
-   * scan over the id index; this is unrelated to the cursor parameter,
-   * which still scans the primary `id` order. The `hasMore`/`nextCursor`
-   * pair is therefore always `false`/`undefined` when sorting.
+   * booleans by 0/1, nulls first in ascending order). Sorting performs a full
+   * scan and uses offset pagination; cursor pagination follows index order.
    */
   async getDocuments(
     collection: string,
@@ -715,9 +798,10 @@ export class DatabaseService {
     limit: number = 50,
     sortBy?: string,
     sortDir: 'asc' | 'desc' = 'asc',
-  ): Promise<{ documents: string[]; hasMore: boolean; nextCursor?: string | number }> {
+    offset?: number,
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean; nextCursor?: string | number }> {
     return this.runExclusive('get-documents', async () =>
-      this.getDocumentsUnlocked(collection, iterableKey, cursor, limit, sortBy, sortDir),
+      this.getDocumentsUnlocked(collection, iterableKey, cursor, limit, sortBy, sortDir, offset),
     );
   }
 
@@ -728,16 +812,39 @@ export class DatabaseService {
     limit: number = 50,
     sortBy?: string,
     sortDir: 'asc' | 'desc' = 'asc',
-  ): Promise<{ documents: string[]; hasMore: boolean; nextCursor?: string | number }> {
+    offset?: number,
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean; nextCursor?: string | number }> {
     this.ensureConnected();
 
     if (sortBy) {
-      const documents = await this.scanAndSortDocuments(collection, sortBy, sortDir, limit);
-      return { documents, hasMore: false, nextCursor: undefined };
+      return this.scanAndSortDocuments(collection, sortBy, sortDir, limit, offset ?? 0);
+    }
+
+    const total = await this.getDocumentCountUnlocked(collection);
+    if (offset !== undefined) {
+      const documents: string[] = [];
+      let seen = 0;
+      for await (const json of this.dbms!.cursor(collection, iterableKey)) {
+        if (seen++ < offset) continue;
+        documents.push(json);
+        if (documents.length > limit) break;
+      }
+      const hasMore = documents.length > limit;
+      return { documents: documents.slice(0, limit), total, hasMore, nextCursor: undefined };
     }
 
     const page = await fetchPageCursor(this.dbms!, { collection, iterableKey, limit, afterCursor: cursor });
-    return { documents: page.data, hasMore: page.hasMore, nextCursor: page.nextCursor };
+    return { documents: page.data, total, hasMore: page.hasMore, nextCursor: page.nextCursor };
+  }
+
+  private async getDocumentCountUnlocked(collection: string): Promise<number> {
+    const cached = this.documentCountCache.get(collection);
+    if (cached !== undefined) return cached;
+    let count = 0;
+    const iterator = this.dbms!.cursor(collection, 'id')[Symbol.asyncIterator]();
+    while (!(await iterator.next()).done) count++;
+    this.documentCountCache.set(collection, count);
+    return count;
   }
 
   /**
@@ -745,8 +852,7 @@ export class DatabaseService {
    * and return up to `limit` JSON strings sorted by `sortBy` using the same
    * deterministic comparator the query engine uses for ORDER BY.
    *
-   * Sorting is in-memory because secondary B+ tree indexes only cover fields
-   * known at collection-create time; a generic data-grid sort cannot assume
+   * Sorting is in-memory because a generic data-grid sort cannot assume
    * an index exists. Limiting after the sort keeps the result well-defined
    * even when the limit truncates equal-keyed runs.
    */
@@ -755,7 +861,8 @@ export class DatabaseService {
     sortBy: string,
     sortDir: 'asc' | 'desc',
     limit: number,
-  ): Promise<string[]> {
+    offset: number,
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean; nextCursor?: string | number }> {
     const direction = sortDir === 'desc' ? -1 : 1;
     const all: { json: string; key: unknown }[] = [];
     for await (const jsonStr of this.dbms!.cursor(collection, 'id')) {
@@ -764,12 +871,18 @@ export class DatabaseService {
         const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
         key = parsed[sortBy];
       } catch {
-        // Treat unparseable docs as nulls — they sink to the end.
+        // Treat unparseable docs as nulls for a deterministic order.
       }
       all.push({ json: jsonStr, key });
     }
     all.sort((a, b) => direction * compareDataGridValues(a.key, b.key));
-    return all.slice(0, limit).map((entry) => entry.json);
+    this.documentCountCache.set(collection, all.length);
+    return {
+      documents: all.slice(offset, offset + limit).map((entry) => entry.json),
+      total: all.length,
+      hasMore: offset + limit < all.length,
+      nextCursor: undefined,
+    };
   }
 
   /** Find all articles containing a word via the persistent word index. */
@@ -779,17 +892,19 @@ export class DatabaseService {
     limit: number,
     offset: number,
   ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
-    this.ensureConnected();
-    const { docIds, total, hasMore } = await searchWordIndex(this.dbms!, word, limit, offset);
-    const documents: string[] = [];
-    for (const id of docIds) {
-      try {
-        documents.push(await this.dbms!.getDocumentById(collection, id));
-      } catch {
-        // Article deleted after indexing — skip silently
+    return this.runExclusive('word-search', async () => {
+      this.ensureConnected();
+      const { docIds, total, hasMore } = await searchWordIndex(this.dbms!, word, limit, offset);
+      const documents: string[] = [];
+      for (const id of docIds) {
+        try {
+          documents.push(await this.dbms!.getDocumentById(collection, id));
+        } catch {
+          // Article deleted after indexing — skip silently
+        }
       }
-    }
-    return { documents, total, hasMore };
+      return { documents, total, hasMore };
+    });
   }
 
   /** Find all articles whose body contains a word via the persistent content index. */
@@ -799,17 +914,19 @@ export class DatabaseService {
     limit: number,
     offset: number,
   ): Promise<{ documents: string[]; total: number; hasMore: boolean }> {
-    this.ensureConnected();
-    const { docIds, total, hasMore } = await searchContentIndex(this.dbms!, word, limit, offset);
-    const documents: string[] = [];
-    for (const id of docIds) {
-      try {
-        documents.push(await this.dbms!.getDocumentById(collection, id));
-      } catch {
-        // Article deleted after indexing — skip silently
+    return this.runExclusive('content-search', async () => {
+      this.ensureConnected();
+      const { docIds, total, hasMore } = await searchContentIndex(this.dbms!, word, limit, offset);
+      const documents: string[] = [];
+      for (const id of docIds) {
+        try {
+          documents.push(await this.dbms!.getDocumentById(collection, id));
+        } catch {
+          // Article deleted after indexing — skip silently
+        }
       }
-    }
-    return { documents, total, hasMore };
+      return { documents, total, hasMore };
+    });
   }
 
   /** Insert a document into a collection. */
@@ -820,20 +937,24 @@ export class DatabaseService {
   ): Promise<void> {
     await this.runExclusive('insert-document', async () => {
       this.ensureConnected();
+      const indexPredicate = collection === 'wiki_lab' ? (field: string) => field === 'title' : undefined;
+      this.validateIndexedKeys(parseRawDocument(collection, document, indexPredicate));
       await this.dbms!.insertDocumentObject(collection, document, {
         compression,
-        indexPredicate: collection === 'wiki_lab' ? (field) => field === 'title' : undefined,
+        indexPredicate,
       });
       await this.dbms!.commit();
+      this.invalidateCollectionStorage(collection);
     });
-    this.recordBytesCache.delete(collection);
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
   /** Retrieve a specific document by its ID. */
   async getDocumentById(collection: string, id: string, options?: { encoded?: boolean }): Promise<string> {
-    this.ensureConnected();
-    return this.dbms!.getDocumentById(collection, id, options);
+    return this.runExclusive('get-document', async () => {
+      this.ensureConnected();
+      return this.dbms!.getDocumentById(collection, id, options);
+    });
   }
 
   /** Delete a document from a collection. */
@@ -842,19 +963,79 @@ export class DatabaseService {
       this.ensureConnected();
       await this.dbms!.deleteDocumentById(collection, id);
       await this.dbms!.commit();
+      this.invalidateCollectionStorage(collection);
     });
-    this.recordBytesCache.delete(collection);
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
+  }
+
+  /** Mutate an explicit selection or all documents without routing through SQL. */
+  async mutateDocuments(
+    collection: string,
+    selection: { all: true } | { ids: Array<string | number> },
+    edit?: { field: string; value: unknown },
+  ): Promise<{ affected: number }> {
+    const result = await this.runExclusive('bulk-documents', async () => {
+      this.ensureConnected();
+      if (edit && (!edit.field.trim() || edit.field === 'id')) {
+        throw new DatabaseInputError('Choose a field other than the primary ID');
+      }
+      const ids: Array<string | number> = [];
+      if ('all' in selection) {
+        for await (const json of this.dbms!.cursor(collection, 'id')) {
+          ids.push((JSON.parse(json) as { id: string | number }).id);
+        }
+      } else {
+        ids.push(...new Set(selection.ids));
+      }
+      // Validate every target before starting mutations, including unloaded rows.
+      const indexed = edit ? new Set(this.dbms!.describeCollection(collection).map((entry) => entry.name)) : null;
+      for (const id of ids) {
+        const document = JSON.parse(await this.dbms!.getDocumentById(collection, id)) as Record<string, unknown>;
+        if (edit) {
+          if (!Object.prototype.hasOwnProperty.call(document, edit.field)) {
+            throw new DatabaseInputError(`Field ${edit.field} is missing on document ${id}`);
+          }
+          this.validateIndexedKeys(
+            parseRawDocument(collection, { ...document, [edit.field]: edit.value }, (field) => indexed!.has(field)),
+          );
+        }
+      }
+      try {
+        for (const id of ids) {
+          if (edit) {
+            await this.dbms!.editDocument(
+              collection,
+              id,
+              edit.field,
+              edit.value as Parameters<SimpleDbms['editDocument']>[3],
+            );
+          } else {
+            await this.dbms!.deleteDocumentById(collection, id);
+          }
+        }
+        await this.dbms!.commit();
+        return { affected: ids.length };
+      } finally {
+        this.invalidateCollectionStorage(collection);
+      }
+    });
+    if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
+    return result;
   }
 
   /** Edit a single field in a document by ID. */
   async editDocument(collection: string, id: string, field: string, value: unknown): Promise<void> {
     await this.runExclusive('edit-document', async () => {
       this.ensureConnected();
+      const existing = JSON.parse(await this.dbms!.getDocumentById(collection, id)) as Record<string, unknown>;
+      const indexed = new Set(this.dbms!.describeCollection(collection).map((entry) => entry.name));
+      this.validateIndexedKeys(
+        parseRawDocument(collection, { ...existing, [field]: value }, (key) => indexed.has(key)),
+      );
       await this.dbms!.editDocument(collection, id, field, value as Parameters<SimpleDbms['editDocument']>[3]);
       await this.dbms!.commit();
+      this.invalidateCollectionStorage(collection);
     });
-    this.recordBytesCache.delete(collection);
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
@@ -871,10 +1052,20 @@ export class DatabaseService {
   ): Promise<void> {
     await this.runExclusive('replace-document', async () => {
       this.ensureConnected();
-      await this.dbms!.replaceDocument(collection, id, newDocument, { compression });
+      const indexPredicate = collection === 'wiki_lab' ? (field: string) => field === 'title' : undefined;
+      const parsed = parseRawDocument(collection, newDocument, indexPredicate);
+      this.validateIndexedKeys(parsed);
+      if (collection === 'wiki_lab') {
+        if (String(parsed.getId()) !== id) throw new DatabaseInputError('Document id cannot be changed');
+        await this.dbms!.getDocumentById(collection, id);
+        await this.dbms!.deleteDocumentById(collection, id);
+        await this.dbms!.insertDocumentObject(collection, newDocument, { compression, indexPredicate });
+      } else {
+        await this.dbms!.replaceDocument(collection, id, newDocument, { compression });
+      }
       await this.dbms!.commit();
+      this.invalidateCollectionStorage(collection);
     });
-    this.recordBytesCache.delete(collection);
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
@@ -883,20 +1074,37 @@ export class DatabaseService {
    *
    * Supports SELECT, INSERT, UPDATE, and DELETE. For mutating statements
    * the result rows are `{id}` per affected document so `rowCount` is
-   * meaningful. The database is committed once at the end so a single
-   * statement either fully lands on disk or doesn't.
+   * meaningful. Successful mutating statements commit once at the end.
    */
   async query(sql: string): Promise<QueryExecutionResult> {
     return this.runExclusive('query', async () => {
       this.ensureConnected();
       const ql = new QueryLanguage(this.dbms!);
       const parsed = ql.parse(sql);
+      if (parsed.kind === 'insert') this.validateIndexedKeys(JSONtoDocument(parsed.body, parsed.collection));
+      if (parsed.kind === 'update') {
+        const indexed = new Set(this.dbms!.describeCollection(parsed.collection).map((entry) => entry.name));
+        // Preflight every matched row before the engine begins its update loop.
+        for await (const json of this.dbms!.cursor(parsed.collection, 'id')) {
+          const document = JSON.parse(json) as Record<string, unknown>;
+          if (typeof document['id'] !== 'string' || (parsed.where && !evaluateWhere(document, parsed.where))) continue;
+          for (const assignment of parsed.assignments) {
+            if (assignment.field === 'id' || !Object.prototype.hasOwnProperty.call(document, assignment.field)) {
+              throw new DatabaseInputError(`Field ${assignment.field} cannot be edited on this document`);
+            }
+            document[assignment.field] = assignment.value;
+            this.validateIndexedKeys(parseRawDocument(parsed.collection, document, (field) => indexed.has(field)));
+          }
+        }
+      }
       const start = Date.now();
       const rows = await ql.execute(sql);
       const elapsedMs = Date.now() - start;
       if (parsed.kind === 'insert' || parsed.kind === 'update' || parsed.kind === 'delete') {
         await this.dbms!.commit();
         this.recordBytesCache.clear();
+        this.documentCountCache.clear();
+        if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
       }
       return { rows, rowCount: rows.length, kind: parsed.kind, elapsedMs };
     });
@@ -909,12 +1117,10 @@ export class DatabaseService {
   async seedDemoEmployees(count: number = 200): Promise<{ collection: string; inserted: number; skipped: boolean }> {
     return this.runExclusive('seed-demo-employees', async () => {
       this.ensureConnected();
-      console.log(`[seed] employees started count=${count.toString()}`);
 
       try {
         const existing = await this.getDocumentsUnlocked('employees', 'id', undefined, 1);
         if (existing.documents.length > 0) {
-          console.log('[seed] employees skipped: collection already has rows');
           return { collection: 'employees', inserted: 0, skipped: true };
         }
       } catch {
@@ -926,8 +1132,8 @@ export class DatabaseService {
         await this.dbms!.insertDocumentObject('employees', employee);
       }
       await this.dbms!.commit();
-      this.recordBytesCache.delete('employees');
-      console.log(`[seed] employees complete inserted=${employees.length.toString()}`);
+      this.invalidateCollectionStorage('employees');
+
       return { collection: 'employees', inserted: employees.length, skipped: false };
     });
   }
@@ -936,12 +1142,10 @@ export class DatabaseService {
     return this.runExclusive('seed-semantic-knowledge', async () => {
       this.ensureConnected();
       const collection = 'knowledge';
-      console.log('[seed] semantic knowledge started');
 
       try {
         const existing = await this.getDocumentsUnlocked(collection, 'id', undefined, 1);
         if (existing.documents.length > 0) {
-          console.log('[seed] semantic knowledge skipped: collection already has rows');
           return { collection, inserted: 0, skipped: true };
         }
       } catch {
@@ -953,9 +1157,9 @@ export class DatabaseService {
         await this.dbms!.insertDocumentObject(collection, document);
       }
       await this.dbms!.commit();
-      this.recordBytesCache.delete(collection);
+      this.invalidateCollectionStorage(collection);
       if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
-      console.log(`[seed] semantic knowledge complete inserted=${documents.length.toString()}`);
+
       return { collection, inserted: documents.length, skipped: false };
     });
   }
@@ -964,12 +1168,10 @@ export class DatabaseService {
     return this.runExclusive('seed-semantic-images', async () => {
       this.ensureConnected();
       const collection = 'photos';
-      console.log('[seed] semantic images started');
 
       try {
         const existing = await this.getDocumentsUnlocked(collection, 'id', undefined, 1);
         if (existing.documents.length > 0) {
-          console.log('[seed] semantic images skipped: collection already has rows');
           return { collection, inserted: 0, skipped: true, source: 'existing collection' };
         }
       } catch {
@@ -987,9 +1189,9 @@ export class DatabaseService {
         });
       }
       await this.dbms!.commit();
-      this.recordBytesCache.delete(collection);
+      this.invalidateCollectionStorage(collection);
       if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
-      console.log(`[seed] semantic images complete inserted=${imageFiles.length.toString()}`);
+
       return {
         collection,
         inserted: imageFiles.length,
@@ -1001,20 +1203,26 @@ export class DatabaseService {
 
   /** Semantic text-to-text search. */
   async semanticSearch(collection: string, query: string, limit: number): Promise<string[]> {
-    this.ensureConnected();
-    return this.dbms!.semanticSearch(collection, query, limit);
+    return this.runExclusive('semantic-search', async () => {
+      this.ensureConnected();
+      return this.dbms!.semanticSearch(collection, query, limit);
+    });
   }
 
   /** CLIP text-to-image search against image-only semantic vectors. */
   async semanticImageTextSearch(collection: string, query: string, limit: number): Promise<string[]> {
-    this.ensureConnected();
-    return this.dbms!.semanticImageTextSearch(collection, query, limit);
+    return this.runExclusive('semantic-photo-search', async () => {
+      this.ensureConnected();
+      return this.dbms!.semanticImageTextSearch(collection, query, limit);
+    });
   }
 
   /** Semantic image-to-image search. */
   async semanticImageSearch(collection: string, queryImage: Buffer, limit: number): Promise<string[]> {
-    this.ensureConnected();
-    return this.dbms!.semanticImageSearch(collection, queryImage, limit);
+    return this.runExclusive('semantic-image-search', async () => {
+      this.ensureConnected();
+      return this.dbms!.semanticImageSearch(collection, queryImage, limit);
+    });
   }
 
   /** Returns the underlying SimpleDbms instance (throws if not connected). */
@@ -1026,7 +1234,8 @@ export class DatabaseService {
   // ── Internal helpers ─────────────────────────────────────────
 
   private async loadLabDocuments(collection: string, limit: number): Promise<Array<Record<string, unknown>>> {
-    const rawDocuments = await this.getDocuments(collection, 'id', undefined, limit);
+    // Lab report/apply callers already own the database operation queue.
+    const rawDocuments = await this.getDocumentsUnlocked(collection, 'id', undefined, limit);
     return rawDocuments.documents.map((raw) => JSON.parse(raw) as Record<string, unknown>);
   }
 
@@ -1199,7 +1408,7 @@ export class DatabaseService {
     return {
       enabled: this.incrementalCompactionEnabled,
       queued: this.incrementalCompactionQueued,
-      running: this.incrementalCompactionActive || this.currentOperation === 'incremental-compaction',
+      running: this.incrementalCompactionActive,
       intervalMs: this.incrementalCompactionIntervalMs,
       policy: this.incrementalCompactionPolicy,
       lastRunAt: this.incrementalCompactionLastRunAt?.toISOString() ?? null,
@@ -1218,7 +1427,6 @@ export class DatabaseService {
   private startIncrementalCompactionTimer(): void {
     if (this.incrementalCompactionTimer) return;
 
-    console.log(`[compaction] auto compact timer started (${this.incrementalCompactionIntervalMs}ms interval)`);
     this.incrementalCompactionTimer = setInterval(() => {
       this.scheduleIncrementalCompaction();
     }, this.incrementalCompactionIntervalMs);
@@ -1229,7 +1437,6 @@ export class DatabaseService {
     if (!this.incrementalCompactionTimer) return;
     clearInterval(this.incrementalCompactionTimer);
     this.incrementalCompactionTimer = null;
-    console.log('[compaction] auto compact timer stopped');
   }
 
   private scheduleIncrementalCompaction(): void {
@@ -1245,17 +1452,11 @@ export class DatabaseService {
       this.incrementalCompactionActive = true;
       const start = Date.now();
       try {
-        console.log('[compaction] auto incremental check started');
         const result = await this.dbms.compactIfNeeded(this.incrementalCompactionPolicy);
         if (result !== null) {
           this.incrementalCompactionLastRunAt = new Date();
           this.incrementalCompactionLastDurationMs = Date.now() - start;
           this.incrementalCompactionLastResult = result;
-          console.log(
-            `[compaction] auto incremental step complete in ${this.incrementalCompactionLastDurationMs}ms: ${JSON.stringify(result)}`,
-          );
-        } else {
-          console.log(`[compaction] auto incremental check complete in ${Date.now() - start}ms: no work needed`);
         }
         this.incrementalCompactionLastError = null;
       } finally {
@@ -1301,7 +1502,7 @@ export class DatabaseService {
     const info: DatabaseSizeInfo = {
       dataFileBytes,
       logFileBytes,
-      totalBytes: dataFileBytes + logFileBytes,
+      totalBytes: dataFileBytes,
     };
 
     if (this.dbms) {
@@ -1328,7 +1529,64 @@ export class DatabaseService {
     }
     this.incrementalCompactionQueued = false;
     this.incrementalCompactionActive = false;
+    this.incrementalCompactionLastRunAt = null;
+    this.incrementalCompactionLastDurationMs = null;
+    this.incrementalCompactionLastError = null;
+    this.incrementalCompactionLastResult = null;
     this.stopIncrementalCompactionTimer();
     this.recordBytesCache.clear();
+    this.documentCountCache.clear();
+  }
+
+  private invalidateCollectionStorage(collection: string): void {
+    this.recordBytesCache.delete(collection);
+    this.documentCountCache.delete(collection);
+  }
+
+  private validateIndexedKeys(document: Document): void {
+    // Each leaf has 1 block-type byte, a 9-byte header, and 8 entry bytes
+    // (two lengths + the 4-byte record pointer). Reserve room for two entries
+    // so a new root/split does not depend on a single nearly page-sized key.
+    const maxKeyBytes = Math.floor((this.dbms!.getBlockSize() - 10) / 2) - 8;
+    const id = document.getId();
+    const idBytes = typeof id === 'string' ? Buffer.byteLength(id, 'utf8') : 8;
+    if (idBytes > maxKeyBytes) {
+      throw new DatabaseInputError(
+        `Document id is too large for its index. Use a shorter id (at most ${maxKeyBytes} UTF-8 bytes).`,
+      );
+    }
+    const fields = document.getFields();
+    for (const field of document.getIterableKeys()) {
+      const value = fields[field];
+      // Match DbmsBack's composite key encoding: string components carry
+      // a 2-byte length; numeric/boolean components use 8 bytes.
+      const valueBytes = typeof value === 'string' ? 2 + Buffer.byteLength(value, 'utf8') : 8;
+      const keyBytes = valueBytes + idBytes + (typeof id === 'string' ? 2 : 0);
+      if (keyBytes > maxKeyBytes) {
+        throw new DatabaseInputError(
+          `Field "${field}" is too large for its index (${keyBytes} UTF-8 key bytes; limit ${maxKeyBytes}). Shorten the value or use an underscore-prefixed field for unindexed storage. Compression does not reduce index key size.`,
+        );
+      }
+    }
+  }
+
+  private async openDatabaseFiles(
+    dataFile: RealFile,
+    logFile: RealFile,
+    hnswConfig: Parameters<typeof SimpleDbms.open>[2],
+    create = false,
+  ): Promise<SimpleDbms> {
+    let database: SimpleDbms | null = null;
+    try {
+      database = create
+        ? await SimpleDbms.create(dataFile, logFile, hnswConfig)
+        : await SimpleDbms.open(dataFile, logFile, hnswConfig);
+      if (create) await database.commit();
+      return database;
+    } catch (error) {
+      // Opening can fail after only one file handle was acquired.
+      await Promise.allSettled([dataFile.close(), logFile.close()]);
+      throw error;
+    }
   }
 }

@@ -288,7 +288,7 @@ export class SimpleDbms {
    * @param id - The ID of the document to retrieve.
    * @returns A Promise that resolves to the JSON representation of the document.
    */
-  async getDocumentById(collection: string, id: string, options?: { encoded?: boolean }): Promise<string> {
+  async getDocumentById(collection: string, id: string | number, options?: { encoded?: boolean }): Promise<string> {
     const document = await this.dbmsback.getDocument(id, collection, options?.encoded ?? false);
     if (options?.encoded) {
       return JSON.stringify(this.encodedDocumentToObject(document as EncodedDocument));
@@ -318,7 +318,7 @@ export class SimpleDbms {
    * @param id - The ID of the document to delete.
    * @returns A Promise that resolves when the document is deleted.
    */
-  async deleteDocumentById(collection: string, id: string): Promise<void> {
+  async deleteDocumentById(collection: string, id: string | number): Promise<void> {
     return this.dbmsback.deleteDocument(id, collection);
   }
 
@@ -333,7 +333,7 @@ export class SimpleDbms {
    *
    * @author Matisse De Gauquier
    */
-  async editDocument(collection: string, id: string, field: string, newValue: FieldValue): Promise<void> {
+  async editDocument(collection: string, id: string | number, field: string, newValue: FieldValue): Promise<void> {
     await this.dbmsback.editDocumentByID(collection, id, field, newValue);
   }
 

@@ -5,9 +5,15 @@ import * as http from 'node:http';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DatabaseService } from './service.mjs';
+import { DatabaseService, DatabaseInputError } from './service.mjs';
 import type { ConversationalService } from './conversational-service.mjs';
 import { getEmbeddingStatus, preloadEmbeddingModels } from './clipHnswConfig.mjs';
+import {
+  COMPRESSION_ALGORITHMS,
+  type FieldCompressionDefaults,
+  type FieldCompressionOverrides,
+} from '../dbms/compression.mjs';
+import { isFieldValue, parseRawDocument } from '../dbms/document.mjs';
 
 const ENV_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../.env');
 
@@ -39,21 +45,30 @@ async function parseBody(
   maxBytes: number = DEFAULT_JSON_BODY_LIMIT_BYTES,
 ): Promise<JsonBody> {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const chunks: Buffer[] = [];
+    let bytes = 0;
     let settled = false;
     req.on('data', (chunk: Buffer) => {
       if (settled) return;
-      body += chunk.toString();
-      if (Buffer.byteLength(body, 'utf-8') > maxBytes) {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
         settled = true;
         reject(new ApiHttpError(413, 'Request body too large'));
+        return;
       }
+      chunks.push(chunk);
     });
     req.on('end', () => {
       if (settled) return;
       settled = true;
       try {
-        resolve((body ? (JSON.parse(body) as JsonBody) : {}) satisfies JsonBody);
+        const body = Buffer.concat(chunks).toString('utf-8');
+        const parsed: unknown = body ? JSON.parse(body) : {};
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          reject(new ApiHttpError(400, 'Request body must be a JSON object'));
+          return;
+        }
+        resolve(parsed as JsonBody);
       } catch {
         reject(new ApiHttpError(400, 'Invalid JSON'));
       }
@@ -75,6 +90,36 @@ export function readLimit(url: URL, defaultValue: number, maxValue: number): num
     throw new ApiHttpError(400, `"limit" must be between 1 and ${maxValue}`);
   }
   return limit;
+}
+
+function readOffset(url: URL): number | undefined {
+  const raw = url.searchParams.get('offset');
+  if (raw === null) return undefined;
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+    throw new ApiHttpError(400, 'Invalid "offset" parameter');
+  }
+  return Number(raw);
+}
+
+function readCompression(value: unknown): FieldCompressionOverrides | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApiHttpError(400, 'compression must be a JSON object');
+  }
+  for (const algorithm of Object.values(value)) {
+    if (algorithm !== 'off' && !COMPRESSION_ALGORITHMS.some((candidate) => candidate === algorithm)) {
+      throw new ApiHttpError(400, 'Invalid compression algorithm');
+    }
+  }
+  return value as FieldCompressionOverrides;
+}
+
+function validateDocument(collection: string, value: unknown): void {
+  try {
+    parseRawDocument(collection, value);
+  } catch (error) {
+    throw new ApiHttpError(400, error instanceof Error ? error.message : String(error));
+  }
 }
 
 /**
@@ -154,6 +199,11 @@ export class ApiRouter {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/database/status') {
+        sendJSON(res, 200, await this.db.getStatus());
+        return;
+      }
+
       // GET /api/settings — returns whether key is configured (never the key itself)
       if (method === 'GET' && pathname === '/api/settings') {
         sendJSON(res, 200, { geminiKeySet: this.conv?.llmAvailable ?? false });
@@ -168,8 +218,11 @@ export class ApiRouter {
 
       // POST /api/embeddings/preload — kick off the requested embedding model load
       if (method === 'POST' && pathname === '/api/embeddings/preload') {
-        const body: JsonBody = await parseBody(req).catch(() => ({}));
+        const body = await parseBody(req);
         const kind = body['kind'];
+        if (kind !== undefined && kind !== 'text' && kind !== 'image' && kind !== 'all') {
+          throw new ApiHttpError(400, 'Invalid embedding model kind');
+        }
         preloadEmbeddingModels(kind === 'text' || kind === 'image' || kind === 'all' ? kind : 'all');
         sendJSON(res, 200, getEmbeddingStatus() as unknown as JsonBody);
         return;
@@ -183,6 +236,7 @@ export class ApiRouter {
           sendError(res, 400, 'Missing key');
           return;
         }
+        if (/[\r\n]/.test(key)) throw new ApiHttpError(400, 'Invalid key');
         // Persist to .env (create or update GEMINI_API_KEY line)
         let envContent = '';
         try {
@@ -207,6 +261,7 @@ export class ApiRouter {
           sendError(res, 400, 'Missing filepath');
           return;
         }
+        if (this.conv) this.conv.onDisconnect();
         const message = await this.db.connect(filepath);
         if (this.conv) await this.conv.onConnect(filepath, this.db.rawDbms);
         sendJSON(res, 200, { message, filepath });
@@ -220,6 +275,7 @@ export class ApiRouter {
           sendError(res, 400, 'Missing filepath');
           return;
         }
+        if (this.conv) this.conv.onDisconnect();
         const message = await this.db.create(filepath);
         if (this.conv) await this.conv.onConnect(filepath, this.db.rawDbms);
         sendJSON(res, 200, { message, filepath });
@@ -244,13 +300,17 @@ export class ApiRouter {
         return;
       }
 
-      if (method === 'GET' && pathname === '/api/database/status') {
-        sendJSON(res, 200, await this.db.getStatus());
-        return;
-      }
-
       if (method === 'POST' && pathname === '/api/database/vacuum') {
-        const result = await this.db.vacuum();
+        if (this.conv) this.conv.onDisconnect();
+        let result: Awaited<ReturnType<DatabaseService['vacuum']>>;
+        try {
+          result = await this.db.vacuum();
+        } finally {
+          // Vacuum replaces the backend, and a failed swap may reopen the original.
+          if (this.conv && this.db.isConnected && this.db.filepath) {
+            await this.conv.onConnect(this.db.filepath, this.db.rawDbms);
+          }
+        }
         sendJSON(res, 200, result as unknown as JsonBody);
         return;
       }
@@ -269,6 +329,33 @@ export class ApiRouter {
         }
         const defaults = this.db.getCompressionDefaults(collection);
         sendJSON(res, 200, { defaults });
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/compression/defaults') {
+        const body = await parseBody(req);
+        const collection = body['collection'];
+        const defaults = body['defaults'];
+        if (typeof collection !== 'string' || !collection.trim()) throw new ApiHttpError(400, 'Missing collection');
+        if (defaults === null || typeof defaults !== 'object' || Array.isArray(defaults)) {
+          throw new ApiHttpError(400, 'defaults must be a JSON object');
+        }
+        for (const [field, codec] of Object.entries(defaults)) {
+          if (
+            !field.trim() ||
+            field === 'id' ||
+            field === '_order_' ||
+            field.startsWith('_layout_') ||
+            !COMPRESSION_ALGORITHMS.some((candidate) => candidate === codec)
+          ) {
+            throw new ApiHttpError(400, 'Invalid compression defaults');
+          }
+        }
+        await this.db.setCompressionDefaults(collection, defaults as FieldCompressionDefaults);
+        sendJSON(res, 200, {
+          defaults,
+          message: 'Compression defaults saved',
+        });
         return;
       }
 
@@ -428,6 +515,7 @@ export class ApiRouter {
       // POST /api/debug/reset
       if (method === 'POST' && pathname === '/api/debug/reset') {
         const fp = this.db.filepath;
+        if (this.conv) this.conv.onDisconnect();
         await this.db.reset();
         if (this.conv && fp) await this.conv.onConnect(fp, this.db.rawDbms);
         sendJSON(res, 200, { message: 'Database reset' });
@@ -450,7 +538,10 @@ export class ApiRouter {
       const collectionDeleteMatch = pathname.match(/^\/api\/collections\/([^/]+)$/);
       if (method === 'DELETE' && collectionDeleteMatch) {
         const collection = decodeURIComponent(collectionDeleteMatch[1]);
-        await this.db.deleteCollection(collection);
+        await this.db.deleteCollection(
+          collection,
+          this.conv ? () => this.conv!.removeCollection(collection) : undefined,
+        );
         sendJSON(res, 200, { message: `Collection "${collection}" deleted` });
         return;
       }
@@ -466,14 +557,14 @@ export class ApiRouter {
       if (method === 'GET' && wordSearchMatch) {
         const collection = decodeURIComponent(wordSearchMatch[1]);
         const word = url.searchParams.get('word') ?? '';
-        const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
-        const offset = parseInt(url.searchParams.get('offset') ?? '0', 10);
+        const limit = readLimit(url, 50, 10000);
+        const offset = readOffset(url) ?? 0;
         if (!word) {
           sendError(res, 400, 'Missing word parameter');
           return;
         }
         const result = await this.db.wordSearch(collection, word, limit, offset);
-        console.log(`[wordsearch] word="${word}" → ${result.documents.length} docs, total=${result.total}`);
+
         sendJSON(res, 200, result);
         return;
       }
@@ -483,8 +574,8 @@ export class ApiRouter {
       if (method === 'GET' && contentSearchMatch) {
         const collection = decodeURIComponent(contentSearchMatch[1]);
         const word = url.searchParams.get('word') ?? '';
-        const limit = parseInt(url.searchParams.get('limit') ?? '50', 10);
-        const offset = parseInt(url.searchParams.get('offset') ?? '0', 10);
+        const limit = readLimit(url, 50, 10000);
+        const offset = readOffset(url) ?? 0;
         if (!word) {
           sendError(res, 400, 'Missing word parameter');
           return;
@@ -506,9 +597,8 @@ export class ApiRouter {
           return;
         }
 
-        console.log(`Semantic text search: collection=${collection}, limit=${limit}`);
         const documents = await this.db.semanticSearch(collection, query, limit);
-        console.log(`Semantic text search complete: ${documents.length} result(s)`);
+
         sendJSON(res, 200, { documents });
         return;
       }
@@ -525,9 +615,8 @@ export class ApiRouter {
           return;
         }
 
-        console.log(`Semantic photo search: collection=${collection}, limit=${limit}`);
         const documents = await this.db.semanticImageTextSearch(collection, query, limit);
-        console.log(`Semantic photo search complete: ${documents.length} result(s)`);
+
         sendJSON(res, 200, { documents });
         return;
       }
@@ -546,9 +635,9 @@ export class ApiRouter {
         }
 
         const imageBuffer = Buffer.from(base64Image, 'base64');
-        console.log(`Semantic image search: collection=${collection}, limit=${limit}`);
+
         const documents = await this.db.semanticImageSearch(collection, imageBuffer, limit);
-        console.log(`Semantic image search complete: ${documents.length} result(s)`);
+
         sendJSON(res, 200, { documents });
         return;
       }
@@ -559,7 +648,14 @@ export class ApiRouter {
         const iterableKey = url.searchParams.get('iterableKey') ?? 'id';
         const cursor = url.searchParams.get('cursor') ?? undefined;
         const limit = readLimit(url, 100, 10000);
+        const offset = readOffset(url);
+        if (cursor !== undefined && offset !== undefined) {
+          throw new ApiHttpError(400, 'Use either cursor or offset pagination');
+        }
         const sortBy = url.searchParams.get('sortBy') ?? undefined;
+        if (cursor !== undefined && sortBy) {
+          throw new ApiHttpError(400, 'Sorted documents require offset pagination');
+        }
         const sortDirRaw = url.searchParams.get('sortDir');
         if (sortDirRaw !== null && sortDirRaw !== 'asc' && sortDirRaw !== 'desc') {
           sendError(res, 400, '"sortDir" must be "asc" or "desc"');
@@ -567,8 +663,46 @@ export class ApiRouter {
         }
         const sortDir: 'asc' | 'desc' = sortDirRaw === 'desc' ? 'desc' : 'asc';
 
-        const result = await this.db.getDocuments(collection, iterableKey, cursor, limit, sortBy, sortDir);
+        const result = await this.db.getDocuments(collection, iterableKey, cursor, limit, sortBy, sortDir, offset);
         sendJSON(res, 200, result);
+        return;
+      }
+
+      // POST /api/documents/:collection
+      const bulkMatch = pathname.match(/^\/api\/documents\/([^/]+)\/bulk-(delete|edit)$/);
+      if (method === 'POST' && bulkMatch) {
+        const collection = decodeURIComponent(bulkMatch[1]);
+        const body = await parseBody(req);
+        const ids = body['ids'];
+        const all = body['all'];
+        if (
+          !(
+            (all === true && ids === undefined) ||
+            (all === undefined &&
+              Array.isArray(ids) &&
+              ids.length > 0 &&
+              ids.length <= 10000 &&
+              ids.every((id) => typeof id === 'string' || (typeof id === 'number' && Number.isFinite(id))))
+          )
+        ) {
+          throw new ApiHttpError(400, 'Provide either all: true or a nonempty list of at most 10000 document IDs');
+        }
+        const selection = all === true ? { all: true as const } : { ids: ids as Array<string | number> };
+        let edit: { field: string; value: unknown } | undefined;
+        if (bulkMatch[2] === 'edit') {
+          const field = body['field'];
+          const value = body['value'];
+          if (
+            typeof field !== 'string' ||
+            !field.trim() ||
+            field === 'id' ||
+            !(['string', 'boolean'].includes(typeof value) || (typeof value === 'number' && Number.isFinite(value)))
+          ) {
+            throw new ApiHttpError(400, 'Choose a non-ID field and a string, boolean or finite number value');
+          }
+          edit = { field, value };
+        }
+        sendJSON(res, 200, await this.db.mutateDocuments(collection, selection, edit));
         return;
       }
 
@@ -577,13 +711,12 @@ export class ApiRouter {
         const collection = decodeURIComponent(collectionMatch[1]);
         const body = await parseBody(req);
         const document = body['document'];
-        const compression = body['compression'] as
-          | import('../dbms/compression.mts').FieldCompressionOverrides
-          | undefined;
+        const compression = readCompression(body['compression']);
         if (document === undefined || document === null) {
           sendError(res, 400, 'Missing document');
           return;
         }
+        validateDocument(collection, document);
         await this.db.insertDocument(collection, document, compression);
         sendJSON(res, 201, { message: 'Document inserted' });
         return;
@@ -604,26 +737,7 @@ export class ApiRouter {
         const collection = decodeURIComponent(metaMatch[1]);
         const id = decodeURIComponent(metaMatch[2]);
 
-        // Accurate on-disk reservation: chainLength × blockSize.
-        const storedSize = await this.db.getDocumentStoredBytes(collection, id);
-        const blockSize = this.db.rawDbms.getBlockSize();
-
-        // Compression algorithms in use per field, surfaced from the
-        // encoded payload (informational; doesn't affect storedSize).
-        const encodedStr = await this.db.getDocumentById(collection, id, { encoded: true });
-        const encodedDoc = JSON.parse(encodedStr) as Record<string, unknown>;
-        const compressions: Record<string, string> = {};
-        for (const [key, val] of Object.entries(encodedDoc)) {
-          if (key === 'id') continue;
-          if (typeof val === 'object' && val !== null && 'payloadBase64' in val) {
-            const encodedField = val as { compression?: string };
-            if (encodedField.compression && encodedField.compression !== 'none') {
-              compressions[key] = encodedField.compression;
-            }
-          }
-        }
-
-        sendJSON(res, 200, { storedSize, blockSize, compressions });
+        sendJSON(res, 200, await this.db.getDocumentMetadata(collection, id));
         return;
       }
 
@@ -651,9 +765,10 @@ export class ApiRouter {
             sendError(res, 400, 'document must be a JSON object');
             return;
           }
-          const compression = body['compression'] as
-            | import('../dbms/compression.mts').FieldCompressionOverrides
-            | undefined;
+          const compression = readCompression(body['compression']);
+          validateDocument(collection, document);
+          const replacementId = (document as Record<string, unknown>)['id'];
+          if (String(replacementId) !== id) throw new ApiHttpError(400, 'Document id cannot be changed');
           await this.db.replaceDocument(collection, id, document, compression);
           sendJSON(res, 200, { message: 'Document replaced' });
           return;
@@ -664,6 +779,7 @@ export class ApiRouter {
           sendError(res, 400, 'Missing field (or document)');
           return;
         }
+        if (!isFieldValue(value)) throw new ApiHttpError(400, 'Invalid field value');
         await this.db.editDocument(collection, id, field, value);
         sendJSON(res, 200, { message: 'Document edited' });
         return;
@@ -716,7 +832,7 @@ export class ApiRouter {
             sendError(res, 400, 'Missing "model" string in request body');
             return;
           }
-          const model = await this.conv.saveModel(json);
+          const model = await this.runDatabaseExclusive('conversational-model-save', () => this.conv!.saveModel(json));
           sendJSON(res, 200, { model });
           return;
         }
@@ -730,18 +846,22 @@ export class ApiRouter {
             return;
           }
           const history = Array.isArray(body['history'])
-            ? (body['history'] as { role: string; text: string }[]).map((m) => {
-                const role: 'user' | 'assistant' = m.role === 'assistant' ? 'assistant' : 'user';
-                return { role, text: String(m.text) };
+            ? (body['history'] as unknown[]).map((entry) => {
+                if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+                  throw new ApiHttpError(400, 'Invalid conversation history');
+                }
+                const m = entry as Record<string, unknown>;
+                const role: 'user' | 'assistant' = m['role'] === 'assistant' ? 'assistant' : 'user';
+                return { role, text: String(m['text']) };
               })
             : [];
           const collection =
             typeof body['collection'] === 'string' && body['collection'].length > 0 ? body['collection'] : undefined;
-          console.log(`Conversational ask: ${question.slice(0, 120)}`);
+
           const response = await this.runDatabaseExclusive('conversational-ask', () =>
             this.conv!.ask(question, history, collection),
           );
-          console.log('Conversational ask complete');
+
           sendJSON(res, 200, response as unknown as Record<string, unknown>);
           return;
         }
@@ -753,8 +873,8 @@ export class ApiRouter {
       // No route matched
       sendError(res, 404, 'API endpoint not found');
     } catch (error) {
-      if (error instanceof ApiHttpError) {
-        sendError(res, error.statusCode, error.message);
+      if (error instanceof ApiHttpError || error instanceof DatabaseInputError) {
+        sendError(res, error instanceof ApiHttpError ? error.statusCode : 400, error.message);
         return;
       }
       console.error('API Error:', error);
