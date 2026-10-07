@@ -1,7 +1,7 @@
 {
-  "name": "simpledbms",
+  "name": "siftwelldb",
   "version": "1.0.1",
-  "description": "P&O CW 2025-2026 simpledmbs",
+  "description": "SiftwellDB document database with semantic search and a browser client",
   "license": "ISC",
   "private": true,
   "type": "module",

@@ -1333,7 +1333,7 @@ export class DbmsBack {
    *
    * @author: Matisse De Gauquier
    */
-  async editDocumentByID(collection: string, id: string, field: string, newValue: FieldValue): Promise<void> {
+  async editDocumentByID(collection: string, id: string | number, field: string, newValue: FieldValue): Promise<void> {
     const existingDocument = (await this.getDocument(id, collection, false)) as Document;
     let processedValue = newValue;
     if (typeof newValue === 'string' && isImageField(field, existingDocument.getFields())) {

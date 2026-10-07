@@ -88,7 +88,47 @@ export const state: WebclientState = {
   },
 };
 
+export type RequestContext = {
+  readonly scope: 'database' | 'collection';
+  readonly databaseEpoch: number;
+  readonly collectionEpoch: number;
+  readonly connected: boolean;
+  readonly filepath: string | null;
+  readonly collection: string | null;
+};
+
+let databaseContextEpoch = 0;
+let collectionContextEpoch = 0;
+
+/** Invalidates pending UI responses before changing database or collection context. */
+export function invalidateRequestContext(scope: 'database' | 'collection' = 'collection'): void {
+  if (scope === 'database') databaseContextEpoch++;
+  collectionContextEpoch++;
+}
+
+export function captureRequestContext(scope: 'database' | 'collection' = 'collection'): RequestContext {
+  return {
+    scope,
+    databaseEpoch: databaseContextEpoch,
+    collectionEpoch: collectionContextEpoch,
+    connected: state.connected,
+    filepath: state.filepath,
+    collection: state.selectedCol,
+  };
+}
+
+export function isCurrentRequestContext(context: RequestContext): boolean {
+  return (
+    context.databaseEpoch === databaseContextEpoch &&
+    context.connected === state.connected &&
+    context.filepath === state.filepath &&
+    (context.scope === 'database' ||
+      (context.collectionEpoch === collectionContextEpoch && context.collection === state.selectedCol))
+  );
+}
+
 export function resetDisconnectedState(): void {
+  invalidateRequestContext('database');
   state.connected = false;
   state.filepath = null;
   state.collections = [];
@@ -96,11 +136,32 @@ export function resetDisconnectedState(): void {
   state.countsByColl = {};
   state.model = null;
   state.selectedCol = null;
+  state.tab = 'overview';
   state.chatHistory = [];
+  state.sqlHistory = [];
+  state.selectedDoc = null;
+  state.selectedDocIndex = null;
+  state.dataFilter = '';
+  state.dataSort = null;
+  state.treeExpanded = {};
+  state.modelPromptDismissed = {};
+  state.modelGenerating = false;
+  state.seedBusy = false;
+  state.search = {
+    mode: 'text',
+    query: '',
+    image: null,
+    busy: false,
+    results: null,
+    error: null,
+    elapsedMs: null,
+    embedStatus: state.search.embedStatus,
+  };
   state.databaseStatus = null;
   state.compression.recommendations = {};
   state.compression.defaults = {};
   state.lab.report = null;
   state.lab.error = null;
   state.lab.collection = 'wiki_lab';
+  state.lab.busy = false;
 }

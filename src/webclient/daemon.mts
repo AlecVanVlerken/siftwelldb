@@ -102,7 +102,6 @@ const api = new ApiRouter(db, conv);
  */
 function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): void {
   const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-  console.log(`${req.method} ${url.pathname}`);
 
   if (url.pathname.startsWith('/api/')) {
     void api.handle(req, res, url);
@@ -113,20 +112,13 @@ function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): vo
 
 const server = http.createServer(requestHandler);
 
-server.listen(port, () => {
-  console.log(`SimpleDBMS Daemon running on http://localhost:${port}`);
-  console.log(`API available at http://localhost:${port}/api/`);
-});
+server.listen(port);
 
 // Graceful shutdown
 process.on('SIGINT', () => {
-  console.log('\nShutting down...');
   const shutdown = async () => {
     await db.disconnect();
-    server.close(() => {
-      console.log('Server closed.');
-      process.exit(0);
-    });
+    server.close(() => process.exit(0));
   };
   void shutdown();
 });

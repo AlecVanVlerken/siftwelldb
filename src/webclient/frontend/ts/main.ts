@@ -5,8 +5,15 @@ import { $, $$ } from './dom.js';
 import { buildDocumentTemplate, compactDocumentImages, validateDocumentInput } from './document-editor.js';
 import { detectType, docSize, esc, fmtNum, fmtSize, imageDataUrlFromValue, isImageField } from './format.js';
 import { openModal, closeModal } from './modals.js';
-import { resetDisconnectedState, state } from './state.js';
+import {
+  captureRequestContext,
+  invalidateRequestContext,
+  isCurrentRequestContext,
+  resetDisconnectedState,
+  state,
+} from './state.js';
 import { getSqlMutationKind } from './sql-ui.js';
+import { mergeScopedModel } from './model-editor.js';
 
 ('use strict');
 
@@ -21,9 +28,126 @@ function toast(msg, kind = '', title = '') {
 $$('[data-close]').forEach((b) => b.addEventListener('click', () => closeModal(b.dataset.close)));
 
 let documentModalMode = 'document';
+let documentModalRequest = 0;
 let documentModalImagePayloads = {};
 let drawerEditImagePayloads = {};
 const COMPRESSION_OPTIONS = ['inherit', 'off', 'none', 'gzip', 'deflate', 'brotli', 'zstd-fast', 'zstd'];
+const DOCUMENT_PAGE_SIZE = 100;
+const documentPages = new Map();
+const documentRequests = new Map();
+let collectionsRequest = 0;
+let drawerRequest = 0;
+let searchRequest = 0;
+let chatRequest = 0;
+let sqlRequest = 0;
+let connectionBusy = false;
+let maintenanceBusy = false;
+let sqlBusy = false;
+let modelModalCollection = null;
+let modelModalRequest = 0;
+let compressionBusy = false;
+let compressionDefaultsError = null;
+let compressionDefaultsRequest = 0;
+let storageEpoch = 0;
+let databaseStatusRequest = 0;
+let overviewRefreshing = false;
+const selectedDocumentIds = new Set();
+let allDocumentsSelected = false;
+let bulkBusy = false;
+let bulkEditContext = null;
+const recommendingFields = new Set();
+
+function clearDocumentSelection() {
+  selectedDocumentIds.clear();
+  allDocumentsSelected = false;
+}
+
+function resetConnectionView() {
+  overviewRefreshing = false;
+  clearDocumentSelection();
+  bulkBusy = false;
+  recommendingFields.clear();
+  modelModalRequest++;
+  documentModalRequest++;
+  resetDisconnectedState();
+  collectionsRequest++;
+  drawerRequest++;
+  searchRequest++;
+  chatRequest++;
+  sqlRequest++;
+  documentPages.clear();
+  documentRequests.clear();
+  invalidateStorageCache();
+  compressionDefaultsLoadedFor = null;
+  pendingSql = '';
+  pendingConfirm = null;
+  aiBusy = false;
+  sqlBusy = false;
+  maintenanceBusy = false;
+  compressionBusy = false;
+  compressionDefaultsError = null;
+  compressionDefaultsRequest++;
+  documentModalImagePayloads = {};
+  drawerEditImagePayloads = {};
+  for (const id of ['doc-save', 'mdl-save', 'mdl-gen', 'mdl-reload']) $('#' + id).disabled = false;
+  $('#mdl-json').readOnly = false;
+  closeDrawer();
+  for (const modal of ['modal-document', 'modal-model', 'modal-confirm']) closeModal(modal);
+  $('#sb-filter').value = '';
+  updateConnState();
+  render();
+}
+
+function resetSelectionView() {
+  overviewRefreshing = false;
+  clearDocumentSelection();
+  bulkBusy = false;
+  recommendingFields.clear();
+  closeModal('modal-bulk-edit');
+  modelModalRequest++;
+  documentModalRequest++;
+  invalidateRequestContext();
+  searchRequest++;
+  chatRequest++;
+  aiBusy = false;
+  state.search = { ...state.search, query: '', image: null, busy: false, results: null, error: null, elapsedMs: null };
+  state.chatHistory = [];
+  state.dataFilter = '';
+  state.dataSort = null;
+  state.compression.recommendations = {};
+  state.compression.defaults = {};
+  compressionBusy = false;
+  compressionDefaultsError = null;
+  compressionDefaultsRequest++;
+  state.lab.report = null;
+  state.lab.error = null;
+  state.lab.busy = false;
+  compressionDefaultsLoadedFor = null;
+  pendingConfirm = null;
+  for (const modal of ['modal-document', 'modal-model', 'modal-confirm']) closeModal(modal);
+  $('#doc-save').disabled = false;
+  for (const id of ['mdl-save', 'mdl-gen', 'mdl-reload']) $('#' + id).disabled = state.modelGenerating;
+  closeDrawer();
+}
+
+async function loadCollectionDocuments(c, append = false) {
+  const context = captureRequestContext('database');
+  const request = (documentRequests.get(c) || 0) + 1;
+  documentRequests.set(c, request);
+  const previous = state.docsByColl[c] || [];
+  const limit = append ? DOCUMENT_PAGE_SIZE : Math.min(10000, Math.max(DOCUMENT_PAGE_SIZE, previous.length));
+  const offset = append ? previous.length : 0;
+  const { documents, total, hasMore } = await api(
+    `/api/documents/${encodeURIComponent(c)}?limit=${limit}&offset=${offset}`,
+  );
+  if (!isCurrentRequestContext(context) || documentRequests.get(c) !== request) return false;
+  const parsed = (documents || []).map((d) => JSON.parse(d));
+  const next = append ? [...previous, ...parsed] : parsed;
+  state.docsByColl[c] = next;
+  state.countsByColl[c] = total ?? next.length;
+  documentPages.set(c, { hasMore: hasMore ?? next.length < (total ?? next.length), loading: false });
+  return true;
+}
 
 function imageMimeMetadataField(fieldName) {
   return `_${fieldName}_mime`;
@@ -33,17 +157,20 @@ function imageMimeMetadataField(fieldName) {
 // Bootstrap
 // ─────────────────────────────────────────────────────────────────
 async function bootstrap() {
+  const context = captureRequestContext('database');
   try {
     const [status, settings, embed] = await Promise.all([
       api('/api/status'),
-      api('/api/settings'),
+      api('/api/settings').catch(() => ({ geminiKeySet: false })),
       api('/api/embeddings/status').catch(() => state.search.embedStatus),
     ]);
+    if (!isCurrentRequestContext(context)) return;
     state.connected = status.connected;
     state.filepath = status.filepath;
     state.geminiKeySet = settings.geminiKeySet;
     state.search.embedStatus = embed;
   } catch (e) {
+    if (!isCurrentRequestContext(context)) return;
     toast('Could not reach daemon: ' + e.message, 'err');
   }
 
@@ -52,6 +179,7 @@ async function bootstrap() {
     closeModal('modal-connect');
     await loadCollections();
     await loadModel();
+    await refreshDatabaseStatus();
     render();
   } else {
     openModal('modal-connect');
@@ -64,7 +192,7 @@ function updateConnState() {
   if (state.connected) {
     ci.classList.add('ok');
     ct.innerHTML = `<strong>${esc(state.filepath)}</strong>`;
-    $('#cm-disconnect').disabled = false;
+    $('#cm-disconnect').disabled = connectionBusy;
     $('#app').classList.remove('disconnected');
   } else {
     ci.classList.remove('ok');
@@ -72,6 +200,9 @@ function updateConnState() {
     $('#cm-disconnect').disabled = true;
     $('#app').classList.add('disconnected');
   }
+  $('#app').classList.toggle('disconnected', !state.connected || connectionBusy);
+  $('#sb-add-collection').disabled = !state.connected || connectionBusy;
+  $('#sb-filter').disabled = !state.connected || connectionBusy;
   renderConnectionMaintenanceMenu();
 }
 
@@ -84,21 +215,16 @@ function renderConnectionMaintenanceMenu() {
   const autoEl = $('#cm-auto-compact');
   const noteEl = $('#cm-compact-status');
   const manualEl = $('#cm-manual-compact');
-  const incrementalEl = $('#cm-incremental-compact');
-  if (sizeEl)
-    sizeEl.textContent = `Database size: ${size ? `${fmtSize(size.totalBytes)} (${fmtSize(size.dataFileBytes)} data + ${fmtSize(size.logFileBytes)} log)` : '—'}`;
+  if (sizeEl) sizeEl.textContent = `Database file: ${size ? fmtSize(size.dataFileBytes) : '—'}`;
   if (autoEl) {
-    autoEl.disabled = !connected || !!status?.busyOperation;
+    autoEl.disabled = !connected || maintenanceBusy || !!status?.busyOperation;
     autoEl.checked = !!inc?.enabled;
   }
-  if (manualEl) manualEl.disabled = !connected || !!status?.busyOperation;
-  if (incrementalEl) incrementalEl.disabled = !connected || !!status?.busyOperation;
+  if (manualEl) manualEl.disabled = !connected || maintenanceBusy || !!status?.busyOperation;
   if (noteEl) {
     if (!connected) noteEl.textContent = 'Open a database to compact.';
-    else if (status?.busyOperation) noteEl.textContent = `Busy: ${status.busyOperation}`;
-    else if (!inc?.enabled)
-      noteEl.textContent =
-        'Auto compact is off. You can still run a one-step incremental compact or a manual full vacuum.';
+    else if (maintenanceBusy || status?.busyOperation) noteEl.textContent = 'Compaction in progress…';
+    else if (!inc?.enabled) noteEl.textContent = 'Background compaction off';
     else if (inc.running) noteEl.textContent = 'Auto compact is running an incremental step.';
     else if (inc.lastError) noteEl.textContent = `Incremental compaction error: ${inc.lastError}`;
     else
@@ -109,12 +235,20 @@ function renderConnectionMaintenanceMenu() {
 }
 
 async function loadCollections() {
+  const context = captureRequestContext('database');
+  const request = ++collectionsRequest;
+  let complete = true;
   try {
     const { collections } = await api('/api/collections');
+    if (!isCurrentRequestContext(context) || request !== collectionsRequest) return;
     const nextCollections = collections || [];
     const live = new Set(nextCollections);
     for (const collection of Object.keys(state.docsByColl)) {
-      if (!live.has(collection)) delete state.docsByColl[collection];
+      if (!live.has(collection)) {
+        delete state.docsByColl[collection];
+        documentRequests.set(collection, (documentRequests.get(collection) || 0) + 1);
+        documentPages.delete(collection);
+      }
     }
     for (const collection of Object.keys(state.countsByColl)) {
       if (!live.has(collection)) delete state.countsByColl[collection];
@@ -124,21 +258,32 @@ async function loadCollections() {
     await Promise.all(
       state.collections.map(async (c) => {
         try {
-          const { documents } = await api(`/api/documents/${encodeURIComponent(c)}?limit=10000`);
-          state.countsByColl[c] = (documents || []).length;
-          state.docsByColl[c] = (documents || []).map((d) => JSON.parse(d));
+          await loadCollectionDocuments(c);
         } catch {
+          if (!isCurrentRequestContext(context) || request !== collectionsRequest) return;
+          complete = false;
           state.countsByColl[c] = '?';
           state.docsByColl[c] = [];
         }
       }),
     );
+    if (!isCurrentRequestContext(context) || request !== collectionsRequest) return;
+    if (state.selectedCol && !live.has(state.selectedCol)) {
+      resetSelectionView();
+      state.selectedCol = null;
+      state.tab = 'overview';
+      render();
+    }
+    return complete;
   } catch (e) {
+    if (!isCurrentRequestContext(context) || request !== collectionsRequest) return;
     toast('Failed to load collections: ' + e.message, 'err');
+    return false;
   }
 }
 
 async function runSeedAction(label, task) {
+  const context = captureRequestContext('database');
   if (state.seedBusy) {
     toast('A seed operation is already running. Wait for it to finish first.', 'warn');
     return null;
@@ -146,25 +291,32 @@ async function runSeedAction(label, task) {
   state.seedBusy = true;
   render();
   try {
-    console.info(`[seed] ${label} started`);
     const result = await task();
-    console.info(`[seed] ${label} complete`, result);
+    if (!isCurrentRequestContext(context)) return null;
+
     return result;
   } finally {
-    state.seedBusy = false;
+    if (isCurrentRequestContext(context)) {
+      state.seedBusy = false;
+      render();
+    }
   }
 }
 
 async function loadModel() {
+  const context = captureRequestContext('database');
   try {
     const { model } = await api('/api/conversational/model');
+    if (!isCurrentRequestContext(context)) return;
     state.model = model;
   } catch {
+    if (!isCurrentRequestContext(context)) return;
     state.model = null;
   }
 }
 
 async function seedDemoEmployees() {
+  const context = captureRequestContext();
   try {
     const result = await runSeedAction('employees', () => api('/api/demo/employees', { method: 'POST' }));
     if (!result) return;
@@ -172,14 +324,16 @@ async function seedDemoEmployees() {
     invalidateStorageCache();
     await loadCollections();
     await loadModel();
-    if (state.collections.includes('employees')) state.selectedCol = 'employees';
+    if (!isCurrentRequestContext(context)) return;
+    if (state.collections.includes('employees')) selectCollection('employees');
     render();
   } catch (e) {
-    toast('Failed to seed demo data: ' + e.message, 'err');
+    if (isCurrentRequestContext(context)) toast('Failed to seed demo data: ' + e.message, 'err');
   }
 }
 
 async function seedSemanticKnowledgeDemo() {
+  const context = captureRequestContext();
   try {
     const result = await runSeedAction('semantic text', () => api('/api/demo/semantic-knowledge', { method: 'POST' }));
     if (!result) return;
@@ -187,15 +341,17 @@ async function seedSemanticKnowledgeDemo() {
     invalidateStorageCache();
     await loadCollections();
     await loadModel();
+    if (!isCurrentRequestContext(context)) return;
     if (state.collections.includes(result.collection || 'knowledge'))
-      state.selectedCol = result.collection || 'knowledge';
+      selectCollection(result.collection || 'knowledge');
     render();
   } catch (e) {
-    toast('Failed to seed semantic knowledge demo: ' + e.message, 'err');
+    if (isCurrentRequestContext(context)) toast('Failed to seed semantic knowledge demo: ' + e.message, 'err');
   }
 }
 
 async function seedSemanticImageDemo() {
+  const context = captureRequestContext();
   try {
     const result = await runSeedAction('semantic images', () => api('/api/demo/semantic-images', { method: 'POST' }));
     if (!result) return;
@@ -203,15 +359,16 @@ async function seedSemanticImageDemo() {
     invalidateStorageCache();
     await loadCollections();
     await loadModel();
-    if (state.collections.includes(result.collection || 'photos')) state.selectedCol = result.collection || 'photos';
+    if (!isCurrentRequestContext(context)) return;
+    if (state.collections.includes(result.collection || 'photos')) selectCollection(result.collection || 'photos');
     render();
   } catch (e) {
-    toast('Failed to seed semantic image demo: ' + e.message, 'err');
+    if (isCurrentRequestContext(context)) toast('Failed to seed semantic image demo: ' + e.message, 'err');
   }
 }
 
 function isValidCollectionName(name) {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+  return /^[A-Za-z][A-Za-z0-9_]*$/.test(name);
 }
 
 function showDocumentModalError(message) {
@@ -230,7 +387,13 @@ function readCompressionOverrides(root = document) {
 }
 
 function renderDocumentCompressionControls(collection, documentValue, meta) {
-  const fields = Object.keys(documentValue).filter((key) => key !== 'id' && !key.startsWith('_'));
+  const fields = Object.keys(documentValue).filter(
+    (key) =>
+      key !== 'id' &&
+      !isImageMimeMetadata(key, documentValue) &&
+      !isImageField(key, documentValue) &&
+      typeof documentValue[key] === 'string',
+  );
   if (!fields.length) return '<div class="empty-state" style="padding:10px;"><p>No compressible fields yet.</p></div>';
   const current = meta?.compressions || {};
   const workload = Math.round(state.compression.workload * 100);
@@ -249,7 +412,7 @@ function renderDocumentCompressionControls(collection, documentValue, meta) {
           <select data-doc-compression-field="${esc(field)}" style="height:30px;border:1px solid var(--bd);background:var(--bg);color:var(--t1);border-radius:3px;">
             ${COMPRESSION_OPTIONS.map((option) => `<option value="${option}">${option}</option>`).join('')}
           </select>
-          <button class="tbtn" data-doc-cmp-recommend="${esc(field)}" data-doc-cmp-collection="${esc(collection)}" style="border:1px solid var(--bd);background:var(--bg);height:30px;">Adviseer</button>
+          <button class="tbtn" data-doc-cmp-recommend="${esc(field)}" data-doc-cmp-collection="${esc(collection)}" style="border:1px solid var(--bd);background:var(--bg);height:30px;">Recommend</button>
         </div>`,
           )
           .join('')}
@@ -267,6 +430,8 @@ function wireDocumentCompressionControls() {
     button.addEventListener('click', async () => {
       const field = button.dataset.docCmpRecommend;
       const collection = button.dataset.docCmpCollection;
+      const context = captureRequestContext();
+      const workload = state.compression.workload;
       try {
         button.disabled = true;
         button.textContent = '...';
@@ -274,15 +439,16 @@ function wireDocumentCompressionControls() {
           method: 'POST',
           body: { collection, field, workload: state.compression.workload, sampleSize: 100 },
         });
+        if (!isCurrentRequestContext(context) || !button.isConnected || state.compression.workload !== workload) return;
         const select = document.querySelector(`[data-doc-compression-field="${CSS.escape(field)}"]`);
         const recommended = recommendation?.recommended ?? recommendation?.algorithm;
         if (select && recommended) select.value = recommended;
         toast(`${field}: ${recommended || 'no recommendation'} recommended`, recommended ? 'ok' : 'warn');
       } catch (e) {
-        toast('Recommendation failed: ' + e.message, 'err');
+        if (isCurrentRequestContext(context) && button.isConnected) toast('Recommendation failed: ' + e.message, 'err');
       } finally {
         button.disabled = false;
-        button.textContent = 'Adviseer';
+        button.textContent = 'Recommend';
       }
     }),
   );
@@ -310,6 +476,13 @@ function mergeImageIntoJsonText(textarea, fieldName, dataUrl, mime, imagePayload
 }
 
 async function attachImageToDocumentJson({ textarea, fieldInput, fileInput, preview, imagePayloads, error }) {
+  const context = captureRequestContext();
+  const current = () =>
+    isCurrentRequestContext(context) &&
+    textarea.isConnected &&
+    (textarea.id === 'doc-json'
+      ? documentModalImagePayloads === imagePayloads
+      : drawerEditImagePayloads === imagePayloads);
   const file = fileInput.files?.[0];
   if (!file) return;
   const mime = file.type && file.type.startsWith('image/') ? file.type : 'image/jpeg';
@@ -321,18 +494,23 @@ async function attachImageToDocumentJson({ textarea, fieldInput, fileInput, prev
   }
   try {
     const dataUrl = await readFileDataUrl(file);
+    if (!current() || textarea.closest('.modal-bg')?.classList.contains('hidden')) return;
     mergeImageIntoJsonText(textarea, fieldName, dataUrl, mime, imagePayloads);
     fieldInput.value = fieldName;
     preview.querySelector('img').src = dataUrl;
     preview.querySelector('span').textContent = `${file.name} attached as ${fieldName} (${mime})`;
     preview.classList.remove('hidden');
   } catch (e) {
+    if (!current()) return;
     error('Image attach failed: ' + e.message);
     fileInput.value = '';
   }
 }
 
 function openCollectionDocumentModal() {
+  if (!state.connected) return;
+  documentModalRequest++;
+  $('#doc-save').disabled = false;
   documentModalMode = 'collection';
   $('#doc-modal-title').firstChild.textContent = 'Add collection';
   $('#doc-modal-sub').textContent = 'Collections are created by inserting their first JSON document.';
@@ -351,6 +529,8 @@ function openAddDocumentModal() {
     toast('Select a collection first.', 'warn');
     return;
   }
+  documentModalRequest++;
+  $('#doc-save').disabled = false;
   documentModalMode = 'document';
   $('#doc-modal-title').firstChild.textContent = 'Add document';
   $('#doc-modal-sub').textContent = `Insert one JSON document into ${state.selectedCol}.`;
@@ -368,15 +548,17 @@ function openAddDocumentModal() {
 }
 
 async function saveDocumentModal() {
-  const collection = documentModalMode === 'collection' ? $('#doc-collection').value.trim() : state.selectedCol;
+  if (!state.connected || $('#doc-save').disabled) return;
+  const context = captureRequestContext();
+  const request = documentModalRequest;
+  const mode = documentModalMode;
+  const collection = $('#doc-collection').value.trim();
   if (!collection) {
     showDocumentModalError('Collection name is required.');
     return;
   }
   if (!isValidCollectionName(collection)) {
-    showDocumentModalError(
-      'Collection name must start with a letter or underscore and contain only letters, numbers, and underscores.',
-    );
+    showDocumentModalError('Start the collection name with a letter; use only letters, numbers and underscores.');
     return;
   }
 
@@ -386,24 +568,36 @@ async function saveDocumentModal() {
     return;
   }
 
+  const save = $('#doc-save');
+  save.disabled = true;
   try {
     await api(`/api/documents/${encodeURIComponent(collection)}`, {
       method: 'POST',
       body: { document: parsed.value },
     });
-    toast(documentModalMode === 'collection' ? 'Collection created' : 'Document inserted', 'ok');
-    closeModal('modal-document');
+    if (!isCurrentRequestContext(context)) return;
     invalidateStorageCache(collection);
     await loadCollections();
+    if (!isCurrentRequestContext(context)) return;
     invalidateSemanticSearch(collection);
+    if (request !== documentModalRequest || $('#modal-document').classList.contains('hidden')) {
+      render();
+      return;
+    }
+    toast(mode === 'collection' ? 'Collection created' : 'Document inserted', 'ok');
+    closeModal('modal-document');
+    resetSelectionView();
     state.selectedCol = collection;
     state.tab = 'data';
     state.selectedDoc = null;
     render();
-    const created = (state.docsByColl[collection] || []).find((doc) => String(doc.id) === String(parsed.value.id));
+    const created = (state.docsByColl[collection] || []).find((doc) => doc.id === parsed.value.id);
     if (created) openDrawer(created, (state.docsByColl[collection] || []).indexOf(created));
   } catch (e) {
+    if (!isCurrentRequestContext(context) || request !== documentModalRequest) return;
     showDocumentModalError('Save failed: ' + e.message);
+  } finally {
+    if (isCurrentRequestContext(context) && request === documentModalRequest) save.disabled = false;
   }
 }
 
@@ -411,6 +605,8 @@ async function saveDocumentModal() {
 // Selection
 // ─────────────────────────────────────────────────────────────────
 function selectCollection(c) {
+  if (!state.connected || !state.collections.includes(c)) return;
+  resetSelectionView();
   state.selectedCol = c;
   state.tab = 'overview';
   state.dataFilter = '';
@@ -433,6 +629,7 @@ function selectCollection(c) {
   render();
 }
 function selectRoot() {
+  resetSelectionView();
   state.selectedCol = null;
   state.tab = 'overview';
   state.selectedDoc = null;
@@ -463,11 +660,18 @@ function getExplore(c) {
 
 function collectionFields(c) {
   const docs = state.docsByColl[c] || [];
-  return Array.from(new Set(docs.flatMap((doc) => Object.keys(doc)))).filter((key) => !key.startsWith('_'));
+  return Array.from(new Set(docs.flatMap((doc) => Object.keys(doc).filter((key) => !isImageMimeMetadata(key, doc)))));
+}
+
+function isImageMimeMetadata(key, doc) {
+  const match = key.match(/^_(.+)_mime$/);
+  return !!match && doc[match[1]] !== undefined;
 }
 
 function invalidateSemanticSearch(c) {
   if (c !== state.selectedCol) return;
+  searchRequest++;
+  state.search.busy = false;
   state.search.results = null;
   state.search.elapsedMs = null;
   state.search.error = null;
@@ -542,13 +746,20 @@ function renderTree() {
         `Drop collection “${b.dataset.del}”?`,
         'This permanently removes every document in it.',
         async () => {
+          const context = captureRequestContext('database');
           try {
             await api(`/api/collections/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
+            if (!isCurrentRequestContext(context)) return;
             toast(`Dropped “${b.dataset.del}”`, 'ok');
-            if (state.selectedCol === b.dataset.del) state.selectedCol = null;
+            invalidateStorageCache(b.dataset.del);
+            documentPages.delete(b.dataset.del);
             await loadCollections();
+            if (!isCurrentRequestContext(context)) return;
+            await loadModel();
+            await refreshDatabaseStatus();
             render();
           } catch (err) {
+            if (!isCurrentRequestContext(context)) return;
             toast(err.message, 'err');
           }
         },
@@ -564,12 +775,13 @@ function renderTabs() {
     <button class="ot ${state.tab === 'overview' ? 'on' : ''}" data-t="overview"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>Overview</button>
     <button class="ot ${state.tab === 'data' ? 'on' : ''}" data-t="data" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span>Data${state.selectedCol ? `<span class="badge">${(state.docsByColl[state.selectedCol] || []).length}</span>` : ''}</button>
     <button class="ot ${state.tab === 'fields' ? 'on' : ''}" data-t="fields" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>Fields</button>
+    <button class="ot ${state.tab === 'compression' ? 'on' : ''}" data-t="compression" ${dis ? 'disabled' : ''}>Compression</button>
     <button class="ot ${state.tab === 'lab' ? 'on' : ''}" data-t="lab" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6L4 19a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3L14 8V2"/><path d="M8 14h8"/></svg></span>Lab</button>
     <button class="ot ${state.tab === 'sql' ? 'on' : ''}" data-t="sql"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg></span>Query Language</button>
     <button class="ot ${state.tab === 'search' ? 'on' : ''}" data-t="search" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg></span>Semantic Search</button>
     <button class="ot ${state.tab === 'ai' ? 'on' : ''}" data-t="ai"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>AI Chat</button>
     <div class="sp"></div>
-    <div class="meta">${state.selectedCol ? `Selected · <strong style="color:var(--ac)">${esc(state.selectedCol)}</strong>` : `Selected · <strong>${esc(state.filepath || '—')}</strong>`}</div>`;
+    <div class="meta">${state.selectedCol ? `Selected · <strong style="color:var(--ac)">${esc(state.selectedCol)}</strong>` : ''}</div>`;
   $$('.ot[data-t]').forEach((b) =>
     b.addEventListener('click', () => {
       if (b.hasAttribute('disabled')) return;
@@ -581,6 +793,7 @@ function renderTabs() {
 }
 
 function renderTab() {
+  destroyAiCharts();
   if (!state.connected) {
     $('#cnt').innerHTML = '';
     return;
@@ -588,6 +801,7 @@ function renderTab() {
   if (state.tab === 'overview') renderOverview();
   else if (state.tab === 'data') renderData();
   else if (state.tab === 'fields') renderFields();
+  else if (state.tab === 'compression') renderCompression();
   else if (state.tab === 'lab') renderLab();
   else if (state.tab === 'sql') renderSql();
   else if (state.tab === 'search') renderSemanticSearch();
@@ -606,24 +820,53 @@ function renderTab() {
 // every collection in the sidebar.
 const storageCache = new Map();
 async function getCollectionStorage(c) {
+  const context = captureRequestContext('database');
+  const epoch = storageEpoch;
   if (storageCache.has(c)) return storageCache.get(c);
   try {
     const s = await api(`/api/collections/${encodeURIComponent(c)}/storage`);
+    if (!isCurrentRequestContext(context) || epoch !== storageEpoch) return null;
     storageCache.set(c, s);
     return s;
   } catch {
+    if (isCurrentRequestContext(context) && epoch === storageEpoch) storageCache.set(c, null);
     return null;
   }
 }
 function invalidateStorageCache(c) {
+  storageEpoch++;
   if (c) storageCache.delete(c);
   else storageCache.clear();
 }
 
 async function refreshDatabaseStatus() {
+  if (!state.connected) return null;
+  const context = captureRequestContext('database');
+  const request = ++databaseStatusRequest;
   try {
-    state.databaseStatus = await api('/api/database/status');
+    const status = await api('/api/database/status');
+    if (!isCurrentRequestContext(context) || request !== databaseStatusRequest) return null;
+    if (!status.connected) {
+      resetConnectionView();
+      openModal('modal-connect');
+      return null;
+    }
+    if (status.filepath !== state.filepath) {
+      resetConnectionView();
+      state.connected = true;
+      state.filepath = status.filepath;
+      state.databaseStatus = status;
+      const reopened = captureRequestContext('database');
+      await loadCollections();
+      await loadModel();
+      if (!isCurrentRequestContext(reopened)) return null;
+      updateConnState();
+      render();
+      return status;
+    }
+    state.databaseStatus = status;
   } catch {
+    if (!isCurrentRequestContext(context) || request !== databaseStatusRequest) return null;
     state.databaseStatus = null;
   }
   renderConnectionMaintenanceMenu();
@@ -631,88 +874,113 @@ async function refreshDatabaseStatus() {
 }
 
 async function runManualCompaction() {
+  if (!state.connected || maintenanceBusy) return;
+  const context = captureRequestContext('database');
+  maintenanceBusy = true;
+  renderConnectionMaintenanceMenu();
   try {
-    console.info('[compaction] manual full vacuum requested');
     toast('Full vacuum compaction started. The UI may pause briefly.', '', 'Compaction');
     const result = await api('/api/database/vacuum', { method: 'POST' });
-    console.info('[compaction] manual full vacuum complete', result);
-    toast(`Full vacuum compaction complete. Saved ${fmtSize(result.bytesSaved)}.`, 'ok');
+    if (!isCurrentRequestContext(context)) return;
+
+    toast(`Vacuum complete: ${fmtSize(result.before.dataFileBytes)} → ${fmtSize(result.after.dataFileBytes)}`, 'ok');
+    closeDrawer();
     invalidateStorageCache();
     await refreshDatabaseStatus();
     await loadCollections();
+    if (!isCurrentRequestContext(context)) return;
     render();
   } catch (e) {
+    if (!isCurrentRequestContext(context)) return;
     toast('Full vacuum compaction failed: ' + e.message, 'err');
-  }
-}
-
-async function runIncrementalCompactionStep() {
-  try {
-    console.info('[compaction] manual incremental step requested');
-    toast('Incremental compaction step started.', '', 'Compaction');
-    const result = await api('/api/database/incremental-compaction/run', { method: 'POST' });
-    console.info('[compaction] manual incremental step complete', result.incrementalCompaction);
-    state.databaseStatus = { ...(state.databaseStatus || {}), incrementalCompaction: result.incrementalCompaction };
-    renderConnectionMaintenanceMenu();
-    toast(result.message || 'Incremental compaction step complete', 'ok');
-    if (!state.selectedCol && state.tab === 'overview') renderOverview();
-  } catch (e) {
-    toast('Incremental compaction step failed: ' + e.message, 'err');
     await refreshDatabaseStatus();
+  } finally {
+    if (isCurrentRequestContext(context)) {
+      maintenanceBusy = false;
+      renderConnectionMaintenanceMenu();
+    }
   }
 }
 
 async function setAutoCompaction(enabled) {
+  if (!state.connected || maintenanceBusy) return;
+  const context = captureRequestContext('database');
+  maintenanceBusy = true;
+  renderConnectionMaintenanceMenu();
   try {
-    console.info(`[compaction] auto compact ${enabled ? 'enabled' : 'disabled'}`);
     const result = await api('/api/database/incremental-compaction/settings', { method: 'POST', body: { enabled } });
-    console.info('[compaction] auto compact status', result.incrementalCompaction);
+    if (!isCurrentRequestContext(context)) return;
+
     state.databaseStatus = { ...(state.databaseStatus || {}), incrementalCompaction: result.incrementalCompaction };
     renderConnectionMaintenanceMenu();
     toast(result.message || 'Background incremental compaction updated', 'ok');
     if (!state.selectedCol && state.tab === 'overview') renderOverview();
   } catch (e) {
+    if (!isCurrentRequestContext(context)) return;
     toast('Background incremental compaction setting failed: ' + e.message, 'err');
     await refreshDatabaseStatus();
+  } finally {
+    if (isCurrentRequestContext(context)) {
+      maintenanceBusy = false;
+      renderConnectionMaintenanceMenu();
+    }
   }
 }
 
 function renderDatabaseTools(status = state.databaseStatus) {
   const size = status?.size;
   return `<div class="psec">
-    <h3>Database status <span class="actions"><button class="tbtn" id="db-refresh-status" style="border:1px solid var(--bd);background:var(--bg2);">Refresh</button></span></h3>
+    <h3>Database status <span class="actions"><button class="tbtn" id="db-refresh-status" ${overviewRefreshing ? 'disabled' : ''} style="border:1px solid var(--bd);background:var(--bg2);">${overviewRefreshing ? 'Refreshing…' : 'Refresh overview'}</button></span></h3>
     <div class="pbody">
       <div class="kpis" style="margin-bottom:12px;">
-        <div class="kpi"><div class="l">Database size</div><div class="v">${fmtSize(size?.totalBytes)}</div><div class="d">${size ? `${fmtSize(size.dataFileBytes)} data · ${fmtSize(size.logFileBytes)} log` : 'status unavailable'}</div></div>
+        <div class="kpi"><div class="l">Database file</div><div class="v">${fmtSize(size?.dataFileBytes)}</div><div class="d">${size ? `${size.usedBlocks ?? 0} used · ${size.freeBlocks ?? 0} free blocks` : 'status unavailable'}</div></div>
         <div class="kpi"><div class="l">Amplification</div><div class="v">${size?.amplification ? size.amplification.toFixed(2) : '—'}</div><div class="d">${size?.freeTailBlocks ?? 0} free tail block${size?.freeTailBlocks === 1 ? '' : 's'}</div></div>
         <div class="kpi"><div class="l">Semantic indexes</div><div class="v" style="font-size:15px;">${status?.semanticIndexes?.length ?? 0}</div><div class="d">${status?.semanticIndexes?.length ? status.semanticIndexes.map((x) => esc(x)).join(', ') : 'none yet'}</div></div>
       </div>
-      <p style="font-size:12px;color:var(--t3);margin:0;">Compaction controls live in the top-right connection/settings menu.</p>
     </div>
   </div>`;
 }
 
-async function wireDatabaseTools() {
-  $('#db-refresh-status')?.addEventListener('click', async () => {
-    await refreshDatabaseStatus();
-    renderOverview();
-  });
+async function refreshOverview() {
+  if (!state.connected || overviewRefreshing) return;
+  const context = captureRequestContext();
+  overviewRefreshing = true;
+  if (state.tab === 'overview') renderOverview();
+  try {
+    invalidateStorageCache();
+    clearDocumentSelection();
+    const collectionsLoaded = await loadCollections();
+    const status = await refreshDatabaseStatus();
+    if (!isCurrentRequestContext(context)) return;
+    toast(
+      status && collectionsLoaded
+        ? 'Overview refreshed: documents, counts and storage reloaded.'
+        : 'Overview could not be refreshed completely. Try again.',
+      status && collectionsLoaded ? 'ok' : 'err',
+    );
+  } finally {
+    if (isCurrentRequestContext(context)) {
+      overviewRefreshing = false;
+      if (state.tab === 'overview') render();
+    }
+  }
+}
+
+function wireDatabaseTools() {
+  $('#db-refresh-status')?.addEventListener('click', refreshOverview);
 }
 
 function renderOverview() {
   const c = state.selectedCol;
+  const context = captureRequestContext();
   if (!c) {
     const totalDocs = state.collections.reduce(
       (s, x) => s + (typeof state.countsByColl[x] === 'number' ? state.countsByColl[x] : 0),
       0,
     );
-    const totalSize = state.collections.reduce(
-      (s, x) => s + (state.docsByColl[x] || []).reduce((a, d) => a + docSize(d), 0),
-      0,
-    );
     $('#cnt').innerHTML = `<div class="ov">
       <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(state.filepath || '—')}</span></h1>
-      <p class="ovsub"><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span><span>JSON ≈ <strong>${fmtSize(totalSize)}</strong></span></p>
+      <p class="ovsub"><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span></p>
       ${renderDatabaseTools()}
       <div class="psec">
         <h3>Demo datasets</h3>
@@ -753,8 +1021,8 @@ function renderOverview() {
     );
     wireDatabaseTools();
     if (!state.databaseStatus) {
-      refreshDatabaseStatus().then(() => {
-        if (!state.selectedCol && state.tab === 'overview') renderOverview();
+      refreshDatabaseStatus().then((status) => {
+        if (status && isCurrentRequestContext(context) && state.tab === 'overview') renderOverview();
       });
     }
     return;
@@ -764,28 +1032,30 @@ function renderOverview() {
   const fields = collectionFields(c);
   const totalSize = docs.reduce((s, d) => s + docSize(d), 0);
   const explore = getExplore(c);
+  const count = state.countsByColl[c] ?? docs.length;
 
   $('#cnt').innerHTML = `<div class="ov">
     <div class="crumb"><a id="ov-back">All collections</a> ›</div>
     <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span><span class="name">${esc(c)}</span></h1>
     ${explore && explore.description ? `<p class="ovdesc">${esc(explore.description)}</p>` : ''}
-    <p class="ovsub"><span><strong>${docs.length}</strong> document${docs.length === 1 ? '' : 's'}</span><span><strong>${fields.length}</strong> field${fields.length === 1 ? '' : 's'}</span><span>JSON ≈ <strong>${fmtSize(totalSize)}</strong></span></p>
+    <p class="ovsub"><span><strong>${count}</strong> documents</span><span><strong>${fields.length}</strong> fields in loaded documents</span></p>
     <div class="kpis">
-      <div class="kpi" title="Number of documents currently loaded in the client cache for this collection."><div class="l"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>Documents</div><div class="v">${docs.length}</div><div class="d">${docs.length > 0 ? `${fields.length} fields detected` : 'empty collection'}</div></div>
-      <div class="kpi" title="Sum of JSON.stringify byte lengths for client-side display. Not what's on disk."><div class="l">JSON size</div><div class="v">${fmtSize(totalSize).replace(/^([\d.]+)\s*/, (_, n) => `${n} <small>`)}${fmtSize(totalSize).endsWith('B') ? '</small>' : '</small>'}</div><div class="d">avg ${fmtSize(docs.length ? totalSize / docs.length : 0)}/doc</div></div>
+      <div class="kpi"><div class="l">Documents</div><div class="v">${count}</div><div class="d">${docs.length} loaded</div></div>
+      <div class="kpi" title="JSON bytes for the loaded documents."><div class="l">Loaded JSON</div><div class="v">${fmtSize(totalSize)}</div><div class="d">avg ${fmtSize(docs.length ? totalSize / docs.length : 0)}/loaded doc</div></div>
       <div class="kpi" id="kpi-stored" title="Loading on-disk storage info…"><div class="l">Stored size</div><div class="v" style="font-size:14px;color:var(--t3);">loading…</div><div class="d">on-disk reservation</div></div>
     </div>
-    <div class="psec"><h3>General</h3><div>
+    <div class="psec"><h3>General <span class="actions"><button class="tbtn" id="ov-refresh" ${overviewRefreshing ? 'disabled' : ''}>${overviewRefreshing ? 'Refreshing…' : 'Refresh overview'}</button></span></h3><div>
       <div class="prow"><div class="k">Name</div><div class="v id">${esc(c)}</div></div>
-      <div class="prow"><div class="k">Document count</div><div class="v num">${docs.length}</div></div>
+      <div class="prow"><div class="k">Document count</div><div class="v num">${count}</div></div>
       <div class="prow"><div class="k">Field count (introspected)</div><div class="v num">${fields.length}</div></div>
     </div></div>
     <div class="psec"><h3>Storage breakdown</h3><div id="ov-storage"><div style="padding:16px;color:var(--t3);font-size:12px;">Loading…</div></div></div>
   </div>`;
   $('#ov-back')?.addEventListener('click', selectRoot);
+  $('#ov-refresh')?.addEventListener('click', refreshOverview);
   (async () => {
     const s = await getCollectionStorage(c);
-    if (state.selectedCol !== c) return;
+    if (!isCurrentRequestContext(context) || state.tab !== 'overview') return;
     const stored = s ? s.recordBytes : null;
     const kpi = $('#kpi-stored');
     if (kpi) {
@@ -795,14 +1065,14 @@ function renderOverview() {
         const f = fmtSize(stored);
         kpi.querySelector('.v').innerHTML =
           f.replace(/^([\d.]+)\s*/, (_, n) => `${n} <small>`) + (f.endsWith('B') ? '</small>' : '</small>');
-        kpi.querySelector('.d').textContent = `avg ${fmtSize(docs.length ? stored / docs.length : 0)}/doc`;
+        kpi.querySelector('.d').textContent = `avg ${fmtSize(s.documentCount ? stored / s.documentCount : 0)}/doc`;
         kpi.title = s.notes.records;
       }
     }
     const host = $('#ov-storage');
     if (host && s) {
       host.innerHTML = `
-        <div class="prow" title="${esc(s.notes.records)}"><div class="k">Records<span style="color:var(--t4);margin-left:6px;font-weight:400;">ⓘ</span></div><div class="v num">${fmtSize(s.recordBytes)} <small style="color:var(--t3);font-family:Segoe UI">(${s.documentCount} doc${s.documentCount === 1 ? '' : 's'} × ${s.blockSize} B per block)</small></div></div>
+        <div class="prow" title="${esc(s.notes.records)}"><div class="k">Records</div><div class="v num">${fmtSize(s.recordBytes)} <small>(${s.documentCount} documents)</small></div></div>
         <div class="prow"><div class="k">Block size</div><div class="v num">${s.blockSize} B</div></div>
       `;
     } else if (host) {
@@ -815,13 +1085,13 @@ function renderOverview() {
 // Data
 // ─────────────────────────────────────────────────────────────────
 async function refreshDocs(c) {
+  const context = captureRequestContext('database');
   try {
-    const { documents } = await api(`/api/documents/${encodeURIComponent(c)}?limit=10000`);
-    const parsed = (documents || []).map((d) => JSON.parse(d));
-    state.docsByColl[c] = parsed;
-    state.countsByColl[c] = parsed.length;
+    return await loadCollectionDocuments(c);
   } catch (e) {
+    if (!isCurrentRequestContext(context)) return false;
     toast('Reload failed: ' + e.message, 'err');
+    return false;
   }
 }
 
@@ -859,6 +1129,8 @@ function cycleSort(col) {
 
 function renderData() {
   const c = state.selectedCol;
+  const context = captureRequestContext();
+  const page = documentPages.get(c);
   const allDocs = state.docsByColl[c] || [];
   const filter = (state.dataFilter || '').trim().toLowerCase();
   const filtered = filter
@@ -869,7 +1141,7 @@ function renderData() {
   // list so that the headers stay stable across sort and filter changes.
   // Without this, the union-of-keys order depended on which document
   // happened to be first after sorting.
-  const keys = Array.from(new Set(allDocs.flatMap((d) => Object.keys(d)))).filter((k) => !k.startsWith('_'));
+  const keys = collectionFields(c);
   $('#cnt').innerHTML = `<div style="display:flex;flex-direction:column;height:100%;">
     <div class="dt-bar">
       <div class="dt-search">
@@ -881,21 +1153,73 @@ function renderData() {
       </div>
       <button class="tbtn pri" id="dt-add-document" title="Insert a JSON document"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>Add document</button>
       <button class="tbtn" id="dt-refresh" title="Reload from server"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v9h-9"/></svg>Reload</button>
-      <div class="dt-meta">${filter ? `<span><strong>${docs.length}</strong> of <strong>${allDocs.length}</strong> row${allDocs.length === 1 ? '' : 's'}</span>` : `<span><strong>${allDocs.length}</strong> row${allDocs.length === 1 ? '' : 's'}</span>`}</div>
+      ${page?.hasMore ? `<button class="tbtn" id="dt-more" ${page.loading ? 'disabled' : ''}>${page.loading ? 'Loading…' : 'Load more'}</button>` : ''}
+      <div class="dt-meta">${filter ? `${docs.length} matches · ` : ''}${allDocs.length} loaded / ${state.countsByColl[c] ?? '?'} rows</div>
+    </div>
+    <div class="dt-bar bulk-bar">
+      <strong id="dt-selection-count">${allDocumentsSelected ? `Entire collection selected (${state.countsByColl[c] ?? '?'} rows)` : `${selectedDocumentIds.size} selected`}</strong>
+      <button class="tbtn" id="dt-select-visible" ${bulkBusy ? 'disabled' : ''}>Select visible rows (${docs.length})</button>
+      <button class="tbtn" id="dt-select-all" ${bulkBusy ? 'disabled' : ''}>Select entire collection</button>
+      <button class="tbtn" id="dt-clear-selection" ${bulkBusy ? 'disabled' : ''}>Clear selection</button>
+      <button class="tbtn" id="dt-bulk-edit" ${bulkBusy || (!allDocumentsSelected && !selectedDocumentIds.size) ? 'disabled' : ''}>Edit field</button>
+      <button class="tbtn danger" id="dt-bulk-delete" ${bulkBusy || (!allDocumentsSelected && !selectedDocumentIds.size) ? 'disabled' : ''}>${bulkBusy ? 'Working…' : 'Delete selected'}</button>
     </div>
     <div class="tw" id="dg-host"></div>
   </div>`;
   renderDataGrid(docs, keys);
+  $('#dt-select-visible').addEventListener('click', () => {
+    allDocumentsSelected = false;
+    docs.forEach((doc) => selectedDocumentIds.add(String(doc.id)));
+    renderData();
+  });
+  $('#dt-select-all').addEventListener('click', () => {
+    selectedDocumentIds.clear();
+    allDocumentsSelected = true;
+    renderData();
+  });
+  $('#dt-clear-selection').addEventListener('click', () => {
+    clearDocumentSelection();
+    renderData();
+  });
+  $('#dt-bulk-delete').addEventListener('click', () => confirmBulkMutation());
+  $('#dt-bulk-edit').addEventListener('click', () => {
+    bulkEditContext = captureRequestContext();
+    $('#bulk-field').innerHTML = keys
+      .filter((field) => field !== 'id' && !allDocs.some((doc) => isImageField(field, doc)))
+      .map((field) => `<option value="${esc(field)}">${esc(field)}</option>`)
+      .join('');
+    $('#bulk-value').value = '';
+    $('#bulk-edit-error').classList.add('hidden');
+    $('#bulk-scope').textContent = allDocumentsSelected
+      ? 'All documents, including unloaded pages. The field must exist on every target.'
+      : `${selectedDocumentIds.size} selected documents. The field must exist on every target.`;
+    openModal('modal-bulk-edit');
+  });
   $('#dt-add-document').addEventListener('click', openAddDocumentModal);
   $('#dt-refresh').addEventListener('click', async () => {
+    clearDocumentSelection();
     await refreshDocs(c);
-    render();
+    if (isCurrentRequestContext(context) && state.tab === 'data') render();
+  });
+  $('#dt-more')?.addEventListener('click', async () => {
+    if (page.loading) return;
+    page.loading = true;
+    renderData();
+    try {
+      await loadCollectionDocuments(c, true);
+    } catch (e) {
+      if (isCurrentRequestContext(context)) toast('Load failed: ' + e.message, 'err');
+    } finally {
+      page.loading = false;
+      if (isCurrentRequestContext(context) && state.tab === 'data') render();
+    }
   });
   const filterEl = $('#dt-filter');
   let filterTimer = null;
   filterEl.addEventListener('input', () => {
     clearTimeout(filterTimer);
     filterTimer = setTimeout(() => {
+      if (!isCurrentRequestContext(context) || state.tab !== 'data') return;
       state.dataFilter = filterEl.value;
       renderData();
       const newEl = $('#dt-filter');
@@ -916,7 +1240,7 @@ function renderDataGrid(docs, keys) {
     $('#dg-host').innerHTML = `<div class="dg"><div class="loader">No documents.</div></div>`;
     return;
   }
-  const unionKeys = (keys || []).filter((k) => k !== 'body');
+  const unionKeys = keys || [];
   const sample = (k) => {
     for (const d of docs) if (d[k] != null) return d[k];
     return null;
@@ -926,7 +1250,7 @@ function renderDataGrid(docs, keys) {
     v == null ? '' : typeof v === 'number' ? 'n' : typeof v === 'boolean' ? 'b' : typeof v === 'string' ? 's' : '';
   const sort = state.dataSort;
   $('#dg-host').innerHTML = `<table class="dg">
-    <thead><tr><th class="rn">#</th>${unionKeys
+    <thead><tr><th class="selection-cell"><input type="checkbox" id="dt-select-page" aria-label="Select visible documents" ${bulkBusy ? 'disabled' : ''}></th><th class="rn">#</th>${unionKeys
       .map((k) => {
         const tb = k === 'id' ? 'pk' : typeBadge(sample(k));
         const isSorted = sort && sort.col === k;
@@ -938,7 +1262,7 @@ function renderDataGrid(docs, keys) {
     <tbody>${docs
       .map((d, i) => {
         const isOn = state.selectedDoc && d.id === state.selectedDoc.id;
-        return `<tr data-i="${i}" data-id="${esc(d.id)}" ${isOn ? 'class="on"' : ''}><td class="rn">${i + 1}</td>${unionKeys
+        return `<tr data-i="${i}" data-id="${esc(d.id)}" ${isOn ? 'class="on"' : ''}><td class="selection-cell"><input type="checkbox" data-select-document="${esc(d.id)}" aria-label="Select document ${esc(d.id)}" ${allDocumentsSelected || selectedDocumentIds.has(String(d.id)) ? 'checked' : ''} ${bulkBusy ? 'disabled' : ''}></td><td class="rn">${i + 1}</td>${unionKeys
           .map((k) => {
             const v = d[k];
             if (v === undefined || v === null) return `<td class="cnu">[NULL]</td>`;
@@ -953,6 +1277,32 @@ function renderDataGrid(docs, keys) {
       })
       .join('')}</tbody>
   </table>`;
+  const pageCheckbox = $('#dt-select-page');
+  const selectedVisible = docs.filter((doc) => allDocumentsSelected || selectedDocumentIds.has(String(doc.id))).length;
+  pageCheckbox.checked = selectedVisible === docs.length;
+  pageCheckbox.indeterminate = selectedVisible > 0 && selectedVisible < docs.length;
+  pageCheckbox.addEventListener('change', () => {
+    if (allDocumentsSelected) clearDocumentSelection();
+    docs.forEach((doc) =>
+      pageCheckbox.checked ? selectedDocumentIds.add(String(doc.id)) : selectedDocumentIds.delete(String(doc.id)),
+    );
+    renderData();
+  });
+  $$('[data-select-document]').forEach((checkbox) => {
+    checkbox.addEventListener('click', (event) => event.stopPropagation());
+    checkbox.addEventListener('change', () => {
+      if (allDocumentsSelected) {
+        clearDocumentSelection();
+        // Leaving collection-wide selection creates an explicit selection of loaded rows only.
+        (state.docsByColl[state.selectedCol] || []).forEach((doc) => selectedDocumentIds.add(String(doc.id)));
+        toast('Selection now covers loaded rows only.', 'warn');
+      }
+      checkbox.checked
+        ? selectedDocumentIds.add(checkbox.dataset.selectDocument)
+        : selectedDocumentIds.delete(checkbox.dataset.selectDocument);
+      renderData();
+    });
+  });
   $$('.dg tbody tr').forEach((tr) =>
     tr.addEventListener('click', () => openDrawer(docs[parseInt(tr.dataset.i, 10)], parseInt(tr.dataset.i, 10))),
   );
@@ -964,6 +1314,77 @@ function renderDataGrid(docs, keys) {
   );
 }
 
+function confirmBulkMutation(edit) {
+  if (bulkBusy || (!allDocumentsSelected && !selectedDocumentIds.size)) return;
+  const context = captureRequestContext();
+  const collection = state.selectedCol;
+  const selection = allDocumentsSelected
+    ? { all: true }
+    : {
+        ids: [...selectedDocumentIds].map(
+          (id) => (state.docsByColl[collection] || []).find((doc) => String(doc.id) === id)?.id ?? id,
+        ),
+      };
+  const scope = allDocumentsSelected
+    ? `ALL documents in ${collection}, including unloaded pages`
+    : `${selection.ids.length} selected documents in ${collection}`;
+  confirmAction(
+    edit ? 'Edit selected documents' : 'Delete selected documents',
+    edit
+      ? `Set ${edit.field} to ${JSON.stringify(edit.value)} on ${scope}?`
+      : `Permanently delete ${scope}? This cannot be undone.`,
+    async () => {
+      if (!isCurrentRequestContext(context) || bulkBusy) return;
+      bulkBusy = true;
+      closeDrawer();
+      if (state.tab === 'data') renderData();
+      try {
+        const result = await api(`/api/documents/${encodeURIComponent(collection)}/bulk-${edit ? 'edit' : 'delete'}`, {
+          method: 'POST',
+          body: { ...selection, ...(edit || {}) },
+        });
+        if (!isCurrentRequestContext(context)) return;
+        clearDocumentSelection();
+        toast(`${edit ? 'Updated' : 'Deleted'} ${result.affected} documents`, 'ok');
+      } catch (error) {
+        if (!isCurrentRequestContext(context)) return;
+        toast(`Bulk operation failed: ${error.message}. Reloading to show the current data.`, 'err');
+      } finally {
+        if (isCurrentRequestContext(context)) {
+          invalidateStorageCache(collection);
+          invalidateSemanticSearch(collection);
+          await refreshDocs(collection);
+          await refreshDatabaseStatus();
+          if (isCurrentRequestContext(context)) {
+            bulkBusy = false;
+            render();
+          }
+        }
+      }
+    },
+  );
+}
+
+$('#bulk-edit-save').addEventListener('click', () => {
+  if (!bulkEditContext || !isCurrentRequestContext(bulkEditContext)) return;
+  try {
+    const value = JSON.parse($('#bulk-value').value);
+    if (
+      !['string', 'number', 'boolean'].includes(typeof value) ||
+      (typeof value === 'number' && !Number.isFinite(value))
+    ) {
+      throw new Error('Use a JSON string, number or boolean. For example: "shipped", 25 or true.');
+    }
+    const field = $('#bulk-field').value;
+    if (!field) throw new Error('Choose a field.');
+    closeModal('modal-bulk-edit');
+    confirmBulkMutation({ field, value });
+  } catch (error) {
+    $('#bulk-edit-error').textContent = error.message;
+    $('#bulk-edit-error').classList.remove('hidden');
+  }
+});
+
 function openDrawer(doc, idx) {
   state.selectedDoc = doc;
   state.selectedDocIndex = idx;
@@ -973,6 +1394,9 @@ function openDrawer(doc, idx) {
   $$(`.dg tbody tr[data-i="${idx}"]`).forEach((tr) => tr.classList.add('on'));
 }
 function closeDrawer() {
+  drawerRequest++;
+  state.selectedDoc = null;
+  state.selectedDocIndex = null;
   $('#drawer').classList.remove('on');
   state.selectedDoc = null;
 }
@@ -981,6 +1405,8 @@ $('#dr-close').addEventListener('click', closeDrawer);
 async function renderDrawer() {
   const d = state.selectedDoc;
   if (!d) return;
+  const context = captureRequestContext();
+  const request = ++drawerRequest;
   $('#dr-title').textContent = String(d.id ?? '(no id)');
   const c = state.selectedCol;
   let meta = null;
@@ -989,7 +1415,8 @@ async function renderDrawer() {
   } catch {
     meta = null;
   }
-  const keys = Object.keys(d).filter((k) => !k.startsWith('_'));
+  if (!isCurrentRequestContext(context) || request !== drawerRequest || state.selectedDoc !== d) return;
+  const keys = Object.keys(d).filter((k) => !isImageMimeMetadata(k, d));
   const compsText =
     meta && meta.compressions && Object.keys(meta.compressions).length > 0
       ? Object.entries(meta.compressions)
@@ -1039,14 +1466,10 @@ async function renderDrawer() {
 $('#dr-edit').addEventListener('click', () => {
   const d = state.selectedDoc;
   if (!d) return;
+  const request = ++drawerRequest;
+  const context = captureRequestContext();
   const c = state.selectedCol;
-  const cleanDoc = Object.fromEntries(
-    Object.entries(d).filter(([k]) => {
-      if (!k.startsWith('_')) return true;
-      const mimeMatch = k.match(/^_(.+)_mime$/);
-      return mimeMatch !== null && d[mimeMatch[1]] !== undefined;
-    }),
-  );
+  const cleanDoc = { ...d };
   const compactedDoc = compactDocumentImages(cleanDoc);
   drawerEditImagePayloads = compactedDoc.imagePayloads;
   const jsonStr = JSON.stringify(compactedDoc.document, null, 2);
@@ -1092,6 +1515,13 @@ $('#dr-edit').addEventListener('click', () => {
     }),
   );
   $('#edit-save').addEventListener('click', async () => {
+    if (
+      !isCurrentRequestContext(context) ||
+      request !== drawerRequest ||
+      state.selectedDoc !== d ||
+      $('#edit-save').disabled
+    )
+      return;
     const errEl = $('#dr-edit-err');
     errEl.classList.add('hidden');
     let parsed;
@@ -1111,16 +1541,27 @@ $('#dr-edit').addEventListener('click', () => {
       renderDrawer();
       return;
     }
+    const save = $('#edit-save');
+    save.disabled = true;
     try {
       await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/edit`, {
         method: 'POST',
         body: { document: parsed, compression },
       });
+      if (!isCurrentRequestContext(context)) return;
+      if (request !== drawerRequest || state.selectedDoc !== d) {
+        invalidateStorageCache(c);
+        await refreshDocs(c);
+        if (isCurrentRequestContext(context) && state.tab === 'data') renderData();
+        await refreshDatabaseStatus();
+        return;
+      }
       toast('Document updated', 'ok');
       invalidateStorageCache(c);
       await refreshDocs(c);
+      if (!isCurrentRequestContext(context) || request !== drawerRequest || state.selectedDoc !== d) return;
       invalidateSemanticSearch(c);
-      const refreshed = (state.docsByColl[c] || []).find((x) => String(x.id) === String(d.id));
+      const refreshed = (state.docsByColl[c] || []).find((x) => x.id === d.id);
       if (refreshed) {
         state.selectedDoc = refreshed;
         renderDrawer();
@@ -1128,9 +1569,13 @@ $('#dr-edit').addEventListener('click', () => {
       renderTree();
       if (state.tab === 'data') renderData();
       else if (state.tab === 'search') renderSemanticSearch();
+      await refreshDatabaseStatus();
     } catch (e) {
+      if (!isCurrentRequestContext(context) || request !== drawerRequest) return;
       errEl.classList.remove('hidden');
       errEl.textContent = 'Save failed: ' + e.message;
+    } finally {
+      save.disabled = false;
     }
   });
 });
@@ -1138,18 +1583,25 @@ $('#dr-edit').addEventListener('click', () => {
 $('#dr-del').addEventListener('click', () => {
   const d = state.selectedDoc;
   if (!d) return;
+  const c = state.selectedCol;
+  const context = captureRequestContext();
   confirmAction(`Delete document “${d.id}”?`, 'This cannot be undone.', async () => {
+    if (!isCurrentRequestContext(context)) return;
     try {
-      await api(`/api/documents/${encodeURIComponent(state.selectedCol)}/${encodeURIComponent(String(d.id))}`, {
+      await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}`, {
         method: 'DELETE',
       });
+      if (!isCurrentRequestContext(context)) return;
       toast('Document deleted', 'ok');
       closeDrawer();
-      invalidateStorageCache(state.selectedCol);
-      await refreshDocs(state.selectedCol);
-      invalidateSemanticSearch(state.selectedCol);
+      invalidateStorageCache(c);
+      await loadCollections();
+      if (!isCurrentRequestContext(context)) return;
+      invalidateSemanticSearch(c);
+      await refreshDatabaseStatus();
       render();
     } catch (e) {
+      if (!isCurrentRequestContext(context)) return;
       toast('Delete failed: ' + e.message, 'err');
     }
   });
@@ -1160,6 +1612,9 @@ $('#dr-del').addEventListener('click', () => {
 // ─────────────────────────────────────────────────────────────────
 function renderFields() {
   const c = state.selectedCol;
+  const context = captureRequestContext();
+  const storage = storageCache.get(c);
+  const indexed = new Set(storage?.indexedFields || []);
   const docs = state.docsByColl[c] || [];
   if (docs.length === 0) {
     $('#cnt').innerHTML =
@@ -1168,7 +1623,7 @@ function renderFields() {
   }
   const explore = getExplore(c);
   const explored = new Map((explore?.fields || []).map((f) => [f.name, f]));
-  const fieldKeys = Array.from(new Set(docs.flatMap((d) => Object.keys(d)))).filter((k) => !k.startsWith('_'));
+  const fieldKeys = collectionFields(c);
   const rows = fieldKeys
     .map((k) => {
       const presentCount = docs.reduce((n, d) => n + (d[k] != null ? 1 : 0), 0);
@@ -1190,7 +1645,7 @@ function renderFields() {
       return `<div class="fr ${hasDesc ? 'has-desc' : ''}">
       <div class="r">
         <div class="nm">${esc(k)}${k === 'id' ? '<span class="pk">PK</span>' : ''}</div>
-        <div class="ty">${t}</div>
+        <div class="ty">${t} · ${k === 'id' || indexed.has(k) ? 'indexed' : storage ? 'not indexed' : '…'}</div>
         <div class="cov ${covCls}">${covLabel}</div>
         <div class="sm">${esc(sampleStr)}</div>
       </div>
@@ -1205,6 +1660,11 @@ function renderFields() {
       ${rows}
     </div>
   </div>`;
+  if (!storageCache.has(c)) {
+    getCollectionStorage(c).then(() => {
+      if (isCurrentRequestContext(context) && state.tab === 'fields') renderFields();
+    });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1213,19 +1673,28 @@ function renderFields() {
 let compressionDefaultsLoadedFor = null;
 
 async function loadCompressionDefaults(c) {
+  const context = captureRequestContext();
+  const request = ++compressionDefaultsRequest;
   try {
     const { defaults } = await api(`/api/compression/defaults?collection=${encodeURIComponent(c)}`);
+    if (!isCurrentRequestContext(context) || request !== compressionDefaultsRequest) return;
     state.compression.defaults = defaults || {};
+    compressionDefaultsError = null;
     compressionDefaultsLoadedFor = c;
-  } catch {
-    state.compression.defaults = {};
+  } catch (e) {
+    if (!isCurrentRequestContext(context) || request !== compressionDefaultsRequest) return;
+    compressionDefaultsError = 'Could not load defaults: ' + e.message;
     compressionDefaultsLoadedFor = c;
   }
 }
 
 async function recommendFieldCompression(field) {
   const c = state.selectedCol;
-  if (!c) return;
+  if (!c || recommendingFields.has(field)) return;
+  const context = captureRequestContext();
+  const workload = state.compression.workload;
+  recommendingFields.add(field);
+  if (state.tab === 'compression') renderCompression();
   try {
     const { recommendation } = await api('/api/compression/recommendation', {
       method: 'POST',
@@ -1236,26 +1705,44 @@ async function recommendFieldCompression(field) {
         sampleSize: 100,
       },
     });
+    if (!isCurrentRequestContext(context) || state.compression.workload !== workload) return;
     state.compression.recommendations[field] = recommendation;
-    renderCompression();
+    toast(`${field}: recommended ${recommendation.recommended}. The saved default has not been changed.`, 'ok');
+    if (state.tab === 'compression') renderCompression();
   } catch (e) {
+    if (!isCurrentRequestContext(context)) return;
     toast(`Compression recommendation failed for ${field}: ${e.message}`, 'err');
+  } finally {
+    if (isCurrentRequestContext(context)) {
+      recommendingFields.delete(field);
+      if (state.tab === 'compression') renderCompression();
+    }
   }
 }
 
 async function applyCompressionAdvice() {
   const c = state.selectedCol;
-  if (!c) return;
+  if (!c || compressionBusy) return;
+  const context = captureRequestContext();
+  compressionBusy = true;
+  if (state.tab === 'compression') renderCompression();
   try {
     const result = await api('/api/compression/lab/apply-advice', {
       method: 'POST',
       body: { collection: c, workload: state.compression.workload, sampleSize: 100 },
     });
+    if (!isCurrentRequestContext(context)) return;
     toast(`Applied compression defaults for ${result.fields} fields. Future writes use this policy.`, 'ok');
     await loadCompressionDefaults(c);
-    renderCompression();
+    if (isCurrentRequestContext(context) && state.tab === 'compression') renderCompression();
   } catch (e) {
+    if (!isCurrentRequestContext(context)) return;
     toast('Apply advice failed: ' + e.message, 'err');
+  } finally {
+    if (isCurrentRequestContext(context)) {
+      compressionBusy = false;
+      if (state.tab === 'compression') renderCompression();
+    }
   }
 }
 
@@ -1263,6 +1750,7 @@ function renderRecommendationCard(field, recommendation) {
   if (!recommendation) return `<div class="empty" style="padding:10px 0;color:var(--t3);">No recommendation yet.</div>`;
   const top = recommendation.ranking || [];
   return `<div style="margin-top:10px;">
+    <p class="control-help">Analysis for <strong>${esc(field)}</strong>. ${recommendation.recommended === 'none' ? 'Keeping this field uncompressed is recommended for this sample and workload; short values often save no storage blocks.' : 'This is advice only. Choose the recommended codec in the saved-default dropdown to use it on future writes.'}</p>
     <div class="prow" style="grid-template-columns:150px 1fr;"><div class="k">Recommended</div><div class="v"><strong style="color:var(--ac)">${esc(recommendation.recommended)}</strong> <span style="font-family:Segoe UI;color:var(--t3);">${esc(recommendation.summary)}</span></div></div>
     <div class="prow" style="grid-template-columns:150px 1fr;"><div class="k">Detected profile</div><div class="v">${esc(recommendation.activeProfile?.displayName || recommendation.detectedProfile?.displayName || '—')}</div></div>
     <table class="dg" style="margin-top:8px;"><thead><tr><th>Algorithm</th><th>Score</th><th>Blocks saved</th><th>Bytes saved</th><th>Write ms</th></tr></thead>
@@ -1279,20 +1767,25 @@ function renderRecommendationCard(field, recommendation) {
 
 function renderCompression() {
   const c = state.selectedCol;
+  const context = captureRequestContext();
   if (!c) {
     $('#cnt').innerHTML =
       `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>Compression recommendations are calculated from collection fields.</p></div></div>`;
     return;
   }
   const docs = state.docsByColl[c] || [];
-  const fields = collectionFields(c).filter((field) => field !== 'id');
+  const fields = collectionFields(c).filter(
+    (field) => field !== 'id' && docs.some((doc) => typeof doc[field] === 'string' && !isImageField(field, doc)),
+  );
   const defaults = state.compression.defaults || {};
+  const defaultsUnavailable = compressionDefaultsLoadedFor !== c || !!compressionDefaultsError;
   $('#cnt').innerHTML = `<div class="ov">
     <div class="crumb"><a id="cmp-back">All collections</a> ›</div>
     <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h10M4 17h7"/></svg></span><span class="name">${esc(c)} compression</span></h1>
-    <p class="ovsub"><span><strong>${fields.length}</strong> recommendable fields</span><span><strong>${docs.length}</strong> sampled documents</span><span>Defaults affect <strong>future writes</strong></span></p>
+    <p class="ovsub"><span><strong>${fields.length}</strong> text fields in loaded rows</span><span>Analysis samples up to <strong>100</strong> documents</span><span>Defaults affect <strong>future writes</strong></span></p>
+    <p class="control-help">Each row is a document field. Changing its saved-default dropdown saves immediately. Analyze field compares codecs using the data and workload; it does not change the saved default. Existing documents keep their current compression.</p>
     <div class="psec">
-      <h3>Advisor settings <span class="actions"><button class="tbtn pri" id="cmp-apply-all">Apply advisor defaults</button></span></h3>
+      <h3>Advisor settings <span class="actions"><button class="tbtn pri" id="cmp-apply-all" ${compressionBusy ? 'disabled' : ''}>${compressionBusy ? 'Saving…' : 'Recommend & save all defaults'}</button></span></h3>
       <div class="pbody">
         <label style="font-size:11px;color:var(--t3);font-weight:700;">Workload hotness: <span id="cmp-workload-label">${Math.round(state.compression.workload * 100)}%</span></label>
         <input id="cmp-workload" type="range" min="0" max="100" value="${Math.round(state.compression.workload * 100)}" style="width:100%;margin:8px 0 4px;">
@@ -1300,7 +1793,8 @@ function renderCompression() {
       </div>
     </div>
     <div class="psec">
-      <h3>Field recommendations <span class="actions"><button class="tbtn" id="cmp-refresh-defaults" style="border:1px solid var(--bd);background:var(--bg2);">Reload defaults</button></span></h3>
+      <h3>Field recommendations <span class="actions"><button class="tbtn" id="cmp-refresh-defaults" ${compressionBusy ? 'disabled' : ''} title="Read the saved codecs from the database; this does not reset or recompress data." style="border:1px solid var(--bd);background:var(--bg2);">Reload saved defaults</button></span></h3>
+      ${compressionDefaultsError ? `<div class="err">${esc(compressionDefaultsError)}</div>` : ''}
       <div>${
         fields.length === 0
           ? `<div class="empty-state"><h4>No fields</h4><p>Add documents with non-id fields to get recommendations.</p></div>`
@@ -1310,8 +1804,13 @@ function renderCompression() {
         <div style="padding:12px 16px;border-bottom:1px solid var(--bg3);">
           <div style="display:flex;align-items:center;gap:10px;">
             <strong class="mono" style="color:var(--ac);">${esc(field)}</strong>
-            <span style="font-size:12px;color:var(--t3);">current default: <span class="mono">${esc(defaults[field] || 'none')}</span></span>
-            <button class="tbtn pri" data-cmp-field="${esc(field)}" style="margin-left:auto;">Recommend</button>
+            <span style="font-size:12px;color:var(--t3);">Saved default</span>
+            <select data-cmp-default="${esc(field)}" ${compressionBusy || defaultsUnavailable ? 'disabled' : ''} aria-label="Default compression for ${esc(field)}">${COMPRESSION_OPTIONS.filter(
+              (x) => x !== 'inherit' && x !== 'off',
+            )
+              .map((codec) => `<option ${codec === (defaults[field] || 'none') ? 'selected' : ''}>${codec}</option>`)
+              .join('')}</select>
+            <button class="tbtn pri" data-cmp-field="${esc(field)}" ${recommendingFields.has(field) ? 'disabled' : ''} style="margin-left:auto;">${recommendingFields.has(field) ? 'Analyzing…' : 'Analyze field'}</button>
           </div>
           ${renderRecommendationCard(field, state.compression.recommendations[field])}
         </div>`,
@@ -1323,19 +1822,55 @@ function renderCompression() {
   $('#cmp-back')?.addEventListener('click', selectRoot);
   $('#cmp-workload')?.addEventListener('input', (e) => {
     state.compression.workload = Number(e.target.value) / 100;
+    state.compression.recommendations = {};
     $('#cmp-workload-label').textContent = `${e.target.value}%`;
   });
+  $('#cmp-workload')?.addEventListener('change', renderCompression);
   $('#cmp-apply-all')?.addEventListener('click', applyCompressionAdvice);
   $('#cmp-refresh-defaults')?.addEventListener('click', async () => {
+    $('#cmp-refresh-defaults').disabled = true;
+    $('#cmp-refresh-defaults').textContent = 'Reloading…';
     await loadCompressionDefaults(c);
-    renderCompression();
+    if (isCurrentRequestContext(context)) {
+      if (!compressionDefaultsError) toast('Saved defaults reloaded from the database.', 'ok');
+      if (state.tab === 'compression') renderCompression();
+    }
   });
+  $$('[data-cmp-default]').forEach((select) =>
+    select.addEventListener('change', async () => {
+      if (compressionBusy || defaultsUnavailable) return;
+      compressionBusy = true;
+      compressionDefaultsRequest++;
+      $$('[data-cmp-default], #cmp-apply-all').forEach((control) => (control.disabled = true));
+      try {
+        const { defaults } = await api('/api/compression/defaults', {
+          method: 'PUT',
+          body: {
+            collection: c,
+            defaults: { ...state.compression.defaults, [select.dataset.cmpDefault]: select.value },
+          },
+        });
+        if (!isCurrentRequestContext(context)) return;
+        state.compression.defaults = defaults;
+        toast('Compression default saved', 'ok');
+      } catch (e) {
+        if (!isCurrentRequestContext(context)) return;
+        toast('Save failed: ' + e.message, 'err');
+        select.value = state.compression.defaults[select.dataset.cmpDefault] || 'none';
+      } finally {
+        if (isCurrentRequestContext(context)) {
+          compressionBusy = false;
+          if (state.tab === 'compression') renderCompression();
+        }
+      }
+    }),
+  );
   $$('[data-cmp-field]').forEach((button) =>
     button.addEventListener('click', () => recommendFieldCompression(button.dataset.cmpField)),
   );
   if (compressionDefaultsLoadedFor !== c) {
     loadCompressionDefaults(c).then(() => {
-      if (state.tab === 'compression' && state.selectedCol === c) renderCompression();
+      if (isCurrentRequestContext(context) && state.tab === 'compression') renderCompression();
     });
   }
 }
@@ -1358,26 +1893,9 @@ function renderLabPolicyChart(report) {
     .join('')}</div>`;
 }
 
-async function seedCompressionLab() {
-  state.lab.busy = true;
-  renderLab();
-  try {
-    const result = await api('/api/compression/lab/seed-wiki', { method: 'POST', body: { count: 100 } });
-    toast(`Seeded ${result.inserted} wiki_lab documents`, 'ok');
-    state.lab.collection = result.collection || 'wiki_lab';
-    invalidateStorageCache(result.collection);
-    await loadCollections();
-    state.selectedCol = state.lab.collection;
-    state.tab = 'lab';
-    await runCompressionLabReport();
-  } catch (e) {
-    state.lab.error = e.message;
-    state.lab.busy = false;
-    renderLab();
-  }
-}
-
 async function runCompressionLabReport() {
+  if (state.lab.busy) return;
+  const context = captureRequestContext();
   const collection = state.selectedCol;
   if (!collection) {
     state.lab.error = 'Select a collection first.';
@@ -1387,36 +1905,57 @@ async function runCompressionLabReport() {
   state.lab.collection = collection;
   state.lab.busy = true;
   state.lab.error = null;
+  const workload = state.lab.workload;
   renderLab();
   try {
     const { report } = await api('/api/compression/lab/recommend-collection', {
       method: 'POST',
       body: { collection, workload: state.lab.workload, sampleSize: 100 },
     });
-    state.lab.report = report;
+    if (!isCurrentRequestContext(context)) return;
+    if (state.lab.workload === workload) state.lab.report = report;
   } catch (e) {
+    if (!isCurrentRequestContext(context)) return;
     state.lab.error = e.message;
   } finally {
-    state.lab.busy = false;
-    renderLab();
+    if (isCurrentRequestContext(context)) {
+      state.lab.busy = false;
+      if (state.tab === 'lab') renderLab();
+    }
   }
 }
 
 async function applyLabAdvice() {
+  if (state.lab.busy || compressionBusy) return;
   const collection = state.selectedCol;
   if (!collection) {
     toast('Select a collection first.', 'warn');
     return;
   }
+  const context = captureRequestContext();
+  state.lab.busy = true;
+  compressionBusy = true;
+  renderLab();
   try {
     const result = await api('/api/compression/lab/apply-advice', {
       method: 'POST',
       body: { collection, workload: state.lab.workload, sampleSize: 100 },
     });
-    toast(`Applied advisor defaults for ${result.fields} fields in ${collection}.`, 'ok');
+    if (!isCurrentRequestContext(context)) return;
+    toast(
+      `Saved advisor defaults for ${result.fields} fields in ${collection}. Existing documents were not recompressed.`,
+      'ok',
+    );
     if (collection === state.selectedCol) await loadCompressionDefaults(collection);
   } catch (e) {
+    if (!isCurrentRequestContext(context)) return;
     toast('Apply lab advice failed: ' + e.message, 'err');
+  } finally {
+    if (isCurrentRequestContext(context)) {
+      state.lab.busy = false;
+      compressionBusy = false;
+      if (state.tab === 'lab') renderLab();
+    }
   }
 }
 
@@ -1438,7 +1977,8 @@ function renderLab() {
     <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6L4 19a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3L14 8V2"/><path d="M8 14h8"/></svg></span><span class="name">${esc(collection)} lab</span></h1>
     <p class="ovsub"><span>Compare field-level compression policies</span><span>Apply defaults for future writes in this collection</span></p>
     <div class="psec">
-      <h3>Scenario <span class="actions"><button class="tbtn" id="lab-seed" style="border:1px solid var(--bd);background:var(--bg2);">Seed wiki_lab</button><button class="tbtn pri" id="lab-run" ${state.lab.busy ? 'disabled' : ''}>Run report</button><button class="tbtn" id="lab-apply" style="border:1px solid var(--bd);background:var(--bg2);" ${report ? '' : 'disabled'}>Apply advice</button></span></h3>
+      <h3>Scenario <span class="actions"><button class="tbtn pri" id="lab-run" ${state.lab.busy ? 'disabled' : ''}>${state.lab.busy ? 'Working…' : 'Analyze collection'}</button><button class="tbtn" id="lab-apply" style="border:1px solid var(--bd);background:var(--bg2);" ${report && !state.lab.busy ? '' : 'disabled'}>Save advised defaults</button></span></h3>
+      <p class="control-help">Analyze collection produces a read-only estimate for the selected collection. Save advised defaults affects future writes; it does not recompress existing records. Policy chart sizes are estimates, not measured file sizes.</p>
       <div class="pbody" style="display:grid;gap:10px;">
         <div style="display:grid;grid-template-columns:1fr;gap:10px;">
           <div><label style="font-size:11px;color:var(--t3);font-weight:700;">Workload: <span id="lab-workload-label">${Math.round(state.lab.workload * 100)}%</span></label><input id="lab-workload" type="range" min="0" max="100" value="${Math.round(state.lab.workload * 100)}" style="width:100%;"></div>
@@ -1469,13 +2009,14 @@ function renderLab() {
     }
   </div>`;
   $('#lab-back')?.addEventListener('click', selectRoot);
-  $('#lab-seed')?.addEventListener('click', seedCompressionLab);
   $('#lab-run')?.addEventListener('click', runCompressionLabReport);
   $('#lab-apply')?.addEventListener('click', applyLabAdvice);
   $('#lab-workload')?.addEventListener('input', (e) => {
     state.lab.workload = Number(e.target.value) / 100;
+    state.lab.report = null;
     $('#lab-workload-label').textContent = `${e.target.value}%`;
   });
+  $('#lab-workload')?.addEventListener('change', renderLab);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1503,12 +2044,22 @@ function refreshModelModal() {
 }
 
 function openModelModal() {
+  modelModalRequest++;
+  for (const id of ['mdl-save', 'mdl-reload', 'mdl-gen']) $('#' + id).disabled = state.modelGenerating;
+  modelModalCollection = state.selectedCol;
   refreshModelModal();
   openModal('modal-model');
 }
 
 async function generateModel() {
+  if (!state.connected || state.modelGenerating) return;
+  const context = captureRequestContext('database');
+  const modalRequest = modelModalRequest;
   state.modelGenerating = true;
+  $('#mdl-gen').disabled = true;
+  $('#mdl-save').disabled = true;
+  $('#mdl-reload').disabled = true;
+  $('#mdl-json').readOnly = true;
   if (state.tab === 'ai') renderAi();
   if (state.geminiKeySet) {
     toast('Generating schema model… this may take ~20s', '', 'Generating');
@@ -1521,48 +2072,81 @@ async function generateModel() {
   }
   try {
     const { model, enriched } = await api('/api/conversational/model/generate', { method: 'POST' });
+    if (!isCurrentRequestContext(context)) return;
     state.model = model;
     if (state.selectedCol) state.modelPromptDismissed[state.selectedCol] = false;
     if (enriched) toast('Schema model generated and enriched.', 'ok');
     else toast('Basic schema model generated. Descriptions/synonyms not added — set a Gemini key to enrich.', 'warn');
   } catch (e) {
+    if (!isCurrentRequestContext(context)) return;
     await loadModel();
     toast('Generation failed: ' + e.message, 'err');
   } finally {
-    await loadModel();
-    state.modelGenerating = false;
-    if (!$('#modal-model').classList.contains('hidden')) refreshModelModal();
-    render();
+    if (isCurrentRequestContext(context)) {
+      state.modelGenerating = false;
+      $('#mdl-gen').disabled = false;
+      $('#mdl-save').disabled = false;
+      $('#mdl-reload').disabled = false;
+      $('#mdl-json').readOnly = false;
+      if (modalRequest === modelModalRequest && !$('#modal-model').classList.contains('hidden')) refreshModelModal();
+      render();
+    }
   }
 }
 // Wire the model modal once at startup (the buttons live in a fixed
 // modal, not inside the tab content, so they're registered just once).
 $('#mdl-gen').addEventListener('click', generateModel);
 $('#mdl-save').addEventListener('click', async () => {
+  if (!state.connected || $('#mdl-save').disabled) return;
+  const context = captureRequestContext();
+  const request = modelModalRequest;
   const raw = $('#mdl-json').value;
+  let edited;
   try {
-    JSON.parse(raw);
+    edited = mergeScopedModel(JSON.parse(raw), state.model, modelModalCollection);
   } catch (e) {
     $('#mdl-err').classList.remove('hidden');
     $('#mdl-err').textContent = 'Invalid JSON: ' + e.message;
     return;
   }
   $('#mdl-err').classList.add('hidden');
+  $('#mdl-save').disabled = true;
   try {
-    const { model } = await api('/api/conversational/model', { method: 'PUT', body: { model: raw } });
+    const { model } = await api('/api/conversational/model', {
+      method: 'PUT',
+      body: { model: JSON.stringify(edited) },
+    });
+    if (!isCurrentRequestContext(context)) return;
     state.model = model;
     toast('Model saved', 'ok');
-    closeModal('modal-model');
+    if (request === modelModalRequest) closeModal('modal-model');
     render();
   } catch (e) {
+    if (!isCurrentRequestContext(context) || request !== modelModalRequest) return;
     $('#mdl-err').classList.remove('hidden');
     $('#mdl-err').textContent = e.message;
+  } finally {
+    if (isCurrentRequestContext(context) && request === modelModalRequest) $('#mdl-save').disabled = false;
   }
 });
 $('#mdl-reload').addEventListener('click', async () => {
-  await loadModel();
-  refreshModelModal();
-  toast('Model reloaded', 'ok');
+  if (!state.connected || $('#mdl-reload').disabled) return;
+  const context = captureRequestContext();
+  const request = modelModalRequest;
+  $('#mdl-reload').disabled = true;
+  try {
+    const { model } = await api('/api/conversational/model');
+    if (!isCurrentRequestContext(context) || request !== modelModalRequest) return;
+    state.model = model;
+    refreshModelModal();
+    toast('Model reloaded', 'ok');
+  } catch (e) {
+    if (!isCurrentRequestContext(context) || request !== modelModalRequest) return;
+    $('#mdl-err').textContent = 'Reload failed: ' + e.message;
+    $('#mdl-err').classList.remove('hidden');
+  } finally {
+    if (isCurrentRequestContext(context) && request === modelModalRequest) $('#mdl-reload').disabled = false;
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -1574,7 +2158,7 @@ function renderSql() {
   const last = state.sqlHistory[0];
   $('#cnt').innerHTML = `<div class="sql-pane">
     <div class="sql-tools">
-      <button class="tbtn pri" id="sql-run"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>Run (⌘↩)</button>
+      <button class="tbtn pri" id="sql-run" ${sqlBusy ? 'disabled' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>${sqlBusy ? 'Running…' : 'Run (Ctrl+Enter)'}</button>
       <button class="tbtn" id="sql-clear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>Clear</button>
       <button class="tbtn" id="sql-example">Example: SELECT</button>
       ${state.selectedCol ? `<button class="tbtn" id="sql-prefill">SELECT * FROM ${esc(state.selectedCol)}</button>` : ''}
@@ -1629,6 +2213,7 @@ function renderSql() {
 }
 
 async function runSql() {
+  if (!state.connected || sqlBusy) return;
   const sql = pendingSql.trim();
   if (!sql) {
     toast('Type a query first.', 'warn');
@@ -1636,19 +2221,22 @@ async function runSql() {
   }
   const kind = getSqlMutationKind(sql);
   if (kind) {
-    await new Promise((resolve) => {
-      confirmAction(`Run a ${kind} statement?`, `${kind} statements modify the database. Continue?`, () => {
-        runSqlNow(sql);
-        resolve();
-      });
-    });
+    confirmAction(`Run a ${kind} statement?`, `${kind} statements modify the database. Continue?`, () =>
+      runSqlNow(sql),
+    );
     return;
   }
   await runSqlNow(sql);
 }
 async function runSqlNow(sql) {
+  if (!state.connected || sqlBusy) return;
+  const context = captureRequestContext('database');
+  const request = ++sqlRequest;
+  sqlBusy = true;
+  if (state.tab === 'sql') renderSql();
   try {
     const result = await api('/api/query', { method: 'POST', body: { sql } });
+    if (!isCurrentRequestContext(context) || request !== sqlRequest) return;
     state.sqlHistory.unshift({
       sql,
       ok: true,
@@ -1659,29 +2247,38 @@ async function runSqlNow(sql) {
       rows: result.rows,
     });
     state.sqlHistory = state.sqlHistory.slice(0, 10);
-    if (result.kind !== 'select') {
+    if (['insert', 'update', 'delete'].includes(result.kind)) {
       toast(`${result.kind.toUpperCase()} ok`, 'ok');
       invalidateStorageCache();
-      const m = sql.match(/(?:from|into)\s+([A-Za-z_][A-Za-z0-9_]*)/i);
-      if (m) await refreshDocs(m[1]);
+      closeDrawer();
+      invalidateSemanticSearch(state.selectedCol);
+      await loadCollections();
+      await refreshDatabaseStatus();
+      if (!isCurrentRequestContext(context)) return;
+      renderTree();
+      renderTabs();
     }
-    renderSql();
   } catch (e) {
+    if (!isCurrentRequestContext(context) || request !== sqlRequest) return;
     state.sqlHistory.unshift({ sql, ok: false, ts: Date.now(), error: e.message });
     state.sqlHistory = state.sqlHistory.slice(0, 10);
-    renderSql();
+  } finally {
+    if (isCurrentRequestContext(context) && request === sqlRequest) {
+      sqlBusy = false;
+      if (state.tab === 'sql') renderSql();
+    }
   }
 }
 
 function renderSqlOut(last) {
   if (!last) return '';
   if (!last.ok) return `<div class="err">${esc(last.error)}</div>`;
-  if (last.kind !== 'select')
+  if (last.kind !== 'select' && last.kind !== 'explain')
     return `<div class="rhead"><span class="ok-pill">${esc(last.kind)}</span><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} affected · ${last.elapsedMs} ms</div>`;
   const rows = last.rows || [];
   if (rows.length === 0)
     return `<div class="rhead"><strong>0</strong> rows · ${last.elapsedMs} ms</div><div style="padding:20px;text-align:center;color:var(--t3);font-size:12px;">No rows returned.</div>`;
-  const cols = Object.keys(rows[0]);
+  const cols = Array.from(new Set(rows.flatMap((row) => Object.keys(row))));
   return `<div class="rhead"><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} · <span class="pill">${esc(last.kind)}</span> · <span class="pill">${last.elapsedMs} ms</span></div>
   <table class="dg"><thead><tr><th class="rn">#</th>${cols
     .map((c) => {
@@ -1727,13 +2324,30 @@ function renderSqlHistory() {
 // ─────────────────────────────────────────────────────────────────
 // Semantic Search
 // ─────────────────────────────────────────────────────────────────
+let embeddingStatusRequest = 0;
+let searchController = null;
+let chatController = null;
+
 async function pollEmbedStatus() {
+  const context = captureRequestContext('database');
+  const request = ++embeddingStatusRequest;
   try {
     const s = await api('/api/embeddings/status');
+    if (!isCurrentRequestContext(context) || request !== embeddingStatusRequest) return;
     state.search.embedStatus = s;
   } catch {
     /* leave previous status */
   }
+}
+
+function cancelSemanticSearch() {
+  searchRequest++;
+  searchController?.abort();
+  searchController = null;
+  state.search.busy = false;
+  state.search.results = null;
+  state.search.error = null;
+  state.search.elapsedMs = null;
 }
 
 function embedStatusPill(mode = state.search.mode || 'text', hasImageUpload = !!state.search.image) {
@@ -1750,6 +2364,7 @@ function embedStatusPill(mode = state.search.mode || 'text', hasImageUpload = !!
 }
 
 function renderSemanticSearch() {
+  if (!state.connected || state.tab !== 'search') return;
   const c = state.selectedCol;
   const s = state.search;
   const mode = s.mode || 'text';
@@ -1779,7 +2394,7 @@ function renderSemanticSearch() {
       <div class="modes ss-modes">
         ${['text', 'image'].map((m) => `<button class="${mode === m ? 'on' : ''}" data-ss-mode="${m}">${m === 'text' ? 'Tekst' : 'Foto'}</button>`).join('')}
       </div>
-      <input type="text" id="ss-q" placeholder="${c ? esc(placeholders[mode]) : 'Select a collection in the sidebar first…'}" value="${esc(s.query)}" ${c ? '' : 'disabled'}/>
+      <input type="text" id="ss-q" placeholder="${c ? esc(placeholders[mode]) : 'Select a collection in the sidebar first…'}" value="${esc(s.query)}" ${c && !s.busy ? '' : 'disabled'}/>
       ${
         mode === 'image'
           ? `<label class="attach ${s.image ? 'has-image' : ''}" title="Attach an image for image-to-image search">
@@ -1787,15 +2402,15 @@ function renderSemanticSearch() {
         ${s.image ? esc(s.image.name) : 'Attach image'}
         <input type="file" id="ss-img" accept="image/*" style="display:none;" ${c ? '' : 'disabled'}/>
       </label>
-      ${s.image ? `<span class="clear-img" id="ss-img-clear" title="Remove attached image">✕</span>` : ''}`
+      ${s.image ? `<button type="button" class="clear-img" id="ss-img-clear" title="Remove attached image" aria-label="Remove attached image">✕</button>` : ''}`
           : ''
       }
       <button class="go" id="ss-go" ${c && !s.busy ? '' : 'disabled'}>Search</button>
     </div>
     <div class="ss-status">
       ${s.image ? `<span class="preview"><img src="${esc(s.image.dataUrl)}" alt=""/> using image embedding</span>` : ''}
-      ${!s.image && s.query ? `<span>${mode === 'image' ? `searching ${imageDocCount} image document${imageDocCount === 1 ? '' : 's'} by description` : 'using text embedding'}</span>` : ''}
-      ${!s.image && !s.query && mode === 'image' ? `<span>Foto mode searches image documents by typed description; ${imageDocCount} image document${imageDocCount === 1 ? '' : 's'} in this collection.</span>` : ''}
+      ${!s.image && s.query ? `<span>${mode === 'image' ? 'searching the CLIP image index by description' : 'using MiniLM text embedding'}</span>` : ''}
+      ${!s.image && !s.query && mode === 'image' ? `<span>Foto mode searches the CLIP image index; ${imageDocCount} image document${imageDocCount === 1 ? '' : 's'} in the loaded page.</span>` : ''}
       ${s.elapsedMs != null ? `<span>· ${s.elapsedMs} ms</span>` : ''}
       ${s.results ? `<span>· ${s.results.length} result${s.results.length === 1 ? '' : 's'}</span>` : ''}
     </div>
@@ -1803,6 +2418,7 @@ function renderSemanticSearch() {
   </div>`;
 
   $('#ss-q')?.addEventListener('input', (e) => {
+    if (state.search.busy) cancelSemanticSearch();
     state.search.query = e.target.value;
   });
   $('#ss-q')?.addEventListener('keydown', (e) => {
@@ -1814,17 +2430,41 @@ function renderSemanticSearch() {
   $('#ss-img')?.addEventListener('change', async (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
-    const dataUrl = await readFileDataUrl(f);
-    const b64 = dataUrl.split(',', 2)[1] || '';
-    state.search.image = { name: f.name, dataUrl, buffer: b64 };
+    cancelSemanticSearch();
+    const context = captureRequestContext();
+    const request = searchRequest;
+    const search = state.search;
+    search.image = null;
+    if (!f.type.startsWith('image/')) {
+      search.error = 'Choose an image file.';
+      renderSemanticSearch();
+      return;
+    }
+    if (f.size > 10 * 1024 * 1024) {
+      search.error = 'Choose an image smaller than 10 MB.';
+      renderSemanticSearch();
+      return;
+    }
+    try {
+      const dataUrl = await readFileDataUrl(f);
+      if (!isCurrentRequestContext(context) || request !== searchRequest || state.search !== search) return;
+      const b64 = dataUrl.split(',', 2)[1] || '';
+      search.image = { name: f.name, dataUrl, buffer: b64 };
+    } catch (err) {
+      if (!isCurrentRequestContext(context) || request !== searchRequest || state.search !== search) return;
+      search.error = err.message || 'The image could not be read.';
+    }
     renderSemanticSearch();
   });
   $('#ss-img-clear')?.addEventListener('click', () => {
+    cancelSemanticSearch();
     state.search.image = null;
     renderSemanticSearch();
   });
   $$('[data-ss-mode]').forEach((button) =>
     button.addEventListener('click', () => {
+      if (state.search.mode === button.dataset.ssMode) return;
+      cancelSemanticSearch();
       state.search.mode = button.dataset.ssMode;
       state.search.results = null;
       state.search.error = null;
@@ -1836,7 +2476,7 @@ function renderSemanticSearch() {
   $$('#ss-body [data-idx]').forEach((el) =>
     el.addEventListener('click', () => {
       const i = parseInt(el.dataset.idx, 10);
-      const doc = state.search.results && state.search.results[i];
+      const doc = s.results && s.results[i];
       if (!doc) return;
       try {
         openDrawer(JSON.parse(doc), i);
@@ -1856,17 +2496,21 @@ function renderSemanticSearch() {
 
 function renderSemanticSearchBody(c, s) {
   if (!c) {
-    return `<div class="ss-empty"><h4>Pick a collection to search</h4><p>Semantic search ranks documents in the selected collection by similarity to your query. The first search of a session loads the CLIP model and may take 10–20 seconds; subsequent searches are fast.</p></div>`;
-  }
-  const missingIndex = semanticMissingIndex(c, s.mode || 'text', !!s.image);
-  if (missingIndex) {
-    return `<div class="ss-empty"><h4>${esc(missingIndex.title)}</h4><p>${missingIndex.body}</p><button class="tbtn pri" id="ss-rebuild-indexes" style="margin-top:12px;">Rebuild semantic indexes</button></div>`;
-  }
-  if (s.busy) {
-    return `<div class="ss-loading"><span class="spin"></span>${state.search.embedStatus.state === 'loading' ? 'Loading CLIP model…' : 'Searching…'}</div>`;
+    return `<div class="ss-empty"><h4>Pick a collection to search</h4><p>Semantic search ranks documents in the selected collection by similarity to your query. Text search loads MiniLM; photo and image search load CLIP. The first use may need a model download.</p></div>`;
   }
   if (s.error) {
     return `<div class="ss-empty"><h4>Search failed</h4><p style="color:var(--rd)">${esc(s.error)}</p></div>`;
+  }
+  if (s.busy) {
+    const kind = s.image || s.mode === 'image' ? 'image' : 'text';
+    const indexStatus = s.embedStatus.indexes?.[kind];
+    const loading = (indexStatus?.state || s.embedStatus.state) === 'loading';
+    const label = kind === 'image' ? 'CLIP image model' : 'MiniLM text model';
+    return `<div class="ss-loading"><span class="spin"></span>${loading ? `Loading ${label}…` : 'Searching…'}</div>`;
+  }
+  const missingIndex = semanticMissingIndex(c, s.mode || 'text', !!s.image);
+  if (missingIndex && !s.results) {
+    return `<div class="ss-empty"><h4>${esc(missingIndex.title)}</h4><p>${missingIndex.body}</p><button class="tbtn pri" id="ss-rebuild-indexes" style="margin-top:12px;">Rebuild semantic indexes</button></div>`;
   }
   if (!s.results) {
     return `<div class="ss-empty"><h4>Ready when you are</h4><p>Type a query and press Search. Tekst uses the MiniLM text index; Foto uses the CLIP image index.</p></div>`;
@@ -1875,9 +2519,9 @@ function renderSemanticSearchBody(c, s) {
     if ((s.mode || 'text') === 'image') {
       const imageDocCount = (state.docsByColl[c] || []).filter(hasImageField).length;
       if (imageDocCount === 0) {
-        return `<div class="ss-empty"><h4>No image documents</h4><p>Foto mode follows main: it runs text semantic search, then keeps only documents with image fields such as <code>photo.jpg</code> or <code>avatar.png</code>. This collection currently has no detected image fields.</p></div>`;
+        return `<div class="ss-empty"><h4>No photo matches</h4><p>No matches were returned from the CLIP image index. The loaded page has no detected image fields. Add image documents or rebuild an existing image index.</p></div>`;
       }
-      return `<div class="ss-empty"><h4>No photo matches</h4><p>Foto mode found ${imageDocCount} image document${imageDocCount === 1 ? '' : 's'}, but none appeared in the semantic top results for this description. Try broader visual words, for example “person”, “portrait”, “animal”, or “outdoor”.</p></div>`;
+      return `<div class="ss-empty"><h4>No photo matches</h4><p>No matches were returned from the CLIP image index. Try a different description or image, or rebuild the semantic indexes for existing data.</p></div>`;
     }
     return `<div class="ss-empty"><h4>No results</h4><p>The collection doesn't have any documents that semantically match. Try broader keywords or a different image.</p></div>`;
   }
@@ -1970,7 +2614,8 @@ function hasImageField(doc) {
 function readFileDataUrl(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
-    r.onerror = reject;
+    r.onerror = () => reject(r.error || new Error('The file could not be read.'));
+    r.onabort = () => reject(new Error('The file read was cancelled.'));
     r.onload = () => resolve(r.result);
     r.readAsDataURL(file);
   });
@@ -1979,7 +2624,7 @@ function readFileDataUrl(file) {
 async function runSemanticSearch() {
   const c = state.selectedCol;
   const s = state.search;
-  if (!c) return;
+  if (!state.connected || state.tab !== 'search' || !c || s.busy) return;
   if (!s.query.trim() && !s.image) {
     s.error = 'Type a query or attach an image first.';
     renderSemanticSearch();
@@ -1989,7 +2634,15 @@ async function runSemanticSearch() {
   s.error = null;
   s.results = null;
   s.elapsedMs = null;
+  const context = captureRequestContext();
+  const request = ++searchRequest;
+  const controller = new AbortController();
+  searchController?.abort();
+  searchController = controller;
+  const isCurrent = () => isCurrentRequestContext(context) && request === searchRequest && state.search === s;
   const mode = s.mode || 'text';
+  const image = s.image;
+  const query = s.query.trim();
   if (mode === 'text' || mode === 'image' || s.image) {
     const kind = s.image || mode === 'image' ? 'image' : 'text';
     // Kick off only the model needed by this search mode.
@@ -1998,34 +2651,49 @@ async function runSemanticSearch() {
   renderSemanticSearch();
   // Poll status while busy so the pill animates from "loading" to "ready".
   const statusTimer = setInterval(async () => {
+    if (!isCurrent()) {
+      clearInterval(statusTimer);
+      return;
+    }
     await pollEmbedStatus();
-    if (state.tab === 'search') renderSemanticSearch();
+    if (isCurrent()) renderSemanticSearch();
   }, 1500);
   const t0 = performance.now();
   try {
     let resp;
-    if (s.image) {
+    if (image) {
       resp = await api(`/api/documents/${encodeURIComponent(c)}/search/image?limit=20`, {
         method: 'POST',
-        body: { image: s.image.buffer },
+        body: { image: image.buffer },
+        signal: controller.signal,
       });
     } else if (mode === 'image') {
-      const q = encodeURIComponent(s.query.trim());
-      resp = await api(`/api/documents/${encodeURIComponent(c)}/search/photos?q=${q}&limit=10`);
+      const q = encodeURIComponent(query);
+      resp = await api(`/api/documents/${encodeURIComponent(c)}/search/photos?q=${q}&limit=10`, {
+        signal: controller.signal,
+      });
     } else {
-      const q = encodeURIComponent(s.query.trim());
-      resp = await api(`/api/documents/${encodeURIComponent(c)}/search?q=${q}&limit=20`);
+      const q = encodeURIComponent(query);
+      resp = await api(`/api/documents/${encodeURIComponent(c)}/search?q=${q}&limit=20`, {
+        signal: controller.signal,
+      });
     }
-    let docs = Array.isArray(resp.documents) ? resp.documents : [];
+    if (!isCurrent()) return;
+    const docs = Array.isArray(resp.documents) ? resp.documents : [];
     s.results = docs;
     s.elapsedMs = Math.round(performance.now() - t0);
   } catch (err) {
+    if (!isCurrent()) return;
     s.error = err.message || String(err);
   } finally {
     clearInterval(statusTimer);
-    s.busy = false;
-    await pollEmbedStatus();
-    if (state.tab === 'search') renderSemanticSearch();
+    if (isCurrent()) {
+      searchController = null;
+      s.busy = false;
+      renderSemanticSearch();
+      await Promise.all([pollEmbedStatus(), refreshDatabaseStatus()]);
+      if (isCurrent()) renderSemanticSearch();
+    }
   }
 }
 
@@ -2035,6 +2703,8 @@ async function runSemanticSearch() {
 let aiBusy = false;
 
 function renderAi() {
+  if (!state.connected || state.tab !== 'ai') return;
+  destroyAiCharts();
   const c = state.selectedCol;
   const exploreForCol = c ? getExplore(c) : null;
   // The collection needs a schema-model entry to chat. If the user
@@ -2044,7 +2714,7 @@ function renderAi() {
   const promptForCol = needsModelForCol && !state.modelPromptDismissed[c];
 
   const schemaReady = !!state.model && !!exploreForCol && !state.modelGenerating;
-  const canChat = state.geminiKeySet && schemaReady;
+  const canChat = state.geminiKeySet && schemaReady && !aiBusy;
   const empty = state.chatHistory.length === 0;
 
   $('#cnt').innerHTML = `<div class="ai-pane">
@@ -2054,7 +2724,7 @@ function renderAi() {
       <div class="meta">
         <span class="dot ${state.geminiKeySet ? 'ok' : 'bad'}" title="${state.geminiKeySet ? 'A Gemini API key is configured. Validity is verified on first chat.' : 'No Gemini API key configured.'}"><strong>LLM</strong>${state.geminiKeySet ? 'key set' : 'no key'}</span>
         <span class="dot ${exploreForCol ? 'ok' : 'warn'}" title="${exploreForCol ? 'Schema model loaded for this collection.' : 'No schema model defined for this collection yet.'}"><strong>Schema</strong>${exploreForCol ? 'ready' : c ? 'missing' : '—'}</span>
-        <button class="tbtn" id="ai-model" title="View or edit the schema model JSON" style="padding:4px 10px;font-size:11px;border:1px solid var(--bd);background:var(--bg2);">Edit schema model</button>
+        <button class="tbtn" id="ai-model" title="View or edit the schema model JSON" style="padding:4px 10px;font-size:11px;border:1px solid var(--bd);background:var(--bg2);" ${aiBusy || state.modelGenerating ? 'disabled' : ''}>Edit schema model</button>
         <button class="tbtn" id="ai-clear" style="padding:4px 10px;font-size:11px;">Clear chat</button>
       </div>
     </div>
@@ -2085,10 +2755,15 @@ function renderAi() {
     </div>
   </div>`;
   $('#ai-clear').addEventListener('click', () => {
+    chatRequest++;
+    chatController?.abort();
+    chatController = null;
+    aiBusy = false;
     state.chatHistory = [];
     renderAi();
   });
   $('#ai-model').addEventListener('click', openModelModal);
+  $('#ai-empty-settings')?.addEventListener('click', () => openModal('modal-settings'));
   $('#ai-q')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !aiBusy) sendChat();
   });
@@ -2097,18 +2772,21 @@ function renderAi() {
   });
   $$('#ai-body .example').forEach((b) =>
     b.addEventListener('click', () => {
+      if (!canChat) return;
       $('#ai-q').value = b.dataset.q;
       sendChat();
     }),
   );
   $$('#ai-body .chip').forEach((b) =>
     b.addEventListener('click', () => {
+      if (!canChat) return;
       $('#ai-q').value = b.dataset.q;
       sendChat();
     }),
   );
   $$('#ai-body .didyou li').forEach((li) =>
     li.addEventListener('click', () => {
+      if (!canChat) return;
       $('#ai-q').value = li.textContent;
       sendChat();
     }),
@@ -2122,8 +2800,12 @@ function renderAi() {
     }),
   );
   $$('#ai-body .qch canvas').forEach((cv) => {
-    const spec = JSON.parse(cv.dataset.chart);
-    drawChart(cv, spec.chart, spec.data);
+    try {
+      const spec = JSON.parse(cv.dataset.chart);
+      drawChart(cv, spec.chart, spec.data);
+    } catch {
+      cv.replaceWith(document.createTextNode('Chart unavailable. The result data is shown above.'));
+    }
   });
   // Wiring for the per-collection model-generation prompt card.
   $('#ai-model-yes')?.addEventListener('click', generateModel);
@@ -2150,7 +2832,7 @@ function renderModelPromptCard(c) {
   // card is what they see when no model exists yet for the selected
   // collection.
   const keyHint = state.geminiKeySet
-    ? `<p style="font-size:11.5px;color:var(--t3);margin-top:6px;">Generation runs against <strong>data.db</strong>, samples a few documents per collection, then asks Gemini to add field descriptions and synonyms. Takes ~20s.</p>`
+    ? `<p style="font-size:11.5px;color:var(--t3);margin-top:6px;">Generation runs against <strong>${esc(state.filepath || 'the connected database')}</strong>, samples a few documents per collection, then asks Gemini to add field descriptions and synonyms.</p>`
     : `<p style="font-size:11.5px;color:var(--t3);margin-top:6px;">No Gemini key set. You can still generate a basic model from the data alone (field names, types, sample values). For descriptions and chat, set the key from the connection pill in the top-right.</p>`;
   return `<div class="ai-empty">
     <h4>No schema model for <span class="mono" style="color:var(--ac)">${esc(c)}</span> yet</h4>
@@ -2171,6 +2853,9 @@ function renderAiEmpty(c, exploreForCol) {
   if (!exploreForCol) {
     return `<div class="ai-empty"><h4>Chat is paused</h4><p>This collection doesn't have a schema model yet. <button class="tbtn" id="ai-model-yes" style="border:1px solid var(--bd);background:var(--bg2);padding:4px 10px;">Generate one now</button> to enable chat.</p></div>`;
   }
+  if (!state.geminiKeySet) {
+    return `<div class="ai-empty"><h4>Configure Gemini to chat</h4><p>The schema model is ready. Add a Gemini API key to ask questions about this collection.</p><button class="tbtn pri" id="ai-empty-settings">Configure Gemini key</button></div>`;
+  }
   const examples = [
     `How many records are in ${c}?`,
     'What are the distinct categories and their counts?',
@@ -2187,7 +2872,7 @@ function renderAiMessage(m, i) {
   if (m.thinking)
     return `<div class="msg a"><div class="who">AI</div><div class="bub thinking"><span class="spin"></span><span class="lbl">${esc(m.text)}</span></div></div>`;
   if (m.error) return `<div class="msg a"><div class="who">AI</div><div class="bub err">${esc(m.error)}</div></div>`;
-  const r = m.response;
+  const r = m.response || {};
   let h = '';
   if (r.query) {
     h += `<div class="q"><div class="qhead">Generated Query<span class="open-sql" data-sql="${esc(r.query)}">Open in Query Language editor →</span></div><div class="qcode">${esc(r.query)}</div></div>`;
@@ -2211,7 +2896,7 @@ function renderAiMessage(m, i) {
   if (r.didYouMean && r.didYouMean.length > 0)
     h += `<div class="didyou"><strong>Did you mean…</strong><ul>${r.didYouMean.map((s) => `<li>${esc(s)}</li>`).join('')}</ul></div>`;
   if (r.suggestions && r.suggestions.length > 0) {
-    h += `<div class="chips">${r.suggestions.map((s) => `<button class="chip" data-q="${esc(s.text)}"><span class="l">${esc(s.type)}</span>${esc(s.text)}</button>`).join('')}</div>`;
+    h += `<div class="chips">${r.suggestions.map((s) => `<button class="chip" data-q="${esc(s.text)}" ${aiBusy || !state.geminiKeySet || state.modelGenerating ? 'disabled' : ''}><span class="l">${esc(s.type)}</span>${esc(s.text)}</button>`).join('')}</div>`;
   }
   if (r.error)
     h =
@@ -2240,34 +2925,52 @@ function renderAiResultCell(key, value, row = null) {
 }
 
 async function sendChat() {
-  const q = $('#ai-q').value.trim();
+  if (!state.connected || state.tab !== 'ai' || !state.selectedCol) return;
+  const input = $('#ai-q');
+  const q = input?.value.trim();
   if (!q || aiBusy) return;
-  $('#ai-q').value = '';
+  if (!state.geminiKeySet || !getExplore(state.selectedCol) || state.modelGenerating) {
+    renderAi();
+    return;
+  }
+  const context = captureRequestContext();
+  const collection = state.selectedCol;
+  const request = ++chatRequest;
+  const controller = new AbortController();
+  chatController?.abort();
+  chatController = controller;
+  const isCurrent = () => isCurrentRequestContext(context) && request === chatRequest;
+  const history = state.chatHistory
+    .filter((m) => !m.thinking && (m.role === 'user' || (m.role === 'assistant' && m.response)))
+    .map((m) => ({
+      role: m.role,
+      text: m.role === 'user' ? m.text : `Query: ${m.response.query}\nResult: ${m.response.summary}`,
+    }));
+  input.value = '';
   aiBusy = true;
   state.chatHistory.push({ role: 'user', text: q });
-  state.chatHistory.push({ role: 'assistant', text: 'Thinking', thinking: true });
+  const pending = { role: 'assistant', text: 'Thinking', thinking: true };
+  state.chatHistory.push(pending);
   renderAi();
   try {
-    const history = state.chatHistory
-      .filter((m) => !m.thinking && (m.role === 'user' || (m.role === 'assistant' && m.response)))
-      .map((m) => ({
-        role: m.role,
-        text: m.role === 'user' ? m.text : `Query: ${m.response.query}\nResult: ${m.response.summary}`,
-      }));
-    // drop the most recent user (we'll re-send via question)
-    history.pop();
     const response = await api('/api/conversational/ask', {
       method: 'POST',
-      body: { question: q, history, collection: state.selectedCol },
+      body: { question: q, history, collection },
+      signal: controller.signal,
     });
-    state.chatHistory = state.chatHistory.filter((m) => !m.thinking);
+    if (!isCurrent()) return;
+    state.chatHistory = state.chatHistory.filter((m) => m !== pending);
     state.chatHistory.push({ role: 'assistant', response });
   } catch (e) {
-    state.chatHistory = state.chatHistory.filter((m) => !m.thinking);
-    state.chatHistory.push({ role: 'assistant', error: e.message });
+    if (!isCurrent()) return;
+    state.chatHistory = state.chatHistory.filter((m) => m !== pending);
+    state.chatHistory.push({ role: 'assistant', error: e.message || String(e) });
   } finally {
-    aiBusy = false;
-    renderAi();
+    if (isCurrent()) {
+      chatController = null;
+      aiBusy = false;
+      renderAi();
+    }
   }
 }
 
@@ -2275,9 +2978,31 @@ async function sendChat() {
 // Chart rendering (Chart.js)
 // ─────────────────────────────────────────────────────────────────
 const PALETTE = ['#2c5aa0', '#0a8f4e', '#b06d00', '#6d4ab8', '#c02929', '#3771c8', '#1a8a8f', '#a3a83a'];
+const aiCharts = new Map();
+
+function destroyAiCharts() {
+  for (const chart of aiCharts.values()) chart.destroy();
+  aiCharts.clear();
+}
 
 function drawChart(canvas, chart, data) {
-  if (!chart || !data || data.length === 0) return;
+  if (!chart || !Array.isArray(data) || data.length === 0 || !Array.isArray(chart.yColumns) || !chart.yColumns.length)
+    return;
+  const previous = aiCharts.get(canvas);
+  if (previous) {
+    previous.destroy();
+    aiCharts.delete(canvas);
+  }
+  for (const [oldCanvas, instance] of aiCharts) {
+    if (!oldCanvas.isConnected) {
+      instance.destroy();
+      aiCharts.delete(oldCanvas);
+    }
+  }
+  if (typeof globalThis.Chart !== 'function') {
+    canvas.replaceWith(document.createTextNode('Chart unavailable. The result data is shown above.'));
+    return;
+  }
   const labels = data.map((r) => String(r[chart.xColumn] ?? ''));
   let datasets;
   if (chart.seriesColumn) {
@@ -2307,7 +3032,7 @@ function drawChart(canvas, chart, data) {
     }));
     canvas._labels = labels;
   }
-  new Chart(canvas, {
+  const instance = new globalThis.Chart(canvas, {
     type: chart.type,
     data: { labels: canvas._labels, datasets },
     options: {
@@ -2328,6 +3053,7 @@ function drawChart(canvas, chart, data) {
             },
     },
   });
+  aiCharts.set(canvas, instance);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -2335,9 +3061,12 @@ function drawChart(canvas, chart, data) {
 // ─────────────────────────────────────────────────────────────────
 let pendingConfirm = null;
 function confirmAction(title, msg, onConfirm) {
+  const context = captureRequestContext();
   $('#confirm-title').textContent = title;
   $('#confirm-msg').textContent = msg;
-  pendingConfirm = onConfirm;
+  pendingConfirm = () => {
+    if (isCurrentRequestContext(context)) return onConfirm();
+  };
   openModal('modal-confirm');
 }
 $('#confirm-ok').addEventListener('click', () => {
@@ -2424,27 +3153,41 @@ $('#cm-manual-compact')?.addEventListener('click', () => {
     runManualCompaction,
   );
 });
-$('#cm-incremental-compact')?.addEventListener('click', () => {
-  closeConnMenu();
-  confirmAction(
-    'Run one incremental compaction step?',
-    'This moves a small batch of records and index units without rewriting the whole database.',
-    runIncrementalCompactionStep,
-  );
-});
+
 $('#cm-auto-compact')?.addEventListener('change', (event) => {
   setAutoCompaction(event.target.checked);
 });
 $('#cm-disconnect').addEventListener('click', async () => {
+  if (connectionBusy || !state.connected) return;
   closeConnMenu();
+  connectionBusy = true;
+  invalidateRequestContext('database');
+  updateConnState();
   try {
     await api('/api/disconnect', { method: 'POST' });
-    resetDisconnectedState();
+    resetConnectionView();
     toast('Disconnected', 'ok');
-    updateConnState();
     openModal('modal-connect');
   } catch (e) {
     toast(e.message, 'err');
+    let status = null;
+    try {
+      status = await api('/api/status');
+    } catch {
+      // Leave the connection dialog usable if the daemon is unreachable.
+    }
+    resetConnectionView();
+    if (status?.connected) {
+      state.connected = true;
+      state.filepath = status.filepath;
+      await loadCollections();
+      await loadModel();
+      await refreshDatabaseStatus();
+      render();
+    } else openModal('modal-connect');
+  } finally {
+    connectionBusy = false;
+    updateConnState();
   }
 });
 $('#sb-add-collection').addEventListener('click', openCollectionDocumentModal);
@@ -2461,85 +3204,86 @@ $('#doc-image-file').addEventListener('change', () =>
 );
 
 // Connect modal
-$('#connect-open').addEventListener('click', async () => {
+async function connectDatabase(mode) {
+  if (connectionBusy) return;
   const fp = $('#connect-filepath').value.trim();
   if (!fp) {
     $('#connect-err').classList.remove('hidden');
     $('#connect-err').textContent = 'Provide a file path.';
     return;
   }
+  connectionBusy = true;
+  for (const id of ['connect-open', 'connect-create', 'connect-demo']) $('#' + id).disabled = true;
+  $('#connect-filepath').disabled = true;
   $('#connect-err').classList.add('hidden');
+  resetConnectionView();
   try {
-    const { message } = await api('/api/connect', { method: 'POST', body: { filepath: fp } });
-    state.connected = true;
-    state.filepath = fp;
+    const endpoint = mode === 'open' ? '/api/connect' : '/api/create';
+    const { message } = await api(endpoint, { method: 'POST', body: { filepath: fp } });
+    const status = await api('/api/status');
+    if (!status.connected) throw new Error('The database did not open.');
+    state.connected = status.connected;
+    state.filepath = status.filepath;
+    state.databaseStatus = status;
     toast(message, 'ok');
     closeModal('modal-connect');
     updateConnState();
     await loadCollections();
     await loadModel();
+    if (mode === 'demo') await seedDemoEmployees();
     render();
   } catch (e) {
+    // A failed switch may have closed the old connection. Reconcile with the daemon.
+    try {
+      const status = await api('/api/status');
+      if (status.connected) {
+        state.connected = true;
+        state.filepath = status.filepath;
+        state.databaseStatus = status;
+        await loadCollections();
+        await loadModel();
+        render();
+      } else resetConnectionView();
+    } catch {
+      resetConnectionView();
+    }
+    openModal('modal-connect');
     $('#connect-err').classList.remove('hidden');
     $('#connect-err').textContent = e.message;
-  }
-});
-$('#connect-create').addEventListener('click', async () => {
-  const fp = $('#connect-filepath').value.trim();
-  if (!fp) {
-    $('#connect-err').classList.remove('hidden');
-    $('#connect-err').textContent = 'Provide a file path.';
-    return;
-  }
-  $('#connect-err').classList.add('hidden');
-  try {
-    const { message } = await api('/api/create', { method: 'POST', body: { filepath: fp } });
-    state.connected = true;
-    state.filepath = fp;
-    toast(message, 'ok');
-    closeModal('modal-connect');
+  } finally {
+    connectionBusy = false;
+    for (const id of ['connect-open', 'connect-create', 'connect-demo']) $('#' + id).disabled = false;
+    $('#connect-filepath').disabled = false;
     updateConnState();
-    await loadCollections();
-    await loadModel();
-    render();
-  } catch (e) {
-    $('#connect-err').classList.remove('hidden');
-    $('#connect-err').textContent = e.message;
   }
-});
-$('#connect-demo').addEventListener('click', async () => {
-  const fp = $('#connect-filepath').value.trim();
-  if (!fp) {
-    $('#connect-err').classList.remove('hidden');
-    $('#connect-err').textContent = 'Provide a file path.';
-    return;
-  }
-  $('#connect-err').classList.add('hidden');
-  try {
-    const { message } = await api('/api/create', { method: 'POST', body: { filepath: fp } });
-    state.connected = true;
-    state.filepath = fp;
-    closeModal('modal-connect');
-    updateConnState();
-    toast(message, 'ok');
-    await seedDemoEmployees();
-  } catch (e) {
-    $('#connect-err').classList.remove('hidden');
-    $('#connect-err').textContent = e.message;
-  }
-});
+}
+$('#connect-open').addEventListener('click', () => connectDatabase('open'));
+for (const [id, mode] of [
+  ['connect-create', 'create'],
+  ['connect-demo', 'demo'],
+]) {
+  $('#' + id).addEventListener('click', () => {
+    if (connectionBusy) return;
+    confirmAction('Create database?', 'An existing file at this path will be replaced.', () => connectDatabase(mode));
+  });
+}
 
 // Settings modal
 $('#set-save-gemini').addEventListener('click', async () => {
+  const save = $('#set-save-gemini');
+  if (save.disabled) return;
   const key = $('#set-gemini-key').value.trim();
   if (!key) {
     $('#set-gemini-err').classList.remove('hidden');
     $('#set-gemini-err').textContent = 'Provide a key.';
     return;
   }
+  save.disabled = true;
+  $('#set-gemini-ok').classList.add('hidden');
   try {
     await api('/api/settings/gemini-key', { method: 'POST', body: { key } });
     state.geminiKeySet = true;
+    $('#set-gemini-key').value = '';
     $('#set-gemini-ok').classList.remove('hidden');
     $('#set-gemini-err').classList.add('hidden');
     updateConnState();
@@ -2548,12 +3292,20 @@ $('#set-save-gemini').addEventListener('click', async () => {
   } catch (e) {
     $('#set-gemini-err').classList.remove('hidden');
     $('#set-gemini-err').textContent = e.message;
+  } finally {
+    save.disabled = false;
   }
 });
 // Start
 bootstrap();
+let statusPolling = false;
 setInterval(async () => {
-  if (!state.connected) return;
-  await refreshDatabaseStatus();
-  if (!state.selectedCol && state.tab === 'overview') renderOverview();
+  if (!state.connected || connectionBusy || statusPolling) return;
+  statusPolling = true;
+  try {
+    const status = await refreshDatabaseStatus();
+    if (status && !state.selectedCol && state.tab === 'overview') renderOverview();
+  } finally {
+    statusPolling = false;
+  }
 }, 5000);

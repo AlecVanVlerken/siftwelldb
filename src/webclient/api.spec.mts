@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import { ApiRouter, readLimit } from './api.mjs';
-import type { DatabaseService } from './service.mjs';
+import { DatabaseInputError, DatabaseService } from './service.mjs';
 import type { ConversationalService } from './conversational-service.mjs';
 import type { SemanticModel } from '../conversational/semanticModel.mjs';
 import type { AnalyticsResponse } from '../conversational/conversationalEngine.mjs';
@@ -85,6 +85,13 @@ function createConversationalStub(overrides: Partial<ConversationalService> = {}
     hasExploreForCollection() {
       return false;
     },
+    onDisconnect() {},
+    onConnect() {
+      return Promise.resolve();
+    },
+    removeCollection() {
+      return Promise.resolve();
+    },
     generateModel() {
       return Promise.resolve({ model: { explores: [] } as unknown as SemanticModel, enriched: false });
     },
@@ -124,6 +131,54 @@ describe('readLimit', () => {
 });
 
 describe('ApiRouter', () => {
+  it.each([{}, { all: false }, { ids: [] }, { all: true, ids: ['a'] }, { ids: [{}] }])(
+    'rejects ambiguous or invalid bulk selection %j',
+    async (body) => {
+      const router = new ApiRouter(createConnectedDbStub());
+      const res = await handle(router, 'POST', '/api/documents/books/bulk-delete', JSON.stringify(body));
+      expect(res.statusCode).toBe(400);
+    },
+  );
+
+  it('passes explicit bulk selection to the service without SQL conversion', async () => {
+    let captured: unknown;
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        mutateDocuments(collection, selection, edit) {
+          captured = { collection, selection, edit };
+          return Promise.resolve({ affected: 2 });
+        },
+      }),
+    );
+    const res = await handle(
+      router,
+      'POST',
+      '/api/documents/books/bulk-edit',
+      JSON.stringify({ ids: ['a', 42], field: 'pages', value: 99 }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(captured).toEqual({
+      collection: 'books',
+      selection: { ids: ['a', 42] },
+      edit: { field: 'pages', value: 99 },
+    });
+  });
+
+  it.each([
+    { field: 'id', value: 'changed' },
+    { field: 'pages', value: null },
+    { field: 'pages', value: {} },
+  ])('rejects unsafe bulk edit %j', async (edit) => {
+    const router = new ApiRouter(createConnectedDbStub());
+    const res = await handle(router, 'POST', '/api/documents/books/bulk-edit', JSON.stringify({ all: true, ...edit }));
+    expect(res.statusCode).toBe(400);
+  });
+  it('returns disconnected database status so polling can detect a closed connection', async () => {
+    const res = await handle(new ApiRouter(new DatabaseService()), 'GET', '/api/database/status');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ connected: false, filepath: null, size: null });
+  });
+
   it('returns status while disconnected', async () => {
     const router = new ApiRouter(createDbStub());
 
@@ -141,6 +196,236 @@ describe('ApiRouter', () => {
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body)).toEqual({ error: 'Invalid JSON' });
   });
+
+  it.each(['null', '[]', '42', '"filepath"'])('rejects non-object JSON bodies: %s', async (body) => {
+    const res = await handle(new ApiRouter(createDbStub()), 'POST', '/api/connect', body);
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Request body must be a JSON object' });
+  });
+
+  it('preserves UTF-8 values across split request chunks', async () => {
+    let inserted: unknown;
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        insertDocument(_collection, document) {
+          inserted = document;
+          return Promise.resolve();
+        },
+      }),
+    );
+    const body = Buffer.from(JSON.stringify({ document: { id: 'b1', title: 'Café' } }));
+    const split = body.indexOf(Buffer.from('é')) + 1;
+    const req = Object.assign(Readable.from([body.subarray(0, split), body.subarray(split)]), { method: 'POST' });
+    const res = createResponse();
+    await router.handle(
+      req as unknown as Parameters<ApiRouter['handle']>[0],
+      res as unknown as Parameters<ApiRouter['handle']>[1],
+      new URL('http://localhost/api/documents/books'),
+    );
+    expect(res.statusCode).toBe(201);
+    expect(inserted).toEqual({ id: 'b1', title: 'Café' });
+  });
+
+  it('does not suppress invalid JSON on embedding preload', async () => {
+    const res = await handle(new ApiRouter(createDbStub()), 'POST', '/api/embeddings/preload', '{');
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Invalid JSON' });
+  });
+
+  it.each(['-1', '1.5', 'NaN', '9007199254740992'])('rejects invalid pagination offsets: %s', async (offset) => {
+    const res = await handle(new ApiRouter(createConnectedDbStub()), 'GET', `/api/documents/books?offset=${offset}`);
+    expect(res.statusCode).toBe(400);
+  });
+
+  it.each(['wordsearch', 'contentsearch'])('validates %s limits and offsets', async (route) => {
+    const router = new ApiRouter(createConnectedDbStub());
+    expect((await handle(router, 'GET', `/api/documents/books/${route}?word=test&limit=abc`)).statusCode).toBe(400);
+    expect((await handle(router, 'GET', `/api/documents/books/${route}?word=test&offset=-1`)).statusCode).toBe(400);
+  });
+
+  it('rejects mixing offset and cursor pagination', async () => {
+    const res = await handle(new ApiRouter(createConnectedDbStub()), 'GET', '/api/documents/books?offset=0&cursor=b1');
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('passes offset pagination and total counts through to the client', async () => {
+    let requestedOffset: number | undefined;
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        getDocuments(_collection, _key, _cursor, _limit, _sortBy, _sortDir, offset) {
+          requestedOffset = offset;
+          return Promise.resolve({ documents: ['{"id":"b2"}'], total: 3, hasMore: true });
+        },
+      }),
+    );
+    const res = await handle(router, 'GET', '/api/documents/books?offset=1&limit=1');
+    expect(res.statusCode).toBe(200);
+    expect(requestedOffset).toBe(1);
+    expect(JSON.parse(res.body)).toEqual({ documents: ['{"id":"b2"}'], total: 3, hasMore: true });
+  });
+
+  it.each([
+    { document: { title: 'Missing id' } },
+    { document: { id: 'b1', title: ['Invalid field'] } },
+    { document: { id: 'b1' }, compression: { title: 'unknown-codec' } },
+    { document: { id: 'b1' }, compression: [] },
+  ])('rejects invalid writes before touching the database: %j', async (body) => {
+    let writes = 0;
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        insertDocument() {
+          writes++;
+          return Promise.resolve();
+        },
+      }),
+    );
+    const res = await handle(router, 'POST', '/api/documents/books', JSON.stringify(body));
+    expect(res.statusCode).toBe(400);
+    expect(writes).toBe(0);
+  });
+
+  it('rejects changing a document id in a replacement', async () => {
+    const res = await handle(
+      new ApiRouter(createConnectedDbStub()),
+      'POST',
+      '/api/documents/books/b1/edit',
+      JSON.stringify({ document: { id: 'b2' } }),
+    );
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'Document id cannot be changed' });
+  });
+
+  it('returns actionable 400 responses for indexed values rejected before storage', async () => {
+    const message =
+      'Field "body" is too large for its index. Use an underscore-prefixed field for unindexed storage. Compression does not reduce index key size.';
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        insertDocument() {
+          return Promise.reject(new DatabaseInputError(message));
+        },
+      }),
+    );
+    const res = await handle(
+      router,
+      'POST',
+      '/api/documents/notes',
+      JSON.stringify({ document: { id: 'n1', body: 'x'.repeat(4200) }, compression: { body: 'gzip' } }),
+    );
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: message });
+  });
+
+  it('reads document metadata through one serialized service operation', async () => {
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        getDocumentMetadata(collection, id) {
+          expect([collection, id]).toEqual(['books', 'b1']);
+          return Promise.resolve({ storedSize: 4096, blockSize: 4096, compressions: { content: 'gzip' } });
+        },
+      }),
+    );
+    const res = await handle(router, 'GET', '/api/documents/books/b1/metadata');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ storedSize: 4096, blockSize: 4096, compressions: { content: 'gzip' } });
+  });
+
+  it('rebinds the conversational backend after vacuum swaps the database files', async () => {
+    let rebound = '';
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        vacuum() {
+          return Promise.resolve({ filepath: 'data.db' } as Awaited<ReturnType<DatabaseService['vacuum']>>);
+        },
+      }),
+      createConversationalStub({
+        onConnect(filepath) {
+          rebound = filepath;
+          return Promise.resolve();
+        },
+      }),
+    );
+    const res = await handle(router, 'POST', '/api/database/vacuum');
+    expect(res.statusCode).toBe(200);
+    expect(rebound).toBe('data.db');
+  });
+
+  it('serializes conversational model saves with other database work', async () => {
+    let operation = '';
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        runExclusiveOperation(name, task) {
+          operation = name;
+          return task();
+        },
+      }),
+      createConversationalStub(),
+    );
+    const res = await handle(router, 'PUT', '/api/conversational/model', JSON.stringify({ model: '{"explores":[]}' }));
+    expect(res.statusCode).toBe(200);
+    expect(operation).toBe('conversational-model-save');
+  });
+
+  it('saves explicit field compression defaults through the service', async () => {
+    let saved: Record<string, string> = {};
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        setCompressionDefaults(collection, defaults) {
+          expect(collection).toBe('books');
+          saved = defaults;
+          return Promise.resolve();
+        },
+        getCompressionDefaults() {
+          return saved as ReturnType<DatabaseService['getCompressionDefaults']>;
+        },
+      }),
+    );
+    const res = await handle(
+      router,
+      'PUT',
+      '/api/compression/defaults',
+      JSON.stringify({ collection: 'books', defaults: { _body: 'gzip', title: 'none' } }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({
+      defaults: { _body: 'gzip', title: 'none' },
+      message: 'Compression defaults saved',
+    });
+  });
+
+  it('prunes collection explores before releasing the delete operation', async () => {
+    const calls: string[] = [];
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        async deleteCollection(collection, afterDelete) {
+          calls.push(`delete:${collection}`);
+          if (afterDelete) await afterDelete();
+          calls.push('release');
+        },
+      }),
+      createConversationalStub({
+        removeCollection(collection) {
+          calls.push(`prune:${collection}`);
+          return Promise.resolve();
+        },
+      }),
+    );
+    const res = await handle(router, 'DELETE', '/api/collections/books');
+    expect(res.statusCode).toBe(200);
+    expect(calls).toEqual(['delete:books', 'prune:books', 'release']);
+  });
+
+  it.each([null, [], { title: 'unknown' }, { title: 'off' }, { id: 'gzip' }, { '': 'gzip' }])(
+    'rejects invalid default maps before saving: %j',
+    async (defaults) => {
+      const res = await handle(
+        new ApiRouter(createConnectedDbStub()),
+        'PUT',
+        '/api/compression/defaults',
+        JSON.stringify({ collection: 'books', defaults }),
+      );
+      expect(res.statusCode).toBe(400);
+    },
+  );
 
   it('returns 413 for oversized JSON request bodies', async () => {
     const router = new ApiRouter(createDbStub());
@@ -178,7 +463,7 @@ describe('ApiRouter', () => {
         getDocuments(_collection, _iterableKey, _cursor, _limit, sortBy, sortDir) {
           receivedSortBy = sortBy;
           receivedSortDir = sortDir;
-          return Promise.resolve({ documents: [], hasMore: false });
+          return Promise.resolve({ documents: [], total: 0, hasMore: false });
         },
       } as Partial<DatabaseService>),
     );

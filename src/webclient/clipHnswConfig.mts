@@ -107,19 +107,15 @@ function loadClipModels(): Promise<ClipModels> {
     loadState.clip = 'loading';
     loadError.clip = null;
     modelsPromise = (async () => {
-      console.log('Lazy loading huggingface transformers for semantic search...');
       const { AutoTokenizer, AutoProcessor, CLIPTextModelWithProjection, CLIPVisionModelWithProjection, RawImage } =
         await import('@huggingface/transformers');
 
-      console.log('Loading CLIP tokenizer & text model...');
       const tokenizer = await AutoTokenizer.from_pretrained(CLIP_MODEL_ID);
       const textModel = await CLIPTextModelWithProjection.from_pretrained(CLIP_MODEL_ID, { dtype: 'fp32' });
 
-      console.log('Loading CLIP processor & vision model...');
       const processor = await AutoProcessor.from_pretrained(CLIP_MODEL_ID);
       const visionModel = await CLIPVisionModelWithProjection.from_pretrained(CLIP_MODEL_ID, { dtype: 'fp32' });
 
-      console.log('CLIP models loaded successfully.');
       loadState.clip = 'ready';
       return {
         tokenizer: tokenizer as ClipModels['tokenizer'],
@@ -143,10 +139,9 @@ function loadMiniLmModel(): Promise<MiniLmModels> {
     loadState.minilm = 'loading';
     loadError.minilm = null;
     miniLmPromise = (async () => {
-      console.log('Lazy loading MiniLM text embedding model...');
       const { pipeline } = await import('@huggingface/transformers');
       const extractor = await pipeline('feature-extraction', MINILM_MODEL_ID, { dtype: 'fp32' });
-      console.log('MiniLM model loaded successfully.');
+
       loadState.minilm = 'ready';
       return { extractor: extractor as MiniLmModels['extractor'] };
     })().catch((err) => {

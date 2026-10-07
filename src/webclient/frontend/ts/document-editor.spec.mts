@@ -29,6 +29,23 @@ describe('document-editor helpers', () => {
     });
   });
 
+  it.each(['true', 'false', 'null', '{}', '[]', '1e400'])('rejects unsupported id %s before sending it', (id) => {
+    expect(validateDocumentInput(`{"id":${id}}`)).toMatchObject({ ok: false });
+  });
+
+  it('preserves the type as well as the value of an existing id', () => {
+    expect(validateDocumentInput('{"id":"1"}', { existingId: 1 })).toMatchObject({ ok: false });
+    expect(validateDocumentInput('{"id":1}', { existingId: '1' })).toMatchObject({ ok: false });
+    expect(validateDocumentInput('{"id":0}', { existingId: 0 })).toEqual({ ok: true, value: { id: 0 } });
+  });
+
+  it.each(['null', '[]', '{}', '1e400'])('rejects field values unsupported by the storage engine: %s', (field) => {
+    expect(validateDocumentInput(`{"id":"a","details":${field}}`)).toEqual({
+      ok: false,
+      error: 'Field "details" must be a string, a finite number, or a boolean.',
+    });
+  });
+
   it('normalizes image data URLs to raw base64 storage values', () => {
     expect(validateDocumentInput('{"id":"a","photo.jpg":"data:image/jpeg;base64,abc123"}')).toEqual({
       ok: true,
@@ -86,8 +103,17 @@ describe('document-editor helpers', () => {
       name: '',
       salary: 0,
       active: false,
-      tags: [],
-      meta: {},
     });
+  });
+
+  it('builds an insertable template with an id absent from the loaded documents', () => {
+    const template = buildDocumentTemplate('employees', [
+      { id: 'employees-1', name: 'Alice' },
+      { id: 'employees-2', name: 'Bob' },
+      { id: 'employees-4', name: 'Carol' },
+    ]);
+
+    expect(template).toEqual({ id: 'employees-3', name: '' });
+    expect(validateDocumentInput(JSON.stringify(template))).toEqual({ ok: true, value: template });
   });
 });
