@@ -93,13 +93,6 @@ export function parseJsonObjectInput(raw: string): JsonObjectParseResult {
   return { ok: true, value: parsed as JsonObject };
 }
 
-function normalizeDocumentId(value: unknown): string | null {
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
-  }
-  return null;
-}
-
 export function validateDocumentInput(
   raw: string,
   options: { existingId?: unknown; requireId?: boolean; imagePayloads?: ImagePayloads } = {},
@@ -109,15 +102,28 @@ export function validateDocumentInput(
 
   const { value } = parsed;
   const hasId = Object.prototype.hasOwnProperty.call(value, 'id');
-  const normalizedId = normalizeDocumentId(value['id']);
+  const id = value['id'];
   if (options.requireId !== false && !hasId) {
     return { ok: false, error: 'Document must include an "id" field.' };
   }
-  if (hasId && (normalizedId === null || normalizedId.trim() === '')) {
+  if (hasId && typeof id !== 'string' && (typeof id !== 'number' || !Number.isFinite(id))) {
+    return { ok: false, error: 'Document "id" must be a string or a finite number.' };
+  }
+  if (typeof id === 'string' && id.trim() === '') {
     return { ok: false, error: 'Document "id" must not be empty.' };
   }
-  if (options.existingId !== undefined && normalizedId !== normalizeDocumentId(options.existingId)) {
+  if (options.existingId !== undefined && id !== options.existingId) {
     return { ok: false, error: `The "id" field is read-only and must remain ${JSON.stringify(options.existingId)}.` };
+  }
+
+  for (const [field, fieldValue] of Object.entries(value)) {
+    if (field === 'id') continue;
+    if (
+      !['string', 'number', 'boolean'].includes(typeof fieldValue) ||
+      (typeof fieldValue === 'number' && !Number.isFinite(fieldValue))
+    ) {
+      return { ok: false, error: `Field ${JSON.stringify(field)} must be a string, a finite number, or a boolean.` };
+    }
   }
 
   return { ok: true, value: restoreCompactedDocumentImages(value, options.imagePayloads) };
@@ -126,19 +132,22 @@ export function validateDocumentInput(
 function placeholderFor(value: unknown): unknown {
   if (typeof value === 'number') return 0;
   if (typeof value === 'boolean') return false;
-  if (Array.isArray(value)) return [];
-  if (value && typeof value === 'object') return {};
   return '';
 }
 
 export function buildDocumentTemplate(collection: string, docs: JsonObject[] = []): JsonObject {
-  const template: JsonObject = { id: `${collection || 'document'}-1` };
+  const prefix = collection || 'document';
+  const existingIds = new Set(docs.map((doc) => String(doc['id'])));
+  let sequence = 1;
+  while (existingIds.has(`${prefix}-${sequence}`)) sequence++;
+  const template: JsonObject = { id: `${prefix}-${sequence}` };
   const keys = Array.from(new Set(docs.flatMap((doc) => Object.keys(doc)))).filter(
     (key) => !key.startsWith('_') && key !== 'id',
   );
 
   for (const key of keys) {
     const sample = docs.find((doc) => doc[key] !== undefined && doc[key] !== null)?.[key];
+    if (!['string', 'number', 'boolean'].includes(typeof sample)) continue;
     template[key] = placeholderFor(sample);
   }
 

@@ -32,9 +32,6 @@
               ><input type="checkbox" id="cm-auto-compact" disabled /> Auto compact in background</label
             >
             <div class="cm-note" id="cm-compact-status">Open a database to compact.</div>
-            <button class="cm-item" id="cm-incremental-compact" type="button" disabled>
-              Run incremental compact step…
-            </button>
             <button class="cm-item" id="cm-manual-compact" type="button" disabled>Manual full vacuum compact…</button>
             <div class="cm-sep"></div>
             <button class="cm-item dn" id="cm-disconnect" type="button" disabled>
@@ -168,10 +165,6 @@
             <span></span>
           </div>
           <div class="err hidden" id="doc-err"></div>
-          <p style="margin-bottom: 0; font-size: 12px">
-            This uses the object API directly. Image fields are stored under a stable name such as <code>photo</code>,
-            with MIME metadata kept in a hidden <code>_photo_mime</code> sidecar.
-          </p>
         </div>
         <div class="modal-foot">
           <button class="sec" data-close="modal-document">Cancel</button>
@@ -193,21 +186,18 @@
           </div>
           <div class="ttl">
             Open a database
-            <div class="sub">Connect to an existing SimpleDBMS file, or create a new one.</div>
+            <div class="sub">Open a SiftwellDB database file, or create a new one.</div>
           </div>
         </div>
         <div class="modal-body">
           <label>Database file</label>
           <input type="text" id="connect-filepath" placeholder="e.g. data.db" value="data.db" autocomplete="off" />
           <div class="err hidden" id="connect-err"></div>
-          <p style="margin-bottom: 0; font-size: 12px">
-            If the file exists it will be opened, otherwise <em>Create new</em> will initialize a fresh one.
-          </p>
         </div>
         <div class="modal-foot">
           <button class="sec" id="connect-demo">Create demo database</button>
           <button class="sec" id="connect-create">Create new</button>
-          <button class="pri" id="connect-open">Open</button>
+          <button class="pri" id="connect-open">Open / create</button>
         </div>
       </div>
     </div>
@@ -238,9 +228,6 @@
           <input type="password" id="set-gemini-key" placeholder="Paste GEMINI_API_KEY..." autocomplete="off" />
           <div class="err hidden" id="set-gemini-err"></div>
           <div class="ok hidden" id="set-gemini-ok">Key saved. AI features are enabled.</div>
-          <p style="margin-bottom: 6px; font-size: 12px">
-            Stored to <code>.env</code> on the daemon host. Cleared whenever the daemon restarts unless persisted there.
-          </p>
         </div>
         <div class="modal-foot">
           <button class="sec" data-close="modal-settings">Close</button>
@@ -299,6 +286,25 @@
         <div class="modal-foot">
           <button class="sec" data-close="modal-model">Cancel</button>
           <button class="pri" id="mdl-save">Save changes</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm modal -->
+    <div class="modal-bg hidden" id="modal-bulk-edit">
+      <div class="modal-box" style="max-width: 480px">
+        <div class="modal-head"><div class="ttl">Edit a field on selected documents</div></div>
+        <div class="modal-body">
+          <p id="bulk-scope"></p>
+          <label for="bulk-field">Field</label
+          ><select id="bulk-field"></select>
+          <label for="bulk-value">New value as JSON</label>
+          <input id="bulk-value" placeholder='"shipped", 25 or true' />
+          <div class="err hidden" id="bulk-edit-error"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="sec" data-close="modal-bulk-edit">Cancel</button
+          ><button class="pri" id="bulk-edit-save">Review change</button>
         </div>
       </div>
     </div>
