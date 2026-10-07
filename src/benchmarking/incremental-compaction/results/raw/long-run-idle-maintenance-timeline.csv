@@ -1,4 +1,0 @@
-scenario,phase,status,beforeBlocks,afterBlocks,beforeAmplification,afterAmplification,stepsTaken,shrunkBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks,timeTakenMs
-long-run-idle-maintenance,1,plateau-no-safe-progress,97,88,1.4058,1.2754,4,9,4,0,5,9,7.577
-long-run-idle-maintenance,2,no-op,146,146,1.2373,1.2373,1,0,0,0,0,0,0.089
-long-run-idle-maintenance,3,no-op,195,195,1.1677,1.1677,1,0,0,0,0,0,0.135

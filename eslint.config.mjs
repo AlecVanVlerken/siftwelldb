@@ -1,54 +1,29 @@
-import typescriptEslint from '@typescript-eslint/eslint-plugin';
-import tsParser from '@typescript-eslint/parser';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import js from '@eslint/js';
-import { FlatCompat } from '@eslint/eslintrc';
+import tseslint from 'typescript-eslint';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-  recommendedConfig: js.configs.recommended,
-  allConfig: js.configs.all,
-});
+const typescriptFiles = ['**/*.mts', '**/*.ts'];
 
-export default [
+export default tseslint.config(
+  { ignores: ['build/**', 'coverage/**', 'node_modules/**', 'hnsw-native/target/**'] },
   {
-    ignores: ['**/build/', '**/coverage/', 'eslint.config.mjs'],
-  },
-  ...compat.extends(
-    'eslint:recommended',
-    'plugin:@typescript-eslint/recommended',
-    'plugin:@typescript-eslint/recommended-requiring-type-checking',
-  ),
-  {
-    plugins: {
-      '@typescript-eslint': typescriptEslint,
-    },
-
+    ...js.configs.recommended,
+    files: ['**/*.mjs'],
     languageOptions: {
-      parser: tsParser,
-      ecmaVersion: 5,
-      sourceType: 'script',
-
-      parserOptions: {
-        project: ['./tsconfig.json'],
-      },
+      sourceType: 'module',
+      globals: { URL: 'readonly', console: 'readonly', process: 'readonly' },
     },
-
+  },
+  ...tseslint.configs.recommendedTypeChecked.map((config) => ({ ...config, files: typescriptFiles })),
+  {
+    files: typescriptFiles,
+    languageOptions: {
+      parserOptions: { project: './tsconfig.json', tsconfigRootDir: import.meta.dirname },
+    },
     rules: {
-      '@typescript-eslint/no-unused-vars': [
-        'warn',
-        {
-          argsIgnorePattern: '^_',
-          destructuredArrayIgnorePattern: '^_',
-        },
-      ],
-
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', destructuredArrayIgnorePattern: '^_' }],
       eqeqeq: ['error', 'always'],
       'guard-for-in': ['warn'],
       '@typescript-eslint/prefer-for-of': ['warn'],
     },
   },
-];
+);

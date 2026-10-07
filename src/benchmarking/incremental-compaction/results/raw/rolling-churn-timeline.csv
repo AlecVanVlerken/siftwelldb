@@ -1,5 +1,0 @@
-scenario,phase,beforeBlocks,afterBlocks,beforeAmplification,afterAmplification,stepsTaken,shrunkBlocks,timeTakenMs
-rolling-churn,1,60,60,1.0000,1.0000,1,0,
-rolling-churn,2,109,109,1.0000,1.0000,1,0,
-rolling-churn,3,160,160,1.0127,1.0127,1,0,
-rolling-churn,4,209,209,1.0000,1.0000,1,0,

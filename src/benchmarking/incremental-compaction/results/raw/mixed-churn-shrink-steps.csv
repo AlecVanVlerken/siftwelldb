@@ -1,8 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-mixed-churn-shrink,1,true,3.957,221,156,65,1.4167,905216,5,20480,5,0,0,5,5,0,0,5
-mixed-churn-shrink,2,true,3.814,216,156,60,1.3846,884736,5,40960,5,0,0,5,10,0,0,10
-mixed-churn-shrink,3,true,4.752,211,156,55,1.3526,864256,5,61440,5,0,0,5,15,0,0,15
-mixed-churn-shrink,4,true,3.633,206,156,50,1.3205,843776,5,81920,5,0,0,5,20,0,0,20
-mixed-churn-shrink,5,true,3.884,201,156,45,1.2885,823296,5,102400,5,0,0,5,25,0,0,25
-mixed-churn-shrink,6,true,4.479,196,156,40,1.2564,802816,5,122880,5,0,0,5,30,0,0,30
-mixed-churn-shrink,7,true,3.820,195,156,39,1.2500,798720,1,126976,1,0,0,1,31,0,0,31

@@ -1,8 +1,8 @@
 // author: Conversational Analytics Module
 
 import fs from 'node:fs';
-import type { SimpleDbms } from '../dbms/simpledbms.mjs';
-import type { FieldValue } from '../dbms/document.mjs';
+import type { SimpleDbms } from '../database/simpledbms.mjs';
+import type { FieldValue } from '../database/document.mjs';
 import type { LLMProvider } from './llmProvider.mjs';
 
 export type FieldType = 'string' | 'number' | 'boolean';

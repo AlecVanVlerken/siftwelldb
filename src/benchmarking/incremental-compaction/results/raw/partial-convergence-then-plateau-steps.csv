@@ -1,8 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-partial-convergence-then-plateau,1,true,1.845,55,34,21,1.6176,225280,3,12288,3,0,0,3,3,0,0,3
-partial-convergence-then-plateau,2,true,1.643,52,34,18,1.5294,212992,3,24576,3,0,0,3,6,0,0,6
-partial-convergence-then-plateau,3,true,1.314,49,34,15,1.4412,200704,3,36864,3,0,0,3,9,0,0,9
-partial-convergence-then-plateau,4,true,1.134,46,34,12,1.3529,188416,3,49152,3,0,0,3,12,0,0,12
-partial-convergence-then-plateau,5,true,1.414,43,34,9,1.2647,176128,3,61440,3,0,0,3,15,0,0,15
-partial-convergence-then-plateau,6,true,1.113,42,34,8,1.2353,172032,1,65536,1,0,0,1,16,0,0,16
-partial-convergence-then-plateau,7,false,0.726,42,34,8,1.2353,172032,0,65536,0,0,0,0,16,0,0,16

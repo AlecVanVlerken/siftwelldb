@@ -3,10 +3,10 @@
 import type { LLMProvider, ChatMessage } from './llmProvider.mjs';
 import type { SemanticModel } from './semanticModel.mjs';
 import { modelToSchemaPrompt } from './semanticModel.mjs';
-import type { ParsedQuery, QueryResultRow } from '../dbms/querylanguage/querylanguage.mjs';
-import { QueryLanguage } from '../dbms/querylanguage/querylanguage.mjs';
+import type { ParsedQuery, QueryResultRow } from '../query/querylanguage.mjs';
+import { QueryLanguage } from '../query/querylanguage.mjs';
 import { QueryGenerator } from './queryGenerator.mjs';
-import { SimpleDbms } from '../dbms/simpledbms.mjs';
+import { SimpleDbms } from '../database/simpledbms.mjs';
 
 /**
  * Whitelist of query kinds the chat surface will execute. Anything not

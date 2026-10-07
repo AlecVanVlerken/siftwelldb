@@ -1,6 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-maintenance-stability,1,false,0.022,48,48,0,1.0000,196608,0,0,0,0,0,0,0,0,0,0
-maintenance-stability,2,false,0.011,68,68,0,1.0000,278528,0,0,0,0,0,0,0,0,0,0
-maintenance-stability,3,false,0.011,88,88,0,1.0000,360448,0,0,0,0,0,0,0,0,0,0
-maintenance-stability,4,false,0.011,108,108,0,1.0000,442368,0,0,0,0,0,0,0,0,0,0
-maintenance-stability,5,false,0.011,128,128,0,1.0000,524288,0,0,0,0,0,0,0,0,0,0

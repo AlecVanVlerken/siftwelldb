@@ -1,32 +1,35 @@
+# Generated builds, caches, and reports
 node_modules/
 build/
 coverage/
+hnsw-native/target/
+hnsw-native/.cargo/config.toml
+.cache/
+*.tsbuildinfo
+*.cpuprofile
+__pycache__/
+*.py[cod]
 
-src/benchmarking/large-dataset/db/
-src/benchmarking/datasets/
-uitleg/
-latex/
-.DS_Store
-Thumbs.db
+# Benchmark datasets and output
+benchmarks/**/results/
+benchmarks/large-dataset/db/
+benchmarks/datasets/
+benchmarks/hnsw/datasets/
 
-# vim swap files
-*.swp
+# Local databases and generated examples
 *.data
 *.db
+*.db.model.json
+*.wal
 *.log
-
 testdb
 demo-db/
 converse-db/
-src/benchmarking/results/
-src/benchmarking/hnsw/results/
-src/benchmarking/hnsw/datasets/gist/
-src/benchmarking/hnsw/datasets/sift/
+/map.html
 
-*.tsbuildinfo
-
-.vscode/
+# Local settings and editor artifacts
 .env
-*.md
-!README.md
-!licences.md
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp

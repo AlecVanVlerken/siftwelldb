@@ -1,6 +1,0 @@
-scenario,step,didWork,timeMs,totalBlocks,usedBlocks,freeBlocks,amplification,fileBytes,shrunkBlocksThisStep,cumulativeShrunkBytes,stepRelocatedDocuments,stepRelocatedBtreeNodes,stepRelocatedHnswUnits,stepReclaimedTailBlocks,relocatedDocuments,relocatedBtreeNodes,relocatedHnswUnits,reclaimedTailBlocks
-hnsw-tail-clear-sequence,1,true,0.908,98,51,47,1.9216,100352,1,1024,0,0,1,1,0,0,1,1
-hnsw-tail-clear-sequence,2,true,0.721,97,51,46,1.9020,99328,1,2048,0,0,1,1,0,0,2,2
-hnsw-tail-clear-sequence,3,true,0.743,96,51,45,1.8824,98304,1,3072,0,0,1,1,0,0,3,3
-hnsw-tail-clear-sequence,4,true,0.921,95,51,44,1.8627,97280,1,4096,0,0,1,1,0,0,4,4
-hnsw-tail-clear-sequence,5,true,0.720,94,51,43,1.8431,96256,1,5120,0,0,1,1,0,0,5,5

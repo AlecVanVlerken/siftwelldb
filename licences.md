@@ -11,9 +11,9 @@ This file is a repository-specific licence inventory for the current codebase st
 
 ## First-party code and generated artifacts
 
-- Files under `src/`, including local declaration files under `src/types/`, `hnsw-native/src/`, and the repository configuration files are first-party project code.
-- `src/hnsw/hnsw_native.dll` and `src/hnsw/libhnsw_native.so` are generated binaries built from the local `hnsw-native/` source tree.
-- Generated outputs such as `build/`, `hnsw-native/target/`, `map.html`, `testdb`, benchmark result files under `src/benchmarking/**/results/`, and database or WAL files such as `demo-db/*.data` and `demo-db/*.wal` are outputs of this repository's code. They do not add separate third-party software licences by themselves.
+- Files under `src/`, `tests/`, `scripts/`, `examples/`, and `benchmarks/`, including local declaration files under `src/types/`, `hnsw-native/src/`, and the repository configuration files are first-party project code.
+- `hnsw-native/prebuilt/hnsw_native.dll` and `hnsw-native/prebuilt/libhnsw_native.so` are generated binaries built from the local `hnsw-native/` source tree.
+- Generated outputs such as `build/`, `hnsw-native/target/`, `map.html`, `testdb`, benchmark result files under `benchmarks/**/results/`, and database or WAL files such as `demo-db/*.data` and `demo-db/*.wal` are outputs of this repository's code. They do not add separate third-party software licences by themselves.
 
 ## Local typing shims
 
@@ -65,18 +65,18 @@ The browser UI and generated semantic map load some libraries directly from jsDe
 | Location                            | Library    | Version selector in repo | Licence | Notes                                                          |
 | ----------------------------------- | ---------- | ------------------------ | ------- | -------------------------------------------------------------- |
 | `src/webclient/frontend/index.html` | `Chart.js` | `@4`                     | `MIT`   | The repo pins the major version, not an exact patch release.   |
-| `src/visualization/renderMap.mts`   | `D3`       | `@7`                     | `ISC`   | The generated `map.html` inherits the same runtime dependency. |
+| `examples/semantic-map/renderMap.mts`   | `D3`       | `@7`                     | `ISC`   | The generated `map.html` inherits the same runtime dependency. |
 
 ## Assets without complete licence metadata in the repo
 
-The image demo implementation in `src/demo/semanticImageSearch.demo.mts` downloads sample animal images from Wikipedia. It resolves an animal name through the Wikipedia REST summary API and then downloads the returned `thumbnail` or `originalimage` asset into `demo-db/images/`.
+The image demo implementation in `examples/semantic-image-search.mts` downloads sample animal images from Wikipedia. It resolves an animal name through the Wikipedia REST summary API and then downloads the returned `thumbnail` or `originalimage` asset into `examples/assets/images/`.
 
 The repository still does not record per-file source page URLs or licence terms for the committed image files themselves, so this document does not assign a licence to those assets.
 
 Assets affected by that limitation include:
 
-- `rabbit.jpg`
-- files under `demo-db/images/`
+- `examples/assets/rabbit.jpg`
+- files under `examples/assets/images/`
 
 ## What this file does not claim
 

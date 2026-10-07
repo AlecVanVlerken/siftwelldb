@@ -3,8 +3,8 @@
 
 import fs from 'node:fs';
 import readline from 'node:readline';
-import { RealFile } from '../core/file.mjs';
-import { SimpleDbms } from '../dbms/simpledbms.mjs';
+import { RealFile } from '../storage/file.mjs';
+import { SimpleDbms } from '../database/simpledbms.mjs';
 import { GeminiProvider } from './llmProvider.mjs';
 import { loadSemanticModel } from './semanticModel.mjs';
 import { ConversationalEngine } from './conversationalEngine.mjs';
