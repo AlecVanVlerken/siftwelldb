@@ -1,6 +1,6 @@
-# SimpleDBMS
+# SiftwellDB
 
-SimpleDBMS is a private Node.js and TypeScript database project for the P&O CW 2025-2026 coursework. It combines a WAL-backed storage engine, document-oriented CRUD operations, B+ tree indexes, optional HNSW-based semantic search, compaction tooling, a browser UI, a query-language CLI, and conversational analytics.
+SiftwellDB is a private Node.js and TypeScript database project originating from the P&O CW 2025-2026 coursework. It combines a WAL-backed storage engine, document-oriented CRUD operations, B+ tree indexes, optional HNSW-based semantic search, compaction tooling, a browser UI, a query-language CLI, and conversational analytics.
 
 ## Highlights
 
@@ -125,11 +125,16 @@ The repository includes multiple benchmark suites under `src/benchmarking/`, inc
 Useful commands:
 
 - `npm run benchmark:compression`
+- `npm run benchmark:pagination -- articles.db --total 100000`
+- `npm run benchmark:btree`
+- `npm run benchmark:dbms`
+- `npm run benchmark:hnsw`
+- `npm run benchmark:vacuum`
 - `npm run benchmark:incremental`
-- `npm run profile`
 
 Benchmark-specific documentation lives in:
 
+- `src/benchmarking/README.md` - suite inventory, small-run examples, and cleanup decisions
 - `src/benchmarking/hnsw/README.md`
 - `src/benchmarking/incremental-compaction/README.txt`
 - `src/benchmarking/large-dataset/README.txt`
