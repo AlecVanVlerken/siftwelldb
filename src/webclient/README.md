@@ -1,6 +1,6 @@
 # SiftwellDB webclient
 
-Build with `npm run build`, then run `npx tsx src/webclient/daemon.mts` and open
+Build with `npm run build`, then run `npx tsx src/webclient/server/daemon.mts` and open
 `http://localhost:8000`. Rebuild and restart the daemon after source changes.
 `Open / create` opens an existing database or initializes a missing file; the
 separate create actions replace existing files after confirmation.
@@ -10,7 +10,7 @@ separate create actions replace existing files after confirmation.
 Run from the repository root:
 
 ```powershell
-npx tsx src/webclient/seed-test-database.mts
+npx tsx scripts/seed-test-database.mts
 ```
 
 This creates `webclient-test.db` and its companion `webclient-test.db.log`.
@@ -18,14 +18,14 @@ It refuses to overwrite either file. To generate a fresh copy after destructive
 experiments, supply a different filename:
 
 ```powershell
-npx tsx src/webclient/seed-test-database.mts webclient-test-2.db
+npx tsx scripts/seed-test-database.mts webclient-test-2.db
 ```
 
 Open the generated file with **Open / create**, not a create action that replaces
 existing data. Keep the companion log beside the database. The seeder uses the
 same real MiniLM/CLIP configuration as the daemon and verifies counts, SQL and
 semantic searches after reopening. Initial model downloads may take several
-minutes. Photos come from the existing `demo-db/images` directory, with the
+minutes. Photos come from the existing `examples/assets/images` directory, with the
 service's bundled fallback when that optional directory is absent.
 
 | Collection      |                 Records | Try                                                                             |
@@ -53,7 +53,7 @@ DELETE FROM playground WHERE id = 'my-test';
 
 In Semantic Search, select `products` and text mode, then try **equipment for a
 rainy hiking trip**. In `support_tickets`, try **I want my money back**. In `photos`,
-use photo mode with **a bear in the wild**, or upload a photo from `demo-db/images`
+use photo mode with **a bear in the wild**, or upload a photo from `examples/assets/images`
 for image similarity search. Search runs within the selected collection.
 
 After edits/deletions, try manual incremental compaction or full vacuum and
@@ -119,15 +119,15 @@ The frontend uses the existing HTTP router, `DatabaseService`, and
 branches are unchanged. Engine CRUD type declarations now also accept numeric
 IDs, matching their underlying storage methods.
 
-| UI area                   | API routes                                                                                              | Behavior                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Connection dialog/menu    | `/api/connect`, `/api/create`, `/api/disconnect`, `/api/status`                                         | Opening, demo creation, switching and disconnecting                            |
-| Explorer, grid and drawer | `/api/collections`, `/api/documents/:collection`, document edit/delete/metadata routes                  | Collection deletion, document CRUD, images and pagination                      |
-| Query Language            | `/api/query`                                                                                            | SELECT, INSERT, UPDATE, DELETE and EXPLAIN SELECT; writes require confirmation |
-| Semantic Search           | Document `search`, `search/photos`, `search/image`; `/api/embeddings/status`, `/api/embeddings/preload` | MiniLM text search and CLIP photo/image search                                 |
-| Compression and Lab       | `/api/compression/defaults`, `/api/compression/recommendation`, `/api/compression/lab/*`                | Persisted defaults, per-write overrides, advice, reports and fixture seeding   |
-| Maintenance menu          | `/api/database/status`, `/api/database/vacuum`, `/api/database/incremental-compaction/*`                | Full vacuum, manual steps and background compaction                            |
-| AI Chat/schema/settings   | `/api/conversational/*`, `/api/settings`, `/api/settings/gemini-key`                                    | Key-free schema introspection and editing; configured Gemini chat              |
+| UI area                   | API routes                                                                                              | Behavior                                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Connection dialog/menu    | `/api/connect`, `/api/create`, `/api/disconnect`, `/api/status`                                         | Opening, demo creation, switching and disconnecting                                                            |
+| Explorer, grid and drawer | `/api/collections`, `/api/documents/:collection`, document edit/delete/metadata routes                  | Collection deletion, document CRUD, images and pagination                                                      |
+| Query Language            | `/api/query`                                                                                            | SELECT, INSERT, UPDATE, DELETE and EXPLAIN SELECT; writes require confirmation                                 |
+| Semantic Search           | Document `search`, `search/photos`, `search/image`; `/api/embeddings/status`, `/api/embeddings/preload` | MiniLM text search and CLIP photo/image search                                                                 |
+| Compression and Lab       | `/api/compression/defaults`, `/api/compression/recommendation`, `/api/compression/lab/*`                | Persisted defaults, per-write overrides, advice and reports; fixture seeding remains available through the API |
+| Maintenance menu          | `/api/database/status`, `/api/database/vacuum`, `/api/database/incremental-compaction/*`                | Full vacuum and background compaction                                                                          |
+| AI Chat/schema/settings   | `/api/conversational/*`, `/api/settings`, `/api/settings/gemini-key`                                    | Key-free schema introspection and editing; configured Gemini chat                                              |
 
 Document lists expose `{documents, total, hasMore, nextCursor?}` and accept
 `limit` and `offset`. The grid sorts and filters the loaded documents; its count

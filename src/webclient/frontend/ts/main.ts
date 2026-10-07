@@ -1,6 +1,15 @@
 /* eslint-disable */
 // @ts-nocheck
 import { api } from './api-client.js';
+import { destroyAiCharts, drawChart } from './charts.js';
+import { createCompressionLab } from './compression-lab.js';
+import {
+  hasImageField,
+  parseSemanticResult,
+  renderSemanticCell,
+  semanticResultColumns,
+  semanticTypeBadge,
+} from './semantic-results.js';
 import { $, $$ } from './dom.js';
 import { buildDocumentTemplate, compactDocumentImages, validateDocumentInput } from './document-editor.js';
 import { detectType, docSize, esc, fmtNum, fmtSize, imageDataUrlFromValue, isImageField } from './format.js';
@@ -14,8 +23,6 @@ import {
 } from './state.js';
 import { getSqlMutationKind } from './sql-ui.js';
 import { mergeScopedModel } from './model-editor.js';
-
-('use strict');
 
 function toast(msg, kind = '', title = '') {
   const div = document.createElement('div');
@@ -56,6 +63,18 @@ let allDocumentsSelected = false;
 let bulkBusy = false;
 let bulkEditContext = null;
 const recommendingFields = new Set();
+const compressionLab = createCompressionLab({
+  selectRoot,
+  loadCompressionDefaults,
+  toast,
+  isCompressionBusy: () => compressionBusy,
+  setCompressionBusy: (busy) => {
+    compressionBusy = busy;
+  },
+});
+function renderLab() {
+  compressionLab.render();
+}
 
 function clearDocumentSelection() {
   selectedDocumentIds.clear();
@@ -1876,150 +1895,6 @@ function renderCompression() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Compression Lab
-// ─────────────────────────────────────────────────────────────────
-function renderLabPolicyChart(report) {
-  if (!report?.policies) return '';
-  const policies = Object.entries(report.policies);
-  const max = Math.max(...policies.map(([, p]) => p.totalBytes || 0), 1);
-  return `<div style="display:grid;gap:8px;">${policies
-    .map(([key, policy]) => {
-      const pct = Math.max(4, Math.round(((policy.totalBytes || 0) / max) * 100));
-      return `<div>
-      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px;"><strong>${esc(key)}</strong><span>${fmtSize(policy.totalBytes)} · ${fmtNum(policy.totalBlocks)} blocks · saved ${fmtNum(policy.blocksSavedVsRaw)}</span></div>
-      <div style="height:10px;background:var(--bg3);border-radius:99px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${key === 'advisor-mix' ? 'var(--gr)' : 'var(--ac)'};"></div></div>
-    </div>`;
-    })
-    .join('')}</div>`;
-}
-
-async function runCompressionLabReport() {
-  if (state.lab.busy) return;
-  const context = captureRequestContext();
-  const collection = state.selectedCol;
-  if (!collection) {
-    state.lab.error = 'Select a collection first.';
-    renderLab();
-    return;
-  }
-  state.lab.collection = collection;
-  state.lab.busy = true;
-  state.lab.error = null;
-  const workload = state.lab.workload;
-  renderLab();
-  try {
-    const { report } = await api('/api/compression/lab/recommend-collection', {
-      method: 'POST',
-      body: { collection, workload: state.lab.workload, sampleSize: 100 },
-    });
-    if (!isCurrentRequestContext(context)) return;
-    if (state.lab.workload === workload) state.lab.report = report;
-  } catch (e) {
-    if (!isCurrentRequestContext(context)) return;
-    state.lab.error = e.message;
-  } finally {
-    if (isCurrentRequestContext(context)) {
-      state.lab.busy = false;
-      if (state.tab === 'lab') renderLab();
-    }
-  }
-}
-
-async function applyLabAdvice() {
-  if (state.lab.busy || compressionBusy) return;
-  const collection = state.selectedCol;
-  if (!collection) {
-    toast('Select a collection first.', 'warn');
-    return;
-  }
-  const context = captureRequestContext();
-  state.lab.busy = true;
-  compressionBusy = true;
-  renderLab();
-  try {
-    const result = await api('/api/compression/lab/apply-advice', {
-      method: 'POST',
-      body: { collection, workload: state.lab.workload, sampleSize: 100 },
-    });
-    if (!isCurrentRequestContext(context)) return;
-    toast(
-      `Saved advisor defaults for ${result.fields} fields in ${collection}. Existing documents were not recompressed.`,
-      'ok',
-    );
-    if (collection === state.selectedCol) await loadCompressionDefaults(collection);
-  } catch (e) {
-    if (!isCurrentRequestContext(context)) return;
-    toast('Apply lab advice failed: ' + e.message, 'err');
-  } finally {
-    if (isCurrentRequestContext(context)) {
-      state.lab.busy = false;
-      compressionBusy = false;
-      if (state.tab === 'lab') renderLab();
-    }
-  }
-}
-
-function renderLab() {
-  const report = state.lab.report;
-  const collection = state.selectedCol;
-  if (!collection) {
-    $('#cnt').innerHTML =
-      `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>The Compression Lab is collection-scoped. Pick a collection in the object explorer, then open the Lab tab.</p></div></div>`;
-    return;
-  }
-  if (state.lab.collection !== collection) {
-    state.lab.collection = collection;
-    state.lab.report = null;
-    state.lab.error = null;
-  }
-  $('#cnt').innerHTML = `<div class="ov">
-    <div class="crumb"><a id="lab-back">All collections</a> › <span>${esc(collection)}</span></div>
-    <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6L4 19a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3L14 8V2"/><path d="M8 14h8"/></svg></span><span class="name">${esc(collection)} lab</span></h1>
-    <p class="ovsub"><span>Compare field-level compression policies</span><span>Apply defaults for future writes in this collection</span></p>
-    <div class="psec">
-      <h3>Scenario <span class="actions"><button class="tbtn pri" id="lab-run" ${state.lab.busy ? 'disabled' : ''}>${state.lab.busy ? 'Working…' : 'Analyze collection'}</button><button class="tbtn" id="lab-apply" style="border:1px solid var(--bd);background:var(--bg2);" ${report && !state.lab.busy ? '' : 'disabled'}>Save advised defaults</button></span></h3>
-      <p class="control-help">Analyze collection produces a read-only estimate for the selected collection. Save advised defaults affects future writes; it does not recompress existing records. Policy chart sizes are estimates, not measured file sizes.</p>
-      <div class="pbody" style="display:grid;gap:10px;">
-        <div style="display:grid;grid-template-columns:1fr;gap:10px;">
-          <div><label style="font-size:11px;color:var(--t3);font-weight:700;">Workload: <span id="lab-workload-label">${Math.round(state.lab.workload * 100)}%</span></label><input id="lab-workload" type="range" min="0" max="100" value="${Math.round(state.lab.workload * 100)}" style="width:100%;"></div>
-        </div>
-        ${state.lab.busy ? `<div class="loader">Computing compression report…</div>` : ''}
-        ${state.lab.error ? `<div class="err">${esc(state.lab.error)}</div>` : ''}
-      </div>
-    </div>
-    ${
-      report
-        ? `<div class="kpis">
-      <div class="kpi"><div class="l">Baseline</div><div class="v">${fmtSize(report.baseline?.totalBytes)}</div><div class="d">${fmtNum(report.baseline?.totalBlocks || 0)} blocks</div></div>
-      <div class="kpi"><div class="l">Advisor</div><div class="v">${fmtSize(report.policies?.['advisor-mix']?.totalBytes)}</div><div class="d">${fmtNum(report.policies?.['advisor-mix']?.blocksSavedVsRaw || 0)} blocks saved</div></div>
-      <div class="kpi"><div class="l">Fields</div><div class="v">${report.perField?.length || 0}</div><div class="d">recommended defaults</div></div>
-    </div>
-    <div class="psec"><h3>Policy comparison</h3><div class="pbody">${renderLabPolicyChart(report)}</div></div>
-    <div class="psec"><h3>Per-field advice</h3><div>${(report.perField || [])
-      .map(
-        (field) => `
-      <div class="prow" style="grid-template-columns:170px 110px 1fr;">
-        <div class="k mono">${esc(field.field)}</div>
-        <div class="v"><strong style="color:var(--ac)">${esc(field.recommended)}</strong></div>
-        <div class="v" style="font-family:Segoe UI;color:var(--t2);">${esc(field.rationale || field.summary || '')}</div>
-      </div>`,
-      )
-      .join('')}</div></div>`
-        : `<div class="empty-state"><h4>No lab report yet</h4><p>Run a report for <strong>${esc(collection)}</strong>. If every recommendation is <code>none</code>, the sampled fields are probably small scalar values where compression would not save blocks.</p></div>`
-    }
-  </div>`;
-  $('#lab-back')?.addEventListener('click', selectRoot);
-  $('#lab-run')?.addEventListener('click', runCompressionLabReport);
-  $('#lab-apply')?.addEventListener('click', applyLabAdvice);
-  $('#lab-workload')?.addEventListener('input', (e) => {
-    state.lab.workload = Number(e.target.value) / 100;
-    state.lab.report = null;
-    $('#lab-workload-label').textContent = `${e.target.value}%`;
-  });
-  $('#lab-workload')?.addEventListener('change', renderLab);
-}
-
-// ─────────────────────────────────────────────────────────────────
 // Schema model (modal opened from AI Chat header)
 // ─────────────────────────────────────────────────────────────────
 function modelModalJsonForCurrentContext() {
@@ -2556,61 +2431,6 @@ function semanticMissingIndex(collection, mode, hasImageUpload) {
   };
 }
 
-function parseSemanticResult(raw) {
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    return { result: parsed };
-  } catch {
-    return { result: raw };
-  }
-}
-
-function semanticResultColumns(rows, mode = 'text') {
-  const seen = new Set();
-  const cols = [];
-  for (const row of rows) {
-    for (const key of Object.keys(row)) {
-      if (key.startsWith('_') || seen.has(key)) continue;
-      seen.add(key);
-      cols.push(key);
-    }
-  }
-  return cols.sort((a, b) => {
-    if (a === 'id') return -1;
-    if (b === 'id') return 1;
-    if (mode === 'image') {
-      const ai = rows.some((row) => isImageField(a, row));
-      const bi = rows.some((row) => isImageField(b, row));
-      if (ai && !bi) return -1;
-      if (!ai && bi) return 1;
-    }
-    return 0;
-  });
-}
-
-function semanticTypeBadge(value) {
-  const t = detectType(value);
-  if (t === 'number') return 'n';
-  if (t === 'boolean') return 'b';
-  if (t === 'string') return 's';
-  return '';
-}
-
-function renderSemanticCell(key, value, row = null) {
-  if (value == null) return '<td class="cnu">[NULL]</td>';
-  if (typeof value === 'number') return `<td class="cn">${fmtNum(value)}</td>`;
-  if (typeof value === 'boolean') return `<td class="cb">${value ? 'true' : 'false'}</td>`;
-  if (typeof value === 'object') return `<td class="ck">${esc(JSON.stringify(value))}</td>`;
-  const imageUrl = imageDataUrlFromValue(key, value, row);
-  if (imageUrl) return `<td class="ci"><img src="${esc(imageUrl)}" alt=""></td>`;
-  return `<td class="cs">${esc(String(value))}</td>`;
-}
-
-function hasImageField(doc) {
-  return !!doc && typeof doc === 'object' && Object.keys(doc).some((key) => isImageField(key, doc));
-}
-
 function readFileDataUrl(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -2972,88 +2792,6 @@ async function sendChat() {
       renderAi();
     }
   }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Chart rendering (Chart.js)
-// ─────────────────────────────────────────────────────────────────
-const PALETTE = ['#2c5aa0', '#0a8f4e', '#b06d00', '#6d4ab8', '#c02929', '#3771c8', '#1a8a8f', '#a3a83a'];
-const aiCharts = new Map();
-
-function destroyAiCharts() {
-  for (const chart of aiCharts.values()) chart.destroy();
-  aiCharts.clear();
-}
-
-function drawChart(canvas, chart, data) {
-  if (!chart || !Array.isArray(data) || data.length === 0 || !Array.isArray(chart.yColumns) || !chart.yColumns.length)
-    return;
-  const previous = aiCharts.get(canvas);
-  if (previous) {
-    previous.destroy();
-    aiCharts.delete(canvas);
-  }
-  for (const [oldCanvas, instance] of aiCharts) {
-    if (!oldCanvas.isConnected) {
-      instance.destroy();
-      aiCharts.delete(oldCanvas);
-    }
-  }
-  if (typeof globalThis.Chart !== 'function') {
-    canvas.replaceWith(document.createTextNode('Chart unavailable. The result data is shown above.'));
-    return;
-  }
-  const labels = data.map((r) => String(r[chart.xColumn] ?? ''));
-  let datasets;
-  if (chart.seriesColumn) {
-    const seriesVals = Array.from(new Set(data.map((r) => String(r[chart.seriesColumn]))));
-    const xVals = Array.from(new Set(labels));
-    datasets = seriesVals.map((sv, i) => ({
-      label: sv,
-      data: xVals.map((xv) => {
-        const row = data.find((r) => String(r[chart.xColumn]) === xv && String(r[chart.seriesColumn]) === sv);
-        return row ? Number(row[chart.yColumns[0]]) || 0 : 0;
-      }),
-      backgroundColor: PALETTE[i % PALETTE.length],
-      borderColor: PALETTE[i % PALETTE.length],
-      borderWidth: 1,
-    }));
-    canvas._labels = xVals;
-  } else {
-    datasets = chart.yColumns.map((y, i) => ({
-      label: y,
-      data: data.map((r) => Number(r[y]) || 0),
-      backgroundColor:
-        chart.type === 'pie' || chart.type === 'doughnut'
-          ? data.map((_, j) => PALETTE[j % PALETTE.length])
-          : PALETTE[i % PALETTE.length],
-      borderColor: PALETTE[i % PALETTE.length],
-      borderWidth: 1,
-    }));
-    canvas._labels = labels;
-  }
-  const instance = new globalThis.Chart(canvas, {
-    type: chart.type,
-    data: { labels: canvas._labels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: '#475569', font: { size: 11 } } },
-        title: chart.title
-          ? { display: true, text: chart.title, color: '#1f2937', font: { size: 13, weight: '500' } }
-          : { display: false },
-      },
-      scales:
-        chart.type === 'pie' || chart.type === 'doughnut'
-          ? {}
-          : {
-              x: { ticks: { color: '#6b7589', font: { size: 11 } }, grid: { color: '#e9eef4' } },
-              y: { ticks: { color: '#6b7589', font: { size: 11 } }, grid: { color: '#e9eef4' }, beginAtZero: true },
-            },
-    },
-  });
-  aiCharts.set(canvas, instance);
 }
 
 // ─────────────────────────────────────────────────────────────────

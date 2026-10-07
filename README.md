@@ -4,45 +4,46 @@ SiftwellDB is a private Node.js and TypeScript database project originating from
 
 ## Highlights
 
-- WAL-backed durability and recovery primitives under `src/atomic/`
-- Fixed-size block storage and record management under `src/freeblockfile/`
-- B+ tree indexing under `src/btree/`
-- Optional semantic search with a Rust-backed HNSW core under `src/hnsw/` and `hnsw-native/`
-- Compression advice and field-compression support under `src/dbms/`
+- WAL-backed durability and recovery primitives under `src/storage/wal/`
+- Fixed-size block storage and record management under `src/storage/`
+- B+ tree indexing under `src/indexes/btree/`
+- Optional semantic search with a Rust-backed HNSW core under `src/indexes/hnsw/` and `hnsw-native/`
+- Compression advice and field-compression support under `src/database/`
 - Incremental compaction and full vacuum support under `src/compaction/`
 - Browser-based management UI under `src/webclient/`
-- SQL-like query language CLI under `src/dbms/querylanguage/`
+- SQL-like query language CLI under `src/query/`
 - Gemini-backed conversational analytics under `src/conversational/`
-- Benchmark, demo, and visualization suites under `src/benchmarking/`, `src/demo/`, and `src/visualization/`
+- Performance benchmarks under `benchmarks/` and runnable demos under `examples/`
 
 ## Repository layout
 
-- `src/core/` - real and mock file abstractions shared across the storage stack
-- `src/atomic/` - WAL records, writer, and atomic file layer
-- `src/freeblockfile/` - fixed-size block allocator and storage primitives
-- `src/btree/` - B+ tree implementation and tests
-- `src/hnsw/` - TypeScript HNSW integration and native bridge
-- `hnsw-native/` - Rust implementation used by the native HNSW backend
-- `src/dbms/` - high-level `SimpleDbms` API, query language, compression, and record logic
-- `src/compaction/` - incremental compaction and full-vacuum code
-- `src/largedatasets/` - bulk import, inverted/word/content indexes, pagination, and the Wikipedia loader
-- `src/webclient/` - HTTP daemon, API router, service layer, and frontend
+- `src/storage/` - file abstraction, WAL/atomic writes, free blocks, and record storage
+- `src/indexes/` - B+ trees, persisted/native HNSW, and word/content indexes
+- `src/database/` - high-level SimpleDbms API, documents, compression, bulk import, and pagination
+- `src/query/` - SQL-like parser, planner, executor, and CLI
+- `src/compaction/` - public compaction entry point, with vacuum, incremental, and relocation modules; see the [compaction layout](src/compaction/README.md)
+- `src/webclient/server/` - HTTP daemon, router, services, and embedding configuration
+- `src/webclient/frontend/` - maintained HTML/CSS and browser TypeScript modules
+- `src/webclient/fixtures/` - sample data used by existing webclient seeding APIs
 - `src/conversational/` - semantic models, query generation, LLM provider, and chat engine
-- `src/demo/` - semantic text and image search demos
-- `src/types/` - local ambient type declarations for third-party modules
-- `src/visualization/` - semantic map demo and HTML renderer
-- `src/benchmarking/` - performance suites and plotting scripts
-- `build/` - generated JavaScript output from TypeScript compilation
+- `src/types/` - local ambient declarations for third-party modules
+- `examples/` - text/image search demos, semantic map, and an independent teaching reference store
+- `examples/assets/` - maintained demo images, also used by image regression tests
+- `benchmarks/` - performance suites and plotting scripts
+- `scripts/` - import/index/seed commands and build helpers
+- `tests/` - shared helpers and subprocess fixtures; implementation tests live in a `tests/` subfolder of each module
+- `hnsw-native/` - Rust source and maintained prebuilt libraries
+- `build/` - generated runtime JavaScript, browser assets, and native libraries
 
 ## Requirements
 
 - Node.js 24.x. CI uses `node:24`.
 - npm
-- Python 3 if you want to run the plotting scripts under `src/benchmarking/`
+- Python 3 if you want to run the plotting scripts under `benchmarks/`
 - Rust only if you want to rebuild the native HNSW library in `hnsw-native/`
 - `GEMINI_API_KEY` in `.env` if you want conversational analytics
 
-The repository currently includes prebuilt native HNSW binaries for Windows and Linux at `src/hnsw/hnsw_native.dll` and `src/hnsw/libhnsw_native.so`. Rust is only needed when you want to rebuild those artifacts.
+The repository includes prebuilt native HNSW binaries for Windows and Linux under `hnsw-native/prebuilt/`. Rust is only needed to rebuild them; see [native build instructions](hnsw-native/README.md).
 
 ## Setup
 
@@ -55,23 +56,27 @@ npm test
 
 Notes:
 
-- `npm run lint` checks the `src/` tree with ESLint.
-- `npm test` runs the `src/` test suite and excludes `src/benchmarking/**`.
+- `npm run lint` checks runtime code, tests, examples, benchmarks, and scripts.
+- `npm test` runs the modules' regression tests and the reference-store tests; benchmarks are opt-in.
 - `npm run coverage` collects coverage for the non-benchmark source tree.
-- `npm run build` compiles both the main TypeScript project and the webclient frontend assets.
+- `npm run build` checks all maintained TypeScript, rebuilds runtime/browser code, and copies HTML/CSS and native libraries.
+- `npm run clean` removes generated build output. Databases and example images are kept.
 
 If a third-party package needs a local typing shim for this codebase, those declarations live in `src/types/`. The current repo includes `src/types/google-genai.d.ts` for `@google/genai`.
 
 ## Running the web client
 
-The browser UI is served by `src/webclient/daemon.mts` on port 8000.
+The browser UI is served by `src/webclient/server/daemon.mts` on port 8000.
 
 ```bash
 npm run build
-npx tsx src/webclient/daemon.mts
+npm start
 ```
 
 Then open `http://localhost:8000`.
+
+For source development, use `npm run start:dev` after building the browser assets.
+Create a populated database with `npm run seed:test`; see the [webclient guide](src/webclient/README.md).
 
 The daemon:
 
@@ -90,7 +95,7 @@ npm run cli -- "SELECT * FROM cities"
 npm run cli -- --data my.db --log my.db.log "SELECT country, COUNT(*) AS n FROM cities GROUP BY country ORDER BY n DESC"
 ```
 
-Supported operations include `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `EXPLAIN`. Full grammar, operator reference, type semantics, and worked examples live in `src/dbms/querylanguage/README.md`.
+Supported operations include `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `EXPLAIN`. Full grammar, operator reference, type semantics, and worked examples live in `src/query/README.md`.
 
 ## Conversational analytics
 
@@ -113,14 +118,16 @@ The example environment file is `.env.example`.
 Available demo scripts:
 
 - `npm run demo` - text semantic search demo
-- `npm run demo:images` - image semantic search demo; downloads sample animal images from Wikipedia into `demo-db/images/`
+- `npm run demo:images` - image semantic search demo; uses maintained animal photos in `examples/assets/images/` and downloads missing samples
 - `npm run demo:map` - generates a standalone `map.html` semantic map
 
-The demos store their data under `demo-db/`.
+The demos store generated databases under the ignored `demo-db/` directory. The map output, `map.html`, is also ignored. The teaching reference store is separate from the runtime DBMS; run its checks with `npm run test:reference`.
+
+Import utilities are available as `npm run import:wikipedia`, `npm run seed:articles`, and `npm run index:content`; pass arguments after `--`.
 
 ## Benchmarks
 
-The repository includes multiple benchmark suites under `src/benchmarking/`, including general DBMS performance, HNSW performance and recall, incremental compaction, and large-dataset loaders and workloads.
+The repository includes multiple benchmark suites under `benchmarks/`, including general DBMS performance, HNSW performance and recall, incremental compaction, and large-dataset loaders and workloads.
 
 Useful commands:
 
@@ -134,18 +141,18 @@ Useful commands:
 
 Benchmark-specific documentation lives in:
 
-- `src/benchmarking/README.md` - suite inventory, small-run examples, and cleanup decisions
-- `src/benchmarking/hnsw/README.md`
-- `src/benchmarking/incremental-compaction/README.txt`
-- `src/benchmarking/large-dataset/README.txt`
+- `benchmarks/README.md` - suite inventory, small-run examples, and cleanup decisions
+- `benchmarks/hnsw/README.md`
+- `benchmarks/incremental-compaction/README.txt`
+- `benchmarks/large-dataset/README.txt`
 
 Many benchmark plotting scripts are Python programs. Install their Python dependencies separately before running them.
 
 ## Main entry points
 
-- `src/dbms/simpledbms.mts` - primary high-level library API
-- `src/webclient/daemon.mts` - browser UI and HTTP API
-- `src/dbms/querylanguage/cli.mts` - query language CLI
+- `src/database/simpledbms.mts` - primary high-level library API
+- `src/webclient/server/daemon.mts` - browser UI and HTTP API
+- `src/query/cli.mts` - query language CLI
 - `src/conversational/cli.mts` - conversational analytics CLI
 
 ## HNSW note
@@ -155,7 +162,7 @@ Semantic search is optional. If you create or reopen a database with HNSW enable
 ## Related docs
 
 - `licences.md`
-- `src/dbms/querylanguage/README.md`
-- `src/benchmarking/hnsw/README.md`
-- `src/benchmarking/incremental-compaction/README.txt`
-- `src/benchmarking/large-dataset/README.txt`
+- `src/query/README.md`
+- `benchmarks/hnsw/README.md`
+- `benchmarks/incremental-compaction/README.txt`
+- `benchmarks/large-dataset/README.txt`

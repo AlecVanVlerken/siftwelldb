@@ -10,24 +10,20 @@
     "moduleResolution": "NodeNext",
     "allowUnusedLabels": false,
     "allowUnreachableCode": false,
-    //"exactOptionalPropertyTypes": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "noImplicitReturns": true,
     "noPropertyAccessFromIndexSignature": true,
-    //"noUncheckedIndexedAccess": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "verbatimModuleSyntax": true,
     "allowJs": false,
-    //"checkJs": false,
     "allowSyntheticDefaultImports": true,
-    "rootDir": "src",
+    "rootDir": ".",
     "sourceMap": true,
-    "outDir": "build",
+    "noEmit": true,
     "noImplicitAny": true
   },
-  "ts-node": { "esm": true },
-  "exclude": ["build"],
-  "include": ["src"]
+  "exclude": ["build", "node_modules", "hnsw-native/target"],
+  "include": ["src", "tests", "examples/**/*.mts", "benchmarks/**/*.mts", "scripts/**/*.mts", "vitest.config.mts"]
 }

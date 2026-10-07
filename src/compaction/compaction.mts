@@ -4,19 +4,13 @@
 /**
  * compaction.mts
  * -------------------------
- * This module implements the public façade of the vacuum
- * compaction subsystem.
+ * This module implements the public façade for full vacuum compaction,
+ * incremental compaction, block relocation, and tail reclamation.
  *
- * This is the only compaction file that should be imported by the rest
- * of the project.
+ * Runtime callers use this entry point. Tests and benchmarks may import
+ * the implementation modules directly.
  *
- * This module provides:
- *   • vacuumCompactInto() — run one full vacuum compaction operation
- *
- * Additionally, it re-exports the public compaction types:
- *   • VacuumOptions
- *   • VacuumResult
- *   • VacuumProgress
+ * It exposes the compaction operations and their public types.
  *
  * This file intentionally stays small and stable.
  * It does not contain:
@@ -24,20 +18,20 @@
  *   • validation logic
  *   • collection iteration details
  *
- * Those responsibilities belong to the internal compaction modules.
+ * Those responsibilities belong to vacuum/, incremental/, and relocation/.
  */
 
-import { VacuumService } from './vacuumservice.mjs';
-import { RecordRelocator } from './recordrelocator.mjs';
-import { BtreeRelocator } from './btreerelocator.mjs';
-import { HnswRelocator } from './hnswrelocator.mjs';
-import { TailReclaimer } from './tailreclaimer.mjs';
-import { CompactionPolicy } from './compactionpolicy.mjs';
-import { CompactionState } from './compactionstate.mjs';
-import { IncrementalCompactionService } from './incrementalservice.mjs';
-import { IncrementalPlanner } from './incrementalplanner.mjs';
-import type { VacuumOptions, VacuumResult } from './vacuumtypes.mjs';
-import type { DbmsBack } from '../dbms/dbmsback.mjs';
+import { VacuumService } from './vacuum/vacuumservice.mjs';
+import { RecordRelocator } from './relocation/recordrelocator.mjs';
+import { BtreeRelocator } from './relocation/btreerelocator.mjs';
+import { HnswRelocator } from './relocation/hnswrelocator.mjs';
+import { TailReclaimer } from './relocation/tailreclaimer.mjs';
+import { CompactionPolicy } from './incremental/compactionpolicy.mjs';
+import { CompactionState } from './incremental/compactionstate.mjs';
+import { IncrementalCompactionService } from './incremental/incrementalservice.mjs';
+import { IncrementalPlanner } from './incremental/incrementalplanner.mjs';
+import type { VacuumOptions, VacuumResult } from './vacuum/vacuumtypes.mjs';
+import type { DbmsBack } from '../database/dbmsback.mjs';
 import type {
   BtreeRelocationTarget,
   HnswRelocationTarget,
@@ -45,9 +39,9 @@ import type {
   IncrementalCompactionResult,
   RecordRelocationTarget,
   RelocationBatch,
-} from './incrementaltypes.mjs';
+} from './incremental/incrementaltypes.mjs';
 
-export type { VacuumOptions, VacuumResult, VacuumProgress } from './vacuumtypes.mjs';
+export type { VacuumOptions, VacuumResult, VacuumProgress } from './vacuum/vacuumtypes.mjs';
 export type {
   BtreeRelocationTarget,
   HnswRelocationTarget,
@@ -58,7 +52,7 @@ export type {
   RelocationBatch,
   RelocationKind,
   RelocationTarget,
-} from './incrementaltypes.mjs';
+} from './incremental/incrementaltypes.mjs';
 
 /**
  * Rebuilds a source database into fresh target files using the vacuum

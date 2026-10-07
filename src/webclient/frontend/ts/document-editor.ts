@@ -1,39 +1,15 @@
+import { fmtSize, isImageField } from './format.js';
+
 export type JsonObject = Record<string, unknown>;
 
 export type JsonObjectParseResult = { ok: true; value: JsonObject } | { ok: false; error: string };
 
 export type ImagePayloads = Record<string, string>;
 
-function imageMimeMetadataField(key: string): string {
-  return `_${key}_mime`;
-}
-
-function imageMimeFromDocument(key: string, document: JsonObject): string | null {
-  const value = document[imageMimeMetadataField(key)];
-  return typeof value === 'string' && value.toLowerCase().startsWith('image/') ? value : null;
-}
-
-function isImageField(key: string, document?: JsonObject): boolean {
-  return (
-    /^(image|photo|picture|cover|avatar|thumbnail|img).*\.(jpe?g|png|gif|webp)$/i.test(key) ||
-    /\.(jpe?g|png|gif|webp)$/i.test(key) ||
-    (document ? imageMimeFromDocument(key, document) !== null : false)
-  );
-}
-
 function normalizeImageValue(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   const dataUrl = value.match(/^data:image\/[a-z0-9.+-]+;base64,(.*)$/i);
   return dataUrl ? dataUrl[1] : value;
-}
-
-export function normalizeDocumentImages(document: JsonObject): JsonObject {
-  return Object.fromEntries(
-    Object.entries(document).map(([key, value]) => [
-      key,
-      isImageField(key, document) ? normalizeImageValue(value) : value,
-    ]),
-  );
 }
 
 function estimateBase64Bytes(value: string): number {
@@ -42,14 +18,8 @@ function estimateBase64Bytes(value: string): number {
   return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
-}
-
 export function imagePlaceholder(fieldName: string, value: string): string {
-  return `[image: ${fieldName}, ${formatBytes(estimateBase64Bytes(value))}]`;
+  return `[image: ${fieldName}, ${fmtSize(estimateBase64Bytes(value))}]`;
 }
 
 export function compactDocumentImages(document: JsonObject): { document: JsonObject; imagePayloads: ImagePayloads } {
@@ -65,7 +35,7 @@ export function compactDocumentImages(document: JsonObject): { document: JsonObj
   return { document: compacted, imagePayloads };
 }
 
-export function restoreCompactedDocumentImages(document: JsonObject, imagePayloads: ImagePayloads = {}): JsonObject {
+function restoreCompactedDocumentImages(document: JsonObject, imagePayloads: ImagePayloads = {}): JsonObject {
   return Object.fromEntries(
     Object.entries(document).map(([key, value]) => {
       if (!isImageField(key, document)) return [key, value];

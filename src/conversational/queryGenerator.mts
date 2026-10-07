@@ -3,7 +3,7 @@
 import type { LLMProvider, ChatMessage } from './llmProvider.mjs';
 import type { SemanticModel } from './semanticModel.mjs';
 import { modelToSchemaPrompt } from './semanticModel.mjs';
-import { QueryLanguage, type ParsedQuery } from '../dbms/querylanguage/querylanguage.mjs';
+import { QueryLanguage, type ParsedQuery } from '../query/querylanguage.mjs';
 
 export type GeneratedQuery = {
   query: string;
