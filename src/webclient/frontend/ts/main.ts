@@ -83,6 +83,7 @@ function clearDocumentSelection() {
 
 function resetConnectionView() {
   overviewRefreshing = false;
+  fieldIndexBusy = false;
   clearDocumentSelection();
   bulkBusy = false;
   recommendingFields.clear();
@@ -119,6 +120,7 @@ function resetConnectionView() {
 
 function resetSelectionView() {
   overviewRefreshing = false;
+  fieldIndexBusy = false;
   clearDocumentSelection();
   bulkBusy = false;
   recommendingFields.clear();
@@ -405,6 +407,109 @@ function readCompressionOverrides(root = document) {
   return Object.keys(overrides).length > 0 ? overrides : undefined;
 }
 
+let fieldIndexBusy = false;
+
+function fieldIndexRows(fields, values, config) {
+  return fields
+    .map(
+      (field) => `<label style="display:flex;gap:8px;align-items:center;padding:5px 0;font-size:12px;">
+    <input type="checkbox" data-field-index="${esc(field)}" ${(config[field] ?? !isImageField(field, values)) ? 'checked' : ''}
+      ${field === 'id' || isImageField(field, values) || fieldIndexBusy ? 'disabled' : ''}>
+    ${esc(field)} · Indexed${field === 'id' ? ' (Primary)' : ''}</label>`,
+    )
+    .join('');
+}
+
+function wireFieldIndexControls(root, collection, config, refresh, current = () => true) {
+  root.querySelectorAll('[data-field-index]').forEach((checkbox) =>
+    checkbox.addEventListener('change', async () => {
+      if (fieldIndexBusy) return;
+      const context = captureRequestContext();
+      const databaseContext = captureRequestContext('database');
+      const requested = checkbox.checked;
+      checkbox.checked = !requested;
+      fieldIndexBusy = true;
+      root.querySelectorAll('[data-field-index]').forEach((input) => {
+        input.disabled = true;
+      });
+      const save = root.closest('#dr-body') ? $('#edit-save') : $('#doc-save');
+      const editor = root.closest('#dr-body, #modal-document');
+      const locked = editor
+        ? [...editor.querySelectorAll('input, textarea, select, button')].filter((input) => !input.disabled)
+        : [];
+      locked.forEach((input) => {
+        input.disabled = true;
+      });
+      if (save) save.disabled = true;
+      const progress = document.createElement('div');
+      progress.textContent = 'Updating index…';
+      root.appendChild(progress);
+      try {
+        const result = await api(`/api/collections/${encodeURIComponent(collection)}/indexes`, {
+          method: 'PUT',
+          body: { field: checkbox.dataset.fieldIndex, indexed: requested },
+        });
+        if (isCurrentRequestContext(databaseContext)) invalidateStorageCache(collection);
+        if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
+        Object.assign(config, result.fields);
+        if (state.collections.includes(collection)) await getCollectionStorage(collection);
+        if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
+        checkbox.checked = result.fields[checkbox.dataset.fieldIndex];
+      } catch (error) {
+        if (isCurrentRequestContext(context) && root.isConnected) toast('Index update failed: ' + error.message, 'err');
+      } finally {
+        if (!fieldIndexBusy || isCurrentRequestContext(context))
+          locked.forEach((input) => {
+            input.disabled = false;
+          });
+        if (isCurrentRequestContext(context)) {
+          fieldIndexBusy = false;
+          progress.remove();
+          if (save) save.disabled = false;
+          if (root.isConnected) {
+            if (current()) refresh();
+            else root.dispatchEvent(new Event('field-index-updated'));
+          }
+        }
+      }
+    }),
+  );
+}
+
+async function wireDocumentIndexControls(textarea, root, collection, current = () => true) {
+  const context = captureRequestContext();
+  root.textContent = 'Loading field settings…';
+  try {
+    const { fields: config } = await api(`/api/collections/${encodeURIComponent(collection)}/indexes`);
+    if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
+    const renderSettings = () => {
+      if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
+      const parsed = validateDocumentInput(textarea.value, { requireId: false });
+      if (!parsed.ok) return;
+      const keys = Object.keys(parsed.value).filter((field) => !isImageMimeMetadata(field, parsed.value));
+      root.innerHTML = `<div style="margin-top:10px;"><strong>Field indexes</strong>${fieldIndexRows(keys, parsed.value, config)}</div>`;
+      wireFieldIndexControls(root, collection, config, renderSettings, current);
+    };
+    root.addEventListener('field-index-updated', async () => {
+      if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
+      try {
+        const updated = await api(`/api/collections/${encodeURIComponent(collection)}/indexes`);
+        if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
+        Object.assign(config, updated.fields);
+        renderSettings();
+      } catch (error) {
+        if (isCurrentRequestContext(context) && root.isConnected && current())
+          toast('Could not refresh field settings: ' + error.message, 'err');
+      }
+    });
+    textarea.addEventListener('input', renderSettings);
+    renderSettings();
+  } catch (error) {
+    if (isCurrentRequestContext(context) && root.isConnected && current())
+      root.textContent = 'Could not load field settings: ' + error.message;
+  }
+}
+
 function renderDocumentCompressionControls(collection, documentValue, meta) {
   const fields = Object.keys(documentValue).filter(
     (key) =>
@@ -492,6 +597,7 @@ function mergeImageIntoJsonText(textarea, fieldName, dataUrl, mime, imagePayload
   Object.keys(imagePayloads).forEach((key) => delete imagePayloads[key]);
   Object.assign(imagePayloads, compacted.imagePayloads);
   textarea.value = JSON.stringify(compacted.document, null, 2);
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
 async function attachImageToDocumentJson({ textarea, fieldInput, fileInput, preview, imagePayloads, error }) {
@@ -506,7 +612,7 @@ async function attachImageToDocumentJson({ textarea, fieldInput, fileInput, prev
   if (!file) return;
   const mime = file.type && file.type.startsWith('image/') ? file.type : 'image/jpeg';
   const fieldName = (fieldInput.value || 'image').trim();
-  if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(fieldName) || fieldName.startsWith('_')) {
+  if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(fieldName)) {
     error('Image field must be a normal field name such as image, photo, avatar, or cover.');
     fileInput.value = '';
     return;
@@ -540,6 +646,7 @@ function openCollectionDocumentModal() {
   resetDocumentImageAttachment();
   $('#doc-err').classList.add('hidden');
   openModal('modal-document');
+  $('#doc-indexes').innerHTML = '';
   $('#doc-collection').focus();
 }
 
@@ -563,11 +670,31 @@ function openAddDocumentModal() {
   resetDocumentImageAttachment();
   $('#doc-err').classList.add('hidden');
   openModal('modal-document');
+  const indexRequest = documentModalRequest;
+  void wireDocumentIndexControls(
+    $('#doc-json'),
+    $('#doc-indexes'),
+    state.selectedCol,
+    () => indexRequest === documentModalRequest,
+  );
   $('#doc-json').focus();
 }
 
+$('#doc-collection').addEventListener('input', () => {
+  const collection = $('#doc-collection').value.trim();
+  const request = ++documentModalRequest;
+  $('#doc-indexes').innerHTML = '';
+  if (isValidCollectionName(collection))
+    void wireDocumentIndexControls(
+      $('#doc-json'),
+      $('#doc-indexes'),
+      collection,
+      () => request === documentModalRequest && $('#doc-collection').value.trim() === collection,
+    );
+});
+
 async function saveDocumentModal() {
-  if (!state.connected || $('#doc-save').disabled) return;
+  if (!state.connected || $('#doc-save').disabled || fieldIndexBusy) return;
   const context = captureRequestContext();
   const request = documentModalRequest;
   const mode = documentModalMode;
@@ -1510,6 +1637,7 @@ $('#dr-edit').addEventListener('click', () => {
       <img alt="" style="max-width:72px;max-height:54px;border:1px solid var(--bd);border-radius:3px;object-fit:cover;"/>
       <span></span>
     </div>
+    <div id="dr-edit-indexes"></div>
     ${renderDocumentCompressionControls(c, cleanDoc, null)}
     <div class="err hidden" id="dr-edit-err" style="margin-top:8px;padding:7px 10px;background:var(--rdb);color:var(--rd);border-radius:3px;font-size:11.5px;font-family:Consolas,monospace;white-space:pre-wrap;"></div>
     <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;">
@@ -1519,6 +1647,7 @@ $('#dr-edit').addEventListener('click', () => {
   `;
   $('#edit-cancel').addEventListener('click', () => renderDrawer());
   wireDocumentCompressionControls();
+  void wireDocumentIndexControls($('#dr-edit-json'), $('#dr-edit-indexes'), c, () => request === drawerRequest);
   $('#dr-image-file').addEventListener('change', () =>
     attachImageToDocumentJson({
       textarea: $('#dr-edit-json'),
@@ -1538,7 +1667,8 @@ $('#dr-edit').addEventListener('click', () => {
       !isCurrentRequestContext(context) ||
       request !== drawerRequest ||
       state.selectedDoc !== d ||
-      $('#edit-save').disabled
+      $('#edit-save').disabled ||
+      fieldIndexBusy
     )
       return;
     const errEl = $('#dr-edit-err');
@@ -1633,16 +1763,16 @@ function renderFields() {
   const c = state.selectedCol;
   const context = captureRequestContext();
   const storage = storageCache.get(c);
-  const indexed = new Set(storage?.indexedFields || []);
+  const config = storage?.fieldIndexes;
   const docs = state.docsByColl[c] || [];
-  if (docs.length === 0) {
+  if (docs.length === 0 && !config) {
     $('#cnt').innerHTML =
       `<div class="flds"><div class="empty-state"><h4>No documents to introspect</h4><p>Insert a document to see what fields exist and their types.</p></div></div>`;
     return;
   }
   const explore = getExplore(c);
   const explored = new Map((explore?.fields || []).map((f) => [f.name, f]));
-  const fieldKeys = collectionFields(c);
+  const fieldKeys = [...new Set([...collectionFields(c), ...Object.keys(config || {})])];
   const rows = fieldKeys
     .map((k) => {
       const presentCount = docs.reduce((n, d) => n + (d[k] != null ? 1 : 0), 0);
@@ -1664,7 +1794,17 @@ function renderFields() {
       return `<div class="fr ${hasDesc ? 'has-desc' : ''}">
       <div class="r">
         <div class="nm">${esc(k)}${k === 'id' ? '<span class="pk">PK</span>' : ''}</div>
-        <div class="ty">${t} · ${k === 'id' || indexed.has(k) ? 'indexed' : storage ? 'not indexed' : '…'}</div>
+        <div class="ty">${t} · <label style="display:inline-flex;gap:4px;align-items:center;"><input type="checkbox" data-field-index="${esc(k)}" ${config?.[k] ? 'checked' : ''} ${
+          !config ||
+          k === 'id' ||
+          isImageField(
+            k,
+            docs.find((doc) => doc[k] != null),
+          ) ||
+          fieldIndexBusy
+            ? 'disabled'
+            : ''
+        }> Indexed${k === 'id' ? ' (Primary)' : ''}</label></div>
         <div class="cov ${covCls}">${covLabel}</div>
         <div class="sm">${esc(sampleStr)}</div>
       </div>
@@ -1679,6 +1819,9 @@ function renderFields() {
       ${rows}
     </div>
   </div>`;
+  wireFieldIndexControls($('#cnt'), c, config || {}, () => {
+    if (state.tab === 'fields') renderFields();
+  });
   if (!storageCache.has(c)) {
     getCollectionStorage(c).then(() => {
       if (isCurrentRequestContext(context) && state.tab === 'fields') renderFields();
@@ -2699,7 +2842,7 @@ function renderAiMessage(m, i) {
   }
   if (r.interpretation) h += `<div class="in">${esc(r.interpretation)}</div>`;
   if (r.data && r.data.length > 0) {
-    const cols = Object.keys(r.data[0]).filter((key) => !key.startsWith('_'));
+    const cols = Object.keys(r.data[0]);
     h += `<table class="qt"><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${r.data
       .slice(0, 30)
       .map((row) => `<tr>${cols.map((c) => renderAiResultCell(c, row[c], row)).join('')}</tr>`)
