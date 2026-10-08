@@ -86,6 +86,25 @@ The daemon:
 - stores WAL data in a sibling file with the `.log` suffix
 - can persist `GEMINI_API_KEY` into `.env` through the settings UI
 
+## Field indexing
+
+Collection fields have a persisted `Indexed` setting. Ordinary string, number and boolean fields default to indexed, regardless of their names; image and binary fields are excluded. The primary `id` index is mandatory. Configure long text before inserting it:
+
+```typescript
+await db.setFieldIndexed('articles', 'body', false);
+await db.insertDocumentObject('articles', { id: '1', title: 'Databases', body: longArticle });
+const settings = db.getFieldIndexConfig('articles');
+await db.setFieldIndexed('articles', 'title', false);
+```
+
+Enabling an index validates and backfills existing documents. Disabling it frees the secondary tree while preserving documents; equality queries use the existing scan fallback. Call `commit()` to persist API changes. Indexed keys have a 2035-byte encoded limit with the default 4096-byte blocks, including field, ID and serialization overhead. Compression does not reduce index key size. Unindexed text stays in RecordStore and has no B+ tree key limit.
+
+With an embedding configuration, HNSW automatically uses eligible textual fields independently of these settings, including underscore-prefixed text. Images retain their separate encoder. Model input limits still apply. In the webclient, use the **Indexed** checkboxes in Fields or the document editor; changes apply to the collection and wait for backend completion.
+
+Existing databases migrate their field settings from persisted index roots and stored fields. Names and record, B+ tree, HNSW, WAL and block formats remain unchanged. Legacy semantic indexes are rebuilt once when the original embedding configuration is available; pending migration is exposed by `getPendingSemanticCollections()` and the database status API, and semantic search reports it explicitly. Normal reopen and B+ tree toggles do not rebuild current semantic indexes. Full vacuum copies the settings before rebuilding records, and incremental compaction repairs references only for existing indexes.
+
+Validation and embedding failures are checked before document replacement writes. The backend does not provide per-operation rollback for storage or index failures after writes begin: discard that session and reopen without committing the failed mutation to recover the last committed database.
+
 ## Query language CLI
 
 The SQL-like query engine has a CLI entry point:

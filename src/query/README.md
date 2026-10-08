@@ -71,10 +71,7 @@ Collections do not have a fixed schema — different documents may use
 different fields. The query engine treats a missing field as `null` for
 the purposes of `IS NULL`, comparisons, and aggregates.
 
-A small set of fields is **indexed** in a secondary B+ tree at insert
-time. The planner uses these indexes when it can (see
-[Execution model and the planner](#execution-model-and-the-planner)),
-and silently falls back to a full scan otherwise.
+Secondary B+ tree indexes follow the collection field's persisted **Indexed** setting. Ordinary fields default to indexed; disable indexing for long text before insertion. Field names, including an underscore prefix, do not control indexing. The primary `id` index is mandatory.
 
 ---
 
