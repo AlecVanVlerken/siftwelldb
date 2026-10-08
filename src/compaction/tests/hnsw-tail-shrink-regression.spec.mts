@@ -42,6 +42,7 @@ describe('HNSW tail shrink regression', () => {
   it('moves live HNSW tail blockers downward, trims the physical file, and preserves semantic results', async () => {
     const { db, data, log, hnswConfig } = await makeDb();
 
+    await db.setFieldIndexed('filler', '_payload', false);
     const fillerPayload = 'free lower record block '.repeat(500);
     for (let i = 0; i < 18; i++) {
       await db.insertDocument(

@@ -22,6 +22,7 @@ async function setupDb(): Promise<QueryLanguage> {
 
   fs.closeSync(fs.openSync(logPath, 'w'));
   const db = await SimpleDbms.create(new RealFile(dataPath), new RealFile(logPath));
+  await db.setFieldIndexed('cities', '_tag', false);
   await db.commit();
 
   const ql = new QueryLanguage(db);

@@ -17,6 +17,7 @@ describe('compression advisor', () => {
   it('recommends compression for cold long text', async () => {
     const db = await SimpleDbms.create(new MockFile(2_000_000), new MockFile(2_000_000));
 
+    await db.setFieldIndexed('articles', '_content', false);
     for (let i = 0; i < 4; i++) {
       await db.insertDocument(
         'articles',
@@ -46,6 +47,7 @@ describe('compression advisor', () => {
   it('recommends none for hot long text', async () => {
     const db = await SimpleDbms.create(new MockFile(2_000_000), new MockFile(2_000_000));
 
+    await db.setFieldIndexed('articles', '_content', false);
     for (let i = 0; i < 4; i++) {
       await db.insertDocument(
         'articles',

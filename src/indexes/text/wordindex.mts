@@ -6,7 +6,7 @@
  *   { id: "<normalised-word>", _docIds: "id1|id2|id3|..." }
  *
  * The `id` field is indexed in the B+ tree (O(log n) lookup by word).
- * The `_docIds` field is prefixed with `_` so it is NOT B+ tree indexed.
+ * The posting-list `_docIds` field is explicitly configured as unindexed.
  */
 
 import { SimpleDbms } from '../../database/simpledbms.mjs';
@@ -27,6 +27,7 @@ export async function persistWordIndex(
   onProgress?: (wordsDone: number) => void,
   collection = WORD_INDEX_COLLECTION,
 ): Promise<void> {
+  if (index.wordCount > 0) await db.setFieldIndexed(collection, '_docIds', false);
   let count = 0;
   let skipped = 0;
   for (const word of index.words) {
@@ -68,6 +69,7 @@ export async function mergeWordIndex(
   onProgress?: (wordsDone: number) => void,
   collection = WORD_INDEX_COLLECTION,
 ): Promise<void> {
+  if (index.wordCount > 0) await db.setFieldIndexed(collection, '_docIds', false);
   let count = 0;
   for (const word of index.words) {
     const newDocIds = index.search(word);

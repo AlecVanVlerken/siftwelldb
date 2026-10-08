@@ -48,7 +48,10 @@ export class VacuumService {
    *
    * @author Alec Van Vlerken
    */
-  constructor(private readonly options: VacuumOptions) {}
+  constructor(
+    private readonly options: VacuumOptions,
+    private readonly commitSource: () => Promise<void> = () => options.source.commit(),
+  ) {}
 
   /**
    * Runs the full vacuum workflow.
@@ -75,7 +78,7 @@ export class VacuumService {
     this.reportProgress({ phase: 'preflight' });
     this.assertPreconditions();
 
-    await source.commit();
+    await this.commitSource();
 
     this.reportProgress({ phase: 'create-target' });
     const target = await this.createTarget();

@@ -128,6 +128,9 @@ export class DatabaseCopier {
    * @author Alec Van Vlerken
    */
   private async copyCollection(collection: string): Promise<number> {
+    for (const [field, indexed] of Object.entries(this.source.getFieldIndexConfig(collection))) {
+      await this.target.setFieldIndexed(collection, field, indexed);
+    }
     const compressionDefaults = this.catalog.getCompressionDefaults(collection);
     if (compressionDefaults) {
       this.target.setFieldCompressionDefaults(collection, compressionDefaults);
@@ -156,6 +159,11 @@ export class DatabaseCopier {
         collection,
         copiedDocuments,
       });
+    }
+
+    if (copiedDocuments === 0) {
+      const type = this.source.describeCollection(collection).find((field) => field.name === 'id')!.type;
+      await this.target.ensurePrimaryIndex(collection, type);
     }
 
     return copiedDocuments;

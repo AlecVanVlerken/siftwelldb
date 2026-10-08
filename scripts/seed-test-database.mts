@@ -121,6 +121,7 @@ try {
       express: i % 4 === 0,
     });
   }
+  await db.setFieldIndexed('travel_guides', '_body', false);
   for (let i = 0; i < 48; i++) {
     const [destination, country, summary] = destinations[i % destinations.length];
     await db.insertDocument(
@@ -157,7 +158,7 @@ try {
     quantity: 7,
     enabled: true,
     description: 'Change these fields, upload an image, or delete this document without disturbing the other examples.',
-    _notes: 'This underscore field is stored but excluded from ordinary and semantic text indexing.',
+    _notes: 'Field names do not control indexing; use the collection Indexed setting.',
   });
   await db.seedSemanticImageDemo();
   await db.disconnect();

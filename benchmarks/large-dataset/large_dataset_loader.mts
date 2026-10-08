@@ -92,7 +92,7 @@ function makeDocJson(id: string, indexedFields: number, fieldSize: number, paylo
     doc[`field${i}`] = `value${i}-${id}`.padEnd(fieldSize, 'x').slice(0, fieldSize);
   }
 
-  // IMPORTANT: store large data in a NON-indexed field (underscore convention)
+  // IMPORTANT: store large data in a field explicitly configured as unindexed
   doc['_payload'] = payload;
 
   // Also non-indexed
@@ -137,6 +137,8 @@ async function main() {
 
   const db = await SimpleDbms.create(dataFile, logFile);
 
+  await db.setFieldIndexed(args.collection, '_payload', false);
+  await db.setFieldIndexed(args.collection, '_text', false);
   // Pre-build payload template once
   const payloadTemplate = makePayloadString(payloadBytes);
 

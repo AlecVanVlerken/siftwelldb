@@ -18,13 +18,7 @@ import {
   type FieldCompressionDefaults,
   type FieldCompressionOverrides,
 } from '../../database/compression.mjs';
-import {
-  imageMimeForField,
-  isImageField,
-  JSONtoDocument,
-  parseRawDocument,
-  type Document,
-} from '../../database/document.mjs';
+import { imageMimeForField, isImageField, JSONtoDocument } from '../../database/document.mjs';
 import { generateWikiArticles } from '../fixtures/wiki.mjs';
 import { RealFile } from '../../storage/file.mjs';
 import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../../compaction/compaction.mjs';
@@ -166,6 +160,7 @@ export type DatabaseStatus = {
   size: DatabaseSizeInfo | null;
   incrementalCompaction: IncrementalCompactionStatus;
   semanticIndexes: string[];
+  semanticReindexPending: string[];
 };
 
 export class DatabaseInputError extends Error {
@@ -228,6 +223,7 @@ export type CollectionStorage = {
   blockSize: number;
   recordBytes: number;
   indexedFields: string[];
+  fieldIndexes: Record<string, boolean>;
   /** Methodology used per category. Each entry describes what was measured and what was excluded. */
   notes: { records: string; indexes: string };
 };
@@ -370,6 +366,7 @@ export class DatabaseService {
       size: this.currentFilepath ? await this.databaseSizeInfo(this.currentFilepath) : null,
       incrementalCompaction: this.getIncrementalCompactionStatus(),
       semanticIndexes: this.dbms ? this.dbms.getHnswIndexKeys() : [],
+      semanticReindexPending: this.dbms ? this.dbms.getPendingSemanticCollections() : [],
     }));
   }
 
@@ -605,10 +602,12 @@ export class DatabaseService {
       }
 
       const articles = generateWikiArticles({ count: options.count });
+      for (const field of Object.keys(articles[0] ?? {})) {
+        if (field !== 'id') await this.dbms!.setFieldIndexed(collection, field, field === 'title');
+      }
       for (const article of articles) {
         await this.dbms!.insertDocumentObject(collection, article, {
           skipSemanticIndex: true,
-          indexPredicate: (field) => field === 'title',
         });
       }
       await this.dbms!.commit();
@@ -773,6 +772,7 @@ export class DatabaseService {
       blockSize,
       recordBytes,
       indexedFields: this.dbms!.describeCollection(collection).map((field) => field.name),
+      fieldIndexes: this.dbms!.getFieldIndexConfig(collection),
       notes: {
         records: `Sum of (chainLength × blockSize) across all documents in this collection. Block size is ${blockSize} bytes.`,
         indexes: 'B+ tree indexes and the HNSW vector index are not yet accounted for in this number.',
@@ -932,11 +932,9 @@ export class DatabaseService {
   async insertDocument(collection: string, document: unknown, compression?: FieldCompressionOverrides): Promise<void> {
     await this.runExclusive('insert-document', async () => {
       this.ensureConnected();
-      const indexPredicate = collection === 'wiki_lab' ? (field: string) => field === 'title' : undefined;
-      this.validateIndexedKeys(parseRawDocument(collection, document, indexPredicate));
+      this.validateIndexedKeys(collection, document);
       await this.dbms!.insertDocumentObject(collection, document, {
         compression,
-        indexPredicate,
       });
       await this.dbms!.commit();
       this.invalidateCollectionStorage(collection);
@@ -983,16 +981,13 @@ export class DatabaseService {
         ids.push(...new Set(selection.ids));
       }
       // Validate every target before starting mutations, including unloaded rows.
-      const indexed = edit ? new Set(this.dbms!.describeCollection(collection).map((entry) => entry.name)) : null;
       for (const id of ids) {
         const document = JSON.parse(await this.dbms!.getDocumentById(collection, id)) as Record<string, unknown>;
         if (edit) {
           if (!Object.prototype.hasOwnProperty.call(document, edit.field)) {
             throw new DatabaseInputError(`Field ${edit.field} is missing on document ${id}`);
           }
-          this.validateIndexedKeys(
-            parseRawDocument(collection, { ...document, [edit.field]: edit.value }, (field) => indexed!.has(field)),
-          );
+          this.validateIndexedKeys(collection, { ...document, [edit.field]: edit.value });
         }
       }
       try {
@@ -1023,10 +1018,7 @@ export class DatabaseService {
     await this.runExclusive('edit-document', async () => {
       this.ensureConnected();
       const existing = JSON.parse(await this.dbms!.getDocumentById(collection, id)) as Record<string, unknown>;
-      const indexed = new Set(this.dbms!.describeCollection(collection).map((entry) => entry.name));
-      this.validateIndexedKeys(
-        parseRawDocument(collection, { ...existing, [field]: value }, (key) => indexed.has(key)),
-      );
+      this.validateIndexedKeys(collection, { ...existing, [field]: value });
       await this.dbms!.editDocument(collection, id, field, value as Parameters<SimpleDbms['editDocument']>[3]);
       await this.dbms!.commit();
       this.invalidateCollectionStorage(collection);
@@ -1047,17 +1039,8 @@ export class DatabaseService {
   ): Promise<void> {
     await this.runExclusive('replace-document', async () => {
       this.ensureConnected();
-      const indexPredicate = collection === 'wiki_lab' ? (field: string) => field === 'title' : undefined;
-      const parsed = parseRawDocument(collection, newDocument, indexPredicate);
-      this.validateIndexedKeys(parsed);
-      if (collection === 'wiki_lab') {
-        if (String(parsed.getId()) !== id) throw new DatabaseInputError('Document id cannot be changed');
-        await this.dbms!.getDocumentById(collection, id);
-        await this.dbms!.deleteDocumentById(collection, id);
-        await this.dbms!.insertDocumentObject(collection, newDocument, { compression, indexPredicate });
-      } else {
-        await this.dbms!.replaceDocument(collection, id, newDocument, { compression });
-      }
+      this.validateIndexedKeys(collection, newDocument);
+      await this.dbms!.replaceDocument(collection, id, newDocument, { compression });
       await this.dbms!.commit();
       this.invalidateCollectionStorage(collection);
     });
@@ -1076,9 +1059,9 @@ export class DatabaseService {
       this.ensureConnected();
       const ql = new QueryLanguage(this.dbms!);
       const parsed = ql.parse(sql);
-      if (parsed.kind === 'insert') this.validateIndexedKeys(JSONtoDocument(parsed.body, parsed.collection));
+      if (parsed.kind === 'insert')
+        this.validateIndexedKeys(parsed.collection, JSONtoDocument(parsed.body, parsed.collection).asDocument());
       if (parsed.kind === 'update') {
-        const indexed = new Set(this.dbms!.describeCollection(parsed.collection).map((entry) => entry.name));
         // Preflight every matched row before the engine begins its update loop.
         for await (const json of this.dbms!.cursor(parsed.collection, 'id')) {
           const document = JSON.parse(json) as Record<string, unknown>;
@@ -1088,7 +1071,7 @@ export class DatabaseService {
               throw new DatabaseInputError(`Field ${assignment.field} cannot be edited on this document`);
             }
             document[assignment.field] = assignment.value;
-            this.validateIndexedKeys(parseRawDocument(parsed.collection, document, (field) => indexed.has(field)));
+            this.validateIndexedKeys(parsed.collection, document);
           }
         }
       }
@@ -1538,31 +1521,29 @@ export class DatabaseService {
     this.documentCountCache.delete(collection);
   }
 
-  private validateIndexedKeys(document: Document): void {
-    // Each leaf has 1 block-type byte, a 9-byte header, and 8 entry bytes
-    // (two lengths + the 4-byte record pointer). Reserve room for two entries
-    // so a new root/split does not depend on a single nearly page-sized key.
-    const maxKeyBytes = Math.floor((this.dbms!.getBlockSize() - 10) / 2) - 8;
-    const id = document.getId();
-    const idBytes = typeof id === 'string' ? Buffer.byteLength(id, 'utf8') : 8;
-    if (idBytes > maxKeyBytes) {
-      throw new DatabaseInputError(
-        `Document id is too large for its index. Use a shorter id (at most ${maxKeyBytes} UTF-8 bytes).`,
-      );
+  private validateIndexedKeys(collection: string, document: unknown): void {
+    try {
+      this.dbms!.validateDocument(collection, document);
+    } catch (error) {
+      throw new DatabaseInputError(error instanceof Error ? error.message : String(error));
     }
-    const fields = document.getFields();
-    for (const field of document.getIterableKeys()) {
-      const value = fields[field];
-      // Match DbmsBack's composite key encoding: string components carry
-      // a 2-byte length; numeric/boolean components use 8 bytes.
-      const valueBytes = typeof value === 'string' ? 2 + Buffer.byteLength(value, 'utf8') : 8;
-      const keyBytes = valueBytes + idBytes + (typeof id === 'string' ? 2 : 0);
-      if (keyBytes > maxKeyBytes) {
-        throw new DatabaseInputError(
-          `Field "${field}" is too large for its index (${keyBytes} UTF-8 key bytes; limit ${maxKeyBytes}). Shorten the value or use an underscore-prefixed field for unindexed storage. Compression does not reduce index key size.`,
-        );
-      }
-    }
+  }
+
+  async getFieldIndexConfig(collection: string): Promise<Record<string, boolean>> {
+    return this.runExclusive('get-field-indexes', () => {
+      this.ensureConnected();
+      return Promise.resolve(this.dbms!.getFieldIndexConfig(collection));
+    });
+  }
+
+  async setFieldIndexed(collection: string, field: string, indexed: boolean): Promise<Record<string, boolean>> {
+    return this.runExclusive('set-field-index', async () => {
+      this.ensureConnected();
+      await this.dbms!.setFieldIndexed(collection, field, indexed);
+      await this.dbms!.commit();
+      this.invalidateCollectionStorage(collection);
+      return this.dbms!.getFieldIndexConfig(collection);
+    });
   }
 
   private async openDatabaseFiles(

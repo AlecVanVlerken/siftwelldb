@@ -7,7 +7,6 @@ import {
   mergeWordIndex,
   searchWordIndex,
   searchContentIndex,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   WORD_INDEX_COLLECTION,
   CONTENT_INDEX_COLLECTION,
 } from '../wordindex.mjs';
@@ -248,4 +247,20 @@ describe('InvertedIndex.clear()', () => {
     expect(idx.search('second')).toContain('a2');
     expect(idx.search('first')).toEqual([]);
   });
+});
+
+it('persists posting lists larger than a B+ tree key through merge and reopen', async () => {
+  const data = new MockFile(4096);
+  const log = new MockFile(4096);
+  const db = await SimpleDbms.create(data, log);
+  const idx = makeIndex(db);
+  for (let i = 0; i < 1000; i++) idx.indexObject({ id: `article-${i}`, title: 'common' });
+  await persistWordIndex(db, idx);
+  const more = makeIndex(db);
+  more.indexObject({ id: 'extra', title: 'common' });
+  await mergeWordIndex(db, more);
+  expect(db.getFieldIndexConfig(WORD_INDEX_COLLECTION)['_docIds']).toBe(false);
+  await db.close();
+  const reopened = await SimpleDbms.open(data, log);
+  expect((await searchWordIndex(reopened, 'common', 2000, 0)).total).toBe(1001);
 });

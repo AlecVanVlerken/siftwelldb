@@ -169,6 +169,7 @@ export async function insertDocuments(
     semanticText?: string;
   } = {},
 ): Promise<void> {
+  await db.setFieldIndexed(collection, '_payload', false);
   const payload = `${prefix} payload `.repeat(options.payloadWords ?? 20);
   for (let i = 0; i < count; i++) {
     const id = `${prefix}${i.toString().padStart(4, '0')}`;

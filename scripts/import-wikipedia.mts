@@ -184,6 +184,7 @@ export async function importWikipedia(
     titleChunksDone++;
   }
 
+  await db.setFieldIndexed(COLLECTION, '_content', false);
   // Stream articles, build both in-memory indexes, flush content index periodically
   async function* articleStream(): AsyncGenerator<Record<string, unknown>> {
     for await (const article of parseWikipediaDump(dumpPath, limit)) {

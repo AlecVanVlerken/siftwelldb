@@ -143,6 +143,16 @@ export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Prom
       if (typeof doc['id'] !== 'string') continue;
       idsToUpdate.push(doc['id']);
     }
+    // Preflight every resulting document before changing the first row.
+    for (const id of idsToUpdate) {
+      const document = JSON.parse(await dbms.getDocumentById(parsed.collection, id)) as Record<string, FieldValue>;
+      for (const { field, value } of parsed.assignments) {
+        if (field === 'id' || !Object.hasOwn(document, field))
+          throw new Error(`Field ${field} cannot be edited on this document`);
+        document[field] = value;
+        dbms.validateDocument(parsed.collection, document);
+      }
+    }
     for (const id of idsToUpdate) {
       for (const { field, value } of parsed.assignments) {
         await dbms.editDocument(parsed.collection, id, field, value);

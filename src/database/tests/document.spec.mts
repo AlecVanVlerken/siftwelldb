@@ -2,7 +2,7 @@
 // date: 2025-12-08
 
 import { describe, expect, it } from 'vitest';
-import { JSONtoDocument, defaultIndexPredicate, parseRawDocument } from '../document.mjs';
+import { JSONtoDocument, parseRawDocument } from '../document.mjs';
 
 describe('document.mts', () => {
   it('parses a document string and splits iterable vs non-iterable fields', () => {
@@ -10,8 +10,8 @@ describe('document.mts', () => {
     const doc = JSONtoDocument(input, 'cities');
 
     expect(doc.getId()).toBe('Leuven');
-    expect(doc.getIterableKeys()).toEqual(['population', 'name']);
-    expect(doc.getNonIterableKeys()).toEqual(['_internal']);
+    expect(doc.getIterableKeys()).toEqual(['population', '_internal', 'name']);
+    expect(doc.getNonIterableKeys()).toEqual([]);
     expect(doc.getFields()).toEqual({ population: 101032, _internal: true, name: 'Leuven' });
     expect(doc.asDocument()).toEqual({
       id: 'Leuven',
@@ -40,10 +40,10 @@ describe('document.mts', () => {
 
   it('parses raw object input via parseRawDocument', () => {
     const raw = { id: 'X', a: 1, _b: false };
-    const doc = parseRawDocument('coll', raw, defaultIndexPredicate);
+    const doc = parseRawDocument('coll', raw);
     expect(doc.getId()).toBe('X');
-    expect(doc.getIterableKeys()).toEqual(['a']);
-    expect(doc.getNonIterableKeys()).toEqual(['_b']);
+    expect(doc.getIterableKeys()).toEqual(['a', '_b']);
+    expect(doc.getNonIterableKeys()).toEqual([]);
     expect(doc.getFields()).toEqual({ a: 1, _b: false });
   });
 

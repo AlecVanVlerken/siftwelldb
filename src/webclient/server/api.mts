@@ -14,6 +14,7 @@ import {
   type FieldCompressionOverrides,
 } from '../../database/compression.mjs';
 import { isFieldValue, parseRawDocument } from '../../database/document.mjs';
+import { IndexValidationError } from '../../database/dbmsback.mjs';
 
 const ENV_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../.env');
 
@@ -483,6 +484,21 @@ export class ApiRouter {
         return;
       }
 
+      const fieldIndexMatch = pathname.match(/^\/api\/collections\/([^/]+)\/indexes$/);
+      if (fieldIndexMatch && (method === 'GET' || method === 'PUT')) {
+        const collection = decodeURIComponent(fieldIndexMatch[1]);
+        if (method === 'GET') {
+          sendJSON(res, 200, { fields: await this.db.getFieldIndexConfig(collection) });
+        } else {
+          const body = await parseBody(req);
+          if (typeof body['field'] !== 'string' || typeof body['indexed'] !== 'boolean') {
+            throw new ApiHttpError(400, 'Provide a field name and a boolean Indexed setting.');
+          }
+          sendJSON(res, 200, { fields: await this.db.setFieldIndexed(collection, body['field'], body['indexed']) });
+        }
+        return;
+      }
+
       // GET /api/collections
       if (method === 'GET' && pathname === '/api/collections') {
         const collections = await this.db.getCollections();
@@ -873,7 +889,11 @@ export class ApiRouter {
       // No route matched
       sendError(res, 404, 'API endpoint not found');
     } catch (error) {
-      if (error instanceof ApiHttpError || error instanceof DatabaseInputError) {
+      if (
+        error instanceof ApiHttpError ||
+        error instanceof DatabaseInputError ||
+        error instanceof IndexValidationError
+      ) {
         sendError(res, error instanceof ApiHttpError ? error.statusCode : 400, error.message);
         return;
       }

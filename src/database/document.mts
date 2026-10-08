@@ -3,7 +3,6 @@
 
 export type FieldValue = string | number | boolean | Buffer;
 export type RawId = string | number;
-export type IndexPredicate = (field: string) => boolean;
 
 /** File extensions that denote binary image fields. */
 export const IMAGE_EXTENSIONS = ['.jpeg', '.jpg', '.png', '.webp', '.gif'] as const;
@@ -27,8 +26,10 @@ export function isImageField(fieldName: string, fields?: Record<string, unknown>
   );
 }
 
-export const defaultIndexPredicate: IndexPredicate = (field) =>
-  field !== 'id' && !field.startsWith('_') && !isImageField(field);
+/** Ordinary key types supported by secondary B+ trees. Field names have no indexing meaning. */
+export function supportsFieldIndex(field: string, value: FieldValue, fields: Record<string, unknown>): boolean {
+  return field !== 'id' && !Buffer.isBuffer(value) && !isImageField(field, fields);
+}
 
 export function isFieldValue(value: unknown): value is FieldValue {
   return ['string', 'number', 'boolean'].includes(typeof value) || Buffer.isBuffer(value);
@@ -112,25 +113,24 @@ export class Document {
 }
 
 /**
- * Parse a raw object supplied by the client and split fields into iterable vs non-iterable.
+ * Parse a raw object supplied by the client. The two entry groups are retained
+ * for RecordStore compatibility; collection metadata controls actual indexing.
  * Returns a Document instance.
  */
-export function parseRawDocument(
-  collection: string,
-  raw: unknown,
-  isIndexable: IndexPredicate = defaultIndexPredicate,
-): Document {
+export function parseRawDocument(collection: string, raw: unknown): Document {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Document must be an object');
 
   const rawId = (raw as Record<string, unknown>)['id'];
   if (rawId === undefined || rawId === null) throw new Error('Document must have an id');
   if (typeof rawId !== 'string' && typeof rawId !== 'number') throw new Error('Document id must be a string or number');
+  if (typeof rawId === 'number' && !Number.isFinite(rawId)) throw new Error('Document id must be finite');
 
   const iterableEntries: [string, FieldValue][] = [];
   const nonIterableEntries: [string, FieldValue][] = [];
   const rawRecord = raw as Record<string, unknown>;
   for (const [key, value] of Object.entries(rawRecord)) {
     if (key === 'id') continue;
+    if (typeof value === 'number' && !Number.isFinite(value)) throw new Error(`Field ${key} must be finite`);
 
     let fieldValue: FieldValue;
     if (isImageField(key, rawRecord) && typeof value === 'string') {
@@ -143,7 +143,7 @@ export function parseRawDocument(
     }
 
     const entry: [string, FieldValue] = [key, fieldValue];
-    if (!isImageField(key, rawRecord) && isIndexable(key)) iterableEntries.push(entry);
+    if (supportsFieldIndex(key, fieldValue, rawRecord)) iterableEntries.push(entry);
     else nonIterableEntries.push(entry);
   }
 
@@ -170,7 +170,7 @@ export function JSONtoDocument(input: string, collection: string): Document {
     throw new Error(`Failed to parse document string: ${(err as Error).message}`);
   }
 
-  return parseRawDocument(collection, parsed, defaultIndexPredicate);
+  return parseRawDocument(collection, parsed);
 }
 
 /**

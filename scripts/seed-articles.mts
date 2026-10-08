@@ -98,6 +98,7 @@ async function main() {
 
   const COLLECTION = 'articles';
   const index = new InvertedIndex(db, COLLECTION, ['title']);
+  await db.setFieldIndexed(COLLECTION, '_content', false);
   const contentIndex = new InvertedIndex(db, COLLECTION, ['_content']);
 
   function* docs(): Generator<Record<string, unknown>> {

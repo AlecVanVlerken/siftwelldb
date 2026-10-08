@@ -286,6 +286,30 @@ describe('DatabaseService with real database files', () => {
     await fs.rm(resolved, { recursive: true, force: true });
   });
 
+  it('persists field controls, rejects failed builds, and clears settings when switching databases', async () => {
+    await service.create(filepath);
+    expect(await service.setFieldIndexed('articles', 'body', false)).toEqual({ id: true, body: false });
+    await service.insertDocument('articles', { id: 'a', title: 'short', body: 'long text '.repeat(1000) });
+    expect(await service.getFieldIndexConfig('articles')).toEqual({ id: true, title: true, body: false });
+    await expect(service.setFieldIndexed('articles', 'body', true)).rejects.toThrow('maximum indexed key size');
+    await service.replaceDocument('articles', 'a', { id: 'a', title: 'changed', body: 'new long text '.repeat(1000) });
+    await service.setFieldIndexed('articles', 'title', false);
+    expect((await service.query("SELECT id FROM articles WHERE title = 'changed'")).rows).toEqual([{ id: 'a' }]);
+    await service.setFieldIndexed('articles', 'title', true);
+    await service.disconnect();
+    await service.connect(filepath);
+    expect((await service.getCollectionStorage('articles')).fieldIndexes).toEqual({
+      id: true,
+      title: true,
+      body: false,
+    });
+    await service.create(path.join(directory, 'other.db'));
+    expect(await service.getFieldIndexConfig('articles')).toEqual({ id: true });
+    await service.disconnect();
+    await service.connect(filepath);
+    expect((await service.getFieldIndexConfig('articles'))['body']).toBe(false);
+  });
+
   it('persists CRUD and SQL writes across disconnect and reconnect', async () => {
     await service.create(filepath);
     await service.insertDocument('books', { id: 'b1', title: 'first book', pages: 100 });
@@ -334,6 +358,7 @@ describe('DatabaseService with real database files', () => {
 
   it('reports database bytes separately from the WAL and exposes actual stored compression', async () => {
     await service.create(filepath);
+    await service.setFieldIndexed('books', '_content', false);
     await service.insertDocument('books', { id: 'b1', _content: 'a'.repeat(12000) }, { _content: 'gzip' });
     const metadata = await service.getDocumentMetadata('books', 'b1');
     expect(metadata).toMatchObject({ blockSize: 4096, storedSize: 4096, compressions: { _content: 'gzip' } });
@@ -393,6 +418,7 @@ describe('DatabaseService with real database files', () => {
 
   it('Lab report includes optional fields appearing after the first sampled document', async () => {
     await service.create(filepath);
+    await service.setFieldIndexed('books', '_notes', false);
     await service.insertDocument('books', { id: 'a', title: 'first' });
     await service.insertDocument('books', { id: 'b', title: 'second', _notes: 'notes '.repeat(1000) });
     const report = await service.recommendCollectionLab({ collection: 'books' });
@@ -413,6 +439,7 @@ describe('DatabaseService with real database files', () => {
 
   it('vacuum preserves contents and indexes and leaves no temporary or backup files', async () => {
     await service.create(filepath);
+    await service.setFieldIndexed('books', '_payload', false);
     for (let i = 0; i < 8; i++) {
       await service.insertDocument('books', {
         id: `b${i}`,
@@ -432,6 +459,7 @@ describe('DatabaseService with real database files', () => {
 
   it('restores and reconnects the original pair if reopening the vacuum target fails', async () => {
     await service.create(filepath);
+    await service.setFieldIndexed('books', '_payload', false);
     await service.insertDocument('books', { id: 'b1', title: 'first', _payload: 'x'.repeat(8000) });
     const originalBytes = await fs.readFile(filepath);
     vi.spyOn(SimpleDbms, 'open').mockRejectedValueOnce(new Error('Simulated target reopen failure'));
@@ -480,6 +508,7 @@ describe('DatabaseService with real database files', () => {
 
   it('supports manual and automatic incremental checks without losing live documents', async () => {
     await service.create(filepath);
+    await service.setFieldIndexed('books', '_payload', false);
     for (let i = 0; i < 6; i++)
       await service.insertDocument('books', { id: `b${i}`, title: 'first', _payload: 'x'.repeat(8000) });
     for (let i = 0; i < 4; i++) await service.deleteDocument('books', `b${i}`);
@@ -508,6 +537,7 @@ describe('DatabaseService with real database files', () => {
 
   it('persists explicit compression defaults and applies them to future writes', async () => {
     await service.create(filepath);
+    await service.setFieldIndexed('books', '_body', false);
     await service.insertDocument('books', { id: 'b1', _body: 'a'.repeat(8000) });
     await service.setCompressionDefaults('books', { _body: 'gzip' });
     await service.disconnect();
@@ -530,9 +560,12 @@ describe('DatabaseService with real database files', () => {
     const longBody = 'Vector database benchmarking and retrieval. '.repeat(100);
     await expect(
       service.insertDocument('notes', { id: 'note / 1%', title: 'first', body: longBody }, { body: 'gzip' }),
-    ).rejects.toThrow(/Field "body" is too large.*underscore-prefixed.*Compression does not reduce/);
+    ).rejects.toThrow(
+      /Field "body" exceeds the maximum indexed key size.*disable indexing.*Compression does not reduce/,
+    );
     expect(await service.getCollections()).toEqual([]);
     await service.insertDocument('notes', { id: 'note / 1%', title: 'first', body: 'short body' });
+    await service.setFieldIndexed('notes', '_body', false);
     await service.insertDocument('notes', { id: 'b2', title: 'second', _body: longBody }, { _body: 'gzip' });
     expect((await service.getDocuments('notes')).total).toBe(2);
     expect(JSON.parse(await service.getDocumentById('notes', 'b2'))).toMatchObject({ _body: longBody });
@@ -545,10 +578,10 @@ describe('DatabaseService with real database files', () => {
   it('checks UTF-8 composite key bytes and leaves room for two large indexed values', async () => {
     await service.create(filepath);
     await expect(service.insertDocument('notes', { id: 'a', body: 'é'.repeat(1020) })).rejects.toThrow(
-      'Field "body" is too large',
+      'Field "body" exceeds the maximum indexed key size',
     );
     await expect(service.insertDocument('notes', { id: 'é'.repeat(1020), body: 'small' })).rejects.toThrow(
-      'Document id is too large',
+      'Field "id" exceeds the maximum indexed key size',
     );
     await service.insertDocument('notes', { id: 'a', body: 'a'.repeat(2000) });
     await service.insertDocument('notes', { id: 'b', body: 'b'.repeat(2000) });
@@ -563,13 +596,15 @@ describe('DatabaseService with real database files', () => {
     const body = 'x'.repeat(4200);
     await expect(
       service.replaceDocument('notes', 'n1', { id: 'n1', title: 'changed', body, score: 9 }),
-    ).rejects.toThrow('Field "body" is too large');
-    await expect(service.editDocument('notes', 'n1', 'body', body)).rejects.toThrow('Field "body" is too large');
+    ).rejects.toThrow('Field "body" exceeds the maximum indexed key size');
+    await expect(service.editDocument('notes', 'n1', 'body', body)).rejects.toThrow(
+      'Field "body" exceeds the maximum indexed key size',
+    );
     await expect(service.query(`INSERT INTO notes VALUES {id: 'failed', body: '${body}'}`)).rejects.toThrow(
-      'Field "body" is too large',
+      'Field "body" exceeds the maximum indexed key size',
     );
     await expect(service.query(`UPDATE notes SET score = 9, body = '${body}' WHERE id = 'n1'`)).rejects.toThrow(
-      'Field "body" is too large',
+      'Field "body" exceeds the maximum indexed key size',
     );
     expect(JSON.parse(await service.getDocumentById('notes', 'n1'))).toMatchObject({
       title: 'first',
@@ -617,6 +652,7 @@ describe('DatabaseService with real database files', () => {
 
   it('completes queued lab reports and applies advice without reentering the operation queue', async () => {
     await service.create(filepath);
+    await service.setFieldIndexed('notes', '_body', false);
     await service.insertDocument('notes', { id: 'n1', title: 'A short note', _body: 'Repeated text. '.repeat(500) });
     const report = await service.recommendCollectionLab({ collection: 'notes', sampleSize: 10 });
     expect(report.perField.map((field) => field.field)).toContain('_body');

@@ -297,7 +297,7 @@ describe('ApiRouter', () => {
 
   it('returns actionable 400 responses for indexed values rejected before storage', async () => {
     const message =
-      'Field "body" is too large for its index. Use an underscore-prefixed field for unindexed storage. Compression does not reduce index key size.';
+      'Field "body" exceeds the maximum indexed key size. Shorten the value or disable indexing for this field. Compression does not reduce index key size.';
     const router = new ApiRouter(
       createConnectedDbStub({
         insertDocument() {
@@ -691,5 +691,59 @@ describe('ApiRouter', () => {
       inserted: 25,
       skipped: false,
     });
+  });
+});
+
+describe('field indexing API', () => {
+  it('returns actual collection settings and awaits an index change', async () => {
+    const config = { id: true, body: false };
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        getFieldIndexConfig: () => Promise.resolve(config),
+        setFieldIndexed: async (_collection, field, indexed) => {
+          await Promise.resolve();
+          return { ...config, [field]: indexed };
+        },
+      }),
+    );
+    const response = await handle(router, 'GET', '/api/collections/articles/indexes');
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({ fields: config });
+    const changed = await handle(
+      router,
+      'PUT',
+      '/api/collections/articles/indexes',
+      JSON.stringify({ field: 'title', indexed: true }),
+    );
+    expect(changed.statusCode).toBe(200);
+    expect(JSON.parse(changed.body)).toEqual({ fields: { ...config, title: true } });
+  });
+
+  it('rejects invalid checkbox input', async () => {
+    const router = new ApiRouter(createConnectedDbStub());
+    const response = await handle(
+      router,
+      'PUT',
+      '/api/collections/articles/indexes',
+      JSON.stringify({ field: 'title', indexed: 'true' }),
+    );
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('reports backend index build validation failures as input errors', async () => {
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        setFieldIndexed: () =>
+          Promise.reject(new DatabaseInputError('Field body exceeds the maximum indexed key size')),
+      }),
+    );
+    const response = await handle(
+      router,
+      'PUT',
+      '/api/collections/articles/indexes',
+      JSON.stringify({ field: 'body', indexed: true }),
+    );
+    expect(response.statusCode).toBe(400);
+    expect((JSON.parse(response.body) as { error: string }).error).toContain('maximum indexed key size');
   });
 });

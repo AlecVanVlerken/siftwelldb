@@ -938,8 +938,10 @@ export class HNSWGraphStorage {
   }
 
   private async *scanPhysicalNodes(): AsyncGenerator<HNSWNode> {
-    const blockCount = Math.max(this.file._getCachedBlockCount(), this.file._getHighestDirtyBlock() + 1);
-    for (let pageId = 1; pageId < blockCount; pageId++) {
+    // Without an entry point, only this instance's known pages can belong to
+    // the graph. Scanning the shared file would adopt another collection's
+    // nodes after the last document is deleted, or while building a new index.
+    for (const pageId of this._pageCache.keys()) {
       const usable = await this.readPageIfData(pageId).catch(() => null);
       if (usable === null) continue;
       if (this.getUsedCount(usable) === 0) continue;

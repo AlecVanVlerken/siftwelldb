@@ -72,7 +72,6 @@ export class InvertedIndex {
     for (const [key, value] of Object.entries(doc)) {
       if (key === 'id') continue;
       if (this.fields.length > 0 && !this.fields.includes(key)) continue;
-      if (key.startsWith('_') && !this.fields.includes(key)) continue;
       if (typeof value !== 'string') continue;
 
       const words = tokenize(value);
