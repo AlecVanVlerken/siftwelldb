@@ -3,6 +3,8 @@ import { MockFile } from '../../../tests/helpers/mockfile.mjs';
 import { DbmsBack, type HnswConfig } from '../dbmsback.mjs';
 import { parseRawDocument, type Document } from '../document.mjs';
 import type { RecordStore } from '../../storage/records/recordstore.mjs';
+import { HnswIndexNative } from '../../indexes/hnsw/hnswNative.mjs';
+import type { HNSWIndex } from '../../indexes/hnsw/hnswIndex.mjs';
 
 const body = 'unindexed rabbit habitat '.repeat(500);
 const encode = (text: string) => Promise.resolve(new Float32Array([text.includes('rabbit') ? 0 : 10, 0, 0, 0]));
@@ -22,6 +24,23 @@ async function semanticIds(db: DbmsBack, collection = 'articles') {
 }
 
 describe('field indexing with retained HNSW tombstones', () => {
+  it('releases collection-native handles on drop and backend close without closing shared storage early', async () => {
+    const { db } = await create();
+    await db.insertDocument(parseRawDocument('articles', { id: 'a', title: 'rabbit' }));
+    await db.insertDocument(parseRawDocument('other', { id: 'b', title: 'dolphin' }));
+    const close = vi.spyOn(HnswIndexNative.prototype, 'close');
+    try {
+      await db.deleteCollection('articles');
+      // dropStorage replaces its emptied handle; both handles must be freed.
+      expect(close).toHaveBeenCalledTimes(2);
+      expect(await semanticIds(db, 'other')).toEqual(['b']);
+      await db.commit();
+      await db.close();
+      expect(close).toHaveBeenCalledTimes(3);
+    } finally {
+      close.mockRestore();
+    }
+  });
   it('keeps record identities and graph topology when deleting an already tombstoned document', async () => {
     const embeddingFn = vi.fn(encode);
     const { db, data, log } = await create({ ...config, embeddingFn });
@@ -118,6 +137,8 @@ describe('field indexing with retained HNSW tombstones', () => {
     await db.deleteDocument('dead', 'articles');
     const foreign = await db.inspectHnswGraphStructureSnapshot('other');
     const results = await semanticIds(db);
+    const index = (db as unknown as { hnswIndexCache: Map<string, HNSWIndex> }).hnswIndexCache.get('articles')!;
+    const native = (index as unknown as { rustIdx: HnswIndexNative }).rustIdx;
     await db.setFieldIndexed('articles', 'title', false);
     const tombstone = (await db.inspectHnswGraphStructure('articles')).find((node) => node.deleted)!;
     await db.relocateHnswUnit({ collection: 'articles', kind: 'hnsw-graph', nodeId: tombstone.nodeId });
@@ -127,6 +148,7 @@ describe('field indexing with retained HNSW tombstones', () => {
     await db.setFieldIndexed('articles', 'title', true);
     const tree = (await db.listBtreeRelocationTargets()).find((target) => target.collection === 'articles')!;
     await db.relocateBtreeNode(tree.collection!, tree.field!, tree.blockNumber!);
+    expect((index as unknown as { rustIdx: HnswIndexNative }).rustIdx).toBe(native);
     expect(await db.inspectHnswGraphStructureSnapshot('other')).toEqual(foreign);
     expect(await semanticIds(db)).toEqual(results);
     expect((await db.getDocument('live', 'articles')) as Document).toBeDefined();

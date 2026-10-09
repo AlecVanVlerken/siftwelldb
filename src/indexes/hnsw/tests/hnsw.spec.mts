@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { FreeBlockFile } from '../../../storage/blocks/freeblockfile.mjs';
 import { AtomicFile } from '../../../storage/wal/atomicfile.mjs';
 import { MockFile } from '../../../../tests/helpers/mockfile.mjs';
@@ -7,6 +7,7 @@ import { VectorHeapFile } from '../vectorHeapFile.mjs';
 import { HNSWGraphStorage, decodeNodeId, encodeNodeId } from '../hnswGraphStorage.mjs';
 import { HNSWNode } from '../hnswNode.mjs';
 import { HNSWIndex } from '../hnswIndex.mjs';
+import type { HnswIndexNative } from '../hnswNative.mjs';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -778,6 +779,23 @@ describe('HNSWIndex', () => {
     expect(await index.tombstone(1)).toBe(true);
     expect(await index.tombstone(1)).toBe(false);
     expect(await index.tombstone(999)).toBe(false);
+  });
+
+  it('keeps healthy high-density search bounded but still fills results when native traversal under-yields', async () => {
+    for (let id = 0; id < 100; id++) await index.insert(id, vec(id, 0));
+    for (let id = 0; id < 90; id++) await index.delete(id);
+    const native = (index as unknown as { rustIdx: HnswIndexNative }).rustIdx;
+    const search = vi.spyOn(native, 'search');
+    try {
+      expect(await index.search(vec(99, 0), 5)).toEqual([99, 98, 97, 96, 95]);
+      expect(search.mock.calls.map(([, k]) => k)).toEqual([5]);
+      search.mockClear();
+      search.mockReturnValue([]);
+      expect(await index.search(vec(99, 0), 5)).toEqual([99, 98, 97, 96, 95]);
+      expect(search.mock.calls.map(([, k]) => k)).toEqual([5, 100]);
+    } finally {
+      search.mockRestore();
+    }
   });
 
   it('tombstone state and live search survive commit + reopen', async () => {

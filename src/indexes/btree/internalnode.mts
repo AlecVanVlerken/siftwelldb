@@ -575,7 +575,10 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
           bestDifference = difference;
         }
       }
-      if (!Number.isFinite(bestDifference)) throw new Error('B+ tree key cannot fit a safe internal split.');
+      // Deletion can replace several short separators with long ones after
+      // child merges. Valid individual keys may then require more than two
+      // contiguous nodes; a two-way split is not always mathematically possible.
+      if (!Number.isFinite(bestDifference)) return this.splitByCapacity();
     }
     const rightChildren = this.children.splice(midpoint);
 
@@ -609,6 +612,37 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
   private needsSplit(): boolean {
     // FreeBlockFile reserves 1 byte for block type
     return this.currentSize > this.blockSize - 1;
+  }
+
+  private async splitByCapacity(): Promise<BlockInternalDescriptor> {
+    const capacity = this.blockSize - 1;
+    const groups: BlockChild[][] = [[]];
+    let size = INTERNAL_HEADER_SIZE;
+    for (const child of this.children) {
+      const bytes = 6 + child.key.length;
+      if (INTERNAL_HEADER_SIZE + bytes > capacity) throw new Error('B+ tree key cannot fit an internal node.');
+      if (size + bytes > capacity) {
+        groups.push([]);
+        size = INTERNAL_HEADER_SIZE;
+      }
+      groups[groups.length - 1].push(child);
+      size += bytes;
+    }
+
+    const nodes: BlockInternalNode[] = [this];
+    for (let i = 1; i < groups.length; i++) nodes.push(await this.allocateInternalNode());
+    for (let i = 1; i < nodes.length; i++) {
+      for (const child of groups[i]) {
+        const loaded = this.childrenLoaded.get(child.blockNumber);
+        if (loaded) nodes[i].childrenLoaded.set(child.blockNumber, loaded);
+      }
+    }
+    for (let i = 0; i < nodes.length; i++) {
+      nodes[i].children = groups[i];
+      nodes[i].currentSize = this.calculateSize(groups[i]);
+      nodes[i].dirty = true;
+    }
+    return { nodes, keys: nodes.map((node) => node.children[node.children.length - 1].key) };
   }
 
   private calculateSize(children: BlockChild[]): number {

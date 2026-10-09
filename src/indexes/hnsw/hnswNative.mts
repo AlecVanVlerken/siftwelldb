@@ -64,6 +64,7 @@ function getLib() {
     insert: _lib.func('void hnsw_insert(HnswT *handle, uint32_t docId, float *vector)'),
     search: _lib.func('uint32_t hnsw_search(HnswT *handle, float *query, uint32_t k, _Out_ uint32_t *outIds)'),
     delete: _lib.func('uint32_t hnsw_delete(HnswT *handle, uint32_t docId)'),
+    relabelDocument: _lib.func('uint32_t hnsw_relabel_document(HnswT *handle, uint32_t oldDocId, uint32_t newDocId)'),
     size: _lib.func('uint32_t hnsw_size(HnswT *handle)'),
     setEfSearch: _lib.func('void hnsw_set_ef_search(HnswT *handle, uint32_t ef)'),
     // ── Dirty-node tracking (FBF persistence) ─────────────────────────────────
@@ -109,6 +110,7 @@ function getLib() {
  */
 export class HnswIndexNative {
   private readonly handle: object;
+  private closed = false;
   private readonly _dim: number;
   private readonly _k_buf: Uint32Array; // reusable result buffer for search
   private readonly _nb_buf: Uint32Array; // reusable result buffer for getNeighbors
@@ -135,6 +137,7 @@ export class HnswIndexNative {
 
   /** Insert a vector identified by `docId`. */
   insert(docId: number, vector: Float32Array): void {
+    this.validateVector(vector);
     _fns['insert'](this.handle, docId, vector);
   }
 
@@ -143,6 +146,7 @@ export class HnswIndexNative {
    * The returned array is a fresh JS array each call.
    */
   search(query: Float32Array, k: number): number[] {
+    this.validateVector(query);
     const buf = k <= 1024 ? this._k_buf : new Uint32Array(k);
     const n = _fns['search'](this.handle, query, k, buf) as number;
     return Array.from(buf.subarray(0, n));
@@ -154,6 +158,11 @@ export class HnswIndexNative {
    */
   delete(docId: number): boolean {
     return (_fns['delete'](this.handle, docId) as number) === 1;
+  }
+
+  /** Relabel a live or tombstoned node in place; reject occupied destinations. */
+  relabelDocument(oldDocId: number, newDocId: number): boolean {
+    return (_fns['relabelDocument'](this.handle, oldDocId, newDocId) as number) === 1;
   }
 
   /** Number of live (non-deleted) entries in the index. */
@@ -246,7 +255,19 @@ export class HnswIndexNative {
    * after all nodes have been imported.
    */
   importNode(docId: number, level: number, vector: Float32Array, deleted: boolean): void {
+    this.validateVector(vector);
     _fns['importNode'](this.handle, docId, level, vector, deleted ? 1 : 0);
+  }
+
+  private validateVector(vector: Float32Array): void {
+    // C ABI reads exactly dim floats from the pointer. Validate in JS before
+    // a malformed encoder output can cause an out-of-bounds native read.
+    if (vector.length !== this._dim) {
+      throw new Error(`Vector dimension mismatch: expected ${this._dim}, got ${vector.length}`);
+    }
+    if (vector.some((value) => !Number.isFinite(value))) {
+      throw new Error('Vector values must be finite.');
+    }
   }
 
   /**
@@ -272,6 +293,8 @@ export class HnswIndexNative {
    * After calling `close()` this instance must not be used.
    */
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     _fns['destroy'](this.handle);
   }
 }

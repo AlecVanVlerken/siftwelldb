@@ -75,6 +75,46 @@ describe('Block-based BPlusTree', () => {
   let file: FreeBlockFile;
   let storage: BlockNodeStorage;
 
+  it('splits enlarged deletion separators into bounded pages and reopens every remaining lookup', async () => {
+    let seed = 1;
+    const random = () => {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      return (seed >>> 0) / 4294967296;
+    };
+    // Every key fits the DBMS's conservative limit for a 256-byte block.
+    const keys = Array.from({ length: 240 }, (_, i) =>
+      Buffer.from(String(i).padStart(5, '0') + 'x'.repeat(i % 3 ? Math.floor(random() * 10) : 110)),
+    );
+    const order = [...keys];
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    let tree: BlockTree = await BPlusTree.create(storage);
+    const live = new Set(keys.map((key) => key.toString()));
+    for (const key of order) await tree.insert(key, Buffer.from('data'));
+    const verify = async () => {
+      expect(await getAllKeys(tree)).toEqual([...live].sort());
+      for (const key of live) expect((await tree.get(Buffer.from(key)))?.toString()).toBe('data');
+    };
+    for (let i = 0; i < order.length; i++) {
+      expect(await tree.delete(order[i])).toBe(true);
+      live.delete(order[i].toString());
+      // Deletion 66 requires a three-way internal split and a root split.
+      if (i === 66 || i % 47 === 0 || i === order.length - 1) {
+        await verify();
+        await file.commit();
+        const rootBlock = tree.getRoot().getBlockNumber();
+        storage.dispose();
+        storage = new BlockNodeStorage(file, { compareKeys: (a, b) => Buffer.compare(a, b) });
+        tree = BPlusTree.open(storage, await storage.openTree(rootBlock));
+        await verify();
+      }
+    }
+  });
+
   beforeEach(async () => {
     // Use small blocks for testing (must fit in log sector after base64 encoding)
     const blockSize = 256;

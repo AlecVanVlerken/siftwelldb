@@ -136,8 +136,13 @@ export class HNSWIndex {
   ): Promise<HNSWIndex> {
     const { efSearch, efConstruction = graphStorage.M * 2 } = params;
     const index = new HNSWIndex(graphStorage, vectorHeap, graphStorage.M, efConstruction, efSearch);
-    await index.loadFromFBF();
-    return index;
+    try {
+      await index.loadFromFBF();
+      return index;
+    } catch (error) {
+      index.dispose();
+      throw error;
+    }
   }
 
   // ** PUBLIC INDEX API **
@@ -147,6 +152,9 @@ export class HNSWIndex {
    * Throws if `docId` is already present.
    */
   async insert(docId: number, vector: Float32Array, options: { maxBlockExclusive?: number } = {}): Promise<void> {
+    if (vector.some((value) => !Number.isFinite(value))) {
+      throw new Error('Vector values must be finite.');
+    }
     if (this.nodeIdByDocId.has(docId)) {
       const state = this.tombstonedDocIdIndex.has(docId) ? 'tombstoned' : 'live';
       throw new Error(
@@ -212,12 +220,12 @@ export class HNSWIndex {
 
     const target = Math.min(k, this.docIdIndex.size);
     const knownPhysicalNodes = this.docIdIndex.size + this.tombstonedDocIdIndex.size;
-    const initialFetch = Math.min(knownPhysicalNodes, Math.max(k, target + this.tombstonedDocIdIndex.size));
+    const initialFetch = target;
     let results = this.filterLiveResults(this.rustIdx.search(queryVector, initialFetch), target);
 
-    // Native search also filters deleted nodes, but wrapper-level filtering is
-    // the durable invariant. Overfetch once so tombstones do not reduce k live
-    // results when enough live candidates exist.
+    // Native search counts live candidates in its beam. Requesting k plus all
+    // tombstones makes every healthy search grow with the collection. Widen
+    // only if native traversal actually under-yields after wrapper filtering.
     if (results.length < target && initialFetch < knownPhysicalNodes) {
       results = this.filterLiveResults(this.rustIdx.search(queryVector, knownPhysicalNodes), target);
     }
@@ -285,8 +293,8 @@ export class HNSWIndex {
    *
    * RecordStore relocation changes the document's physical record pointer, but
    * must not delete and reinsert the HNSW entry because that can perturb graph
-   * topology and semantic result ordering. This updates the persisted doc id in
-   * place, then reloads the native index from the unchanged persisted graph.
+   * topology and semantic result ordering. Update both persisted and native
+   * identities in place; native neighbors refer to stable internal node IDs.
    */
   async relabelDocument(oldDocId: number, newDocId: number): Promise<boolean> {
     if (oldDocId === newDocId) return this.docIdIndex.has(oldDocId);
@@ -300,6 +308,10 @@ export class HNSWIndex {
     const node = await this.getLiveNodeForDocument(oldDocId, nodeId);
     if (node === undefined) return false;
 
+    if (!this.rustIdx.relabelDocument(oldDocId, newDocId)) {
+      throw new Error(`HNSWIndex: native relabel failed for docId ${oldDocId}.`);
+    }
+
     node.docId = newDocId;
     await this.graphStorage.saveNode(node);
     this.nodeIdByDocId.delete(oldDocId);
@@ -308,8 +320,6 @@ export class HNSWIndex {
     this.docIdIndex.set(newDocId, node.nodeId);
     this.vectorPtrCache.delete(oldDocId);
     this.vectorPtrCache.set(newDocId, node.vectorPtr);
-    await this.pruneNodesWithMissingVectors();
-    await this.reloadNativeFromFBF();
     return true;
   }
 
@@ -371,8 +381,13 @@ export class HNSWIndex {
 
   async relocateGraphNode(nodeId: NodeId, options: { maxBlockExclusive?: number } = {}): Promise<NodeId> {
     const result = await this.graphStorage.relocateNode(nodeId, options);
-    await this.pruneNodesWithMissingVectors();
-    await this.reloadNativeFromFBF();
+    this.nodeIdByDocId.set(result.docId, result.newNodeId);
+    if (this.docIdIndex.has(result.docId)) {
+      this.docIdIndex.set(result.docId, result.newNodeId);
+    } else if (this.tombstonedDocIdIndex.has(result.docId)) {
+      this.tombstonedDocIdIndex.set(result.docId, result.newNodeId);
+    }
+    // Native topology uses internal node IDs, independent of disk locations.
     return result.newNodeId;
   }
 
@@ -387,8 +402,7 @@ export class HNSWIndex {
     } else {
       this.vectorPtrCache.set(node.docId, newPtr);
     }
-    await this.pruneNodesWithMissingVectors();
-    await this.reloadNativeFromFBF();
+    // The same vector remains resident in native memory at the same node ID.
     return newPtr;
   }
 
@@ -459,9 +473,14 @@ export class HNSWIndex {
    * Always call commit() before close().
    */
   async close(): Promise<void> {
-    this.rustIdx.close();
+    this.dispose();
     await this.vectorHeap.close();
     await this.graphStorage.close();
+  }
+
+  /** Release native memory without closing the backend's shared storage file. */
+  dispose(): void {
+    this.rustIdx.close();
   }
 
   // ** Private helpers **

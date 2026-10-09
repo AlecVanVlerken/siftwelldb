@@ -68,6 +68,12 @@ pub extern "C" fn hnsw_delete(handle: *mut HnswHandle, doc_id: u32) -> u32 {
     unsafe { (*handle).0.delete(doc_id) as u32 }
 }
 
+/// Relabel a retained node without rebuilding or rewiring the native graph.
+#[no_mangle]
+pub extern "C" fn hnsw_relabel_document(handle: *mut HnswHandle, old_doc_id: u32, new_doc_id: u32) -> u32 {
+    unsafe { (*handle).0.relabel_document(old_doc_id, new_doc_id) as u32 }
+}
+
 #[no_mangle]
 pub extern "C" fn hnsw_size(handle: *const HnswHandle) -> u32 {
     unsafe { (*handle).0.size() as u32 }

@@ -70,4 +70,51 @@ describe('HnswIndexNative FFI contracts', () => {
     expect(Array.from(index.getNeighbors(2, 0))).toContain(1);
     expect(Array.from(index.search(new Float32Array([1, 0]), 2))).toEqual([2]);
   });
+
+  it('relabels live and deleted routing identities without changing topology or live counts', () => {
+    index.importNode(1, 1, new Float32Array([0, 0]), true);
+    index.importNode(2, 0, new Float32Array([1, 0]), false);
+    index.importSetNeighbors(1, 0, [2]);
+    index.importSetNeighbors(2, 0, [1]);
+    index.importFinish(1, 1);
+    expect(index.relabelDocument(2, 1)).toBe(false);
+    expect(index.relabelDocument(999, 3)).toBe(false);
+    expect(index.relabelDocument(2, 20)).toBe(true);
+    expect(index.relabelDocument(1, 10)).toBe(true);
+    expect(index.relabelDocument(10, 10)).toBe(true);
+    expect(index.getEntryDocId()).toBe(10);
+    expect(index.getMaxLevel()).toBe(1);
+    expect(index.getLevel(1)).toBe(-1);
+    expect(Array.from(index.getNeighbors(10, 0))).toEqual([20]);
+    expect(Array.from(index.getNeighbors(20, 0))).toEqual([10]);
+    expect(index.size).toBe(1);
+    expect(index.search(new Float32Array([0, 0]), 2)).toEqual([20]);
+    expect(index.delete(2)).toBe(false);
+    expect(index.delete(20)).toBe(true);
+    expect(index.size).toBe(0);
+    expect(index.relabelDocument(10, 20)).toBe(false);
+  });
+
+  it('traverses a distant deleted bridge until the live search beam has filled', () => {
+    index.importNode(1, 0, new Float32Array([10, 0]), true);
+    index.importNode(2, 0, new Float32Array([0, 0]), false);
+    index.importNode(3, 0, new Float32Array([20, 0]), true);
+    index.importNode(4, 0, new Float32Array([1, 0]), false);
+    index.importSetNeighbors(1, 0, [2, 3]);
+    index.importSetNeighbors(2, 0, [1]);
+    index.importSetNeighbors(3, 0, [1, 4]);
+    index.importSetNeighbors(4, 0, [3]);
+    index.importFinish(1, 0);
+    expect(index.search(new Float32Array([0, 0]), 2)).toEqual([2, 4]);
+  });
+
+  it('rejects malformed vectors before native calls and remains usable after validation failures', () => {
+    expect(() => index.insert(1, new Float32Array([0]))).toThrow('dimension mismatch');
+    expect(() => index.importNode(1, 0, new Float32Array([0, NaN]), false)).toThrow('finite');
+    expect(index.size).toBe(0);
+    index.insert(1, new Float32Array([0, 0]));
+    expect(() => index.search(new Float32Array([0]), 1)).toThrow('dimension mismatch');
+    expect(() => index.search(new Float32Array([Infinity, 0]), 1)).toThrow('finite');
+    expect(index.search(new Float32Array([0, 0]), 1)).toEqual([1]);
+  });
 });

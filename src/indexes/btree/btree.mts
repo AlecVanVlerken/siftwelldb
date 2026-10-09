@@ -248,8 +248,14 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
       this.root = await this.storage.finalizeRoot(this.root);
       return;
     }
-    this.root = await this.storage.allocateInternalNode(descriptor.nodes, descriptor.keys);
-    this.root = (await this.storage.finalizeRoot(this.root)) as I;
+    // A byte-aware split may produce three or more nodes. Their separator
+    // keys can also overflow the new root, so propagate splits until it fits.
+    let current = descriptor;
+    while (current.nodes.length > 1) {
+      const root = await this.storage.allocateInternalNode(current.nodes, current.keys);
+      current = await root.splitIfNeeded();
+    }
+    this.root = await this.storage.finalizeRoot(current.nodes[0]);
   }
 
   private async compressRootIfPossible(): Promise<void> {

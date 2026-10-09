@@ -74,6 +74,10 @@ export interface InternalNode<
   InternalNodeType extends InternalNode<K, V, LeafNodeType, InternalNodeType>,
 > extends NodeBase<K, V, LeafNodeType, InternalNodeType> {
   readonly isLeaf: false;
+  /** Split an over-capacity node before persisting it, including a new root. */
+  splitIfNeeded():
+    | { nodes: (LeafNodeType | InternalNodeType)[]; keys: K[] }
+    | Promise<{ nodes: (LeafNodeType | InternalNodeType)[]; keys: K[] }>;
   getChildCursorAtFirstChild():
     | ChildCursor<K, V, LeafNodeType, InternalNodeType>
     | PromiseLike<ChildCursor<K, V, LeafNodeType, InternalNodeType>>;

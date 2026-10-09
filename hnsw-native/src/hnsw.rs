@@ -184,6 +184,7 @@ impl HnswCore {
     /// Return the `k` nearest doc_ids to `query` (closest first).
     pub fn search(&self, query: &[f32], k: usize) -> Vec<u32> {
         assert_eq!(query.len(), self.dim, "query dimension mismatch");
+        if k == 0 || self.doc_to_node.is_empty() { return vec![]; }
 
         let Some(mut ep) = self.entry_point else { return vec![] };
 
@@ -193,7 +194,7 @@ impl HnswCore {
         }
 
         // Phase 2: beam search at layer 0.
-        let ef = self.ef_search.max(k);
+        let ef = self.ef_search.max(k).min(self.doc_to_node.len());
         let mut results = self.search_layer(ep, query, ef, 0, false);
 
         // Sort closest-first, return top-k doc_ids.
@@ -226,6 +227,26 @@ impl HnswCore {
 
     pub fn size(&self) -> usize {
         self.doc_to_node.len()
+    }
+
+    /// Change a retained node's document identity without changing vectors,
+    /// topology, entry point, or live/deleted state. Destination IDs must be free.
+    pub fn relabel_document(&mut self, old_doc_id: u32, new_doc_id: u32) -> bool {
+        let Some(&node_id) = self.all_doc_to_node.get(&old_doc_id) else { return false; };
+        if old_doc_id == new_doc_id { return true; }
+        if self.all_doc_to_node.contains_key(&new_doc_id) { return false; }
+
+        self.all_doc_to_node.remove(&old_doc_id);
+        self.all_doc_to_node.insert(new_doc_id, node_id);
+        if !self.nodes[node_id as usize].deleted {
+            self.doc_to_node.remove(&old_doc_id);
+            self.doc_to_node.insert(new_doc_id, node_id);
+        }
+        self.nodes[node_id as usize].doc_id = new_doc_id;
+        for doc_id in &mut self.dirty_doc_ids {
+            if *doc_id == old_doc_id { *doc_id = new_doc_id; }
+        }
+        true
     }
 
     pub fn set_ef_search(&mut self, ef: usize) {
@@ -411,7 +432,10 @@ impl HnswCore {
         while let Some(MinDist(c)) = candidates.pop() {
             // If the closest unvisited node is farther than the furthest result, stop.
             let f_dist = w.peek().map_or(f32::INFINITY, |m| m.0.0);
-            if c.0 > f_dist { break; }
+            // Deleted routing nodes do not fill the live result beam. A distant
+            // bridge must still be explored while that beam is incomplete.
+            // Construction includes deleted nodes and keeps its existing rule.
+            if c.0 > f_dist && (include_deleted || w.len() >= ef) { break; }
 
             let neighbors = match self.nodes[c.1 as usize].neighbors.get(layer) {
                 Some(v) => v,

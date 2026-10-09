@@ -907,14 +907,11 @@ export class HNSWGraphStorage {
   async *scanNodes(): AsyncGenerator<HNSWNode> {
     if (this._entryPoint === null) return;
 
-    const seen = new Set<NodeId>();
+    const seen = new Set<NodeId>([this._entryPoint]);
     const queue: NodeId[] = [this._entryPoint];
 
-    while (queue.length > 0) {
-      const nodeId = queue.shift()!;
-      if (seen.has(nodeId)) continue;
-      seen.add(nodeId);
-
+    // Array iteration visits appended items without removing/reindexing them.
+    for (const nodeId of queue) {
       let node: HNSWNode;
       try {
         node = await this.getNode(nodeId);
@@ -929,7 +926,10 @@ export class HNSWGraphStorage {
 
       for (const layer of node.neighbors) {
         for (const neighbor of layer) {
-          if (!seen.has(neighbor)) queue.push(neighbor);
+          if (!seen.has(neighbor)) {
+            seen.add(neighbor);
+            queue.push(neighbor);
+          }
         }
       }
     }

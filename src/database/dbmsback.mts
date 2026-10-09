@@ -215,6 +215,7 @@ export class DbmsBack {
           err instanceof Error ? err.message : err,
         );
         dbmsback.hnswConfig = undefined;
+        for (const index of dbmsback.hnswIndexCache.values()) index.dispose();
         dbmsback.hnswIndexCache.clear();
       }
     }
@@ -273,6 +274,7 @@ export class DbmsBack {
         for (const indexKey of this.hnswIndexKeysForCollection(collection, hnswMeta)) {
           const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
           await hnswIdx.dropStorage();
+          hnswIdx.dispose();
           delete hnswMeta[indexKey];
           this.hnswIndexCache.delete(indexKey);
         }
@@ -342,6 +344,7 @@ export class DbmsBack {
       }
     }
     for (const indexKey of this.hnswIndexKeysForCollection(collection)) {
+      this.hnswIndexCache.get(indexKey)?.dispose();
       this.hnswIndexCache.delete(indexKey);
     }
   }
@@ -352,6 +355,8 @@ export class DbmsBack {
    */
   async close(): Promise<void> {
     await this.mutationQueue;
+    for (const index of this.hnswIndexCache.values()) index.dispose();
+    this.hnswIndexCache.clear();
     await this.freeblockFile.close();
   }
 
@@ -1980,12 +1985,14 @@ export class DbmsBack {
     } catch (error) {
       for (const { index } of staged.values()) {
         await index.dropStorage();
+        index.dispose();
       }
       throw error;
     }
     for (const indexKey of oldKeys) {
       const index = await this.getOrCreateHnswIndex(indexKey);
       await index.dropStorage();
+      index.dispose();
       delete this.getHnswMeta()[indexKey];
       this.hnswIndexCache.delete(indexKey);
     }
