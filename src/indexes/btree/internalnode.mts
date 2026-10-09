@@ -559,7 +559,24 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       return this.describe();
     }
 
-    const midpoint = Math.ceil(this.children.length / 2);
+    let midpoint = Math.ceil(this.children.length / 2);
+    const capacity = this.blockSize - 1;
+    const leftSize = this.calculateSize(this.children.slice(0, midpoint));
+    const rightHalfSize = this.currentSize - leftSize + INTERNAL_HEADER_SIZE;
+    if (leftSize > capacity || rightHalfSize > capacity) {
+      let size = INTERNAL_HEADER_SIZE;
+      let bestDifference = Infinity;
+      for (let i = 0; i < this.children.length - 1; i++) {
+        size += 6 + this.children[i].key.length;
+        const otherSize = this.currentSize - size + INTERNAL_HEADER_SIZE;
+        const difference = Math.abs(size - otherSize);
+        if (size <= capacity && otherSize <= capacity && difference < bestDifference) {
+          midpoint = i + 1;
+          bestDifference = difference;
+        }
+      }
+      if (!Number.isFinite(bestDifference)) throw new Error('B+ tree key cannot fit a safe internal split.');
+    }
     const rightChildren = this.children.splice(midpoint);
 
     // Compute sizes for both halves

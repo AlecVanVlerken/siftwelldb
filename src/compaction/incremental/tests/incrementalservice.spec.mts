@@ -199,6 +199,7 @@ describe('IncrementalCompactionService', () => {
 
   it('compactIfNeeded runs multiple bounded steps toward the K target', async () => {
     const db = await makeDb();
+    await db.setFieldIndexed('items', '_payload', false);
     const payload = 'bounded convergence '.repeat(900);
 
     for (let i = 0; i < 8; i++) {

@@ -79,8 +79,11 @@ export type {
  *
  * @author Alec Van Vlerken
  */
-export async function vacuumCompactInto(options: VacuumOptions): Promise<VacuumResult> {
-  const service = new VacuumService(options);
+export async function vacuumCompactInto(
+  options: VacuumOptions,
+  commitSource?: () => Promise<void>,
+): Promise<VacuumResult> {
+  const service = new VacuumService(options, commitSource);
   return await service.run();
 }
 

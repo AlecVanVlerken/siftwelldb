@@ -275,6 +275,11 @@ export class HNSWIndex {
     return this.docIdIndex.has(docId);
   }
 
+  /** Whether a live or tombstoned node still anchors this record pointer. */
+  hasRetainedDocument(docId: number): boolean {
+    return this.nodeIdByDocId.has(docId);
+  }
+
   /**
    * Rename the physical document pointer associated with an existing HNSW node.
    *
@@ -791,11 +796,9 @@ export class HNSWIndex {
 
     // Finalise: set entry point (convert stored NodeId → docId).
     const entryNodeId = this.graphStorage.entryPoint;
-    const storedEntryDocId = entryNodeId !== null ? (nodeIdToDocId.get(entryNodeId) ?? null) : null;
-    const entryDocId =
-      storedEntryDocId !== null && this.docIdIndex.has(storedEntryDocId)
-        ? storedEntryDocId
-        : (this.docIdIndex.keys().next().value ?? null);
+    // A tombstoned entry point remains a valid routing node. Preserve it so
+    // reopen and physical relocation import exactly the same graph topology.
+    const entryDocId = entryNodeId !== null ? (nodeIdToDocId.get(entryNodeId) ?? null) : null;
     this.rustIdx.importFinish(entryDocId, this.graphStorage.currentMaxLevel);
   }
 }

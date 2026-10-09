@@ -52,7 +52,7 @@ describe('SimpleDbms', () => {
       expect(JSON.parse(result2)).toEqual(vub);
     });
 
-    it('handles documents with non-iterable keys (starting with _)', async () => {
+    it('handles documents with underscore-prefixed fields', async () => {
       const city = { id: 'Leuven', population: 101032, _internalNote: 'test data' };
       await simpleDbms.insertDocument('cities', JSON.stringify(city));
 
@@ -233,6 +233,7 @@ describe('SimpleDbms', () => {
         _metadata: 'internal tracking data',
       };
 
+      await simpleDbms.setFieldIndexed('articles', 'content', false);
       await simpleDbms.insertDocument('articles', JSON.stringify(largeDoc));
       const result = await simpleDbms.getDocumentById('articles', 'doc1');
       expect(JSON.parse(result)).toEqual(largeDoc);
@@ -635,6 +636,7 @@ describe('SimpleDbms', () => {
       const doc = { id: 'test1', name: 'Test', _private: 'secret' };
       await simpleDbms.insertDocument('test', JSON.stringify(doc));
 
+      await simpleDbms.setFieldIndexed('test', '_private', false);
       const cursor = simpleDbms.cursor('test', '_private');
       await expect(async () => {
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -1373,19 +1375,11 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
       expect(results).toEqual([]);
     });
 
-    it('does not use underscore-prefixed fields as embeddable text', async () => {
-      /**
-       * Fields starting with "_" are reserved for private/internal metadata
-       * (e.g. _isProvinceCapital in the city documents that appear throughout
-       * the test suite) and must be excluded from the embedding input.
-       * A document whose only string fields all start with "_" must therefore
-       * not be indexed.
-       */
-      const internalDoc = { id: 'priv1', _secret: 'do not embed this' };
+    it('includes underscore-prefixed text fields in embeddings', async () => {
+      const internalDoc = { id: 'priv1', _secret: 'eligible text' };
       await db.insertDocument('internals', JSON.stringify(internalDoc));
-
-      const results = await db.semanticSearch('internals', 'secret', 3);
-      expect(results).toEqual([]);
+      const results = await db.semanticSearch('internals', 'eligible text', 3);
+      expect(results.map((json) => JSON.parse(json) as unknown)).toEqual([internalDoc]);
     });
 
     it('concatenates multiple public string fields for the embedding', async () => {
@@ -1457,8 +1451,8 @@ describe('SimpleDbms – semantic search (HNSW)', () => {
     it('indexes a document that mixes public text fields with underscore fields', async () => {
       /**
        * A document that has BOTH public text fields and underscore-prefixed
-       * fields must still be indexed (using only the public fields).  The
-       * underscore fields must be silently ignored but must not prevent the
+       * fields must still be indexed using all eligible text. The
+       * underscore fields also contribute and must not prevent the
        * document from appearing in results.
        */
       const mixed = { id: 'mixed1', title: 'Public title', _internalTag: 'tag-xyz' };

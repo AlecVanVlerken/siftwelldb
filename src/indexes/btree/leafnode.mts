@@ -474,8 +474,27 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
       return this.describe();
     }
 
-    // Find split point
-    const midpoint = Math.ceil(this.entries.length / 2);
+    // Count-based splits can overflow one half when short and long keys mix.
+    // Keep the usual split when it fits; otherwise choose a boundary by bytes.
+    let midpoint = Math.ceil(this.entries.length / 2);
+    const capacity = this.blockSize - 1;
+    const leftSize = this.calculateSize(this.entries.slice(0, midpoint));
+    const rightHalfSize = this.currentSize - leftSize + LEAF_HEADER_SIZE;
+    if (leftSize > capacity || rightHalfSize > capacity) {
+      let size = LEAF_HEADER_SIZE;
+      let bestDifference = Infinity;
+      for (let i = 0; i < this.entries.length - 1; i++) {
+        const entry = this.entries[i];
+        size += 4 + entry.key.length + entry.value.length;
+        const otherSize = this.currentSize - size + LEAF_HEADER_SIZE;
+        const difference = Math.abs(size - otherSize);
+        if (size <= capacity && otherSize <= capacity && difference < bestDifference) {
+          midpoint = i + 1;
+          bestDifference = difference;
+        }
+      }
+      if (!Number.isFinite(bestDifference)) throw new Error('B+ tree key cannot fit a safe leaf split.');
+    }
     const rightEntries = this.entries.splice(midpoint);
 
     // Maintain incremental sizes for both halves

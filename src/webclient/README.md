@@ -63,8 +63,8 @@ not. The sample data itself does not bypass that requirement.
 MiniLM and CLIP are pretrained models: inserts compute vectors and update HNSW
 indexes, rather than training either model. New supported text/image records
 inserted through the webclient become searchable without retraining. Copying
-files into a folder alone does not import them. Underscore-prefixed text is
-excluded from semantic embeddings; ordinary short summaries remain searchable.
+files into a folder alone does not import them. All eligible text fields contribute to semantic embeddings, including long
+unindexed bodies and underscore-prefixed fields.
 Larger collections cost more embedding time, disk space and search resources;
 HNSW produces approximate similarity rankings, not guaranteed semantic matches.
 
@@ -119,15 +119,15 @@ The frontend uses the existing HTTP router, `DatabaseService`, and
 branches are unchanged. Engine CRUD type declarations now also accept numeric
 IDs, matching their underlying storage methods.
 
-| UI area                   | API routes                                                                                              | Behavior                                                                                                       |
-| ------------------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Connection dialog/menu    | `/api/connect`, `/api/create`, `/api/disconnect`, `/api/status`                                         | Opening, demo creation, switching and disconnecting                                                            |
-| Explorer, grid and drawer | `/api/collections`, `/api/documents/:collection`, document edit/delete/metadata routes                  | Collection deletion, document CRUD, images and pagination                                                      |
-| Query Language            | `/api/query`                                                                                            | SELECT, INSERT, UPDATE, DELETE and EXPLAIN SELECT; writes require confirmation                                 |
-| Semantic Search           | Document `search`, `search/photos`, `search/image`; `/api/embeddings/status`, `/api/embeddings/preload` | MiniLM text search and CLIP photo/image search                                                                 |
-| Compression and Lab       | `/api/compression/defaults`, `/api/compression/recommendation`, `/api/compression/lab/*`                | Persisted defaults, per-write overrides, advice and reports; fixture seeding remains available through the API |
-| Maintenance menu          | `/api/database/status`, `/api/database/vacuum`, `/api/database/incremental-compaction/*`                | Full vacuum and background compaction                                                                          |
-| AI Chat/schema/settings   | `/api/conversational/*`, `/api/settings`, `/api/settings/gemini-key`                                    | Key-free schema introspection and editing; configured Gemini chat                                              |
+| UI area                   | API routes                                                                                                   | Behavior                                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Connection dialog/menu    | `/api/connect`, `/api/create`, `/api/disconnect`, `/api/status`                                              | Opening, demo creation, switching and disconnecting                                                            |
+| Explorer, grid and drawer | `/api/collections`, `/api/documents/:collection`, document edit/delete/metadata routes, collection `indexes` | Collection deletion, document CRUD, field Indexed settings, images and pagination                              |
+| Query Language            | `/api/query`                                                                                                 | SELECT, INSERT, UPDATE, DELETE and EXPLAIN SELECT; writes require confirmation                                 |
+| Semantic Search           | Document `search`, `search/photos`, `search/image`; `/api/embeddings/status`, `/api/embeddings/preload`      | MiniLM text search and CLIP photo/image search                                                                 |
+| Compression and Lab       | `/api/compression/defaults`, `/api/compression/recommendation`, `/api/compression/lab/*`                     | Persisted defaults, per-write overrides, advice and reports; fixture seeding remains available through the API |
+| Maintenance menu          | `/api/database/status`, `/api/database/vacuum`, `/api/database/incremental-compaction/*`                     | Full vacuum and background compaction                                                                          |
+| AI Chat/schema/settings   | `/api/conversational/*`, `/api/settings`, `/api/settings/gemini-key`                                         | Key-free schema introspection and editing; configured Gemini chat                                              |
 
 Document lists expose `{documents, total, hasMore, nextCursor?}` and accept
 `limit` and `offset`. The grid sorts and filters the loaded documents; its count
@@ -144,12 +144,13 @@ that queue must use the unlocked methods.
 
 - Documents contain scalar fields and supported binary/image values. Nested
   objects, null fields and general arrays are unsupported.
-- Ordinary scalar fields receive secondary indexes. The service rejects keys
-  too large for safe leaf splitting before writes, including UTF-8 and composite
-  ID overhead. Compression does not shorten index keys. Underscore-prefixed
-  fields support long unindexed storage, but the current engine excludes them
-  from semantic text embeddings. The Lab's existing title-only indexing policy
-  is preserved when its documents are edited.
+- Ordinary scalar fields default to secondary indexes, controlled by persisted
+  collection-field **Indexed** settings. Disable indexing for long text through
+  Fields or the document editor. The backend rejects oversized encoded keys
+  before writes, including UTF-8 and composite ID overhead. Compression does
+  not shorten index keys. All eligible text contributes to semantic embeddings,
+  including unindexed and underscore-prefixed fields. The Lab configures its
+  title-only B+ tree policy explicitly.
 - SQL UPDATE/DELETE currently operate on string IDs. Other DB APIs can use
   numeric IDs. This engine limitation is unchanged.
 - Gemini chat requires an API key; schema introspection works without one.

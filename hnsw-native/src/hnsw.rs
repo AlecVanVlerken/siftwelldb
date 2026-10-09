@@ -148,7 +148,7 @@ impl HnswCore {
         for lc in (0..=level.min(self.max_level)).rev() {
             let m_max = if lc == 0 { self.m0 } else { self.m };
 
-            let candidates = self.search_layer(ep, vector, self.ef_construction, lc);
+            let candidates = self.search_layer(ep, vector, self.ef_construction, lc, true);
 
             if let Some(best) = candidates.iter().min_by(|a, b| a.0.total_cmp(&b.0)) {
                 ep = best.1;
@@ -194,7 +194,7 @@ impl HnswCore {
 
         // Phase 2: beam search at layer 0.
         let ef = self.ef_search.max(k);
-        let mut results = self.search_layer(ep, query, ef, 0);
+        let mut results = self.search_layer(ep, query, ef, 0, false);
 
         // Sort closest-first, return top-k doc_ids.
         results.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
@@ -218,20 +218,8 @@ impl HnswCore {
         self.nodes[node_id as usize].deleted = true;
         self.doc_to_node.remove(&doc_id);
 
-        // Update entry point if we deleted it.
-        if self.entry_point == Some(node_id) {
-            // Find any live node to use as the new entry point.
-            self.entry_point = self.nodes.iter()
-                .enumerate()
-                .find(|(_, n)| !n.deleted)
-                .map(|(i, _)| i as u32);
-            // Recalculate max level.
-            self.max_level = self.nodes.iter()
-                .filter(|n| !n.deleted)
-                .map(|n| n.level)
-                .max()
-                .unwrap_or(0);
-        }
+        // Keep the entry point and graph levels: deleted nodes remain routing
+        // structures. Deletion must not scan the collection or change topology.
 
         true
     }
@@ -404,7 +392,7 @@ impl HnswCore {
 
     /// Beam search on `layer` starting from `entry`, collecting up to `ef`
     /// nearest candidates. Implements Algorithm 2 from the HNSW paper.
-    fn search_layer(&self, entry: u32, query: &[f32], ef: usize, layer: usize) -> Vec<Dist> {
+    fn search_layer(&self, entry: u32, query: &[f32], ef: usize, layer: usize, include_deleted: bool) -> Vec<Dist> {
         let entry_dist = l2_squared(self.vec(entry), query);
 
         // `candidates` = min-heap  (pop = closest, unexplored)
@@ -414,8 +402,8 @@ impl HnswCore {
         let mut visited:    FxHashSet<u32>      = FxHashSet::with_capacity_and_hasher(ef * 4, Default::default());
 
         candidates.push(MinDist(Dist(entry_dist, entry)));
-        // Only add the entry to the result window if it is live.
-        if !self.nodes[entry as usize].deleted {
+        // Construction needs retained routing candidates even when no live nodes remain.
+        if include_deleted || !self.nodes[entry as usize].deleted {
             w.push(MaxDist(Dist(entry_dist, entry)));
         }
         visited.insert(entry);
@@ -458,8 +446,8 @@ impl HnswCore {
                     // Always enqueue in `candidates` so we can route *through*
                     // deleted nodes and reach their live neighbours.
                     candidates.push(MinDist(Dist(d, nb)));
-                    // Only live nodes enter the result window `w`.
-                    if !self.nodes[nb as usize].deleted {
+                    // Searches exclude tombstones; construction can connect through them.
+                    if include_deleted || !self.nodes[nb as usize].deleted {
                         w.push(MaxDist(Dist(d, nb)));
                         if w.len() > ef { w.pop(); }
                     }

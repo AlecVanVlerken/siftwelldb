@@ -45,4 +45,29 @@ describe('HnswIndexNative FFI contracts', () => {
     expect(dirty).toContain(2);
     expect(Array.from(index.takeDirtyNodes())).toEqual(dirty);
   });
+
+  it('preserves tombstoned entry-point routing and imports its neighbors', () => {
+    index.importNode(1, 1, new Float32Array([0, 0]), true);
+    index.importNode(2, 0, new Float32Array([1, 0]), false);
+    index.importSetNeighbors(1, 0, [2]);
+    index.importSetNeighbors(2, 0, [1]);
+    index.importFinish(1, 1);
+    expect(index.getEntryDocId()).toBe(1);
+    expect(index.getLevel(1)).toBe(1);
+    expect(Array.from(index.getNeighbors(1, 0))).toEqual([2]);
+    expect(Array.from(index.search(new Float32Array([0, 0]), 2))).toEqual([2]);
+    index.delete(2);
+    expect(index.getEntryDocId()).toBe(1);
+    expect(index.getMaxLevel()).toBe(1);
+    expect(Array.from(index.takeDirtyNodes())).toEqual([]);
+  });
+
+  it('connects a new live entry through an entirely tombstoned graph', () => {
+    index.importNode(1, 0, new Float32Array([0, 0]), true);
+    index.importFinish(1, 0);
+    index.insert(2, new Float32Array([1, 0]));
+    expect(Array.from(index.getNeighbors(1, 0))).toContain(2);
+    expect(Array.from(index.getNeighbors(2, 0))).toContain(1);
+    expect(Array.from(index.search(new Float32Array([1, 0]), 2))).toEqual([2]);
+  });
 });

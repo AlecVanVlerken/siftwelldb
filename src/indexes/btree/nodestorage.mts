@@ -305,7 +305,9 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
       (bn) => this.loadNode(bn),
       async () => {
         const bn = await this.file.allocateBlock();
-        return this.createInternalNode(bn);
+        const node = this.createInternalNode(bn);
+        this.nodeCache.set(bn, node);
+        return node;
       },
       (bn) => this.invalidateNode(bn),
     );
@@ -436,5 +438,12 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     this.nodeCache.clear();
     this.currentRoot = null;
     this.file.removePreCommitHook(this.preCommitHook);
+  }
+
+  /** Discard a newly built, unpublished tree, including nodes not yet linked after a failed split. */
+  async discardNewTree(): Promise<void> {
+    const blocks = [...this.nodeCache.keys()];
+    this.dispose();
+    for (const block of blocks) await this.file.freeBlock(block);
   }
 }

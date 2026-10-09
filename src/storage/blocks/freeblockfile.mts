@@ -351,7 +351,7 @@ export class FreeBlockFile {
   async getStats(): Promise<FreeBlockFileStats> {
     this._ensureOpen();
     const totalBlocks = Math.max(this.cachedPhysicalBlockCount, this.highestDirtyBlock + 1);
-    const header = await this.readHeaderBlock();
+    const header = this.dirtyBlocks.get(0) ?? (await this.readHeaderBlock());
     const freeBlocks = await this.countFreeListBlocks(totalBlocks, header);
     const freeTailBlocks = await this.countFreeTailBlocks(totalBlocks);
 

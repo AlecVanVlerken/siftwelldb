@@ -24,6 +24,7 @@ async function makeDb(hnswConfig?: HnswConfig): Promise<{ db: DbmsBack; data: Mo
 describe('DbmsBack.deleteCollection storage cleanup', () => {
   it('frees dropped collection records and B-tree nodes so incremental compaction can trim the file', async () => {
     const { db, data, log } = await makeDb();
+    await db.setFieldIndexed('dropme', '_payload', false);
     const payload = 'collection drop record payload '.repeat(180);
 
     for (let i = 0; i < 30; i++) {
@@ -84,6 +85,9 @@ describe('DbmsBack.deleteCollection storage cleanup', () => {
     const { db, data, log } = await makeDb(hnswConfig);
 
     for (let i = 0; i < 8; i++) {
+      await db.setFieldIndexed('base', '_payload', false);
+      await db.setFieldIndexed('animals', '_payload', false);
+
       await db.insertDocument(
         JSONtoDocument(
           JSON.stringify({

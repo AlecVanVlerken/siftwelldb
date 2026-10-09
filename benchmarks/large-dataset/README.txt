@@ -40,7 +40,7 @@ The benchmark consists of three steps:
 Each document contains:
 - an "id" field ("doc1234")
 - one or more fixed-size indexed fields
-- a large "_payload" field (KB-sized, **not indexed**)
+- a large "_payload" field (KB-sized, **explicitly configured as unindexed**)
 - additional non-indexed text fields
 
 This simulates realistic large documents without inflating index size.

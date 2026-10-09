@@ -89,6 +89,9 @@ export async function buildSemanticEquivalenceDataset(
   options: { fragmentation?: boolean } = {},
 ): Promise<void> {
   if (options.fragmentation === true) {
+    await db.setFieldIndexed('articles', '_payload', false);
+    await db.setFieldIndexed('images', '_payload', false);
+
     for (let i = 0; i < 18; i++) {
       await db.insertDocument(
         JSONtoDocument(

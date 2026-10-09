@@ -69,6 +69,8 @@ async function makeIsolationDb(): Promise<{ db: DbmsBack; data: MockFile; log: M
 }
 
 async function buildIsolationDataset(db: DbmsBack): Promise<void> {
+  await db.setFieldIndexed('animals-a', '_payload', false);
+  await db.setFieldIndexed('animals-b', '_payload', false);
   for (let i = 0; i < 18; i++) {
     await insertDoc(db, 'animals-a', `dead-a-${i.toString().padStart(2, '0')}`, `deleted brown cat ${i}`, 160, {
       skipSemanticIndex: true,

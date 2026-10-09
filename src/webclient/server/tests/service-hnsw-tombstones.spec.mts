@@ -185,7 +185,9 @@ describe('DatabaseService HNSW tombstone integration', () => {
     });
 
     try {
-      const fillerPayload = 'free low blocks for service compaction '.repeat(220);
+      await fixture.service.setFieldIndexed('filler', '_payload', false);
+      // Binary filler creates reusable holes without new automatic text embeddings.
+      const fillerPayload = Buffer.from('free low blocks for service compaction '.repeat(220));
       for (let i = 0; i < 18; i++) {
         await fixture.service.insertDocument('filler', { id: `filler-${i}`, _payload: fillerPayload });
       }

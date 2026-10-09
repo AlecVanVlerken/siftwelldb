@@ -140,7 +140,7 @@ export type {
 } from './compression-advisor.mjs';
 export type { CompressionProfileSummary } from './compression-profiles.mjs';
 import { type File } from '../storage/file.mjs';
-import { documentToJSON, parseRawDocument, type Document, type FieldValue, type IndexPredicate } from './document.mjs';
+import { documentToJSON, parseRawDocument, type Document, type FieldValue } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
 import { type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
 import {
@@ -242,7 +242,8 @@ export class SimpleDbms {
    * Inserts a document into the specified collection.
    *
    * The document is a JSON string with at least an `id` field. Regular fields
-   * (string, number, boolean) are indexed in the B+ tree. Fields whose names
+   * (string, number, boolean) follow the collection's Indexed settings and
+   * default to indexed in the B+ tree. Fields whose names
    * end in `.jpeg`, `.jpg`, `.png` or `.webp` are treated as image fields:
    * pass the raw bytes as a **base64 string** and the DBMS stores them as a
    * `Buffer` internally. Image fields are excluded from B+ tree indexes but
@@ -273,10 +274,9 @@ export class SimpleDbms {
     options?: {
       compression?: FieldCompressionOverrides;
       skipSemanticIndex?: boolean;
-      indexPredicate?: IndexPredicate;
     },
   ): Promise<void> {
-    const documentObj = parseRawDocument(collection, document, options?.indexPredicate);
+    const documentObj = parseRawDocument(collection, document);
     return this.dbmsback.insertDocument(documentObj, options?.compression, {
       skipSemanticIndex: options?.skipSemanticIndex,
     });
@@ -302,6 +302,22 @@ export class SimpleDbms {
 
   getFieldCompressionDefaults(collection: string): FieldCompressionDefaults {
     return this.dbmsback.getFieldCompressionDefaults(collection);
+  }
+
+  getFieldIndexConfig(collection: string): Record<string, boolean> {
+    return this.dbmsback.getFieldIndexConfig(collection);
+  }
+
+  async setFieldIndexed(collection: string, field: string, indexed: boolean): Promise<void> {
+    await this.dbmsback.setFieldIndexed(collection, field, indexed);
+  }
+
+  validateDocument(collection: string, raw: unknown): void {
+    this.dbmsback.validateDocument(parseRawDocument(collection, raw));
+  }
+
+  getPendingSemanticCollections(): string[] {
+    return this.dbmsback.getPendingSemanticCollections();
   }
 
   listCompressionProfiles(): CompressionProfileSummary[] {
@@ -480,6 +496,14 @@ export class SimpleDbms {
             const parsed = JSON.parse(json) as Record<string, unknown>;
             if (parsed[field] === value) {
               yield json;
+            } else if (
+              (typeof parsed[field] === 'number' || typeof parsed[field] === 'boolean') &&
+              (typeof value === 'number' || typeof value === 'boolean') &&
+              Number(parsed[field]) === Number(value)
+            ) {
+              // Booleans share numeric key encoding. Skip a different logical
+              // value within the same prefix instead of ending the seek early.
+              continue;
             } else {
               // First key past the matching prefix — done.
               return;

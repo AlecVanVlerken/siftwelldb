@@ -15,7 +15,7 @@ export function semanticResultColumns(rows: Record<string, unknown>[], mode = 't
   const cols: string[] = [];
   for (const row of rows) {
     for (const key of Object.keys(row)) {
-      if (key.startsWith('_') || seen.has(key)) continue;
+      if (seen.has(key)) continue;
       seen.add(key);
       cols.push(key);
     }

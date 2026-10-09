@@ -209,6 +209,7 @@ describe('HnswRelocator', () => {
     const db = new DbmsBack(data, log, hnswConfig);
     await db.create();
 
+    await db.setFieldIndexed('filler', '_payload', false);
     const fillerPayload = 'free low blocks for tombstone-aware hnsw compaction '.repeat(260);
     for (let i = 0; i < 18; i++) {
       await db.insertDocument(
@@ -294,6 +295,7 @@ describe('HnswRelocator', () => {
   it('relocates HNSW metadata blocks so metadata does not pin the file tail', async () => {
     const { db, data, log, hnswConfig } = await makeDbmsBack();
 
+    await db.setFieldIndexed('filler', '_payload', false);
     const fillerPayload = 'free low blocks for hnsw metadata relocation '.repeat(220);
     for (let i = 0; i < 8; i++) {
       await db.insertDocument(

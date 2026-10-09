@@ -5,7 +5,7 @@ import { FreeBlockFile, type FreeBlockFileStats } from '../storage/blocks/freebl
 import { AtomicFile } from '../storage/wal/atomicfile.mjs';
 import { type File } from '../storage/file.mjs';
 import { allocateBlock } from '../storage/blocks/freelist.mjs';
-import { Document, type FieldValue, imageMimeForField, isImageField } from './document.mjs';
+import { Document, type FieldValue, imageMimeForField, isImageField, supportsFieldIndex } from './document.mjs';
 import {
   RecordStore,
   type EncodedDocument,
@@ -103,7 +103,8 @@ export type HnswConfig = HnswIndexConfig & {
 /** Reserved metaCache key used to track which collections have an HNSW index. */
 const HNSW_META_KEY = '__hnsw__';
 const COMPRESSION_META_KEY = '__compression__';
-const RESERVED_META_KEYS = new Set([HNSW_META_KEY, COMPRESSION_META_KEY]);
+const INDEXING_META_KEY = '__indexing__';
+const RESERVED_META_KEYS = new Set([HNSW_META_KEY, COMPRESSION_META_KEY, INDEXING_META_KEY]);
 const SUPPORTED_COMPRESSION_ALGORITHMS: Set<CompressionAlgorithm> = new Set(COMPRESSION_ALGORITHMS);
 
 type CachedTree = {
@@ -113,6 +114,13 @@ type CachedTree = {
 
 type MetaCache = Record<string, unknown>;
 type CompressionStorageTotals = Map<CompressionAlgorithm, CompressionStorageEstimate>;
+type IndexingMeta = {
+  version: 1;
+  fields: Record<string, Record<string, boolean>>;
+  semanticPending: string[];
+};
+type SemanticVector = { indexKey: string; vector: Float32Array };
+export class IndexValidationError extends Error {}
 
 /**
  * DbmsBack class
@@ -124,6 +132,16 @@ export class DbmsBack {
   private freeblockFile: FreeBlockFile;
   private recordStore: RecordStore;
   private metaCache: MetaCache = {};
+  private mutationQueue: Promise<void> = Promise.resolve();
+
+  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.mutationQueue.then(operation);
+    this.mutationQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
 
   private dataFile: File;
   private logFile: File;
@@ -164,6 +182,7 @@ export class DbmsBack {
     await this.freeblockFile.create(); // must be async
     const initialMeta = Buffer.from(JSON.stringify([]));
     await this.freeblockFile.writeClientArea(initialMeta);
+    this.metaCache[INDEXING_META_KEY] = { version: 1, fields: {}, semanticPending: [] } satisfies IndexingMeta;
   }
 
   /**
@@ -176,6 +195,9 @@ export class DbmsBack {
     const dbmsback = new DbmsBack(dataFile, logFile, hnswConfig);
     await dbmsback.freeblockFile.open();
     dbmsback.metaCache = await dbmsback.metaReadJSON();
+    const migrating = !dbmsback.metaCache[INDEXING_META_KEY];
+    await dbmsback.migrateFieldIndexes();
+    const pendingBefore = dbmsback.getPendingSemanticCollections().length;
 
     // Re-open HNSW indices for every collection that was indexed before.
     if (hnswConfig) {
@@ -197,6 +219,17 @@ export class DbmsBack {
       }
     }
 
+    if (dbmsback.hnswConfig) {
+      for (const collection of dbmsback.getPendingSemanticCollections()) {
+        try {
+          await dbmsback.rebuildSemanticCollection(collection);
+        } catch (error) {
+          console.warn(`Semantic reindex pending for "${collection}":`, error instanceof Error ? error.message : error);
+        }
+      }
+    }
+
+    if (migrating || dbmsback.getPendingSemanticCollections().length < pendingBefore) await dbmsback.commit();
     return dbmsback;
   }
 
@@ -215,7 +248,11 @@ export class DbmsBack {
    * then removes collection metadata.
    * @param collection - The name of the collection to delete.
    */
-  async deleteCollection(collection: string): Promise<void> {
+  deleteCollection(collection: string): Promise<void> {
+    return this.mutate(() => this.deleteCollectionInternal(collection));
+  }
+
+  private async deleteCollectionInternal(collection: string): Promise<void> {
     if (!this.hasCollectionMeta(collection)) {
       throw new Error(`Collection "${collection}" does not exist`);
     }
@@ -278,6 +315,8 @@ export class DbmsBack {
     }
 
     delete this.metaCache[collection];
+    delete this.getIndexingMeta().fields[collection];
+    this.getIndexingMeta().semanticPending = this.getPendingSemanticCollections().filter((name) => name !== collection);
 
     const compressionMetaRaw = this.metaCache[COMPRESSION_META_KEY];
     if (compressionMetaRaw && typeof compressionMetaRaw === 'object' && !Array.isArray(compressionMetaRaw)) {
@@ -312,6 +351,7 @@ export class DbmsBack {
    * @returns A Promise that resolves when the database backend is closed.
    */
   async close(): Promise<void> {
+    await this.mutationQueue;
     await this.freeblockFile.close();
   }
 
@@ -359,6 +399,8 @@ export class DbmsBack {
   }
 
   private getCollectionMeta(collection: string): Record<string, [number, string]> {
+    if (RESERVED_META_KEYS.has(collection))
+      throw new IndexValidationError('This collection name is reserved for database metadata.');
     const raw = this.metaCache[collection];
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       return raw as Record<string, [number, string]>;
@@ -372,6 +414,228 @@ export class DbmsBack {
     if (RESERVED_META_KEYS.has(collection)) return false;
     const raw = this.metaCache[collection];
     return !!raw && typeof raw === 'object' && !Array.isArray(raw);
+  }
+
+  private getIndexingMeta(): IndexingMeta {
+    return this.metaCache[INDEXING_META_KEY] as IndexingMeta;
+  }
+
+  /** Legacy records retain their representation; persisted roots determine their migrated policy. */
+  private async migrateFieldIndexes(): Promise<void> {
+    if (this.metaCache[INDEXING_META_KEY]) {
+      if (this.getIndexingMeta().version !== 1) throw new Error('Unsupported collection indexing metadata version.');
+      return;
+    }
+    const fields: IndexingMeta['fields'] = {};
+    const missingEntries: Array<{ collection: string; field: string; key: Buffer; pointer: number }> = [];
+    const staleEntries: Array<{ collection: string; field: string; key: Buffer }> = [];
+    for (const collection of this.listCollections()) {
+      const roots = this.getCollectionMeta(collection);
+      const config = Object.fromEntries(Object.keys(roots).map((field) => [field, true]));
+      config['id'] = true;
+      if (roots['id']) {
+        for await (const document of await this.cursor(collection, 'id')) {
+          for (const field of Object.keys(document.getFields())) {
+            config[field] = Object.hasOwn(roots, field);
+            if (!config[field]) continue;
+            const value = document.getFields()[field];
+            if (this.keyForm(value, document.getId()) !== roots[field][1]) {
+              throw new IndexValidationError(
+                `Legacy index "${collection}.${field}" has incompatible values; migration cannot safely backfill it.`,
+              );
+            }
+            const [root, form] = roots[field];
+            const tree = await this.getOrCreateTree(collection, field, form, root);
+            if (typeof value === 'string' && Buffer.byteLength(value) > 65535)
+              this.validateIndexValue(field, value, document.getId());
+            const key = this.secondaryIndexKeyBuffer(form, value, document.getId());
+            const existing = await tree.get(key);
+            const pointer = (await this.getDocumentBlockId(collection, document.getId()))!;
+            if (existing === null || existing.readUInt32BE(0) !== pointer) {
+              this.validateIndexValue(field, value, document.getId());
+              missingEntries.push({ collection, field, key, pointer });
+            }
+          }
+        }
+      }
+      for (const [field, [root, form]] of Object.entries(roots)) {
+        if (field === 'id') continue;
+        const tree = await this.getOrCreateTree(collection, field, form, root);
+        for await (const [key, pointerBuffer] of tree.iterate()) {
+          const pointer = pointerBuffer.readUInt32BE(0);
+          const document = await this.recordStore.readRecord(pointer);
+          const value = document?.getFields()[field];
+          if (
+            !document ||
+            document.getCollectionName() !== collection ||
+            value === undefined ||
+            (await this.getDocumentBlockId(collection, document.getId())) !== pointer ||
+            !supportsFieldIndex(field, value, document.getFields()) ||
+            this.keyForm(value, document.getId()) !== form ||
+            !key.equals(this.secondaryIndexKeyBuffer(form, value, document.getId()))
+          ) {
+            staleEntries.push({ collection, field, key });
+          }
+        }
+      }
+      fields[collection] = config;
+    }
+    // Legacy per-document predicates could have left a secondary index incomplete.
+    // Validate every collection first, then remove obsolete entries and backfill missing ones.
+    for (const { collection, field, key } of staleEntries) {
+      const meta = this.getCollectionMeta(collection)[field];
+      const tree = await this.getOrCreateTree(collection, field, meta[1], meta[0]);
+      await tree.delete(key);
+      meta[0] = tree.getRoot().getBlockNumber();
+    }
+    for (const { collection, field, key, pointer } of missingEntries) {
+      const meta = this.getCollectionMeta(collection)[field];
+      const tree = await this.getOrCreateTree(collection, field, meta[1], meta[0]);
+      if ((await tree.get(key)) !== null) await tree.update(key, this.recordPointerBuffer(pointer));
+      else await tree.insert(key, this.recordPointerBuffer(pointer));
+      meta[0] = tree.getRoot().getBlockNumber();
+    }
+    const semanticPending = [
+      ...new Set(Object.keys(this.getExistingHnswMeta() ?? {}).map((key) => this.collectionFromHnswIndexKey(key))),
+    ];
+    this.metaCache[INDEXING_META_KEY] = { version: 1, fields, semanticPending } satisfies IndexingMeta;
+  }
+
+  getFieldIndexConfig(collection: string): Record<string, boolean> {
+    if (RESERVED_META_KEYS.has(collection))
+      throw new IndexValidationError('This collection name is reserved for database metadata.');
+    return { ...this.getIndexingMeta().fields[collection], id: true };
+  }
+
+  private indexedFields(document: Document): string[] {
+    const config = this.getFieldIndexConfig(document.getCollectionName());
+    const fields = document.getFields();
+    return Object.keys(fields).filter((field) => config[field] ?? supportsFieldIndex(field, fields[field], fields));
+  }
+
+  private keyForm(value: FieldValue, id: string | number): string {
+    return (typeof value === 'string' ? 'S' : 'N') + (typeof id === 'string' ? 'S' : 'N');
+  }
+
+  private validateIndexValue(field: string, value: FieldValue, id: string | number): void {
+    const maxBytes = Math.floor((this.getBlockSize() - 10) / 2) - 8;
+    const idBytes = typeof id === 'string' ? Buffer.byteLength(id) : 8;
+    const keyBytes =
+      field === 'id'
+        ? idBytes
+        : (typeof value === 'string' ? Buffer.byteLength(value) + 2 : 8) + idBytes + (typeof id === 'string' ? 2 : 0);
+    if (keyBytes > maxBytes) {
+      throw new IndexValidationError(
+        `Field "${field}" exceeds the maximum indexed key size (${keyBytes} bytes; limit ${maxBytes}). ${field === 'id' ? 'Use a shorter document id.' : 'Shorten the value or disable indexing for this field. Compression does not reduce index key size.'}`,
+      );
+    }
+  }
+
+  /** Shared preflight for public, SQL, import and web mutations, before record/index writes. */
+  validateDocument(document: Document): void {
+    const id = document.getId();
+    this.validateIndexValue('id', id, id);
+    const roots = this.metaCache[document.getCollectionName()] as Record<string, [number, string]> | undefined;
+    if (roots?.['id'] && roots['id'][1] !== (typeof id === 'string' ? 'S' : 'N')) {
+      throw new IndexValidationError('Document id type must match the collection primary index.');
+    }
+    const fields = document.getFields();
+    for (const field of this.indexedFields(document)) {
+      if (!supportsFieldIndex(field, fields[field], fields)) {
+        throw new IndexValidationError(`Field "${field}" contains binary/image data and cannot be indexed.`);
+      }
+      this.validateIndexValue(field, fields[field], id);
+      if (roots?.[field] && roots[field][1] !== this.keyForm(fields[field], id)) {
+        throw new IndexValidationError(
+          `Field "${field}" must match its indexed value type. Disable indexing before changing its type.`,
+        );
+      }
+    }
+  }
+
+  /** Build privately, then publish a complete root. The regular WAL commit persists the change. */
+  setFieldIndexed(collection: string, field: string, indexed: boolean): Promise<void> {
+    return this.mutate(() => this.setFieldIndexedInternal(collection, field, indexed));
+  }
+
+  private async setFieldIndexedInternal(collection: string, field: string, indexed: boolean): Promise<void> {
+    if (!field.trim() || typeof indexed !== 'boolean')
+      throw new IndexValidationError('Choose a field and an Indexed setting.');
+    if (indexed && isImageField(field))
+      throw new IndexValidationError(`Field "${field}" contains binary/image data and cannot be indexed.`);
+    if (field === 'id') {
+      if (!indexed) throw new IndexValidationError('The primary id index cannot be disabled.');
+      return;
+    }
+    const roots = this.metaCache[collection] as Record<string, [number, string]> | undefined;
+    const current = this.getFieldIndexConfig(collection);
+    if (current[field] === indexed) return;
+    let built: CachedTree | undefined;
+    let form: string | undefined;
+    if (indexed && roots?.['id']) {
+      // First pass validates all values; no allocation or metadata change on a validation failure.
+      for await (const document of await this.cursor(collection, 'id')) {
+        const fields = document.getFields();
+        if (!Object.hasOwn(fields, field)) continue;
+        if (!supportsFieldIndex(field, fields[field], fields))
+          throw new IndexValidationError(`Field "${field}" contains binary/image data and cannot be indexed.`);
+        this.validateIndexValue(field, fields[field], document.getId());
+        const nextForm = this.keyForm(fields[field], document.getId());
+        if (form && form !== nextForm)
+          throw new IndexValidationError(`Field "${field}" has mixed value types and cannot be indexed.`);
+        form = nextForm;
+      }
+      if (form) {
+        const storage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(form) });
+        try {
+          const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
+          built = { storage, tree };
+          for await (const document of await this.cursor(collection, 'id')) {
+            const value = document.getFields()[field];
+            if (value === undefined) continue;
+            const pointer = await this.getDocumentBlockId(collection, document.getId());
+            await tree.insert(
+              this.secondaryIndexKeyBuffer(form, value, document.getId()),
+              this.recordPointerBuffer(pointer!),
+            );
+          }
+          await storage.flushDirtyNodes();
+        } catch (error) {
+          await storage.discardNewTree();
+          throw error;
+        }
+      }
+    }
+    const collectionMeta = this.getCollectionMeta(collection);
+    if (!indexed && collectionMeta[field]) {
+      const [root, oldForm] = collectionMeta[field];
+      const storage = this.getOrCreateStorage(collection, field, oldForm);
+      const blocks = await storage.listNodeBlocks(root);
+      storage.dispose();
+      this.storageCache.delete(`${collection}:${field}`);
+      this.treeCache.delete(`${collection}:${field}`);
+      delete collectionMeta[field];
+      for (const block of blocks) await this.freeblockFile.freeBlock(block.blockNumber);
+    }
+    if (built && form) {
+      collectionMeta[field] = [built.tree.getRoot().getBlockNumber(), form];
+      this.storageCache.set(`${collection}:${field}`, built.storage);
+      this.treeCache.set(`${collection}:${field}`, built);
+    }
+    this.getIndexingMeta().fields[collection] = { ...current, [field]: indexed };
+  }
+
+  /** Preserve an existing collection's primary type when vacuum copies zero documents. */
+  ensurePrimaryIndex(collection: string, type: 'string' | 'number'): Promise<void> {
+    return this.mutate(async () => {
+      const meta = this.getCollectionMeta(collection);
+      if (meta['id']) return;
+      const form = type === 'number' ? 'N' : 'S';
+      const storage = this.getOrCreateStorage(collection, 'id', form);
+      const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
+      this.treeCache.set(`${collection}:id`, { storage, tree });
+      meta['id'] = [tree.getRoot().getBlockNumber(), form];
+    });
   }
 
   private getHnswMeta(): Record<string, [number, string]> {
@@ -550,7 +814,7 @@ export class DbmsBack {
       sample.kind === 'text' ? (request.draftValue ?? sample.raw.toString('utf-8')) : sample.raw;
     const entry: [string, FieldValue] = [request.field, value];
 
-    if (request.field.startsWith('_') || isImageField(request.field)) {
+    if (this.getFieldIndexConfig(request.collection ?? '')[request.field] === false || isImageField(request.field)) {
       return new Document(request.collection, '__draft__', [], [entry]);
     }
 
@@ -631,7 +895,11 @@ export class DbmsBack {
    * nodes, and HNSW vector data — they all share the same FreeBlockFile WAL.
    * @returns A Promise that resolves when the commit is complete.
    */
-  async commit(): Promise<void> {
+  commit(): Promise<void> {
+    return this.mutate(() => this.commitInternal());
+  }
+
+  private async commitInternal(): Promise<void> {
     // Flush all dirty B+tree nodes to the FBF dirty-block cache before committing.
     for (const storage of this.storageCache.values()) {
       await storage.flushDirtyNodes();
@@ -645,129 +913,61 @@ export class DbmsBack {
    * @param document - The Document to insert.
    * @returns A Promise that resolves when the document is inserted.
    */
-  async insertDocument(
+  insertDocument(
     document: Document,
     compressionOverrides?: FieldCompressionOverrides,
     options?: { skipSemanticIndex?: boolean },
   ): Promise<void> {
-    const collectionName = document.getCollectionName(); //constant time
+    return this.mutate(() => this.insertDocumentInternal(document, compressionOverrides, options));
+  }
+
+  private async insertDocumentInternal(
+    document: Document,
+    compressionOverrides?: FieldCompressionOverrides,
+    options?: { skipSemanticIndex?: boolean; semanticVectors?: SemanticVector[] },
+  ): Promise<void> {
+    this.validateDocument(document);
+    const collectionName = document.getCollectionName();
+    const documentId = document.getId();
+    if ((await this.getDocumentBlockId(collectionName, documentId)) !== null) {
+      throw new IndexValidationError('A document with this id already exists.');
+    }
+    const vectors =
+      options?.semanticVectors ?? (await this.prepareSemanticVectors(document, options?.skipSemanticIndex));
     const writeOptions: RecordWriteOptions = {
       compressionDefaults: this.getCompressionDefaults(collectionName),
       compressionOverrides,
     };
-    const documentLocation = await this.recordStore.writeRecord(document, writeOptions); //constant time
-    const documentId = document.getId(); //constant time
-    let vorm = 'S'; //constant time
-    if (typeof documentId === 'number') {
-      vorm = 'N'; //constant time
-    }
-    // check if collection exists in meta, anders toevoegen
+    // Serialize/compress before allocating records, so codec failures also leave no partial mutation.
+    this.recordStore.estimateRecordStorage(document, writeOptions);
+    const documentLocation = await this.recordStore.writeRecord(document, writeOptions);
     const collectionMeta = this.getCollectionMeta(collectionName);
-    // voeg document-pointer toe aan id B+ tree
-
-    // ga naar root voor id
-    let idTree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>; // constant time
-    if (!('id' in collectionMeta)) {
-      // maak nieuwe B+ tree voor id aan en update meta
-      const storage = this.getOrCreateStorage(collectionName, 'id', vorm);
-      idTree = await BPlusTree.create(storage);
-      const newIdRoot = idTree.getRoot().getBlockNumber();
-      collectionMeta['id'] = [newIdRoot, vorm];
-      // Cache the newly created tree
-      this.treeCache.set(`${collectionName}:id`, { storage, tree: idTree });
-    } else {
-      const idRoot = collectionMeta['id'][0];
-      idTree = await this.getOrCreateTree(collectionName, 'id', vorm, idRoot);
+    const config = this.getFieldIndexConfig(collectionName);
+    const fields = document.getFields();
+    for (const [field, value] of Object.entries(fields)) {
+      if (!Object.hasOwn(config, field)) config[field] = supportsFieldIndex(field, value, fields);
     }
-
-    // BPLUSTREE INSERT (IDROOT, (documentLocation, documentId ) : documentPointer)
-    const idBuffer = toBuffer(vorm, documentId); //constant time
-    const valueBuffer = Buffer.alloc(4); // 32-bit block number
-    valueBuffer.writeUInt32BE(documentLocation, 0);
-    await idTree.insert(idBuffer, valueBuffer);
-    collectionMeta['id'][0] = idTree.getRoot().getBlockNumber();
-    // START FOR LOOP: voor elke iterabele key in document
-
-    for (const key of document.getIterableKeys()) {
-      // haal de vorm van de key op
-      let keyVorm = vorm; // Default to vorm for unsupported types
-      const keyValue = document.getFields()[key];
-      let convertedKeyValue: string | number | Buffer = keyValue as string | number | Buffer;
-
-      if (typeof keyValue === 'number') {
-        // keyvorm : keyVorm + Idvorm as a string, dus "NN" of "SN" of "NS"
-        keyVorm = 'N' + vorm;
-      } else if (typeof keyValue === 'string') {
-        keyVorm = 'S' + vorm;
-      } else if (typeof keyValue === 'boolean') {
-        // Treat booleans as numbers (0 for false, 1 for true)
-        keyVorm = 'N' + vorm;
-        convertedKeyValue = keyValue ? 1 : 0;
-      }
-
-      // check if iterable keys exist in meta, anders toevoegen
-      let keyTree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
-      if (!(key in collectionMeta)) {
-        // maak nieuwe B+ tree voor deze key aan en update meta
-        const storage = this.getOrCreateStorage(collectionName, key, keyVorm);
-        keyTree = await BPlusTree.create(storage);
-        const newKeyRoot = keyTree.getRoot().getBlockNumber();
-        collectionMeta[key] = [newKeyRoot, keyVorm];
-        // Cache the newly created tree
-        this.treeCache.set(`${collectionName}:${key}`, { storage, tree: keyTree });
+    this.getIndexingMeta().fields[collectionName] = config;
+    for (const field of ['id', ...this.indexedFields(document)]) {
+      const value = field === 'id' ? documentId : fields[field];
+      const form = field === 'id' ? (typeof documentId === 'string' ? 'S' : 'N') : this.keyForm(value, documentId);
+      let tree: BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>;
+      if (collectionMeta[field]) {
+        tree = await this.getOrCreateTree(collectionName, field, form, collectionMeta[field][0]);
       } else {
-        // load de B+ tree van de juiste collectie -> pointer naar de root
-        const keyRoot = collectionMeta[key][0];
-        keyTree = await this.getOrCreateTree(collectionName, key, keyVorm, keyRoot);
+        const storage = this.getOrCreateStorage(collectionName, field, form);
+        tree = await BPlusTree.create(storage);
+        this.treeCache.set(`${collectionName}:${field}`, { storage, tree });
       }
-
-      const keyBuffer = toBuffer(keyVorm, convertedKeyValue, documentId);
-      const valueBuffer = Buffer.alloc(4);
-      valueBuffer.writeUInt32BE(documentLocation, 0);
-      await keyTree.insert(keyBuffer, valueBuffer);
-      collectionMeta[key][0] = keyTree.getRoot().getBlockNumber();
+      const key = field === 'id' ? toBuffer(form, documentId) : this.secondaryIndexKeyBuffer(form, value, documentId);
+      await tree.insert(key, this.recordPointerBuffer(documentLocation));
+      collectionMeta[field] = [tree.getRoot().getBlockNumber(), form];
     }
-    // END FOR LOOP
-
-    // HNSW: maintain separate text/image semantic indexes when configured.
-    if (this.hnswConfig && !options?.skipSemanticIndex) {
-      if (!this.hnswConfig.textIndex && !this.hnswConfig.imageIndex) {
-        // Legacy single-index mode used by the demos: image documents are
-        // represented by their image vector, otherwise by labelled text.
-        const imageData = this.extractImageData(document);
-        if (imageData.length > 0 && this.hnswConfig.imageEmbeddingFn) {
-          const hnswIdx = await this.getOrCreateHnswIndex(collectionName);
-          const vector = await this.embedImages(
-            this.hnswConfig as HnswConfig & { imageEmbeddingFn: (imageData: Buffer) => Promise<Float32Array> },
-            imageData,
-          );
-          if (vector) await hnswIdx.insert(documentLocation, vector);
-        } else {
-          const text = this.extractText(document);
-          if (text !== null) {
-            const hnswIdx = await this.getOrCreateHnswIndex(collectionName);
-            const vector = await this.hnswConfig.embeddingFn(text);
-            await hnswIdx.insert(documentLocation, vector);
-          }
-        }
-        return;
-      }
-
-      const textConfig = this.textHnswConfig();
-      const text = this.extractText(document);
-      if (textConfig && text !== null) {
-        const hnswIdx = await this.getOrCreateHnswIndex(this.textHnswIndexKey(collectionName));
-        const vector = await textConfig.embeddingFn(text);
-        await hnswIdx.insert(documentLocation, vector);
-      }
-
-      const imageConfig = this.imageHnswConfig();
-      const imageData = this.extractImageData(document);
-      if (imageConfig && imageData.length > 0) {
-        const hnswIdx = await this.getOrCreateHnswIndex(this.imageHnswIndexKey(collectionName));
-        const vector = await this.embedImages(imageConfig, imageData);
-        if (vector) await hnswIdx.insert(documentLocation, vector);
-      }
+    if (!this.hnswConfig && this.hnswIndexKeysForCollection(collectionName).length > 0)
+      this.markSemanticPending(collectionName);
+    for (const { indexKey, vector } of vectors) {
+      const index = await this.getOrCreateHnswIndex(indexKey);
+      await index.insert(documentLocation, vector);
     }
 
     // Note: metaWriteJSON is called in commit() to batch writes
@@ -876,7 +1076,11 @@ export class DbmsBack {
    * @param documentId - The ID of the document to delete.
    * @param collection - The collection to delete the document from.
    */
-  async deleteDocument(documentId: number | string, collection: string): Promise<void> {
+  deleteDocument(documentId: number | string, collection: string): Promise<void> {
+    return this.mutate(() => this.deleteDocumentInternal(documentId, collection));
+  }
+
+  private async deleteDocumentInternal(documentId: number | string, collection: string): Promise<void> {
     // Check if collection exists
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
@@ -903,14 +1107,11 @@ export class DbmsBack {
     if (!document) {
       throw new Error('Document not found in record store');
     }
-    const iterableKeys = document.getIterableKeys();
+    const iterableKeys = Object.keys(document.getFields()).filter((key) => Object.hasOwn(collectionMeta, key));
 
     const hnswMeta = this.getExistingHnswMeta();
     const hnswIndexKeys = this.hnswIndexKeysForCollection(collection, hnswMeta);
     const collectionHasHnsw = hnswIndexKeys.length > 0;
-    if (collectionHasHnsw && !this.hnswConfig) {
-      throw new Error(`Cannot delete from HNSW-backed collection "${collection}" without hnswConfig`);
-    }
 
     // Delete from id B+ tree
     await idTree.delete(idBuffer);
@@ -927,7 +1128,7 @@ export class DbmsBack {
       const keyVorm = keyMetaData[1];
       const keyValue = document.getFields()[key];
       const keyTree = await this.getOrCreateTree(collection, key, keyVorm, keyRoot);
-      const keyBuffer = toBuffer(keyVorm, keyValue as string | number | Buffer, documentId);
+      const keyBuffer = this.secondaryIndexKeyBuffer(keyVorm, keyValue, documentId);
       await keyTree.delete(keyBuffer);
       // verwijder document-pointer uit B+ tree
       //BPLUSTREE DELETE (keyRoot, (Key, id) )
@@ -935,23 +1136,23 @@ export class DbmsBack {
       keyMetaData[0] = keyTree.getRoot().getBlockNumber();
     }
 
-    let retainedRecordForSemanticTombstone = false;
+    let retainedRecordForSemanticTombstone = collectionHasHnsw && !this.hnswConfig;
 
     if (this.hnswConfig) {
       for (const indexKey of hnswIndexKeys) {
         const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
-        if (hnswIdx.hasDocument(documentPointer)) {
-          retainedRecordForSemanticTombstone =
-            (await hnswIdx.delete(documentPointer)) || retainedRecordForSemanticTombstone;
-        }
+        await hnswIdx.delete(documentPointer);
+        retainedRecordForSemanticTombstone =
+          hnswIdx.hasRetainedDocument(documentPointer) || retainedRecordForSemanticTombstone;
       }
     }
 
-    // HNSW currently uses physical record pointers as semantic doc ids. When a
-    // semantic entry is tombstoned, keep its record chain allocated as the
-    // durable identity anchor so RecordStore cannot reuse that pointer for a
-    // later live document in the same HNSW collection. The logical DBMS delete
-    // has already removed every B+ tree path to the document above.
+    if (collectionHasHnsw && !this.hnswConfig) this.markSemanticPending(collection);
+
+    // Physical record pointers remain the identity of retained HNSW nodes.
+    // Keep their record chains allocated, including already tombstoned entries
+    // and offline deletions awaiting a semantic rebuild. Full vacuum reclaims
+    // these chains by copying only documents still visible in the primary tree.
     if (!retainedRecordForSemanticTombstone) {
       await this.recordStore.deleteRecord(documentPointer);
     }
@@ -967,7 +1168,11 @@ export class DbmsBack {
    * B+ tree entries untouched. Normal deleteDocument() uses the same HNSWIndex
    * tombstone primitive after removing logical B+ tree entries.
    */
-  async tombstoneSemanticEntry(documentId: number | string, collection: string): Promise<boolean> {
+  tombstoneSemanticEntry(documentId: number | string, collection: string): Promise<boolean> {
+    return this.mutate(() => this.tombstoneSemanticEntryInternal(documentId, collection));
+  }
+
+  private async tombstoneSemanticEntryInternal(documentId: number | string, collection: string): Promise<boolean> {
     if (!this.hnswConfig) {
       throw new Error('Cannot tombstone semantic entry without hnswConfig');
     }
@@ -1007,7 +1212,11 @@ export class DbmsBack {
    * creates an empty live-only index so the rebuilt target preserves the
    * collection's semantic capability without carrying source tombstones over.
    */
-  async ensureHnswCollection(collection: string): Promise<void> {
+  ensureHnswCollection(collection: string): Promise<void> {
+    return this.mutate(() => this.ensureHnswCollectionInternal(collection));
+  }
+
+  private async ensureHnswCollectionInternal(collection: string): Promise<void> {
     if (!this.hnswConfig) {
       throw new Error('Cannot ensure HNSW collection without hnswConfig');
     }
@@ -1032,7 +1241,15 @@ export class DbmsBack {
    * @param collection - Collection containing the document.
    * @param id - Logical document id.
    */
-  async relocateDocument(
+  relocateDocument(
+    collection: string,
+    id: string | number,
+    options: RelocationOptions = {},
+  ): Promise<DocumentRelocationResult> {
+    return this.mutate(() => this.relocateDocumentInternal(collection, id, options));
+  }
+
+  private async relocateDocumentInternal(
     collection: string,
     id: string | number,
     options: RelocationOptions = {},
@@ -1075,7 +1292,7 @@ export class DbmsBack {
     }
     idMetaData[0] = idTree.getRoot().getBlockNumber();
 
-    for (const key of document.getIterableKeys()) {
+    for (const key of Object.keys(document.getFields()).filter((key) => Object.hasOwn(collectionMeta, key))) {
       if (!(key in collectionMeta)) {
         throw new Error('Key should exist in meta, but does not');
       }
@@ -1112,7 +1329,16 @@ export class DbmsBack {
    * @param blockNumber - Existing B+ tree node block to relocate.
    * @returns The fresh block number containing the relocated node.
    */
-  async relocateBtreeNode(
+  relocateBtreeNode(
+    collection: string,
+    field: string,
+    blockNumber: number,
+    options: RelocationOptions = {},
+  ): Promise<number> {
+    return this.mutate(() => this.relocateBtreeNodeInternal(collection, field, blockNumber, options));
+  }
+
+  private async relocateBtreeNodeInternal(
     collection: string,
     field: string,
     blockNumber: number,
@@ -1185,7 +1411,11 @@ export class DbmsBack {
     return await (await this.getOrCreateHnswIndex(collection)).inspectGraphStructureSnapshot();
   }
 
-  async relocateHnswUnit(target: HnswRelocationTarget): Promise<boolean> {
+  relocateHnswUnit(target: HnswRelocationTarget): Promise<boolean> {
+    return this.mutate(() => this.relocateHnswUnitInternal(target));
+  }
+
+  private async relocateHnswUnitInternal(target: HnswRelocationTarget): Promise<boolean> {
     if (!this.hnswConfig) {
       throw new Error('Cannot relocate HNSW unit without hnswConfig');
     }
@@ -1224,9 +1454,11 @@ export class DbmsBack {
   }
 
   async trimFreeTail(): Promise<number> {
-    await this.commit();
-    const result = await this.freeblockFile.trimFreeTail();
-    return result.removedBlocks;
+    return this.mutate(async () => {
+      await this.commitInternal();
+      const result = await this.freeblockFile.trimFreeTail();
+      return result.removedBlocks;
+    });
   }
 
   async getCompactionStorageStats(): Promise<FreeBlockFileStats> {
@@ -1398,7 +1630,9 @@ export class DbmsBack {
       const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
       if (!hnswIdx.hasDocument(oldPointer)) continue;
       if (!(await hnswIdx.relabelDocument(oldPointer, newPointer))) {
-        throw new Error('Failed to relabel HNSW document pointer during document relocation');
+        throw new Error(
+          `Failed to relabel HNSW document pointer ${oldPointer} -> ${newPointer} in ${indexKey} during document relocation`,
+        );
       }
     }
   }
@@ -1412,7 +1646,16 @@ export class DbmsBack {
    *
    * @author: Matisse De Gauquier
    */
-  async editDocumentByID(collection: string, id: string | number, field: string, newValue: FieldValue): Promise<void> {
+  editDocumentByID(collection: string, id: string | number, field: string, newValue: FieldValue): Promise<void> {
+    return this.mutate(() => this.editDocumentByIDInternal(collection, id, field, newValue));
+  }
+
+  private async editDocumentByIDInternal(
+    collection: string,
+    id: string | number,
+    field: string,
+    newValue: FieldValue,
+  ): Promise<void> {
     const existingDocument = (await this.getDocument(id, collection, false)) as Document;
     let processedValue = newValue;
     if (typeof newValue === 'string' && isImageField(field, existingDocument.getFields())) {
@@ -1427,8 +1670,13 @@ export class DbmsBack {
       throw new Error('Cannot change document ID or collection name during edit.');
     }
 
-    await this.deleteDocument(existingDocument.getId(), existingDocument.getCollectionName());
-    await this.insertDocument(newDocumentObj);
+    this.validateDocument(newDocumentObj);
+    const vectors = await this.prepareSemanticVectors(newDocumentObj);
+    this.recordStore.estimateRecordStorage(newDocumentObj, {
+      compressionDefaults: this.getCompressionDefaults(collection),
+    });
+    await this.deleteDocumentInternal(existingDocument.getId(), existingDocument.getCollectionName());
+    await this.insertDocumentInternal(newDocumentObj, undefined, { semanticVectors: vectors });
   }
 
   /**
@@ -1442,7 +1690,16 @@ export class DbmsBack {
    * is re-embedded exactly once), but exposes a single round-trip from
    * the API layer instead of N per-field calls.
    */
-  async replaceDocumentByID(
+  replaceDocumentByID(
+    collection: string,
+    id: string,
+    document: Document,
+    compression?: FieldCompressionOverrides,
+  ): Promise<void> {
+    return this.mutate(() => this.replaceDocumentByIDInternal(collection, id, document, compression));
+  }
+
+  private async replaceDocumentByIDInternal(
     collection: string,
     id: string,
     newDocument: Document,
@@ -1464,8 +1721,14 @@ export class DbmsBack {
       throw new Error('Document not found');
     }
 
-    await this.deleteDocument(id, collection);
-    await this.insertDocument(newDocument, compression);
+    this.validateDocument(newDocument);
+    const vectors = await this.prepareSemanticVectors(newDocument);
+    this.recordStore.estimateRecordStorage(newDocument, {
+      compressionDefaults: this.getCompressionDefaults(collection),
+      compressionOverrides: compression,
+    });
+    await this.deleteDocumentInternal(id, collection);
+    await this.insertDocumentInternal(newDocument, compression, { semanticVectors: vectors });
   }
 
   /**
@@ -1485,6 +1748,8 @@ export class DbmsBack {
     }
     const collectionMeta = this.getCollectionMeta(collection);
     if (!(iterableKey in collectionMeta)) {
+      // A policy can be configured before the first document creates its primary tree.
+      if (iterableKey === 'id' && !collectionMeta['id']) return (async function* () {})();
       throw new Error('Iterable key does not exist in collection');
     }
 
@@ -1525,6 +1790,10 @@ export class DbmsBack {
    * @throws If HNSW is not configured.
    */
   async semanticSearch(collection: string, query: string, k: number): Promise<Document[]> {
+    if (this.getPendingSemanticCollections().includes(collection))
+      throw new Error(
+        `Semantic reindex pending for \"${collection}\". Reopen with the original working embedding configuration to finish migration.`,
+      );
     if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
 
     const textConfig = this.textHnswConfig();
@@ -1547,6 +1816,10 @@ export class DbmsBack {
   }
 
   async semanticImageTextSearch(collection: string, query: string, k: number): Promise<Document[]> {
+    if (this.getPendingSemanticCollections().includes(collection))
+      throw new Error(
+        `Semantic reindex pending for \"${collection}\". Reopen with the original working embedding configuration to finish migration.`,
+      );
     if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
     const imageConfig = this.imageHnswConfig();
     if (!imageConfig) {
@@ -1579,6 +1852,10 @@ export class DbmsBack {
    * @returns Up to `k` Documents ordered by similarity (closest first).
    */
   async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<Document[]> {
+    if (this.getPendingSemanticCollections().includes(collection))
+      throw new Error(
+        `Semantic reindex pending for \"${collection}\". Reopen with the original working embedding configuration to finish migration.`,
+      );
     if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
     const imageConfig = this.imageHnswConfig();
     if (!imageConfig) {
@@ -1613,11 +1890,110 @@ export class DbmsBack {
     const parts: string[] = [];
     const fields = document.getFields();
     for (const [key, value] of Object.entries(fields)) {
-      if (!key.startsWith('_') && !isImageField(key, fields) && typeof value === 'string') {
+      if (!isImageField(key, fields) && typeof value === 'string' && !this.isImageMimeSidecar(key, fields)) {
         parts.push(`${key}: ${value}`);
       }
     }
     return parts.length > 0 ? parts.join(' ') : null;
+  }
+
+  private isImageMimeSidecar(field: string, fields: Record<string, unknown>): boolean {
+    return Object.keys(fields).some((key) => field === `_${key}_mime` && imageMimeForField(key, fields) !== null);
+  }
+
+  getPendingSemanticCollections(): string[] {
+    return [...this.getIndexingMeta().semanticPending];
+  }
+
+  private markSemanticPending(collection: string): void {
+    if (!this.getIndexingMeta().semanticPending.includes(collection))
+      this.getIndexingMeta().semanticPending.push(collection);
+  }
+
+  private async prepareSemanticVectors(
+    document: Document,
+    skip = false,
+    rebuilding = false,
+  ): Promise<SemanticVector[]> {
+    if (
+      !this.hnswConfig ||
+      skip ||
+      (!rebuilding && this.getPendingSemanticCollections().includes(document.getCollectionName()))
+    )
+      return [];
+    const collection = document.getCollectionName();
+    const vectors: SemanticVector[] = [];
+    const images = this.extractImageData(document);
+    const single = !this.hnswConfig.textIndex && !this.hnswConfig.imageIndex;
+    const imageConfig = this.imageHnswConfig();
+    if (single && images.length > 0 && imageConfig) {
+      const vector = await this.embedImages(imageConfig, images);
+      if (vector) vectors.push({ indexKey: collection, vector });
+    } else {
+      const text = this.extractText(document);
+      const config = this.textHnswConfig();
+      if (text !== null && config)
+        vectors.push({ indexKey: this.textHnswIndexKey(collection), vector: await config.embeddingFn(text) });
+      if (!single && imageConfig && images.length > 0) {
+        const vector = await this.embedImages(imageConfig, images);
+        if (vector) vectors.push({ indexKey: this.imageHnswIndexKey(collection), vector });
+      }
+    }
+    for (const item of vectors) {
+      const config = this.hnswConfigForIndexKey(item.indexKey)!;
+      if (item.vector.length !== config.dimension || Array.from(item.vector).some((value) => !Number.isFinite(value))) {
+        throw new Error(`Invalid embedding for "${item.indexKey}": expected ${config.dimension} finite components.`);
+      }
+    }
+    return vectors;
+  }
+
+  /** One-time, retryable replacement. Old semantic storage stays live until every new vector is built. */
+  private async rebuildSemanticCollection(collection: string): Promise<void> {
+    const staged = new Map<string, { index: HNSWIndex; root: number }>();
+    const oldKeys = this.hnswIndexKeysForCollection(collection);
+    try {
+      if (this.getCollectionMeta(collection)['id']) {
+        for await (const document of await this.cursor(collection, 'id')) {
+          const pointer = await this.getDocumentBlockId(collection, document.getId());
+          for (const { indexKey, vector } of await this.prepareSemanticVectors(document, false, true)) {
+            let target = staged.get(indexKey);
+            if (!target) {
+              const config = this.hnswConfigForIndexKey(indexKey)!;
+              const graph = await HNSWGraphStorage.create(
+                this.freeblockFile,
+                config.M ?? 16,
+                config.maxStoredLevel ?? 4,
+              );
+              const index = HNSWIndex.create(graph, new VectorHeapFile(this.freeblockFile, config.dimension), {
+                M: config.M ?? 16,
+                efConstruction: config.efConstruction ?? 200,
+                efSearch: config.efSearch ?? 50,
+              });
+              target = { index, root: graph.metaBlockId };
+              staged.set(indexKey, target);
+            }
+            await target.index.insert(pointer!, vector);
+          }
+        }
+      }
+    } catch (error) {
+      for (const { index } of staged.values()) {
+        await index.dropStorage();
+      }
+      throw error;
+    }
+    for (const indexKey of oldKeys) {
+      const index = await this.getOrCreateHnswIndex(indexKey);
+      await index.dropStorage();
+      delete this.getHnswMeta()[indexKey];
+      this.hnswIndexCache.delete(indexKey);
+    }
+    for (const [indexKey, { index, root }] of staged) {
+      this.getHnswMeta()[indexKey] = [root, 'hnsw'];
+      this.hnswIndexCache.set(indexKey, index);
+    }
+    this.getIndexingMeta().semanticPending = this.getPendingSemanticCollections().filter((name) => name !== collection);
   }
 
   /**
@@ -1735,7 +2111,7 @@ export class DbmsBack {
     const result: Record<string, Record<string, [number, string]>> = {};
 
     for (const [key, value] of Object.entries(this.metaCache)) {
-      if (key === HNSW_META_KEY || key === COMPRESSION_META_KEY) continue;
+      if (RESERVED_META_KEYS.has(key)) continue;
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         const collectionMeta = value as Record<string, [number, string]>;
         const copiedCollectionMeta: Record<string, [number, string]> = {};
@@ -1796,15 +2172,20 @@ export class DbmsBack {
     tempLogFile: File,
     onProgress?: (progress: VacuumProgress) => void,
   ): Promise<DbmsBack> {
-    const result = await runVacuumCompactInto({
-      source: this,
-      tempDataFile,
-      tempLogFile,
-      validate: true,
-      rebuildHnsw: true,
-      onProgress,
+    return this.mutate(async () => {
+      const result = await runVacuumCompactInto(
+        {
+          source: this,
+          tempDataFile,
+          tempLogFile,
+          validate: true,
+          rebuildHnsw: true,
+          onProgress,
+        },
+        () => this.commitInternal(),
+      );
+      return result.target;
     });
-    return result.target;
   }
 
   /**

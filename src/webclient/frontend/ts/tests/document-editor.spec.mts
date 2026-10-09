@@ -117,3 +117,11 @@ describe('document-editor helpers', () => {
     expect(validateDocumentInput(JSON.stringify(template))).toEqual({ ok: true, value: template });
   });
 });
+
+it('includes underscore-prefixed fields in document templates', () => {
+  expect(buildDocumentTemplate('articles', [{ id: 'a', _body: 'ordinary text', _count: 5 }])).toEqual({
+    id: 'articles-1',
+    _body: '',
+    _count: 0,
+  });
+});

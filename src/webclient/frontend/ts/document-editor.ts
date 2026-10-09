@@ -111,9 +111,7 @@ export function buildDocumentTemplate(collection: string, docs: JsonObject[] = [
   let sequence = 1;
   while (existingIds.has(`${prefix}-${sequence}`)) sequence++;
   const template: JsonObject = { id: `${prefix}-${sequence}` };
-  const keys = Array.from(new Set(docs.flatMap((doc) => Object.keys(doc)))).filter(
-    (key) => !key.startsWith('_') && key !== 'id',
-  );
+  const keys = Array.from(new Set(docs.flatMap((doc) => Object.keys(doc)))).filter((key) => key !== 'id');
 
   for (const key of keys) {
     const sample = docs.find((doc) => doc[key] !== undefined && doc[key] !== null)?.[key];

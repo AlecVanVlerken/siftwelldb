@@ -654,6 +654,8 @@ export class HNSWGraphStorage {
   ): Promise<HnswGraphNodeRelocationResult> {
     const oldLocation = decodeNodeId(nodeId);
     const node = await this.getNode(nodeId);
+    // Load this graph's reachable pages before repairing incoming references.
+    for await (const existing of this.scanNodes()) void existing;
 
     const moved = new HNSWNode({
       nodeId: 0,
@@ -671,7 +673,7 @@ export class HNSWGraphStorage {
       await this.saveMetadata();
     }
 
-    for await (const candidate of this.scanPhysicalNodes()) {
+    for await (const candidate of this.scanPhysicalNodes({ knownPagesOnly: true })) {
       if (candidate.nodeId === nodeId) {
         continue;
       }
@@ -938,9 +940,13 @@ export class HNSWGraphStorage {
    * Only use this for diagnostics on a file with a single graph: graph pages
    * do not store collection ownership, so this cannot isolate shared indexes.
    */
-  async *scanPhysicalNodes(): AsyncGenerator<HNSWNode> {
+  async *scanPhysicalNodes(options: { knownPagesOnly?: boolean } = {}): AsyncGenerator<HNSWNode> {
     const blockCount = Math.max(this.file._getCachedBlockCount(), this.file._getHighestDirtyBlock() + 1);
-    for (let pageId = 1; pageId < blockCount; pageId++) {
+    const allPages = function* () {
+      for (let pageId = 1; pageId < blockCount; pageId++) yield pageId;
+    };
+    const pages = options.knownPagesOnly ? this._pageCache.keys() : allPages();
+    for (const pageId of pages) {
       const usable = await this.readPageIfData(pageId).catch(() => null);
       if (usable === null) continue;
       if (this.getUsedCount(usable) === 0) continue;

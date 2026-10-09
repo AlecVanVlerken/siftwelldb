@@ -170,6 +170,8 @@ async function makeDbmsBack(hnswConfig?: HnswConfig): Promise<DbmsBack> {
   const log = new MockFile(4096);
   const db = new DbmsBack(data, log, hnswConfig);
   await db.create();
+  await db.setFieldIndexed('articles', '_body', false);
+  await db.setFieldIndexed('articles', '_tags', false);
   return db;
 }
 
