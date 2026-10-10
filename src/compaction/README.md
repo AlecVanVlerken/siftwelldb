@@ -13,6 +13,11 @@ stable while the implementations are grouped by responsibility:
 - `tests/` contains integration and regression tests for consistency, durability,
   semantic equivalence, and interactions across storage structures.
 
+Full vacuum preserves each field's stored compression codec, including
+uncompressed fields and per-document overrides. Collection defaults are copied
+for future writes; they do not recompress existing documents with a different
+codec during vacuum. HNSW indexes are still rebuilt from live documents.
+
 Unit tests live in `vacuum/tests/`, `incremental/tests/`, and `relocation/tests/`.
 The public entry point is tested by `tests/compaction.spec.mts`. Performance benchmarks live separately under
 `benchmarks/full-vacuum/` and `benchmarks/incremental-compaction/`.

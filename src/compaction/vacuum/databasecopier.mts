@@ -38,6 +38,7 @@
  */
 
 import type { DbmsBack } from '../../database/dbmsback.mjs';
+import type { EncodedDocument } from '../../storage/records/recordstore.mjs';
 import { CollectionCatalog } from './collectioncatalog.mjs';
 import type { VacuumProgress } from './vacuumtypes.mjs';
 
@@ -154,7 +155,13 @@ export class DatabaseCopier {
     const docs = await this.source.cursor(collection, 'id');
 
     for await (const doc of docs) {
-      await this.target.insertDocument(doc);
+      const stored = (await this.source.getDocument(doc.getId(), collection, true)) as EncodedDocument;
+      // Preserve actual stored codecs, including 'none', even if defaults have
+      // changed since insertion or compression was explicitly disabled.
+      const compression = Object.fromEntries(
+        [...stored.iterableEntries, ...stored.nonIterableEntries].map((entry) => [entry.key, entry.compression]),
+      );
+      await this.target.insertDocument(doc, compression);
       copiedDocuments += 1;
 
       this.reportProgress({
