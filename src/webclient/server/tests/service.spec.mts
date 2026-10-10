@@ -337,6 +337,57 @@ describe('DatabaseService with real database files', () => {
     });
   });
 
+  it('persists numeric SQL IDs and reports actual affected IDs across reconnect', async () => {
+    await service.create(filepath);
+    expect(await service.query('INSERT INTO numbers VALUES {id: 7, score: 1, note: "old"}')).toMatchObject({
+      rows: [{ id: 7 }],
+      rowCount: 1,
+    });
+    expect(await service.query("UPDATE numbers SET score = 2, note = 'some where text' WHERE id = 7")).toMatchObject({
+      rows: [{ id: 7 }],
+    });
+    await service.disconnect();
+    await service.connect(filepath);
+    expect((await service.query('SELECT * FROM numbers WHERE id = 7')).rows).toEqual([
+      { id: 7, score: 2, note: 'some where text' },
+    ]);
+    await expect(service.query('DELETE FROM numbers WHERE')).rejects.toThrow('line 1');
+    expect((await service.getDocuments('numbers')).total).toBe(1);
+    expect((await service.query('DELETE FROM numbers WHERE id = 7')).rows).toEqual([{ id: 7 }]);
+    await service.disconnect();
+    await service.connect(filepath);
+    expect((await service.getDocuments('numbers')).total).toBe(0);
+  });
+
+  it('includes the durable commit in SQL duration and parses a statement once', async () => {
+    await service.create(filepath);
+    const clock = vi.spyOn(performance, 'now').mockReturnValue(100);
+    const commit = service.rawDbms.commit.bind(service.rawDbms);
+    vi.spyOn(service.rawDbms, 'commit').mockImplementation(async () => {
+      await commit();
+      clock.mockReturnValue(150);
+    });
+    const { QueryLanguage } = await import('../../../query/querylanguage.mjs');
+    const parse = vi.spyOn(QueryLanguage.prototype, 'parse');
+    expect(await service.query('INSERT INTO numbers VALUES {id: 1, score: 1}')).toMatchObject({ elapsedMs: 50 });
+    expect(parse).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports completed IDs on commit failure and discards staged SQL changes on reconnect', async () => {
+    await service.create(filepath);
+    await service.query('INSERT INTO numbers VALUES {id: 7, score: 1}');
+    service.setIncrementalCompactionEnabled(true);
+    await service.getStatus();
+    vi.spyOn(service.rawDbms, 'commit').mockRejectedValueOnce(new Error('commit offline'));
+    await expect(service.query('UPDATE numbers SET score = 2 WHERE id = 7')).rejects.toMatchObject({
+      affectedIds: [7],
+    });
+    expect((await service.getStatus()).incrementalCompaction.enabled).toBe(false);
+    await service.disconnect();
+    await service.connect(filepath);
+    expect((await service.query('SELECT score FROM numbers WHERE id = 7')).rows).toEqual([{ score: 1 }]);
+  });
+
   it('returns complete page counts and preserves sorted and ordinary offset pages', async () => {
     await service.create(filepath);
     for (const [id, pages] of [

@@ -2502,6 +2502,50 @@ table.dg {
   z-index: 200;
   pointer-events: none;
 }
+
+#modal-sql-reference {
+  z-index: 110;
+}
+.sql-reference nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--bd);
+}
+.sql-reference a {
+  color: var(--ac);
+  font-size: 12px;
+  text-decoration: underline;
+}
+.sql-reference section {
+  margin-top: 22px;
+  scroll-margin-top: 12px;
+}
+.sql-reference h2 {
+  font-size: 15px;
+  margin-bottom: 10px;
+}
+.sql-reference p {
+  line-height: 1.65;
+  margin-bottom: 12px;
+}
+.sql-reference pre {
+  font-family: Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 12px;
+  background: var(--bg3);
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+  user-select: text;
+}
+.sql-reference :focus-visible {
+  outline: 2px solid var(--ac);
+  outline-offset: 3px;
+}
 .toast {
   padding: 10px 14px 10px 12px;
   background: var(--bg2);

@@ -12,6 +12,7 @@
       <header class="tb">
         <div class="brand">SiftwellDB</div>
         <div class="sp"></div>
+        <button class="tbtn" id="header-sql-reference" type="button">SQL Reference</button>
         <div class="conn-wrap" id="conn-wrap">
           <button class="conn-info" id="conn-info" type="button">
             <span class="d"></span><span id="conn-text">Disconnected</span
@@ -193,6 +194,7 @@
         <div class="modal-body">
           <label>Database file</label>
           <input type="text" id="connect-filepath" placeholder="e.g. data.db" value="data.db" autocomplete="off" />
+          <p><button class="tbtn" id="connect-sql-reference" type="button">Read the SQL Reference</button></p>
           <div class="err hidden" id="connect-err"></div>
         </div>
         <div class="modal-foot">
@@ -200,6 +202,22 @@
           <button class="sec" id="connect-create">Create new</button>
           <button class="pri" id="connect-open">Open / create</button>
         </div>
+      </div>
+    </div>
+
+    <div class="modal-bg hidden" id="modal-sql-reference" aria-labelledby="sql-reference-title">
+      <div class="modal-box wide tall">
+        <div class="modal-head">
+          <div class="ttl" id="sql-reference-title">
+            SQL Reference
+            <div class="sub">Supported syntax and examples · available without a database connection</div>
+          </div>
+          <button class="close" data-close="modal-sql-reference" type="button" aria-label="Close SQL reference">
+            ✕
+          </button>
+        </div>
+        <div class="modal-body sql-reference" id="sql-reference-content">Loading SQL reference…</div>
+        <div class="modal-foot"><button class="sec" data-close="modal-sql-reference" type="button">Close</button></div>
       </div>
     </div>
 

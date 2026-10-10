@@ -151,8 +151,10 @@ that queue must use the unlocked methods.
   not shorten index keys. All eligible text contributes to semantic embeddings,
   including unindexed and underscore-prefixed fields. The Lab configures its
   title-only B+ tree policy explicitly.
-- SQL UPDATE/DELETE currently operate on string IDs. Other DB APIs can use
-  numeric IDs. This engine limitation is unchanged.
+- SQL INSERT/UPDATE/DELETE support string and numeric IDs. The bundled **SQL
+  Reference** opens beside the editor and from the connection dialog, without an
+  open database or internet connection. Its source also generates the
+  [query-language README](../query/README.md) through `npm run docs:sql`.
 - Gemini chat requires an API key; schema introspection works without one.
   MiniLM/CLIP require their model assets. Chart rendering falls back to its
   result table when Chart.js is unavailable.

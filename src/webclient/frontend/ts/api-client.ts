@@ -2,6 +2,16 @@ type ApiOptions = Omit<RequestInit, 'body'> & {
   body?: BodyInit | Record<string, unknown>;
 };
 
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly affectedIds?: Array<string | number>,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
 function isJsonBody(body: unknown): body is Record<string, unknown> {
   return (
     body !== null &&
@@ -40,7 +50,18 @@ export async function api<T = Record<string, unknown>>(path: string, opts: ApiOp
       json && typeof json === 'object' && 'error' in json && typeof json.error === 'string' && json.error.trim()
         ? json.error
         : `HTTP ${res.status}`;
-    throw new Error(message);
+    const affectedIds =
+      json &&
+      typeof json === 'object' &&
+      'affectedIds' in json &&
+      Array.isArray(json.affectedIds) &&
+      json.affectedIds.every(
+        (id: unknown): id is string | number =>
+          typeof id === 'string' || (typeof id === 'number' && Number.isFinite(id)),
+      )
+        ? json.affectedIds
+        : undefined;
+    throw new ApiError(message, affectedIds);
   }
 
   return json as T;

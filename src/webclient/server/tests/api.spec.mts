@@ -5,6 +5,7 @@ import { DatabaseInputError, DatabaseService } from '../service.mjs';
 import type { ConversationalService } from '../conversational-service.mjs';
 import type { SemanticModel } from '../../../conversational/semanticModel.mjs';
 import type { AnalyticsResponse } from '../../../conversational/conversationalEngine.mjs';
+import { QueryMutationError } from '../../../query/executor.mjs';
 
 class MockRequest extends Readable {
   private sent = false;
@@ -117,6 +118,18 @@ async function handle(router: ApiRouter, method: string, path: string, body = ''
 }
 
 describe('readLimit', () => {
+  it('reports numeric completed IDs and a readable error for a late SQL failure', async () => {
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        query: () => Promise.reject(new QueryMutationError('update', [7], new Error('encoder offline'))),
+      }),
+    );
+    const response = await handle(router, 'POST', '/api/query', JSON.stringify({ sql: 'UPDATE docs SET score = 1' }));
+    expect(response.statusCode).toBe(400);
+    const failure = JSON.parse(response.body) as { affectedIds: number[]; error: string };
+    expect(failure.affectedIds).toEqual([7]);
+    expect(failure.error).toContain('1 document(s) completed');
+  });
   it('uses the default when no limit is provided', () => {
     expect(readLimit(new URL('http://localhost/api/documents/books'), 100, 10000)).toBe(100);
   });

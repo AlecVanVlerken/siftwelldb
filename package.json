@@ -10,6 +10,8 @@
     "coverage": "vitest run --coverage --exclude '**/benchmarks/**'",
     "build": "npm run clean && tsc --noEmit && tsc --project tsconfig.build.json && npm run build:webclient-frontend && node scripts/build-assets.mjs",
     "build:webclient-frontend": "tsc --project tsconfig.webclient-frontend.json",
+    "docs:sql": "node scripts/build-sql-reference.mjs",
+    "benchmark:query": "tsx benchmarks/query/query-performance.mts",
     "clean": "node scripts/clean.mjs",
     "lint": "eslint src/ tests/ examples/ benchmarks/ scripts/ vitest.config.mts",
     "lint-fix": "eslint --fix src/ tests/ examples/ benchmarks/ scripts/ vitest.config.mts",

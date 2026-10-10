@@ -6,6 +6,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseService, DatabaseInputError } from './service.mjs';
+import { QueryMutationError } from '../../query/executor.mjs';
 import type { ConversationalService } from './conversational-service.mjs';
 import { getEmbeddingStatus, preloadEmbeddingModels } from './embedding-config.mjs';
 import {
@@ -506,7 +507,7 @@ export class ApiRouter {
         return;
       }
 
-      // POST /api/query — execute a SQL-like statement (SELECT / INSERT / DELETE)
+      // POST /api/query — execute one supported SQL-like statement
       if (method === 'POST' && pathname === '/api/query') {
         const body = await parseBody(req);
         const sql = body['sql'];
@@ -523,7 +524,9 @@ export class ApiRouter {
             elapsedMs: result.elapsedMs,
           });
         } catch (err) {
-          sendError(res, 400, err instanceof Error ? err.message : String(err));
+          if (err instanceof QueryMutationError) {
+            sendJSON(res, 400, { error: err.message, affectedIds: err.affectedIds });
+          } else sendError(res, 400, err instanceof Error ? err.message : String(err));
         }
         return;
       }

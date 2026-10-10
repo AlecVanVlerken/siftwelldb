@@ -21,6 +21,12 @@ describe('api client', () => {
 
     await expect(api('/api/documents/books')).rejects.toThrow('No database connected');
   });
+  it('preserves completed numeric and string IDs from late query failures', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{"error":"Partial SQL write","affectedIds":[7,"a"]}', { status: 400 }),
+    );
+    await expect(api('/api/query')).rejects.toMatchObject({ message: 'Partial SQL write', affectedIds: [7, 'a'] });
+  });
 
   it.each([new Blob(['image bytes']), new URLSearchParams({ q: 'books' })])(
     'preserves a native request body instead of converting it to JSON',

@@ -22,6 +22,7 @@ import {
   state,
 } from './state.js';
 import { getSqlMutationKind } from './sql-ui.js';
+import { openSqlReference } from './sql-reference.js';
 import { mergeScopedModel } from './model-editor.js';
 
 function toast(msg, kind = '', title = '') {
@@ -33,6 +34,8 @@ function toast(msg, kind = '', title = '') {
 }
 
 $$('[data-close]').forEach((b) => b.addEventListener('click', () => closeModal(b.dataset.close)));
+$('#header-sql-reference').addEventListener('click', openSqlReference);
+$('#connect-sql-reference').addEventListener('click', openSqlReference);
 
 let documentModalMode = 'document';
 let documentModalRequest = 0;
@@ -428,50 +431,61 @@ function wireFieldIndexControls(root, collection, config, refresh, current = () 
       const databaseContext = captureRequestContext('database');
       const requested = checkbox.checked;
       checkbox.checked = !requested;
-      fieldIndexBusy = true;
-      root.querySelectorAll('[data-field-index]').forEach((input) => {
-        input.disabled = true;
-      });
-      const save = root.closest('#dr-body') ? $('#edit-save') : $('#doc-save');
-      const editor = root.closest('#dr-body, #modal-document');
-      const locked = editor
-        ? [...editor.querySelectorAll('input, textarea, select, button')].filter((input) => !input.disabled)
-        : [];
-      locked.forEach((input) => {
-        input.disabled = true;
-      });
-      if (save) save.disabled = true;
-      const progress = document.createElement('div');
-      progress.textContent = 'Updating index…';
-      root.appendChild(progress);
-      try {
-        const result = await api(`/api/collections/${encodeURIComponent(collection)}/indexes`, {
-          method: 'PUT',
-          body: { field: checkbox.dataset.fieldIndex, indexed: requested },
-        });
-        if (isCurrentRequestContext(databaseContext)) invalidateStorageCache(collection);
-        if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
-        Object.assign(config, result.fields);
-        if (state.collections.includes(collection)) await getCollectionStorage(collection);
-        if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
-        checkbox.checked = result.fields[checkbox.dataset.fieldIndex];
-      } catch (error) {
-        if (isCurrentRequestContext(context) && root.isConnected) toast('Index update failed: ' + error.message, 'err');
-      } finally {
-        if (!fieldIndexBusy || isCurrentRequestContext(context))
-          locked.forEach((input) => {
-            input.disabled = false;
+      const field = checkbox.dataset.fieldIndex;
+      confirmAction(
+        `${requested ? 'Enable' : 'Disable'} index for “${field}”?`,
+        requested
+          ? `This scans existing documents in “${collection}” and builds an index for this field. Large collections may take time.`
+          : `This removes the field’s index from “${collection}”. Document values stay intact. Queries may become slower, and enabling it again requires rebuilding the index.`,
+        async () => {
+          if (fieldIndexBusy || !isCurrentRequestContext(context) || !root.isConnected || !current()) return;
+          fieldIndexBusy = true;
+          root.querySelectorAll('[data-field-index]').forEach((input) => {
+            input.disabled = true;
           });
-        if (isCurrentRequestContext(context)) {
-          fieldIndexBusy = false;
-          progress.remove();
-          if (save) save.disabled = false;
-          if (root.isConnected) {
-            if (current()) refresh();
-            else root.dispatchEvent(new Event('field-index-updated'));
+          const save = root.closest('#dr-body') ? $('#edit-save') : $('#doc-save');
+          const editor = root.closest('#dr-body, #modal-document');
+          const locked = editor
+            ? [...editor.querySelectorAll('input, textarea, select, button')].filter((input) => !input.disabled)
+            : [];
+          locked.forEach((input) => {
+            input.disabled = true;
+          });
+          if (save) save.disabled = true;
+          const progress = document.createElement('div');
+          progress.textContent = requested ? 'Building index… This may take time.' : 'Removing index…';
+          root.appendChild(progress);
+          try {
+            const result = await api(`/api/collections/${encodeURIComponent(collection)}/indexes`, {
+              method: 'PUT',
+              body: { field: checkbox.dataset.fieldIndex, indexed: requested },
+            });
+            if (isCurrentRequestContext(databaseContext)) invalidateStorageCache(collection);
+            if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
+            Object.assign(config, result.fields);
+            if (state.collections.includes(collection)) await getCollectionStorage(collection);
+            if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
+            checkbox.checked = result.fields[checkbox.dataset.fieldIndex];
+          } catch (error) {
+            if (isCurrentRequestContext(context) && root.isConnected)
+              toast('Index update failed: ' + error.message, 'err');
+          } finally {
+            if (!fieldIndexBusy || isCurrentRequestContext(context))
+              locked.forEach((input) => {
+                input.disabled = false;
+              });
+            if (isCurrentRequestContext(context)) {
+              fieldIndexBusy = false;
+              progress.remove();
+              if (save) save.disabled = false;
+              if (root.isConnected) {
+                if (current()) refresh();
+                else root.dispatchEvent(new Event('field-index-updated'));
+              }
+            }
           }
-        }
-      }
+        },
+      );
     }),
   );
 }
@@ -2178,8 +2192,7 @@ function renderSql() {
     <div class="sql-tools">
       <button class="tbtn pri" id="sql-run" ${sqlBusy ? 'disabled' : ''}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>${sqlBusy ? 'Running…' : 'Run (Ctrl+Enter)'}</button>
       <button class="tbtn" id="sql-clear"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg>Clear</button>
-      <button class="tbtn" id="sql-example">Example: SELECT</button>
-      ${state.selectedCol ? `<button class="tbtn" id="sql-prefill">SELECT * FROM ${esc(state.selectedCol)}</button>` : ''}
+      <button class="tbtn" id="sql-reference">SQL Reference</button>
       <div class="meta">
         ${
           last
@@ -2204,23 +2217,11 @@ function renderSql() {
     }
   });
   $('#sql-run').addEventListener('click', runSql);
+  $('#sql-reference').addEventListener('click', openSqlReference);
   $('#sql-clear').addEventListener('click', () => {
     pendingSql = '';
     editor.innerText = '';
   });
-  $('#sql-example').addEventListener('click', () => {
-    const ex = state.selectedCol
-      ? `SELECT *\n  FROM ${state.selectedCol}\n LIMIT 25;`
-      : 'SELECT *\n  FROM <collection>\n LIMIT 25;';
-    pendingSql = ex;
-    editor.innerText = pendingSql;
-  });
-  if (state.selectedCol) {
-    $('#sql-prefill').addEventListener('click', () => {
-      pendingSql = `SELECT * FROM ${state.selectedCol} LIMIT 100;`;
-      editor.innerText = pendingSql;
-    });
-  }
   if (pendingSql) editor.innerText = pendingSql;
   $$('#sql-out .item').forEach((el) =>
     el.addEventListener('click', () => {
@@ -2278,8 +2279,18 @@ async function runSqlNow(sql) {
     }
   } catch (e) {
     if (!isCurrentRequestContext(context) || request !== sqlRequest) return;
-    state.sqlHistory.unshift({ sql, ok: false, ts: Date.now(), error: e.message });
+    state.sqlHistory.unshift({ sql, ok: false, ts: Date.now(), error: e.message, affectedIds: e.affectedIds });
     state.sqlHistory = state.sqlHistory.slice(0, 10);
+    if (e.affectedIds) {
+      invalidateStorageCache();
+      closeDrawer();
+      invalidateSemanticSearch(state.selectedCol);
+      await loadCollections();
+      await refreshDatabaseStatus();
+      if (!isCurrentRequestContext(context)) return;
+      renderTree();
+      renderTabs();
+    }
   } finally {
     if (isCurrentRequestContext(context) && request === sqlRequest) {
       sqlBusy = false;
@@ -2290,7 +2301,8 @@ async function runSqlNow(sql) {
 
 function renderSqlOut(last) {
   if (!last) return '';
-  if (!last.ok) return `<div class="err">${esc(last.error)}</div>`;
+  if (!last.ok)
+    return `<div class="err">${esc(last.error)}${last.affectedIds?.length ? `<p>Completed IDs: ${last.affectedIds.map((id) => esc(JSON.stringify(id))).join(', ')}</p>` : ''}</div>`;
   if (last.kind !== 'select' && last.kind !== 'explain')
     return `<div class="rhead"><span class="ok-pill">${esc(last.kind)}</span><strong>${last.rowCount}</strong> row${last.rowCount === 1 ? '' : 's'} affected · ${last.elapsedMs} ms</div>`;
   const rows = last.rows || [];

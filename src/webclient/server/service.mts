@@ -20,14 +20,15 @@ import {
   type FieldCompressionDefaults,
   type FieldCompressionOverrides,
 } from '../../database/compression.mjs';
-import { imageMimeForField, isImageField, JSONtoDocument } from '../../database/document.mjs';
+import { imageMimeForField, isImageField } from '../../database/document.mjs';
 import { generateWikiArticles } from '../fixtures/wiki.mjs';
 import { RealFile } from '../../storage/file.mjs';
 import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../../compaction/compaction.mjs';
 import { fetchPageCursor } from '../../database/pagination.mjs';
 import { searchWordIndex, searchContentIndex } from '../../indexes/text/wordindex.mjs';
 import { QueryLanguage, type QueryResultRow } from '../../query/querylanguage.mjs';
-import { compareValues, evaluateWhere } from '../../query/expressions.mjs';
+import { QueryMutationError } from '../../query/executor.mjs';
+import { compareValues } from '../../query/expressions.mjs';
 import { getClipHnswConfig } from './embedding-config.mjs';
 import { generateDemoEmployees, generateSemanticKnowledgeDemoDocuments } from './demo-data.mjs';
 
@@ -1104,34 +1105,41 @@ export class DatabaseService {
   async query(sql: string): Promise<QueryExecutionResult> {
     return this.runExclusive('query', async () => {
       this.ensureConnected();
+      const start = performance.now();
       const ql = new QueryLanguage(this.dbms!);
       const parsed = ql.parse(sql);
-      if (parsed.kind === 'insert')
-        this.validateIndexedKeys(parsed.collection, JSONtoDocument(parsed.body, parsed.collection).asDocument());
-      if (parsed.kind === 'update') {
-        // Preflight every matched row before the engine begins its update loop.
-        for await (const json of this.dbms!.cursor(parsed.collection, 'id')) {
-          const document = JSON.parse(json) as Record<string, unknown>;
-          if (typeof document['id'] !== 'string' || (parsed.where && !evaluateWhere(document, parsed.where))) continue;
-          for (const assignment of parsed.assignments) {
-            if (assignment.field === 'id' || !Object.prototype.hasOwnProperty.call(document, assignment.field)) {
-              throw new DatabaseInputError(`Field ${assignment.field} cannot be edited on this document`);
-            }
-            document[assignment.field] = assignment.value;
-            this.validateIndexedKeys(parsed.collection, document);
-          }
+      let rows: QueryResultRow[];
+      try {
+        rows = await ql.executeParsed(parsed);
+      } catch (error) {
+        if (error instanceof QueryMutationError) {
+          this.recordBytesCache.clear();
+          this.documentCountCache.clear();
+          this.setIncrementalCompactionEnabled(false);
         }
+        throw error;
       }
-      const start = Date.now();
-      const rows = await ql.execute(sql);
-      const elapsedMs = Date.now() - start;
       if (parsed.kind === 'insert' || parsed.kind === 'update' || parsed.kind === 'delete') {
-        await this.dbms!.commit();
         this.recordBytesCache.clear();
         this.documentCountCache.clear();
+        try {
+          await this.dbms!.commit();
+        } catch (error) {
+          this.setIncrementalCompactionEnabled(false);
+          throw new QueryMutationError(
+            `${parsed.kind} commit`,
+            rows.map((row) => row['id'] as string | number),
+            error,
+          );
+        }
         if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
       }
-      return { rows, rowCount: rows.length, kind: parsed.kind, elapsedMs };
+      return {
+        rows,
+        rowCount: rows.length,
+        kind: parsed.kind,
+        elapsedMs: Math.round((performance.now() - start) * 100) / 100,
+      };
     });
   }
 

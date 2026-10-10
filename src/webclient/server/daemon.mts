@@ -111,7 +111,9 @@ function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): vo
 
 const server = http.createServer(requestHandler);
 
-server.listen(port);
+server.listen(port, () => {
+  console.log(`SiftwellDB webclient running at http://localhost:${port}`);
+});
 
 // Graceful shutdown
 process.on('SIGINT', () => {
