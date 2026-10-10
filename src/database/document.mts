@@ -1,6 +1,8 @@
 // author: Frederik Caeyman
 // date: 2025-12-08
 
+import { readQuotedString } from './string-literal.mjs';
+
 export type FieldValue = string | number | boolean | Buffer;
 export type RawId = string | number;
 
@@ -159,13 +161,29 @@ export function JSONtoDocument(input: string, collection: string): Document {
   const body = input.trim();
   if (!body.startsWith('{') || !body.endsWith('}')) throw new Error('Input must be of the form { ... }');
 
-  // Quote keys and convert single quotes to double quotes so JSON.parse can handle it safely.
-  const withQuotedKeys = body.replace(/([{,]\s*)([A-Za-z0-9_.]+)\s*:/g, '$1"$2":');
-  const normalizedStrings = withQuotedKeys.replace(/'([^']*)'/g, '"$1"');
-
   let parsed: unknown;
   try {
-    parsed = JSON.parse(normalizedStrings);
+    // Preserve ordinary JSON exactly; the compatibility literal form only
+    // normalizes actual keys and quoted tokens, never string contents.
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      let normalized = '';
+      for (let i = 0; i < body.length; ) {
+        if (body[i] === "'" || body[i] === '"') {
+          const token = readQuotedString(body, i);
+          normalized += JSON.stringify(token.value);
+          i = token.end;
+        } else {
+          const key = body.slice(i).match(/^[A-Za-z0-9_.]+(?=\s*:)/);
+          if (key) {
+            normalized += JSON.stringify(key[0]);
+            i += key[0].length;
+          } else normalized += body[i++];
+        }
+      }
+      parsed = JSON.parse(normalized);
+    }
   } catch (err) {
     throw new Error(`Failed to parse document string: ${(err as Error).message}`);
   }

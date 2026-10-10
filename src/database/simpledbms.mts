@@ -140,7 +140,7 @@ export type {
 } from './compression-advisor.mjs';
 export type { CompressionProfileSummary } from './compression-profiles.mjs';
 import { type File } from '../storage/file.mjs';
-import { documentToJSON, parseRawDocument, type Document, type FieldValue } from './document.mjs';
+import { documentToJSON, parseRawDocument, type Document, type FieldValue, type RawId } from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
 import { type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
 import {
@@ -296,6 +296,12 @@ export class SimpleDbms {
     return documentToJSON(document as Document);
   }
 
+  /** Read decoded field values without converting binary fields to JSON strings. */
+  async getDocumentObjectById(collection: string, id: RawId): Promise<Record<string, FieldValue> & { id: RawId }> {
+    const document = (await this.dbmsback.getDocument(id, collection, false)) as Document;
+    return document.asDocument();
+  }
+
   setFieldCompressionDefaults(collection: string, defaults: FieldCompressionDefaults): void {
     this.dbmsback.setFieldCompressionDefaults(collection, defaults);
   }
@@ -364,12 +370,12 @@ export class SimpleDbms {
    */
   async replaceDocument(
     collection: string,
-    id: string,
+    id: string | number,
     newDocument: unknown,
-    options?: { compression?: FieldCompressionOverrides },
+    options?: { compression?: FieldCompressionOverrides; preserveCompression?: boolean },
   ): Promise<void> {
     const doc = parseRawDocument(collection, newDocument);
-    await this.dbmsback.replaceDocumentByID(collection, id, doc, options?.compression);
+    await this.dbmsback.replaceDocumentByID(collection, id, doc, options?.compression, options?.preserveCompression);
   }
 
   /**
@@ -446,24 +452,21 @@ export class SimpleDbms {
     })();
 
     if (field === 'id') {
-      // For `id` equality the existing single-key cursor is already a
-      // direct seek; we keep the same wrapper so callers can treat
-      // both paths identically (they both stop after one doc here).
-      const startValue = typeof value === 'boolean' ? (value ? 1 : 0) : value;
-      const inner = this.dbmsback.cursor(collection, 'id', startValue);
       return {
         async *[Symbol.asyncIterator]() {
-          const cursor = await inner;
-          for await (const document of cursor) {
-            const json = documentToJSON(document);
-            try {
-              const parsed = JSON.parse(json) as Record<string, unknown>;
-              if (parsed[field] === value) yield json;
-              else if (field === 'id') return;
-            } catch {
-              yield json;
-            }
+          if (typeof value === 'boolean') return;
+          let document: Document;
+          try {
+            document = (await dbmsback.getDocument(value, collection, false)) as Document;
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              ['Document not found', 'No document with given id exists'].includes(error.message)
+            )
+              return;
+            throw error;
           }
+          if (document.getId() === value) yield documentToJSON(document);
         },
       };
     }

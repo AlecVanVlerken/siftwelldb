@@ -3,7 +3,7 @@
 
 import { type FieldValue } from '../database/document.mjs';
 
-export type QueryResultRow = Record<string, FieldValue | undefined>;
+export type QueryResultRow = Record<string, FieldValue | null | undefined>;
 
 // ── WHERE Expression Types ───────────────────────────────────────────────────
 
@@ -150,6 +150,7 @@ export type ParsedInsert = {
   kind: 'insert';
   collection: string;
   body: string;
+  document: Record<string, FieldValue>;
 };
 
 export type ParsedDelete = {

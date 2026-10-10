@@ -41,7 +41,7 @@
 //
 // GROUP BY aggregates: COUNT(*), COUNT(field), SUM, AVG, MIN, MAX —
 //   each may take `DISTINCT field` to dedupe before aggregating.
-//   SUM / AVG / MIN / MAX return `null` (rendered as undefined column)
+//   SUM / AVG / MIN / MAX return query-result `null`
 //   when the input set has no values, matching standard SQL.
 // SELECT aliases:      `expr AS alias`  (also recognised in ORDER BY / HAVING)
 
@@ -91,6 +91,11 @@ export class QueryLanguage {
 
   async execute(query: string): Promise<QueryResultRow[]> {
     return executeParsed(this.dbms, parse(query));
+  }
+
+  /** Execute an already parsed statement without repeating syntax validation. */
+  async executeParsed(query: ParsedQuery): Promise<QueryResultRow[]> {
+    return executeParsed(this.dbms, query);
   }
 
   /**

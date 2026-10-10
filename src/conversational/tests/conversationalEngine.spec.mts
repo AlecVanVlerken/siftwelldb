@@ -79,6 +79,43 @@ async function createEngine(
 }
 
 describe('ConversationalEngine', () => {
+  it('executes grouped aggregate aliases and HAVING from generated SQL', async () => {
+    const { engine, db } = await createEngine([
+      'SELECT department, count( * ) AS n, AVG(salary) AS average FROM employees GROUP BY department HAVING n >= 1 ORDER BY average DESC',
+      JSON.stringify({ summary: 'Engineering has the higher average.', chart: null }),
+    ]);
+    const response = await engine.ask('Compare department averages');
+    expect(response.error).toBeUndefined();
+    expect(response.data).toEqual([
+      { department: 'Engineering', n: 1, average: 120000 },
+      { department: 'Sales', n: 1, average: 90000 },
+    ]);
+    await db.close();
+  });
+  it('executes EXPLAIN while rejecting malformed or disguised generated writes without changing data', async () => {
+    const { engine, db } = await createEngine([
+      "EXPLAIN SELECT name FROM employees WHERE id = 'e1'",
+      JSON.stringify({ summary: 'Uses the primary index.', chart: null }),
+    ]);
+    const response = await engine.ask('Explain the employee lookup plan');
+    expect(response.error).toBeUndefined();
+    expect(response.data.map((row) => row['stage'])).toEqual(['collection', 'scan', 'filter', 'project']);
+    expect(response.data[1]['detail']).toContain('exact primary id lookup');
+    await db.close();
+    for (const query of [
+      'UPDATE employees SET salary = 1',
+      'EXPLAIN DELETE FROM employees',
+      'SELECT * FROM employees; DELETE FROM employees',
+    ]) {
+      const attempted = await createEngine([query]);
+      expect((await attempted.engine.ask('Show employee information')).error).toBeTruthy();
+      expect(await new QueryLanguage(attempted.db).execute('SELECT id, salary FROM employees ORDER BY id')).toEqual([
+        { id: 'e1', salary: 120000 },
+        { id: 'e2', salary: 90000 },
+      ]);
+      await attempted.db.close();
+    }
+  });
   it('generates, executes, and enriches a read-only SELECT response', async () => {
     const insight = JSON.stringify({
       summary: 'Alice is the highest-paid Engineering employee.',
@@ -150,7 +187,7 @@ describe('ConversationalEngine', () => {
 
   it('repairs an over-filtered zero-result query once before falling back', async () => {
     const { engine, provider, db } = await createEngine([
-      "SELECT COUNT(*) FROM employees WHERE department = 'Legal'",
+      "SELECT name FROM employees WHERE department = 'Legal'",
       'SELECT COUNT(*) FROM employees',
       JSON.stringify({ summary: 'There are 2 employees.', chart: null }),
     ]);
@@ -161,6 +198,18 @@ describe('ConversationalEngine', () => {
     expect(response.data).toEqual([{ 'COUNT(*)': 2 }]);
     expect(response.summary).toBe('There are 2 employees.');
     expect(provider.chatCalls[1]?.userMessage).toContain('returned 0 rows');
+    await db.close();
+  });
+
+  it('keeps a valid zero COUNT result instead of broadening its filter', async () => {
+    const { engine, provider, db } = await createEngine([
+      "SELECT COUNT(*) FROM employees WHERE department = 'Legal'",
+      JSON.stringify({ summary: 'There are no Legal employees.', chart: null }),
+    ]);
+    const response = await engine.ask('How many employees work in Legal?');
+    expect(response.query).toBe("SELECT COUNT(*) FROM employees WHERE department = 'Legal'");
+    expect(response.data).toEqual([{ 'COUNT(*)': 0 }]);
+    expect(provider.chatCalls).toHaveLength(2);
     await db.close();
   });
 

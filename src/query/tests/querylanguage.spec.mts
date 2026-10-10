@@ -1061,23 +1061,22 @@ describe('Aggregator semantics', () => {
     expect(rows[0]?.['MAX(name)']).toBe('Rotterdam');
   });
 
-  it('SUM on empty input returns undefined (was 0)', async () => {
+  it('SUM on empty input returns one null aggregate row', async () => {
     const ql = await setupDb();
     const rows = await ql.execute("SELECT SUM(population) FROM cities WHERE country = 'XX'");
-    expect(rows[0]?.['SUM(population)']).toBeUndefined();
+    expect(rows).toEqual([{ 'SUM(population)': null }]);
   });
 
-  it('AVG on empty input returns undefined (was 0)', async () => {
+  it('AVG on empty input returns one null aggregate row', async () => {
     const ql = await setupDb();
     const rows = await ql.execute("SELECT AVG(population) FROM cities WHERE country = 'XX'");
-    expect(rows[0]?.['AVG(population)']).toBeUndefined();
+    expect(rows).toEqual([{ 'AVG(population)': null }]);
   });
 
-  it('MIN / MAX on empty input returns undefined (was 0)', async () => {
+  it('MIN / MAX on empty input return one null aggregate row', async () => {
     const ql = await setupDb();
     const rows = await ql.execute("SELECT MIN(population), MAX(population) FROM cities WHERE country = 'XX'");
-    expect(rows[0]?.['MIN(population)']).toBeUndefined();
-    expect(rows[0]?.['MAX(population)']).toBeUndefined();
+    expect(rows).toEqual([{ 'MIN(population)': null, 'MAX(population)': null }]);
   });
 
   it('HAVING ... IS NULL matches empty-group aggregates', async () => {

@@ -1,7 +1,6 @@
 // author: Frederik Caeyman & Matisse De Gauquier
 // Project a single row onto a SELECT field list. Honors `AS` aliases.
 
-import { type FieldValue } from '../database/document.mjs';
 import type { FieldSelector, QueryResultRow } from './ast.mjs';
 
 /**
@@ -16,13 +15,10 @@ import type { FieldSelector, QueryResultRow } from './ast.mjs';
  * This is the single place where `AS` aliasing is actually applied; the
  * parser is responsible for splitting `expr AS alias` into the two parts.
  */
-export function project(doc: Record<string, FieldValue>, fields: '*' | FieldSelector[]): QueryResultRow {
+export function project(doc: QueryResultRow, fields: '*' | FieldSelector[]): QueryResultRow {
   if (fields === '*') return doc;
 
-  const projected: QueryResultRow = {};
-  for (const sel of fields) {
-    const outKey = sel.alias ?? sel.expr;
-    projected[outKey] = doc[sel.expr];
-  }
-  return projected;
+  return Object.fromEntries(
+    fields.map((sel) => [sel.alias ?? sel.expr, Object.hasOwn(doc, sel.expr) ? doc[sel.expr] : undefined]),
+  );
 }

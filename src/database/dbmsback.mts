@@ -1697,18 +1697,22 @@ export class DbmsBack {
    */
   replaceDocumentByID(
     collection: string,
-    id: string,
+    id: string | number,
     document: Document,
     compression?: FieldCompressionOverrides,
+    preserveCompression = false,
   ): Promise<void> {
-    return this.mutate(() => this.replaceDocumentByIDInternal(collection, id, document, compression));
+    return this.mutate(() =>
+      this.replaceDocumentByIDInternal(collection, id, document, compression, preserveCompression),
+    );
   }
 
   private async replaceDocumentByIDInternal(
     collection: string,
-    id: string,
+    id: string | number,
     newDocument: Document,
     compression?: FieldCompressionOverrides,
+    preserveCompression = false,
   ): Promise<void> {
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
@@ -1724,6 +1728,16 @@ export class DbmsBack {
     const existing = await this.getDocumentBlockId(collection, id);
     if (existing === null) {
       throw new Error('Document not found');
+    }
+    const stored = await this.recordStore.readRecordEncoded(existing);
+    if (!stored || stored.id !== newDocument.getId()) throw new Error('Cannot change document ID type during replace.');
+    if (preserveCompression) {
+      compression = {
+        ...Object.fromEntries(
+          [...stored.iterableEntries, ...stored.nonIterableEntries].map((entry) => [entry.key, entry.compression]),
+        ),
+        ...compression,
+      };
     }
 
     this.validateDocument(newDocument);
@@ -2362,6 +2376,7 @@ function getCompareFunction(form: string): (a: Buffer, b: Buffer) => number {
       if (numA1 !== numB1) {
         return numA1 - numB1;
       }
+      if (a.length < 16 || b.length < 16) return 0;
       const numA2 = a.readDoubleBE(8);
       const numB2 = b.readDoubleBE(8);
       return numA2 - numB2;

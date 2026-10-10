@@ -9,6 +9,7 @@ import type {
   IsNullExpression,
   WhereExpression,
 } from './ast.mjs';
+import { readQuotedString } from '../database/string-literal.mjs';
 
 /**
  * Convert a SQL `LIKE` pattern to a case-insensitive `RegExp`.
@@ -18,11 +19,15 @@ import type {
  *   All other regex metacharacters are escaped.
  */
 export function likeToRegex(pattern: string): RegExp {
-  const escaped = pattern
-    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/%/g, '.*')
-    .replace(/_/g, '.');
-  return new RegExp(`^${escaped}$`, 'i');
+  let escaped = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === '\\' && i + 1 < pattern.length) escaped += pattern[++i].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    else if (ch === '%') escaped += '.*';
+    else if (ch === '_') escaped += '.';
+    else escaped += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^(?:${escaped})$`, 'isu');
 }
 
 /**
@@ -34,12 +39,15 @@ export function likeToRegex(pattern: string): RegExp {
  * Anything else throws — we never silently coerce.
  */
 export function parseValue(raw: string): FieldValue {
-  const quoted = raw.match(/^'(.*)'$/) ?? raw.match(/^"(.*)"$/);
-  if (quoted) return quoted[1];
+  if (raw.startsWith("'") || raw.startsWith('"')) {
+    const quoted = readQuotedString(raw, 0);
+    if (quoted.end === raw.length) return quoted.value;
+    throw new Error('Unexpected trailing text after string literal');
+  }
 
   if (/^(true|false)$/i.test(raw)) return raw.toLowerCase() === 'true';
 
-  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw);
+  if (/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw) && Number.isFinite(Number(raw))) return Number(raw);
 
   throw new Error(`Unsupported value: "${raw}". Use numbers, booleans, or quoted strings.`);
 }
@@ -57,8 +65,7 @@ export function parseValue(raw: string): FieldValue {
  * tends to hide bad data and produce surprising analytics.
  */
 export function compareValues(a: unknown, b: unknown): number {
-  if (a === null && b === null) return 0;
-  if (a === undefined && b === undefined) return 0;
+  if ((a === null || a === undefined) && (b === null || b === undefined)) return 0;
   if (a === null || a === undefined) return -1;
   if (b === null || b === undefined) return 1;
 
@@ -125,8 +132,7 @@ function evaluateComparison(doc: Record<string, unknown>, expr: ComparisonExpres
       return typeof actual !== 'string' || !re.test(actual);
     }
     case 'CONTAINS': {
-      const re = expr.regex ?? likeToRegex(`%${String(expected)}%`);
-      return typeof actual === 'string' && re.test(actual);
+      return typeof actual === 'string' && actual.toLowerCase().includes(String(expected).toLowerCase());
     }
     default: {
       const exhaustiveCheck: never = expr.operator;
@@ -137,7 +143,7 @@ function evaluateComparison(doc: Record<string, unknown>, expr: ComparisonExpres
 
 function evaluateIsNull(doc: Record<string, unknown>, expr: IsNullExpression): boolean {
   const v = doc[expr.field];
-  const isMissing = v === undefined || v === null;
+  const isMissing = !Object.hasOwn(doc, expr.field) || v === undefined || v === null;
   return expr.negated ? !isMissing : isMissing;
 }
 
@@ -164,7 +170,14 @@ function evaluateBetween(doc: Record<string, unknown>, expr: BetweenExpression):
  * Logical operators short-circuit: the right-hand side is only evaluated
  * when the left side cannot decide the outcome alone.
  */
-export function evaluateWhere(doc: Record<string, unknown>, expr: WhereExpression): boolean {
+function evaluateCondition(doc: Record<string, unknown>, expr: WhereExpression): boolean | undefined {
+  if (
+    expr.type !== 'logical' &&
+    expr.type !== 'not' &&
+    expr.type !== 'isnull' &&
+    (!Object.hasOwn(doc, expr.field) || doc[expr.field] === null || doc[expr.field] === undefined)
+  )
+    return undefined;
   switch (expr.type) {
     case 'comparison':
       return evaluateComparison(doc, expr);
@@ -174,16 +187,27 @@ export function evaluateWhere(doc: Record<string, unknown>, expr: WhereExpressio
       return evaluateIn(doc, expr);
     case 'between':
       return evaluateBetween(doc, expr);
-    case 'not':
-      return !evaluateWhere(doc, expr.expr);
-    case 'logical':
-      if (expr.operator === 'AND') {
-        return evaluateWhere(doc, expr.left) && evaluateWhere(doc, expr.right);
-      }
-      return evaluateWhere(doc, expr.left) || evaluateWhere(doc, expr.right);
+    case 'not': {
+      const value = evaluateCondition(doc, expr.expr);
+      return value === undefined ? undefined : !value;
+    }
+    case 'logical': {
+      const left = evaluateCondition(doc, expr.left);
+      if (expr.operator === 'AND' && left === false) return false;
+      if (expr.operator === 'OR' && left === true) return true;
+      const right = evaluateCondition(doc, expr.right);
+      if (expr.operator === 'AND')
+        return right === false ? false : left === undefined || right === undefined ? undefined : true;
+      return right === true ? true : left === undefined || right === undefined ? undefined : false;
+    }
     default: {
       const exhaustive: never = expr;
       throw new Error(`Unknown WHERE expression: ${String(exhaustive)}`);
     }
   }
+}
+
+/** Absent comparisons remain unmatched under negation; IS NULL tests absence. */
+export function evaluateWhere(doc: Record<string, unknown>, expr: WhereExpression): boolean {
+  return evaluateCondition(doc, expr) === true;
 }
