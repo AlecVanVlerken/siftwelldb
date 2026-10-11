@@ -178,57 +178,49 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
     // Try to merge with next sibling FIRST (simpler cursor handling)
     // When merging with next, cursor stays at current position
     if (!cursor.isLastChild()) {
-      try {
-        cursor.moveNext();
-        const nextSibling = await cursor.getChild();
-        const nextKey = cursor.getKeyAfter();
+      cursor.moveNext();
+      const nextSibling = await cursor.getChild();
+      const nextKey = cursor.getKeyAfter();
 
-        if (node.canMergeWithNext(nodeKey, nextSibling)) {
-          // Merge: node absorbs nextSibling
-          await node.mergeWithNext(nodeKey, nextSibling);
-          cursor.movePrevious(); // Move back to original position (at node)
-          // Parent will replace node + nextSibling with just node
-          return {
-            descriptor: {
-              nodes: [node],
-              keys: [nextKey], // Use the larger key
-            },
-            mergedWithPrev: false,
-            mergedWithNext: true,
-          };
-        }
-        cursor.movePrevious(); // Move back to original position
-      } catch {
-        // If movement fails, continue without merging
+      if (node.canMergeWithNext(nodeKey, nextSibling)) {
+        // Merge: node absorbs nextSibling
+        await node.mergeWithNext(nodeKey, nextSibling);
+        cursor.movePrevious(); // Move back to original position (at node)
+        // Parent will replace node + nextSibling with just node
+        return {
+          descriptor: {
+            nodes: [node],
+            keys: [nextKey], // Use the larger key
+          },
+          mergedWithPrev: false,
+          mergedWithNext: true,
+        };
       }
+      cursor.movePrevious(); // Move back to original position
     }
 
     // Try to merge with previous sibling
     // When merging with prev, we need cursor at prev position for correct replacement
     if (!cursor.isFirstChild()) {
-      try {
-        cursor.movePrevious();
-        const prevSibling = await cursor.getChild();
-        const separatorKey = cursor.getKeyAfter();
+      cursor.movePrevious();
+      const prevSibling = await cursor.getChild();
+      const separatorKey = cursor.getKeyAfter();
 
-        if (prevSibling.canMergeWithNext(separatorKey, node)) {
-          // Merge: prevSibling absorbs node
-          await prevSibling.mergeWithNext(separatorKey, node);
-          // Cursor STAYS at prevSibling position (don't move back!)
-          // Parent will replace prevSibling + node with just prevSibling
-          return {
-            descriptor: {
-              nodes: [prevSibling],
-              keys: [nodeKey], // Use the larger key
-            },
-            mergedWithPrev: true,
-            mergedWithNext: false,
-          };
-        }
-        cursor.moveNext(); // Move back to original position
-      } catch {
-        // If movement fails, continue without merging
+      if (prevSibling.canMergeWithNext(separatorKey, node)) {
+        // Merge: prevSibling absorbs node
+        await prevSibling.mergeWithNext(separatorKey, node);
+        // Cursor STAYS at prevSibling position (don't move back!)
+        // Parent will replace prevSibling + node with just prevSibling
+        return {
+          descriptor: {
+            nodes: [prevSibling],
+            keys: [nodeKey], // Use the larger key
+          },
+          mergedWithPrev: true,
+          mergedWithNext: false,
+        };
       }
+      cursor.moveNext(); // Move back to original position
     }
 
     return noMerge;

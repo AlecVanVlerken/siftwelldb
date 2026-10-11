@@ -17,6 +17,13 @@
 import type { FreeBlockFile } from './freeblockfile.mjs';
 import { BlockType } from './layout.mjs';
 
+export class BlockReadError extends Error {
+  constructor(blockNumber: number, cause: unknown) {
+    super(`Cannot read block ${blockNumber}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
+    this.name = 'BlockReadError';
+  }
+}
+
 /**
  * Reads a block from disk or from the dirty cache.
  */
@@ -38,7 +45,11 @@ export async function readBlock(fbf: FreeBlockFile, blockNumber: number): Promis
 
   const offset = offsetOf(fbf, blockNumber);
   const buffer = Buffer.allocUnsafe(fbf._getBlockSize());
-  await fbf._getFile().read(buffer, { position: offset });
+  try {
+    await fbf._getFile().read(buffer, { position: offset });
+  } catch (error) {
+    throw new BlockReadError(blockNumber, error);
+  }
   return buffer;
 }
 

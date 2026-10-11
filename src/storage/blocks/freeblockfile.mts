@@ -92,15 +92,20 @@ export class FreeBlockFile {
    * @author Arthur Cukier
    */
   async create() {
-    await this.file.create();
-    this.isOpen = true;
-    const header = Buffer.alloc(this.blockSize);
-    header.writeUInt8(layout.BlockType.Header, layout.HEADER_TYPE_OFFSET);
-    header.writeUInt32LE(0, layout.HEADER_FIRST_FREE_OFFSET);
-    header.writeUInt32LE(0, layout.HEADER_ROOT_OFFSET);
-
-    this._setDirtyBlock(0, header);
-    await this.commit();
+    try {
+      await this.file.create();
+      this.isOpen = true;
+      const header = Buffer.alloc(this.blockSize);
+      header.writeUInt8(layout.BlockType.Header, layout.HEADER_TYPE_OFFSET);
+      header.writeUInt32LE(0, layout.HEADER_FIRST_FREE_OFFSET);
+      header.writeUInt32LE(0, layout.HEADER_ROOT_OFFSET);
+      this._setDirtyBlock(0, header);
+      await this.commit();
+    } catch (error) {
+      await this.file.close().catch(() => undefined);
+      this.isOpen = false;
+      throw error;
+    }
   }
 
   /**
@@ -115,14 +120,21 @@ export class FreeBlockFile {
    */
   async open() {
     if (this.isOpen) throw new Error('File already open');
-    await this.file.open();
-    this.isOpen = true;
-    // Initialize cached block count from file size
-    const stats = await this.file.stat();
-    if (stats.size % this.blockSize !== 0) {
-      throw new Error(`Corrupt file: size ${stats.size} is not a multiple of block size ${this.blockSize}`);
+    try {
+      await this.file.open();
+      this.isOpen = true;
+      // Initialize cached block count from file size.
+      const stats = await this.file.stat();
+      if (stats.size % this.blockSize !== 0) {
+        throw new Error(`Corrupt file: size ${stats.size} is not a multiple of block size ${this.blockSize}`);
+      }
+      this.cachedPhysicalBlockCount = Math.floor(stats.size / this.blockSize);
+    } catch (error) {
+      // AtomicFile can acquire both handles before replay fails.
+      await this.file.close().catch(() => undefined);
+      this.isOpen = false;
+      throw error;
     }
-    this.cachedPhysicalBlockCount = Math.floor(stats.size / this.blockSize);
   }
 
   /**
@@ -212,10 +224,9 @@ export class FreeBlockFile {
    * Commits all staged (dirty) block changes to disk atomically.
    *
    * This method ensures crash-safe persistence of all pending writes using
-   * the AtomicFile mechanism. It gathers all modified blocks, writes them
-   * to a temporary file, and atomically swaps it into place so that the
-   * database file is always in a consistent state, even in the event of
-   * a crash or power failure.
+   * the AtomicFile redo WAL. The WAL is synchronized before applying blocks;
+   * the data is synchronized before WAL cleanup. Failed replay preserves the
+   * log and blocks further operations until recovery succeeds.
    *
    * Steps:
    *  1. Collect all dirty blocks into a write set.
@@ -245,6 +256,7 @@ export class FreeBlockFile {
   }
 
   async commit(): Promise<void> {
+    this.file.assertHealthy();
     for (const hook of this._preCommitHooks) {
       await hook();
     }
@@ -466,6 +478,7 @@ export class FreeBlockFile {
 
   _ensureOpen(): void {
     if (!this.isOpen) throw new Error('File not open');
+    this.file.assertHealthy();
   }
 
   private async readHeaderBlock(): Promise<Buffer> {

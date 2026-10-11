@@ -11,6 +11,20 @@ type EncodedUpdate = {
   data: Buffer;
 };
 
+export class RecoveryRequiredError extends Error {
+  constructor(cause?: unknown) {
+    super('Database recovery is incomplete; recover or close and reopen before continuing.', { cause });
+    this.name = 'RecoveryRequiredError';
+  }
+}
+
+export class WalCorruptionError extends Error {
+  constructor(cause: unknown) {
+    super('WAL is invalid or incomplete; recovery was refused and the log was preserved.', { cause });
+    this.name = 'WalCorruptionError';
+  }
+}
+
 // WAL payload encoding (binary, compact):
 // [count: u32][entry...]
 // entry = [position: u64][length: u32][data bytes...]
@@ -21,8 +35,8 @@ function encodeWalPayload(updates: Map<number, Buffer>): Buffer {
   parts.push(countBuf);
 
   for (const [position, buf] of updates) {
-    if (position < 0) {
-      throw new Error('Negative position not supported');
+    if (!Number.isSafeInteger(position) || position < 0 || !Number.isSafeInteger(position + buf.length)) {
+      throw new Error('WAL positions must be nonnegative safe integers');
     }
     const header = Buffer.alloc(12);
     header.writeBigUInt64BE(BigInt(position), 0);
@@ -46,13 +60,16 @@ function decodeWalPayload(payload: Buffer): EncodedUpdate[] {
     if (offset + 12 > payload.length) {
       throw new Error('Incomplete WAL entry header');
     }
-    const position = Number(payload.readBigUInt64BE(offset));
+    const encodedPosition = payload.readBigUInt64BE(offset);
+    if (encodedPosition > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Unsafe WAL position');
+    const position = Number(encodedPosition);
     const length = payload.readUInt32BE(offset + 8);
     offset += 12;
 
     if (offset + length > payload.length) {
       throw new Error('Incomplete WAL entry payload');
     }
+    if (!Number.isSafeInteger(position + length)) throw new Error('Unsafe WAL write extent');
 
     const data = Buffer.from(payload.subarray(offset, offset + length));
     offset += length;
@@ -72,7 +89,10 @@ export class AtomicFile implements File {
   private readonly dataFile: File;
   private readonly logFile: File;
   private inFlight = false;
-  private isOpen = false;
+  private dataIsOpen = false;
+  private logIsOpen = false;
+  private recoveryRequired = false;
+  private recoveryCause: unknown;
 
   constructor(dataFile: File, logFile: File) {
     this.dataFile = dataFile;
@@ -80,34 +100,73 @@ export class AtomicFile implements File {
   }
 
   async create(): Promise<void> {
-    await this.dataFile.create();
-    await this.dataFile.truncate(0);
-    await this.dataFile.sync();
-
-    await this.logFile.create();
-    await this.logFile.truncate(0);
-    await this.logFile.sync();
-    this.isOpen = true;
+    this.assertHealthy();
+    if (this.dataIsOpen || this.logIsOpen) throw new Error('File already open');
+    try {
+      await this.dataFile.create();
+      this.dataIsOpen = true;
+      await this.dataFile.truncate(0);
+      await this.dataFile.sync();
+      await this.logFile.create();
+      this.logIsOpen = true;
+      await this.logFile.truncate(0);
+      await this.logFile.sync();
+    } catch (error) {
+      this.recoveryRequired = true;
+      this.recoveryCause = error;
+      await this.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   async open(): Promise<void> {
-    if (this.isOpen) {
+    if (this.dataIsOpen && this.logIsOpen) {
+      if (this.recoveryRequired) await this.recover();
       return;
     }
-    await this.dataFile.open();
-    await this.logFile.open();
-    this.isOpen = true;
+    try {
+      if (!this.dataIsOpen) {
+        await this.dataFile.open();
+        this.dataIsOpen = true;
+      }
+      if (!this.logIsOpen) {
+        await this.logFile.open();
+        this.logIsOpen = true;
+      }
+    } catch (error) {
+      this.recoveryRequired = true;
+      this.recoveryCause = error;
+      await this.close().catch(() => undefined);
+      throw error;
+    }
     // Redo any in-progress atomic write from a previous crash.
     await this.recover();
   }
 
   async close(): Promise<void> {
-    if (!this.isOpen) {
-      return;
-    }
-    await this.dataFile.close();
-    await this.logFile.close();
-    this.isOpen = false;
+    if (this.inFlight) throw new Error('Cannot close during a WAL operation');
+    const results = await Promise.allSettled([
+      this.dataIsOpen
+        ? this.dataFile.close().then(() => {
+            this.dataIsOpen = false;
+          })
+        : Promise.resolve(),
+      this.logIsOpen
+        ? this.logFile.close().then(() => {
+            this.logIsOpen = false;
+          })
+        : Promise.resolve(),
+    ]);
+    const errors = results.filter((result) => result.status === 'rejected').map((result) => result.reason as unknown);
+    if (errors.length) throw new AggregateError(errors, 'Failed to close database files');
+  }
+
+  get requiresRecovery(): boolean {
+    return this.recoveryRequired;
+  }
+
+  assertHealthy(): void {
+    if (this.recoveryRequired) throw new RecoveryRequiredError(this.recoveryCause);
   }
 
   get sectorSize(): number {
@@ -115,15 +174,18 @@ export class AtomicFile implements File {
   }
 
   async read(buffer: Buffer, options: { position: number }): Promise<void> {
+    this.assertHealthy();
     return this.dataFile.read(buffer, options);
   }
 
   async writev(buffers: Buffer[], position: number): Promise<void> {
+    this.assertHealthy();
     // Non-atomic write-through; use atomicWrite() for WAL-protected writes.
     await this.dataFile.writev(buffers, position);
   }
 
   async truncate(length: number): Promise<void> {
+    this.assertHealthy();
     await this.dataFile.truncate(length);
   }
 
@@ -132,6 +194,7 @@ export class AtomicFile implements File {
   }
 
   async sync(): Promise<void> {
+    this.assertHealthy();
     await this.dataFile.sync();
   }
 
@@ -143,7 +206,8 @@ export class AtomicFile implements File {
    * Atomic write over one or more block positions using a single redo log record.
    *
    * @param updates - Map of position -> data (Buffer) to write at each position
-   * @returns true if successful, false if failed or nested call
+   * @returns true after durable completion, false for a nested call.
+   * @throws I/O errors; failed WAL operations require recovery before reuse.
    *
    * The WAL record contains:
    *   - A compact binary payload: [count][(pos,len,data)...]
@@ -160,6 +224,7 @@ export class AtomicFile implements File {
       // Prevent nested atomic writes; keeps state machine simple.
       return false;
     }
+    this.assertHealthy();
 
     if (updates.size === 0) {
       // Nothing to do; vacuously atomic.
@@ -179,6 +244,11 @@ export class AtomicFile implements File {
         checksum: computeChecksum(payload),
       };
 
+      // Never replace a pending log, including one discovered outside this instance.
+      // From the first I/O attempt, a failure leaves the session blocked until recovery.
+      this.recoveryRequired = true;
+      if ((await this.logFile.stat()).size !== 0) throw new RecoveryRequiredError();
+
       // STEP 2: Write WAL record atomically and fsync.
       await writeAndSyncLog(this.logFile, record);
 
@@ -193,12 +263,14 @@ export class AtomicFile implements File {
 
       // STEP 4: Cleanup WAL (successful completion).
       await this.cleanupLog();
-
+      this.recoveryRequired = false;
+      this.recoveryCause = undefined;
       return true;
-    } catch {
+    } catch (error) {
       // If something fails after writeAndSyncLog(), we leave the WAL intact
       // so recover() can finish the write (redo-only protocol).
-      return false;
+      if (this.recoveryRequired) this.recoveryCause = error;
+      throw error;
     } finally {
       this.inFlight = false;
     }
@@ -225,38 +297,47 @@ export class AtomicFile implements File {
    * Crash recovery:
    *   - If log is empty: nothing to do.
    *   - If log contains a valid record: parse the payload, redo all writes, clear the log.
-   *   - If log is corrupt/incomplete: drop it.
+   *   - If log is corrupt/incomplete: preserve it and fail explicitly.
    *
    * writeAndSyncLog() writes a single record padded to whole sectors, then fsyncs.
    * On recovery the WAL is either empty or contains exactly one record (or
    * detectable corruption), which we can safely redo.
    */
   async recover(): Promise<void> {
-    const { size } = await this.logFile.stat();
-    if (size === 0) {
-      return; // no WAL -> nothing to redo
-    }
-
-    const walBuf = Buffer.alloc(size);
-    await this.logFile.read(walBuf, { position: 0 });
-
+    if (this.inFlight) throw new Error('A WAL operation is already in progress');
+    this.inFlight = true;
+    this.recoveryRequired = true;
     try {
-      // deserializeLogRecord() also recomputes and checks the checksum.
-      const record = deserializeLogRecord(walBuf);
-
-      const encoded = decodeWalPayload(record.data);
-
-      // Redo is idempotent: we simply re-apply all bytes at their positions.
-      for (const u of encoded) {
-        await this.dataFile.writev([u.data], u.position);
+      const { size } = await this.logFile.stat();
+      if (size !== 0) {
+        const walBuf = Buffer.alloc(size);
+        await this.logFile.read(walBuf, { position: 0 });
+        let encoded: EncodedUpdate[];
+        try {
+          // Only framing/checksum/payload errors are classified as malformed WAL.
+          const record = deserializeLogRecord(walBuf);
+          encoded = decodeWalPayload(record.data);
+        } catch (error) {
+          throw new WalCorruptionError(error);
+        }
+        // Redo is idempotent. A replay or sync error must retain the valid log.
+        for (const update of encoded) {
+          await this.dataFile.writev([update.data], update.position);
+        }
+        await this.dataFile.sync();
+        await this.cleanupLog();
+      } else {
+        // Complete a cleanup whose truncate succeeded but whose sync failed.
+        await this.logFile.sync();
       }
-      await this.dataFile.sync();
-    } catch {
-      // Invalid / corrupted WAL: drop it. We can't safely redo.
+      this.recoveryRequired = false;
+      this.recoveryCause = undefined;
+    } catch (error) {
+      this.recoveryCause = error;
+      throw error;
+    } finally {
+      this.inFlight = false;
     }
-
-    // In all cases, clear WAL so we don't keep redoing the same record.
-    await this.cleanupLog();
   }
 }
 

@@ -49,7 +49,24 @@ Unused blocks are managed using a linked free-list stored inside the file. The h
 
 ## Crash Safety
 
-FreeBlockFile relies on the AtomicFile abstraction to guarantee durability. During `commit()`, all dirty blocks are written atomically so that a crash cannot leave the file in a partially updated state. Either all staged changes are persisted, or none of them are.
+FreeBlockFile commits its dirty blocks through the existing redo WAL:
+write and sync the complete WAL, apply every data write, sync the data file,
+then truncate and sync the WAL. RealFile fills required read buffers and
+completes scatter/gather writes, retrying partial transfers and rejecting
+unexpected EOF, zero progress, and I/O failures.
+
+A failed commit or recovery blocks further storage reads and mutations in that session.
+Close and reopen the database to retry recovery with fresh block/index caches.
+AtomicFile also supports explicit recovery when used directly. Valid WAL entries
+are replayed idempotently; failed replay or data synchronization preserves the
+WAL. Malformed or incomplete WAL files remain intact and opening fails explicitly.
+No automatic corruption repair is attempted.
+
+A rejected commit can still be applied by later redo recovery. If WAL truncation
+succeeds but its sync fails, data has already been synchronized; the session
+still rejects the commit until recovery completes cleanup. These guarantees
+depend on the filesystem honoring file synchronization. They do not provide
+rollback for arbitrary failures during staged B+ tree/document mutations.
 
 ## Authors
 

@@ -193,10 +193,18 @@ export class VacuumValidator {
     }
 
     let count = 0;
+    const expectedCount = await db.getPrimaryReferenceCount(collection);
 
     for await (const doc of await db.cursor(collection, 'id')) {
       void doc;
       count += 1;
+    }
+
+    if (count !== expectedCount) {
+      throw new Error(
+        `Vacuum validation failed for collection "${collection}": ` +
+          `document scan returned ${count} documents from ${expectedCount} live primary references.`,
+      );
     }
 
     return count;

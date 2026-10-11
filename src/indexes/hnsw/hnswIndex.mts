@@ -754,13 +754,11 @@ export class HNSWIndex {
     }
 
     for (const nodeId of invalidNodeIds) {
-      const node = await this.graphStorage.getNode(nodeId).catch(() => null);
-      if (node !== null) {
-        this.nodeIdByDocId.delete(node.docId);
-        this.docIdIndex.delete(node.docId);
-        this.tombstonedDocIdIndex.delete(node.docId);
-        this.vectorPtrCache.delete(node.docId);
-      }
+      const node = await this.graphStorage.getNode(nodeId);
+      this.nodeIdByDocId.delete(node.docId);
+      this.docIdIndex.delete(node.docId);
+      this.tombstonedDocIdIndex.delete(node.docId);
+      this.vectorPtrCache.delete(node.docId);
       await this.graphStorage.hardDeleteNode(nodeId);
     }
 

@@ -320,8 +320,8 @@ export class VectorHeapFile {
   async *scan(): AsyncGenerator<{ ptr: VectorPointer; vector: Float32Array }> {
     const blockCount = Math.max(this.file._getCachedBlockCount(), this.file._getHighestDirtyBlock() + 1);
     for (let pageId = 1; pageId < blockCount; pageId++) {
-      const usable = await this.readPageIfData(pageId).catch(() => null);
-      if (usable === null) continue; // freed or inaccessible block
+      const usable = await this.readPageIfData(pageId);
+      if (usable === null) continue; // freed block or another page type
       if (this.getUsedCount(usable) === 0) continue;
       for (let slotId = 0; slotId < this.slotsPerPage; slotId++) {
         if (this.isBitSet(usable, slotId)) {

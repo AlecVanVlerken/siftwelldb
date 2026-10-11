@@ -947,7 +947,7 @@ export class HNSWGraphStorage {
     };
     const pages = options.knownPagesOnly ? this._pageCache.keys() : allPages();
     for (const pageId of pages) {
-      const usable = await this.readPageIfData(pageId).catch(() => null);
+      const usable = await this.readPageIfData(pageId);
       if (usable === null) continue;
       if (this.getUsedCount(usable) === 0) continue;
       for (let slotId = 0; slotId < this.slotsPerPage; slotId++) {

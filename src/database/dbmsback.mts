@@ -2,12 +2,14 @@
 // date: 2025-12-07
 
 import { FreeBlockFile, type FreeBlockFileStats } from '../storage/blocks/freeblockfile.mjs';
-import { AtomicFile } from '../storage/wal/atomicfile.mjs';
+import { AtomicFile, RecoveryRequiredError } from '../storage/wal/atomicfile.mjs';
+import { BlockReadError } from '../storage/blocks/io.mjs';
 import { type File } from '../storage/file.mjs';
 import { allocateBlock } from '../storage/blocks/freelist.mjs';
 import { Document, type FieldValue, imageMimeForField, isImageField, supportsFieldIndex } from './document.mjs';
 import {
   RecordStore,
+  RecordReadError,
   type EncodedDocument,
   type RecordStorageEstimate,
   type RecordWriteOptions,
@@ -135,7 +137,10 @@ export class DbmsBack {
   private mutationQueue: Promise<void> = Promise.resolve();
 
   private mutate<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.mutationQueue.then(operation);
+    const result = this.mutationQueue.then(() => {
+      this.atomicFile.assertHealthy();
+      return operation();
+    });
     this.mutationQueue = result.then(
       () => undefined,
       () => undefined,
@@ -193,45 +198,61 @@ export class DbmsBack {
    */
   static async open(dataFile: File, logFile: File, hnswConfig?: HnswConfig): Promise<DbmsBack> {
     const dbmsback = new DbmsBack(dataFile, logFile, hnswConfig);
-    await dbmsback.freeblockFile.open();
-    dbmsback.metaCache = await dbmsback.metaReadJSON();
-    const migrating = !dbmsback.metaCache[INDEXING_META_KEY];
-    await dbmsback.migrateFieldIndexes();
-    const pendingBefore = dbmsback.getPendingSemanticCollections().length;
+    try {
+      await dbmsback.freeblockFile.open();
+      dbmsback.metaCache = await dbmsback.metaReadJSON();
+      const migrating = !dbmsback.metaCache[INDEXING_META_KEY];
+      await dbmsback.migrateFieldIndexes();
+      const pendingBefore = dbmsback.getPendingSemanticCollections().length;
 
-    // Re-open HNSW indices for every collection that was indexed before.
-    if (hnswConfig) {
-      try {
-        for (const indexKey of Object.keys(dbmsback.getHnswMeta())) {
-          const idx = await dbmsback.openHnswIndex(indexKey);
-          dbmsback.hnswIndexCache.set(indexKey, idx);
-        }
-      } catch (err) {
-        // Stored HNSW parameters don't match current config (e.g. DB was created
-        // with different dimensions or M). Disable HNSW for this session so the
-        // DB can still be opened for non-semantic operations.
-        console.warn(
-          'HNSW index could not be opened, semantic search disabled:',
-          err instanceof Error ? err.message : err,
-        );
-        dbmsback.hnswConfig = undefined;
-        for (const index of dbmsback.hnswIndexCache.values()) index.dispose();
-        dbmsback.hnswIndexCache.clear();
-      }
-    }
-
-    if (dbmsback.hnswConfig) {
-      for (const collection of dbmsback.getPendingSemanticCollections()) {
+      // Re-open HNSW indices for every collection that was indexed before.
+      if (hnswConfig) {
         try {
-          await dbmsback.rebuildSemanticCollection(collection);
-        } catch (error) {
-          console.warn(`Semantic reindex pending for "${collection}":`, error instanceof Error ? error.message : error);
+          for (const indexKey of Object.keys(dbmsback.getHnswMeta())) {
+            const idx = await dbmsback.openHnswIndex(indexKey);
+            dbmsback.hnswIndexCache.set(indexKey, idx);
+          }
+        } catch (err) {
+          if (err instanceof BlockReadError || err instanceof RecordReadError || err instanceof RecoveryRequiredError)
+            throw err;
+          // Stored HNSW parameters don't match current config (e.g. DB was created
+          // with different dimensions or M). Disable HNSW for this session so the
+          // DB can still be opened for non-semantic operations.
+          console.warn(
+            'HNSW index could not be opened, semantic search disabled:',
+            err instanceof Error ? err.message : err,
+          );
+          dbmsback.hnswConfig = undefined;
+          for (const index of dbmsback.hnswIndexCache.values()) index.dispose();
+          dbmsback.hnswIndexCache.clear();
         }
       }
-    }
 
-    if (migrating || dbmsback.getPendingSemanticCollections().length < pendingBefore) await dbmsback.commit();
-    return dbmsback;
+      if (dbmsback.hnswConfig) {
+        for (const collection of dbmsback.getPendingSemanticCollections()) {
+          try {
+            await dbmsback.rebuildSemanticCollection(collection);
+          } catch (error) {
+            if (
+              error instanceof BlockReadError ||
+              error instanceof RecordReadError ||
+              error instanceof RecoveryRequiredError
+            )
+              throw error;
+            console.warn(
+              `Semantic reindex pending for "${collection}":`,
+              error instanceof Error ? error.message : error,
+            );
+          }
+        }
+      }
+
+      if (migrating || dbmsback.getPendingSemanticCollections().length < pendingBefore) await dbmsback.commit();
+      return dbmsback;
+    } catch (error) {
+      await dbmsback.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   /**
@@ -295,11 +316,7 @@ export class DbmsBack {
     }
 
     for (const pointer of recordPointers) {
-      const document = await this.recordStore.readRecord(pointer);
-      if (!document || document.getCollectionName() !== collection) {
-        console.warn(`Skipping stale record pointer ${pointer.toString()} while deleting collection "${collection}"`);
-        continue;
-      }
+      await this.readIndexedDocument(pointer, collection);
       await this.recordStore.deleteRecord(pointer);
     }
 
@@ -716,6 +733,7 @@ export class DbmsBack {
   }
 
   setFieldCompressionDefaults(collection: string, defaults: FieldCompressionDefaults): void {
+    this.atomicFile.assertHealthy();
     for (const algorithm of Object.values(defaults)) {
       if (!SUPPORTED_COMPRESSION_ALGORITHMS.has(algorithm)) {
         throw new Error(`Unsupported compression algorithm: ${algorithm}`);
@@ -1012,12 +1030,59 @@ export class DbmsBack {
       throw new Error('Document not found');
     }
     const document = encoded
-      ? await this.recordStore.readRecordEncoded(documentPointer)
-      : await this.recordStore.readRecord(documentPointer);
-    if (!document) {
-      throw new Error('Document not found');
+      ? await this.readIndexedEncodedDocument(documentPointer, collection)
+      : await this.readIndexedDocument(documentPointer, collection);
+    const storedId = document instanceof Document ? document.getId() : document.id;
+    if (!toBuffer(vorm, storedId).equals(idBuffer)) {
+      throw new Error(
+        `Primary index in collection "${collection}" references a different document at block ${documentPointer}`,
+      );
     }
     return document;
+  }
+
+  /** An index reference is a promise of a live record, never ordinary absence. */
+  private async readIndexedDocument(pointer: number, collection: string): Promise<Document> {
+    this.atomicFile.assertHealthy();
+    const document = await this.recordStore.readRecord(pointer);
+    if (!document) {
+      throw new Error(`Index in collection "${collection}" references missing record at block ${pointer}`);
+    }
+    if (
+      document.getCollectionName() !== collection ||
+      (await this.getDocumentBlockId(collection, document.getId())) !== pointer
+    ) {
+      throw new Error(`Index in collection "${collection}" references a non-live document at block ${pointer}`);
+    }
+    return document;
+  }
+
+  private async readIndexedEncodedDocument(pointer: number, collection: string): Promise<EncodedDocument> {
+    this.atomicFile.assertHealthy();
+    const document = await this.recordStore.readRecordEncoded(pointer);
+    if (!document) {
+      throw new Error(`Index in collection "${collection}" references missing encoded record at block ${pointer}`);
+    }
+    if (document.collection !== collection || (await this.getDocumentBlockId(collection, document.id)) !== pointer) {
+      throw new Error(`Index in collection "${collection}" references a non-live encoded document at block ${pointer}`);
+    }
+    return document;
+  }
+
+  /** Counts live primary references without decoding records, for vacuum completeness checks. */
+  async getPrimaryReferenceCount(collection: string): Promise<number> {
+    this.atomicFile.assertHealthy();
+    if (!this.hasCollectionMeta(collection)) return 0;
+    const idMeta = this.getCollectionMeta(collection)['id'];
+    if (!idMeta) return 0;
+    const [root, form] = idMeta;
+    const tree = await this.getOrCreateTree(collection, 'id', form, root);
+    let count = 0;
+    for await (const [, pointer] of tree.iterate()) {
+      pointer.readUInt32BE(0);
+      count += 1;
+    }
+    return count;
   }
 
   /**
@@ -1046,6 +1111,7 @@ export class DbmsBack {
   async getDocumentStoredBytes(collection: string, documentId: number | string): Promise<number> {
     const blockId = await this.getDocumentBlockId(collection, documentId);
     if (blockId === null) throw new Error('Document not found');
+    await this.readIndexedDocument(blockId, collection);
     return this.recordStore.getStoredByteCount(blockId);
   }
 
@@ -1063,6 +1129,7 @@ export class DbmsBack {
     let total = 0;
     for await (const [, documentPointerBuffer] of idTree.iterate(undefined)) {
       const documentPointer = documentPointerBuffer.readUInt32BE(0);
+      await this.readIndexedDocument(documentPointer, collection);
       total += await this.recordStore.getStoredByteCount(documentPointer);
     }
     return total;
@@ -1108,10 +1175,7 @@ export class DbmsBack {
     const documentPointer = documentPointerBuffer.readUInt32BE(0);
 
     // Get the document for its iterable keys
-    const document = await this.recordStore.readRecord(documentPointer);
-    if (!document) {
-      throw new Error('Document not found in record store');
-    }
+    const document = await this.readIndexedDocument(documentPointer, collection);
     const iterableKeys = Object.keys(document.getFields()).filter((key) => Object.hasOwn(collectionMeta, key));
 
     const hnswMeta = this.getExistingHnswMeta();
@@ -1267,15 +1331,8 @@ export class DbmsBack {
       idMetaData,
     } = await this.findDocumentPointer(collection, id);
 
-    const document = await this.recordStore.readRecord(oldPointer);
-    if (!document) {
-      throw new Error('Document not found in record store');
-    }
-
-    const encodedDocument = await this.recordStore.readRecordEncoded(oldPointer);
-    if (!encodedDocument) {
-      throw new Error('Encoded document not found in record store');
-    }
+    const document = await this.readIndexedDocument(oldPointer, collection);
+    const encodedDocument = await this.readIndexedEncodedDocument(oldPointer, collection);
 
     const newPointer =
       options.maxBlockExclusive === undefined
@@ -1492,8 +1549,7 @@ export class DbmsBack {
       const idTree = await this.getOrCreateTree(collection, 'id', vorm, root);
       for await (const [, pointerBuffer] of idTree.iterate()) {
         const blockNumber = pointerBuffer.readUInt32BE(0);
-        const document = await this.recordStore.readRecord(blockNumber);
-        if (!document) continue;
+        const document = await this.readIndexedDocument(blockNumber, collection);
         const chain = await this.recordStore.readRecordBlockChain(blockNumber);
         targets.push({
           kind: 'record',
@@ -1729,8 +1785,8 @@ export class DbmsBack {
     if (existing === null) {
       throw new Error('Document not found');
     }
-    const stored = await this.recordStore.readRecordEncoded(existing);
-    if (!stored || stored.id !== newDocument.getId()) throw new Error('Cannot change document ID type during replace.');
+    const stored = await this.readIndexedEncodedDocument(existing, collection);
+    if (stored.id !== newDocument.getId()) throw new Error('Cannot change document ID type during replace.');
     if (preserveCompression) {
       compression = {
         ...Object.fromEntries(
@@ -1762,6 +1818,7 @@ export class DbmsBack {
     iterableKey: string,
     value?: string | number | Buffer,
   ): Promise<AsyncIterable<Document>> {
+    this.atomicFile.assertHealthy();
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
     }
@@ -1782,13 +1839,14 @@ export class DbmsBack {
     const asyncGenerator = keyTree.iterate(startKeyBuffer);
 
     const documentGenerator = async function* (this: DbmsBack) {
-      for await (const [, documentPointerBuffer] of asyncGenerator) {
+      for await (const [key, documentPointerBuffer] of asyncGenerator) {
         const documentPointer = documentPointerBuffer.readUInt32BE(0);
-        const document = await this.recordStore.readRecord(documentPointer);
-        // A scan should not fail completely because an older index entry points
-        // at a record block that has since been freed. Direct lookups still
-        // report not-found; cursor scans treat stale pointers as deleted rows.
-        if (!document) continue;
+        const document = await this.readIndexedDocument(documentPointer, collection);
+        if (iterableKey === 'id' && !key.equals(toBuffer(keyVorm, document.getId()))) {
+          throw new Error(
+            `Primary index in collection "${collection}" references a different document at block ${documentPointer}`,
+          );
+        }
         yield document;
       }
     }.bind(this);
@@ -1828,8 +1886,7 @@ export class DbmsBack {
 
     const results: Document[] = [];
     for (const loc of documentLocations) {
-      const doc = await this.recordStore.readRecord(loc);
-      if (doc) results.push(doc);
+      results.push(await this.readIndexedDocument(loc, collection));
     }
     return results;
   }
@@ -1855,8 +1912,7 @@ export class DbmsBack {
 
     const results: Document[] = [];
     for (const loc of documentLocations) {
-      const doc = await this.recordStore.readRecord(loc);
-      if (doc) results.push(doc);
+      results.push(await this.readIndexedDocument(loc, collection));
     }
     return results;
   }
@@ -1891,8 +1947,7 @@ export class DbmsBack {
 
     const results: Document[] = [];
     for (const loc of documentLocations) {
-      const doc = await this.recordStore.readRecord(loc);
-      if (doc) results.push(doc);
+      results.push(await this.readIndexedDocument(loc, collection));
     }
     return results;
   }

@@ -309,7 +309,7 @@ describe('atomicFile', () => {
       // Data depends on what crash() randomly kept
     });
 
-    it('should ignore corrupted WAL and clear it', async () => {
+    it('preserves corrupted WAL and refuses recovery', async () => {
       // Write garbage to WAL
       await logFile.writev([Buffer.from('corrupted garbage data')], 0);
       await logFile.sync();
@@ -318,20 +318,20 @@ describe('atomicFile', () => {
       await dataFile.writev([Buffer.from('untouched')], 0);
       await dataFile.sync();
 
-      // Recovery should drop the corrupted WAL
-      await atomicFile.recover();
+      await expect(atomicFile.recover()).rejects.toThrow('WAL is invalid or incomplete');
 
       // Data file should be unchanged
       const readBuf = Buffer.alloc(9);
-      await atomicFile.read(readBuf, { position: 0 });
+      await dataFile.read(readBuf, { position: 0 });
       expect(readBuf.toString()).toBe('untouched');
 
-      // WAL should be cleared
+      // Keep the log for diagnosis; do not pretend this database is writable.
       const logStat = await logFile.stat();
-      expect(logStat.size).toBe(0);
+      expect(logStat.size).toBe(Buffer.byteLength('corrupted garbage data'));
+      await expect(atomicFile.atomicWrite(new Map([[0, Buffer.from('replacement')]]))).rejects.toThrow(/recovery/i);
     });
 
-    it('should ignore WAL with bad checksum', async () => {
+    it('preserves WAL with a bad checksum and refuses recovery', async () => {
       const { serializeLogRecord } = await import('../logrecord.mjs');
 
       const payload = encodeWalPayload(new Map([[0, Buffer.from('bad')]]));
@@ -351,12 +351,13 @@ describe('atomicFile', () => {
       await dataFile.writev([Buffer.from('original')], 0);
       await dataFile.sync();
 
-      await atomicFile.recover();
+      await expect(atomicFile.recover()).rejects.toThrow('WAL is invalid or incomplete');
 
-      // Data should be unchanged (bad checksum = drop WAL)
+      // No replay or WAL cleanup is safe when integrity cannot be established.
       const readBuf = Buffer.alloc(8);
-      await atomicFile.read(readBuf, { position: 0 });
+      await dataFile.read(readBuf, { position: 0 });
       expect(readBuf.toString()).toBe('original');
+      expect((await logFile.stat()).size).toBeGreaterThan(0);
     });
   });
 

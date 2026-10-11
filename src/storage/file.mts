@@ -10,7 +10,9 @@ export interface File {
   open(): Promise<void>;
   close(): Promise<void>;
   sync(): Promise<void>;
+  /** Writes every byte at the given position, or rejects if the write cannot complete. */
   writev(buffers: Buffer[], position: number): Promise<void>;
+  /** Fills the entire buffer, or rejects on an I/O failure or unexpected EOF. Empty reads are allowed. */
   read(buffer: Buffer, options: { position: number }): Promise<void>;
   truncate(length: number): Promise<void>;
   stat(): Promise<{ size: number }>;
@@ -49,12 +51,55 @@ export class RealFile implements File {
 
   public async writev(buffers: Buffer[], position: number) {
     assert(this.fileHandle !== null);
-    await this.fileHandle.writev(buffers, position);
+    // Keep views into the caller's buffers, without changing their contents or array.
+    let pending = buffers.filter((buffer) => buffer.length > 0);
+    let remaining = pending.reduce((size, buffer) => size + buffer.length, 0);
+    let currentPosition = position;
+
+    while (remaining > 0) {
+      const { bytesWritten } = await this.fileHandle.writev(pending, currentPosition);
+      if (bytesWritten === 0) {
+        throw new Error(
+          `Write made no progress for ${this.filePath} at position ${currentPosition} (${remaining} bytes remain)`,
+        );
+      }
+      if (!Number.isInteger(bytesWritten) || bytesWritten < 0 || bytesWritten > remaining) {
+        throw new Error(`Invalid write byte count ${bytesWritten} for ${this.filePath}`);
+      }
+      currentPosition += bytesWritten;
+      remaining -= bytesWritten;
+
+      let consumed = bytesWritten;
+      let index = 0;
+      while (index < pending.length && consumed >= pending[index].length) {
+        consumed -= pending[index].length;
+        index++;
+      }
+      pending = pending.slice(index);
+      if (consumed > 0) pending[0] = pending[0].subarray(consumed);
+    }
   }
 
   public async read(buffer: Buffer, options: { position: number }) {
     assert(this.fileHandle !== null);
-    await this.fileHandle.read(buffer, 0, buffer.length, options.position);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await this.fileHandle.read(
+        buffer,
+        offset,
+        buffer.length - offset,
+        options.position + offset,
+      );
+      if (bytesRead === 0) {
+        throw new Error(
+          `Unexpected EOF reading ${this.filePath} at position ${options.position}: read ${offset} of ${buffer.length} bytes`,
+        );
+      }
+      if (!Number.isInteger(bytesRead) || bytesRead < 0 || bytesRead > buffer.length - offset) {
+        throw new Error(`Invalid read byte count ${bytesRead} for ${this.filePath}`);
+      }
+      offset += bytesRead;
+    }
   }
 
   public async truncate(length: number) {

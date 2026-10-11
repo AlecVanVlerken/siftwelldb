@@ -44,12 +44,31 @@ describe('RecordStore', () => {
 
   it('returns null when reading a non-existent block', async () => {
     const { recordStore } = await createRecordStore();
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
     const result = await recordStore.readRecord(999);
     expect(result).toBeNull();
-    expect(consoleSpy).toHaveBeenCalledOnce();
-    consoleSpy.mockRestore();
+  });
+
+  it('propagates read failures with the original cause instead of returning absence', async () => {
+    const { recordStore, freeBlockFile } = await createRecordStore();
+    const blockId = await recordStore.writeRecord(parseRawDocument('docs', { id: 'B', value: 'original' }));
+    const failure = new Error('injected record read failure');
+    const read = vi.spyOn(freeBlockFile, 'readBlock').mockRejectedValue(failure);
+    try {
+      await expect(recordStore.readRecord(blockId)).rejects.toMatchObject({ cause: failure });
+      await expect(recordStore.readRecordEncoded(blockId)).rejects.toMatchObject({ cause: failure });
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it('rejects corrupt record JSON instead of returning absence', async () => {
+    const { recordStore, freeBlockFile } = await createRecordStore();
+    const blockId = await recordStore.writeRecord(parseRawDocument('docs', { id: 'B' }));
+    const block = await freeBlockFile.readBlock(blockId);
+    block[9] = '!'.charCodeAt(0);
+    freeBlockFile._setDirtyBlock(blockId, block);
+    await expect(recordStore.readRecord(blockId)).rejects.toThrow(/record.*block/i);
+    await expect(recordStore.readRecordEncoded(blockId)).rejects.toThrow(/record.*block/i);
   });
 
   it('frees a block on delete', async () => {
@@ -77,6 +96,35 @@ describe('RecordStore', () => {
 
     const fetched = await recordStore.readRecord(secondBlock);
     expect(fetched?.asDocument()).toEqual(doc2.asDocument());
+  });
+
+  it('reads a smaller record from a reused block with nonzero bytes after its payload', async () => {
+    const { recordStore } = await createRecordStore(4096);
+    const original = await recordStore.writeRecord(parseRawDocument('docs', { id: 'large', title: 'x'.repeat(1000) }));
+    await recordStore.deleteRecord(original);
+    const smaller = parseRawDocument('docs', { id: 'small', score: 1 });
+    const reused = await recordStore.writeRecord(smaller);
+    expect(reused).toBe(original);
+    expect((await recordStore.readRecord(reused))?.asDocument()).toEqual(smaller.asDocument());
+  });
+
+  it.each(['cycle', 'length'] as const)('rejects a malformed record %s before freeing its chain', async (failure) => {
+    const { recordStore, freeBlockFile } = await createRecordStore(4096);
+    const pointer = await recordStore.writeRecord(parseRawDocument('docs', { id: 'A', score: 1 }));
+    const block = await freeBlockFile.readBlock(pointer);
+    if (failure === 'cycle') block.writeUInt32LE(pointer, 1);
+    else block.writeUInt32BE(8192, 5);
+    freeBlockFile._setDirtyBlock(pointer, block);
+    await expect(recordStore.readRecord(pointer)).rejects.toThrow(
+      failure === 'cycle' ? 'Cyclic record chain' : 'length exceeds',
+    );
+    await expect(recordStore.readRecordEncoded(pointer)).rejects.toThrow(
+      failure === 'cycle' ? 'Cyclic record chain' : 'length exceeds',
+    );
+    if (failure === 'cycle') {
+      await expect(recordStore.deleteRecord(pointer)).rejects.toThrow('Cyclic record chain');
+      expect((await freeBlockFile.readBlock(pointer))[0]).toBe(2);
+    }
   });
 
   it('stores large documents across multiple blocks when needed', async () => {

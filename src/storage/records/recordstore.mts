@@ -3,6 +3,8 @@
 
 import { Document, type RawId, type FieldValue } from '../../database/document.mjs';
 import { FreeBlockFile } from '../blocks/freeblockfile.mjs';
+import { getBlockCount, getBlockType } from '../blocks/io.mjs';
+import { BlockType } from '../blocks/layout.mjs';
 import {
   CompressionRegistry,
   type CompressionAlgorithm,
@@ -14,6 +16,16 @@ export type RecordWriteOptions = {
   compressionDefaults?: FieldCompressionDefaults;
   compressionOverrides?: FieldCompressionOverrides;
 };
+
+export class RecordReadError extends Error {
+  constructor(blockID: number, cause: unknown, encoded = false) {
+    super(
+      `Cannot read ${encoded ? 'encoded record' : 'record'} at block ${blockID}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = 'RecordReadError';
+  }
+}
 
 export type RecordRelocationWriteOptions = {
   maxBlockExclusive?: number;
@@ -201,7 +213,7 @@ export class RecordStore {
    * Follows the linked list of blocks to reconstruct the complete document.
    *
    * @param {number} blockID - The block ID of the first block in the chain
-   * @returns {Promise<Document | null>} The Document object, or null if not found or invalid
+   * @returns {Promise<Document | null>} The Document, or null for an absent/freed head block.
    * @throws {Error} - If reading or deserialization fails
    */
   async readRecord(blockID: number): Promise<Document | null> {
@@ -210,8 +222,7 @@ export class RecordStore {
       if (!stored) return null;
       return this.deserializeDocument(stored);
     } catch (err) {
-      console.error(`RecordStore.readRecord(${blockID}) failed:`, err);
-      return null;
+      throw new RecordReadError(blockID, err);
     }
   }
 
@@ -226,8 +237,7 @@ export class RecordStore {
         nonIterableEntries: stored.nonIterableEntries,
       };
     } catch (error) {
-      console.error(`Failed to read encoded record from block ${blockID}:`, error);
-      return null;
+      throw new RecordReadError(blockID, error, true);
     }
   }
 
@@ -250,14 +260,7 @@ export class RecordStore {
    * @returns {Promise<number>} - Total bytes reserved on disk for this record
    */
   async getStoredByteCount(blockID: number): Promise<number> {
-    let chainLength = 0;
-    let currentBlockID = blockID;
-    while (currentBlockID !== 0) {
-      chainLength += 1;
-      const blockData = await this.freeBlockFile.readBlock(currentBlockID);
-      currentBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
-    }
-    return chainLength * this.blockSize;
+    return (await this.readRecordBlockChain(blockID)).length * this.blockSize;
   }
 
   /**
@@ -279,16 +282,23 @@ export class RecordStore {
 
   async readRecordBlockChain(blockID: number): Promise<number[]> {
     const blocks: number[] = [];
+    for await (const [currentBlockID] of this.recordBlocks(blockID)) blocks.push(currentBlockID);
+    return blocks;
+  }
+
+  private async *recordBlocks(blockID: number, head?: Buffer): AsyncGenerator<[number, Buffer]> {
+    const visited = new Set<number>();
     let currentBlockID = blockID;
-
     while (currentBlockID !== 0) {
-      blocks.push(currentBlockID);
-
-      const blockData = await this.freeBlockFile.readBlock(currentBlockID);
+      if (visited.has(currentBlockID)) throw new Error(`Cyclic record chain at block ${currentBlockID}`);
+      visited.add(currentBlockID);
+      const blockData = currentBlockID === blockID && head ? head : await this.freeBlockFile.readBlock(currentBlockID);
+      if (getBlockType(blockData) !== BlockType.Data) {
+        throw new Error(`Record chain references non-data block ${currentBlockID} (type=${blockData[0]})`);
+      }
+      yield [currentBlockID, blockData];
       currentBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
     }
-
-    return blocks;
   }
 
   private serializeDocument(doc: Document, options?: RecordWriteOptions): Buffer {
@@ -395,14 +405,15 @@ export class RecordStore {
   }
 
   private async readStoredDocument(blockID: number): Promise<StoredDocumentV2 | null> {
+    // Absence is determined explicitly; read/decode failures are never absence.
+    if (!Number.isSafeInteger(blockID) || blockID < 0) throw new Error(`Invalid record block ${blockID}`);
+    if (blockID === 0 || blockID >= getBlockCount(this.freeBlockFile)) return null;
+    const head = await this.freeBlockFile.readBlock(blockID);
+    if (getBlockType(head) === BlockType.Free) return null;
     const chunks: Buffer[] = [];
-    let currentBlockID = blockID;
 
     // Follow the chain of blocks
-    while (currentBlockID !== 0) {
-      // Read the block
-      const blockData = await this.freeBlockFile.readBlock(currentBlockID);
-
+    for await (const [, blockData] of this.recordBlocks(blockID, head)) {
       // Read the pointer to the next block
       const nextBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
 
@@ -421,8 +432,6 @@ export class RecordStore {
         // Not the last block: use all
         chunks.push(dataInBlock);
       }
-
-      currentBlockID = nextBlockID;
     }
 
     const completeData = Buffer.concat(chunks);
@@ -430,16 +439,41 @@ export class RecordStore {
   }
 
   private deserializeStoredDocument(data: Buffer): StoredDocumentV2 {
+    if (data.length < 4) throw new Error('Record payload has no complete length prefix');
     const length = data.readUInt32BE(0);
+    // Reused blocks may retain bytes after the payload. The length prefix,
+    // rather than padding contents, determines the stored JSON boundary.
+    if (length === 0 || length > data.length - 4) throw new Error('Record payload length exceeds its data');
     const jsonBuffer = data.subarray(4, 4 + length);
     const jsonString = jsonBuffer.toString('utf-8');
 
     const rawParsed = JSON.parse(jsonString) as LegacyStoredDocument | StoredDocumentV2;
+    if (
+      !rawParsed ||
+      typeof rawParsed !== 'object' ||
+      typeof rawParsed.collection !== 'string' ||
+      !['string', 'number'].includes(typeof rawParsed.id) ||
+      !Array.isArray(rawParsed.iterableEntries) ||
+      !Array.isArray(rawParsed.nonIterableEntries)
+    ) {
+      throw new Error('Invalid stored document structure');
+    }
     if ('version' in rawParsed && rawParsed.version === 2) {
+      for (const entry of [...rawParsed.iterableEntries, ...rawParsed.nonIterableEntries]) {
+        if (
+          !entry ||
+          typeof entry.key !== 'string' ||
+          !['string', 'number', 'boolean', 'buffer'].includes(entry.valueType) ||
+          typeof entry.compression !== 'string' ||
+          typeof entry.payloadBase64 !== 'string'
+        )
+          throw new Error('Invalid stored field structure');
+      }
       return rawParsed;
     }
+    if ('version' in rawParsed) throw new Error(`Unsupported stored document version ${String(rawParsed.version)}`);
 
-    return this.fromLegacy(rawParsed as LegacyStoredDocument);
+    return this.fromLegacy(rawParsed);
   }
 
   private fromLegacy(doc: LegacyStoredDocument): StoredDocumentV2 {
@@ -530,10 +564,14 @@ export class RecordStore {
       return asText;
     }
     if (entry.valueType === 'number') {
-      return JSON.parse(asText) as number;
+      const value: unknown = JSON.parse(asText);
+      if (typeof value !== 'number') throw new Error(`Invalid number payload for field ${entry.key}`);
+      return value;
     }
     if (entry.valueType === 'boolean') {
-      return JSON.parse(asText) as boolean;
+      const value: unknown = JSON.parse(asText);
+      if (typeof value !== 'boolean') throw new Error(`Invalid boolean payload for field ${entry.key}`);
+      return value;
     }
 
     throw new Error(`Unknown value type: ${entry.valueType as string}`);

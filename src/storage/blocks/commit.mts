@@ -20,6 +20,7 @@ import { FreeBlockFile } from './freeblockfile.mjs';
  * Atomically persists all staged block modifications.
  */
 export async function commit(fbf: FreeBlockFile): Promise<void> {
+  fbf._getFile().assertHealthy();
   const dirty = fbf._getDirtyBlocks();
   if (dirty.size === 0) return;
   fbf._ensureOpen();
@@ -35,6 +36,6 @@ export async function commit(fbf: FreeBlockFile): Promise<void> {
   const ok = await fbf._getFile().atomicWrite(updates);
   if (!ok) throw new Error('Atomic write failed; database not updated');
 
-  await fbf._getFile().sync();
+  // atomicWrite already synchronized the data before clearing its WAL.
   fbf._clearDirty();
 }

@@ -145,6 +145,7 @@ export class DatabaseCopier {
     }
 
     let copiedDocuments = 0;
+    const expectedDocuments = await this.source.getPrimaryReferenceCount(collection);
 
     this.reportProgress({
       phase: 'copy-collection',
@@ -169,6 +170,13 @@ export class DatabaseCopier {
         collection,
         copiedDocuments,
       });
+    }
+
+    if (copiedDocuments !== expectedDocuments) {
+      throw new Error(
+        `Vacuum copy failed for collection "${collection}": ` +
+          `copied ${copiedDocuments} documents from ${expectedDocuments} live primary references.`,
+      );
     }
 
     if (copiedDocuments === 0) {

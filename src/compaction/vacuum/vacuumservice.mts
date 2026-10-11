@@ -83,33 +83,44 @@ export class VacuumService {
     this.reportProgress({ phase: 'create-target' });
     const target = await this.createTarget();
 
-    const catalog = new CollectionCatalog(source);
+    try {
+      const catalog = new CollectionCatalog(source);
 
-    const copier = new DatabaseCopier(source, target, catalog, this.options.onProgress);
+      const copier = new DatabaseCopier(source, target, catalog, this.options.onProgress);
 
-    const copyResult = await copier.copyAll();
+      const copyResult = await copier.copyAll();
 
-    this.reportProgress({ phase: 'commit-target' });
-    await target.commit();
+      this.reportProgress({ phase: 'commit-target' });
+      await target.commit();
 
-    let validated = false;
-    if (validate) {
-      this.reportProgress({ phase: 'validate' });
+      let validated = false;
+      if (validate) {
+        this.reportProgress({ phase: 'validate' });
 
-      const validator = new VacuumValidator(source, target, catalog);
-      await validator.validate();
+        const validator = new VacuumValidator(source, target, catalog);
+        await validator.validate();
 
-      validated = true;
+        validated = true;
+      }
+
+      this.reportProgress({ phase: 'done' });
+
+      return {
+        target,
+        collectionsCopied: copyResult.collectionsCopied,
+        documentsCopied: copyResult.documentsCopied,
+        validated,
+      };
+    } catch (error) {
+      // A failed copy must release native indexes and file handles without
+      // committing or publishing the incomplete target.
+      try {
+        await target.close();
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], 'Vacuum failed and its incomplete target could not be closed');
+      }
+      throw error;
     }
-
-    this.reportProgress({ phase: 'done' });
-
-    return {
-      target,
-      collectionsCopied: copyResult.collectionsCopied,
-      documentsCopied: copyResult.documentsCopied,
-      validated,
-    };
   }
 
   /**
@@ -181,7 +192,12 @@ export class VacuumService {
     const hnswConfig: HnswConfig | undefined = source.getVacuumHnswConfig();
 
     const target = new DbmsBack(tempDataFile, tempLogFile, hnswConfig);
-    await target.create();
+    try {
+      await target.create();
+    } catch (error) {
+      await target.close().catch(() => undefined);
+      throw error;
+    }
 
     return target;
   }
