@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DatabaseService } from '../service.mjs';
 import { SimpleDbms } from '../../../database/simpledbms.mjs';
 import { DbmsBack } from '../../../database/dbmsback.mjs';
+import { RealFile } from '../../../storage/file.mjs';
 
 vi.mock('../embedding-config.mjs', () => ({
   getClipHnswConfig: () => ({
@@ -31,8 +32,25 @@ type ServiceInternals = {
 function setFakeDbms(service: DatabaseService, dbms: FakeDbms): ServiceInternals {
   const internals = service as unknown as ServiceInternals;
   internals.dbms = dbms;
+  Object.assign(dbms, { isHealthy: true, assertHealthy() {} });
   internals.recordBytesCache = new Map();
   return internals;
+}
+
+function nameIndex(db: SimpleDbms): {
+  insert(key: Buffer, pointer: Buffer): Promise<void>;
+  delete(key: Buffer): Promise<boolean>;
+} {
+  const back = (db as unknown as { dbmsback: DbmsBack }).dbmsback;
+  const cache = back as unknown as {
+    treeCache: Map<
+      string,
+      { tree: { insert(key: Buffer, pointer: Buffer): Promise<void>; delete(key: Buffer): Promise<boolean> } }
+    >;
+  };
+  const entry = cache.treeCache.get('people:name');
+  if (!entry) throw new Error('Expected the secondary name index');
+  return entry.tree;
 }
 
 function isDocumentRecord(value: unknown): value is Record<string, unknown> {
@@ -286,6 +304,138 @@ describe('DatabaseService with real database files', () => {
     await fs.rm(resolved, { recursive: true, force: true });
   });
 
+  it.each(['insert', 'edit', 'replace', 'delete', 'SQL INSERT', 'SQL UPDATE', 'SQL DELETE'])(
+    'disconnects after an unsafe %s and rejects queued work before reopening the durable database',
+    async (operation) => {
+      await service.create(filepath);
+      await service.insertDocument('people', { id: 'safe', name: 'existing', score: 1 });
+      service.setIncrementalCompactionEnabled(true);
+      await service.getStatus();
+      const original = await fs.readFile(filepath);
+      const oldDb = service.rawDbms;
+      const tree = nameIndex(oldDb);
+      const fault = new Error('secondary index mutation failed');
+      const treeOperation = operation === 'insert' || operation === 'SQL INSERT' ? 'insert' : 'delete';
+      vi.spyOn(tree, treeOperation).mockRejectedValueOnce(fault);
+      let failed: Promise<unknown>;
+      switch (operation) {
+        case 'insert':
+          failed = service.insertDocument('people', { id: 'broken', name: 'new', score: 2 });
+          break;
+        case 'edit':
+          failed = service.editDocument('people', 'safe', 'name', 'new');
+          break;
+        case 'replace':
+          failed = service.replaceDocument('people', 'safe', { id: 'safe', name: 'new', score: 2 });
+          break;
+        case 'delete':
+          failed = service.deleteDocument('people', 'safe');
+          break;
+        case 'SQL INSERT':
+          failed = service.query("INSERT INTO people VALUES {id: 'broken', name: 'new', score: 2}");
+          break;
+        case 'SQL UPDATE':
+          failed = service.query("UPDATE people SET name = 'new' WHERE id = 'safe'");
+          break;
+        default:
+          failed = service.query("DELETE FROM people WHERE id = 'safe'");
+      }
+      const queued = service.insertDocument('people', { id: 'later', name: 'later', score: 3 });
+      await Promise.all([
+        expect(failed).rejects.toThrow(/secondary index mutation failed/),
+        expect(queued).rejects.toThrow('No database connected'),
+      ]);
+      expect(service.isConnected).toBe(false);
+      expect(service.filepath).toBe(filepath);
+      expect(await service.getStatus()).toMatchObject({
+        connected: false,
+        filepath,
+        incrementalCompaction: { enabled: false, queued: false },
+      });
+      await expect(oldDb.commit()).rejects.toThrow(/close and reopen/);
+      expect(await fs.readFile(filepath)).toEqual(original);
+      await service.connect(filepath);
+      expect((await service.getDocuments('people')).documents).toEqual([
+        JSON.stringify({ id: 'safe', name: 'existing', score: 1 }),
+      ]);
+      expect((await service.getDocuments('people', 'name', 'existing')).total).toBe(1);
+      await service.insertDocument('people', { id: 'later', name: 'later', score: 3 });
+      await service.disconnect();
+      await service.connect(filepath);
+      expect((await service.getDocuments('people')).total).toBe(2);
+    },
+  );
+
+  it('discards an unsafe backend even when a serialized caller catches its original error', async () => {
+    await service.create(filepath);
+    await service.insertDocument('people', { id: 'safe', name: 'existing' });
+    vi.spyOn(nameIndex(service.rawDbms), 'insert').mockRejectedValueOnce(new Error('secondary insertion failed'));
+    await expect(
+      service.runExclusiveOperation('caught-failure', async () => {
+        try {
+          await service.rawDbms.insertDocumentObject('people', { id: 'broken', name: 'new' });
+        } catch {
+          // An HTTP or query adapter may handle an error before its outer
+          // exclusive operation settles. That must not bypass backend health.
+        }
+        return 'apparently successful';
+      }),
+    ).rejects.toThrow('close and reopen');
+    expect(service.isConnected).toBe(false);
+    await service.connect(filepath);
+    expect((await service.getDocuments('people')).total).toBe(1);
+  });
+
+  it('disconnects on a WAL commit failure and lets reopening recover the complete unacknowledged write', async () => {
+    await service.create(filepath);
+    await service.insertDocument('people', { id: 'safe', name: 'existing' });
+    const original = await fs.readFile(filepath);
+    const fault = new Error('WAL sync failed');
+    const sync = vi.spyOn(RealFile.prototype, 'sync').mockRejectedValueOnce(fault);
+    await expect(service.insertDocument('people', { id: 'pending', name: 'new' })).rejects.toBe(fault);
+    sync.mockRestore();
+    expect(service.isConnected).toBe(false);
+    expect(service.filepath).toBe(filepath);
+    expect(await fs.readFile(filepath)).toEqual(original);
+    await service.connect(filepath);
+    expect((await service.getDocuments('people')).total).toBe(2);
+    expect((await service.query("SELECT id FROM people WHERE name = 'new'")).rows).toEqual([{ id: 'pending' }]);
+    expect((await fs.stat(`${filepath}.log`)).size).toBe(0);
+  });
+
+  it('keeps a failed close unavailable and retries it when explicitly reconnecting', async () => {
+    await service.create(filepath);
+    await service.insertDocument('people', { id: 'safe', name: 'existing' });
+    const oldDb = service.rawDbms;
+    vi.spyOn(nameIndex(oldDb), 'insert').mockRejectedValueOnce(new Error('secondary insertion failed'));
+    const close = vi.spyOn(oldDb, 'close').mockRejectedValueOnce(new Error('temporary handle close failure'));
+    await expect(service.insertDocument('people', { id: 'broken', name: 'new' })).rejects.toThrow(
+      'could not be closed completely',
+    );
+    expect(service.isConnected).toBe(false);
+    expect(service.filepath).toBe(filepath);
+    expect(close).toHaveBeenCalledTimes(1);
+    await service.connect(filepath);
+    expect(close).toHaveBeenCalledTimes(2);
+    expect(service.isConnected).toBe(true);
+    expect((await service.getDocuments('people')).total).toBe(1);
+  });
+
+  it.each([NaN, Infinity, -Infinity])(
+    'keeps the connection usable after rejecting a non-finite edit (%s)',
+    async (value) => {
+      await service.create(filepath);
+      await service.insertDocument('people', { id: 'safe', name: 'existing', score: 1 });
+      await expect(service.editDocument('people', 'safe', 'score', value)).rejects.toThrow();
+      expect(service.isConnected).toBe(true);
+      expect(service.rawDbms.isHealthy).toBe(true);
+      await service.editDocument('people', 'safe', 'score', 2);
+      await service.disconnect();
+      await service.connect(filepath);
+      expect(JSON.parse(await service.getDocumentById('people', 'safe'))).toMatchObject({ score: 2 });
+    },
+  );
+
   it('persists field controls, rejects failed builds, and clears settings when switching databases', async () => {
     await service.create(filepath);
     expect(await service.setFieldIndexed('articles', 'body', false)).toEqual({ id: true, body: false });
@@ -418,6 +568,59 @@ describe('DatabaseService with real database files', () => {
     expect(status.size?.logFileBytes).toBe(512);
     expect(status.size?.totalBytes).toBe((await fs.stat(filepath)).size);
     expect(status.size?.totalBytes).toBe(status.size?.dataFileBytes);
+  });
+
+  it('preserves stored codecs in editor replacements while explicit codec and off selections still apply', async () => {
+    await service.create(filepath);
+    await service.setFieldIndexed('books', '_body', false);
+    await service.setFieldIndexed('books', '_notes', false);
+    await service.setCompressionDefaults('books', {
+      title: 'gzip',
+      _body: 'gzip',
+      _notes: 'gzip',
+      'photo.png': 'gzip',
+    });
+    const document = {
+      id: 'coded',
+      title: 'first title '.repeat(60),
+      _body: 'long compressed body '.repeat(600),
+      _notes: 'uncompressed notes '.repeat(200),
+      'photo.png': Buffer.from('binary bytes '.repeat(400)),
+    };
+    await service.insertDocument('books', document, { _body: 'deflate', _notes: 'off', 'photo.png': 'none' });
+    const original = await service.getDocumentMetadata('books', 'coded');
+    expect(original.compressions).toEqual({ title: 'gzip', _body: 'deflate' });
+    const encoded = JSON.parse(await service.rawDbms.getDocumentById('books', 'coded', { encoded: true })) as Record<
+      string,
+      unknown
+    >;
+    const revisedTitle = 'first revised '.repeat(50);
+    await service.replaceDocument('books', 'coded', { ...document, title: revisedTitle });
+    expect((await service.getDocumentMetadata('books', 'coded')).compressions).toEqual(original.compressions);
+    await service.disconnect();
+    await service.connect(filepath);
+    const decoded = await service.rawDbms.getDocumentObjectById('books', 'coded');
+    expect(decoded).toEqual({ ...document, title: revisedTitle });
+    const reopenedEncoded = JSON.parse(
+      await service.rawDbms.getDocumentById('books', 'coded', { encoded: true }),
+    ) as Record<string, unknown>;
+    expect(reopenedEncoded['_notes']).toEqual(encoded['_notes']);
+    expect(reopenedEncoded['photo.png']).toEqual(encoded['photo.png']);
+    expect((await service.getDocumentMetadata('books', 'coded')).compressions).toEqual(original.compressions);
+    await service.replaceDocument(
+      'books',
+      'coded',
+      { ...decoded, title: 'second revised' },
+      { _body: 'brotli', title: 'off' },
+    );
+    expect((await service.getDocumentMetadata('books', 'coded')).compressions).toEqual({ _body: 'brotli' });
+    await service.disconnect();
+    await service.connect(filepath);
+    expect((await service.getDocumentMetadata('books', 'coded')).compressions).toEqual({ _body: 'brotli' });
+    expect(await service.rawDbms.getDocumentObjectById('books', 'coded')).toEqual({
+      ...document,
+      title: 'second revised',
+    });
   });
 
   it('bulk edits selected string and numeric IDs and preserves unrelated documents after reopening', async () => {

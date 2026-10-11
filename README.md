@@ -105,7 +105,11 @@ Existing databases migrate their field settings from persisted index roots and s
 
 Semantic deletion retains graph nodes, vectors and their record-pointer anchors as tombstones, without rebuilding the collection graph. Incremental compaction moves retained graph/vector units; full vacuum copies live logical documents and reclaims tombstones and retained dead records. Offline semantic mutations remain pending until reopening with a working embedding configuration.
 
-Validation and embedding failures are checked before document replacement writes. The backend does not provide per-operation rollback for storage or index failures after writes begin: discard that session and reopen without committing the failed mutation to recover the last committed database.
+Document mutations validate supported values, finite numbers, index keys, compression and embeddings before writing. Single-field edits preserve the stored codecs of untouched fields, including explicit uncompressed choices and binary fields, using the same preservation path as SQL UPDATE and preserving replacements.
+
+If a record, index or semantic mutation fails after changes may have begun, the session rejects subsequent reads, writes and commits, including direct block-file commits. `db.isHealthy` and `db.assertHealthy()` expose this state. Close without committing, then open a fresh database instance; logical staged changes, including earlier uncommitted successful operations, are discarded. Validation failures and completely discarded unpublished index builds remain usable. Bulk import continues after safe document rejections, but stops on an unsafe failure and throws `BulkImportError` with completed insertion and acknowledged-commit counts. The webclient closes unsafe sessions, stops maintenance and retains the database path for explicit reconnect.
+
+This protection is not per-operation rollback or SQL statement atomicity. A failure during WAL commit still follows storage recovery: a complete submitted write set can be applied on reopen even when its commit was not acknowledged. Already acknowledged commits are retained. Record, B+ tree, HNSW, WAL and block formats remain compatible.
 
 ## Query language CLI
 

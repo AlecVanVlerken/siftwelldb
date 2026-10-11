@@ -157,6 +157,7 @@ export type DatabaseSizeInfo = {
 export type DatabaseStatus = {
   connected: boolean;
   filepath: string | null;
+  recoveryError: string | null;
   busyOperation: string | null;
   size: DatabaseSizeInfo | null;
   incrementalCompaction: IncrementalCompactionStatus;
@@ -248,6 +249,7 @@ export type CollectionStorage = {
 export class DatabaseService {
   private dbms: SimpleDbms | null = null;
   private currentFilepath: string | null = null;
+  private recoveryError: string | null = null;
   private operationChain: Promise<void> = Promise.resolve();
   private readonly exclusiveContext = new AsyncLocalStorage<symbol>();
   private activeExclusiveToken: symbol | null = null;
@@ -297,7 +299,7 @@ export class DatabaseService {
 
   /** True when a database is currently connected. */
   get isConnected(): boolean {
-    return this.dbms !== null;
+    return this.dbms !== null && this.dbms.isHealthy;
   }
 
   /** The filepath of the currently connected database, or null. */
@@ -411,11 +413,12 @@ export class DatabaseService {
     return this.runExclusive('database-status', async () => ({
       connected: this.isConnected,
       filepath: this.currentFilepath,
+      recoveryError: this.recoveryError,
       busyOperation: null,
       size: this.currentFilepath ? await this.databaseSizeInfo(this.currentFilepath) : null,
       incrementalCompaction: this.getIncrementalCompactionStatus(),
-      semanticIndexes: this.dbms ? this.dbms.getHnswIndexKeys() : [],
-      semanticReindexPending: this.dbms ? this.dbms.getPendingSemanticCollections() : [],
+      semanticIndexes: this.isConnected ? this.dbms!.getHnswIndexKeys() : [],
+      semanticReindexPending: this.isConnected ? this.dbms!.getPendingSemanticCollections() : [],
     }));
   }
 
@@ -1078,8 +1081,8 @@ export class DatabaseService {
 
   /**
    * Replace an entire document by ID. Wire-compatible single round-trip
-   * for the data-tab edit drawer — the underlying engine still does a
-   * delete + reinsert atomically.
+   * for the data-tab edit drawer. The engine stages a delete + reinsert
+   * before the service commits it.
    */
   async replaceDocument(
     collection: string,
@@ -1090,7 +1093,7 @@ export class DatabaseService {
     await this.runExclusive('replace-document', async () => {
       this.ensureConnected();
       this.validateIndexedKeys(collection, newDocument);
-      await this.dbms!.replaceDocument(collection, id, newDocument, { compression });
+      await this.dbms!.replaceDocument(collection, id, newDocument, { compression, preserveCompression: true });
       await this.dbms!.commit();
       this.invalidateCollectionStorage(collection);
     });
@@ -1443,6 +1446,7 @@ export class DatabaseService {
 
   private ensureConnected(): void {
     if (!this.dbms) throw new Error('No database connected');
+    this.dbms.assertHealthy();
   }
 
   private getIncrementalCompactionStatus(): IncrementalCompactionStatus {
@@ -1460,6 +1464,7 @@ export class DatabaseService {
   }
 
   private onDatabaseOpened(): void {
+    this.recoveryError = null;
     if (!this.incrementalCompactionEnabled) return;
     this.startIncrementalCompactionTimer();
     this.scheduleIncrementalCompaction();
@@ -1538,7 +1543,23 @@ export class DatabaseService {
     const token = Symbol(operation);
     this.activeExclusiveToken = token;
     try {
-      return await this.exclusiveContext.run(token, task);
+      const result = await this.exclusiveContext.run(token, task);
+      // A caller may catch a backend error inside the serialized operation.
+      // Do not acknowledge its result while the backend requires reopening.
+      this.dbms?.assertHealthy();
+      return result;
+    } catch (error) {
+      if (this.dbms && !this.dbms.isHealthy) {
+        try {
+          await this.discardUnsafeSession(error);
+        } catch (closeError) {
+          throw new AggregateError(
+            [error, closeError],
+            'The database session is unsafe and could not be closed completely. Retry reconnecting before using it.',
+          );
+        }
+      }
+      throw error;
     } finally {
       this.activeExclusiveToken = null;
       this.currentOperation = null;
@@ -1583,8 +1604,8 @@ export class DatabaseService {
     if (this.dbms) {
       await this.dbms.close();
       this.dbms = null;
-      this.currentFilepath = null;
     }
+    this.currentFilepath = null;
     this.incrementalCompactionQueued = false;
     this.incrementalCompactionActive = false;
     this.incrementalCompactionLastRunAt = null;
@@ -1594,6 +1615,20 @@ export class DatabaseService {
     this.stopIncrementalCompactionTimer();
     this.recordBytesCache.clear();
     this.documentCountCache.clear();
+    this.recoveryError = null;
+  }
+
+  private async discardUnsafeSession(error: unknown): Promise<void> {
+    this.recoveryError = error instanceof Error ? error.message : String(error);
+    this.incrementalCompactionEnabled = false;
+    this.incrementalCompactionQueued = false;
+    this.stopIncrementalCompactionTimer();
+    this.recordBytesCache.clear();
+    this.documentCountCache.clear();
+    // close() never commits staged writes. Retain the path for explicit reconnect;
+    // retain a backend whose close failed so that reconnect can retry its handles.
+    await this.dbms!.close();
+    this.dbms = null;
   }
 
   private invalidateCollectionStorage(collection: string): void {

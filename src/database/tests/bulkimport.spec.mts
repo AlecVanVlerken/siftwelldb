@@ -1,7 +1,127 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { MockFile } from '../../../tests/helpers/mockfile.mjs';
 import { SimpleDbms } from '../simpledbms.mjs';
-import { bulkImportArray, bulkImportStream, parseJsonLines, streamJsonLines } from '../bulkimport.mjs';
+import { BulkImportError, bulkImportArray, bulkImportStream, parseJsonLines, streamJsonLines } from '../bulkimport.mjs';
+import type { DbmsBack } from '../dbmsback.mjs';
+
+type InsertionTree = { insert(key: Buffer, pointer: Buffer): Promise<void> };
+
+function secondaryTree(db: SimpleDbms): InsertionTree {
+  const back = (db as unknown as { dbmsback: DbmsBack }).dbmsback;
+  const entry = (back as unknown as { treeCache: Map<string, { tree: InsertionTree }> }).treeCache.get('people:name');
+  if (!entry) throw new Error('Expected the secondary name index');
+  return entry.tree;
+}
+
+describe('bulk import mutation safety', () => {
+  it('rejects a non-object JSONL document safely and continues the following batch', async () => {
+    const data = new MockFile(4096);
+    const log = new MockFile(4096);
+    const db = await SimpleDbms.create(data, log);
+    const result = await bulkImportStream(db, streamJsonLines('{"id":"a"}\nnull\n{"id":"b"}'), {
+      collection: 'people',
+    });
+    expect(result).toMatchObject({ totalImported: 2, failedCount: 1, batchesCommitted: 1 });
+    expect(db.isHealthy).toBe(true);
+    await db.close();
+    const reopened = await SimpleDbms.open(data, log);
+    expect(JSON.parse(await reopened.getDocumentById('people', 'b'))).toEqual({ id: 'b' });
+    await reopened.close();
+  });
+
+  it('stops an unsafe insertion and preserves acknowledged batches when reopened', async () => {
+    const data = new MockFile(4096);
+    const log = new MockFile(4096);
+    const db = await SimpleDbms.create(data, log);
+    await db.insertDocumentObject('people', { id: 'seed', name: 'existing' });
+    await db.commit();
+    const tree = secondaryTree(db);
+    const insert = tree.insert.bind(tree);
+    const fault = new Error('secondary insertion failed');
+    const spy = vi.spyOn(tree, 'insert').mockImplementation(async (key, pointer) => {
+      if (key.includes(Buffer.from('broken'))) throw fault;
+      await insert(key, pointer);
+    });
+    let consumed = 0;
+    function* source() {
+      for (const id of ['a', 'b', 'staged', 'broken', 'never']) {
+        consumed++;
+        yield { id, name: 'imported' };
+      }
+    }
+    const error = await bulkImportStream(db, source(), { collection: 'people', batchSize: 2 }).catch(
+      (failure: unknown) => failure,
+    );
+    spy.mockRestore();
+    expect(error).toBeInstanceOf(BulkImportError);
+    expect(error).toMatchObject({
+      progress: { totalImported: 3, totalCommitted: 2, batchesCommitted: 1, failedCount: 1 },
+      cause: { cause: fault },
+    });
+    expect(consumed).toBe(4);
+    expect(db.isHealthy).toBe(false);
+    await expect(db.commit()).rejects.toThrow('close and reopen');
+    await db.close();
+    const reopened = await SimpleDbms.open(data, log);
+    const primary: string[] = [];
+    for await (const json of reopened.cursor('people', 'id')) primary.push((JSON.parse(json) as { id: string }).id);
+    const secondary: string[] = [];
+    for await (const json of reopened.cursorEqual('people', 'name', 'imported'))
+      secondary.push((JSON.parse(json) as { id: string }).id);
+    expect(primary).toEqual(['a', 'b', 'seed']);
+    expect(secondary).toEqual(['a', 'b']);
+    await reopened.insertDocumentObject('people', { id: 'later', name: 'healthy' });
+    await reopened.commit();
+    await reopened.close();
+  });
+
+  it('reports a failed commit without counting its batch as acknowledged durable progress', async () => {
+    const data = new MockFile(4096);
+    const log = new MockFile(4096);
+    const db = await SimpleDbms.create(data, log);
+    await db.commit();
+    const fault = new Error('WAL sync failed');
+    const sync = vi.spyOn(log, 'sync').mockRejectedValueOnce(fault);
+    const error = await bulkImportArray(db, [{ id: 'a', name: 'one' }], {
+      collection: 'people',
+      batchSize: 1,
+    }).catch((failure: unknown) => failure);
+    sync.mockRestore();
+    expect(error).toBeInstanceOf(BulkImportError);
+    expect(error).toMatchObject({
+      progress: { totalImported: 1, totalCommitted: 0, batchesCommitted: 0, failedCount: 0 },
+    });
+    expect(db.isHealthy).toBe(false);
+    await expect(db.commit()).rejects.toThrow();
+    // A pending WAL may replay this unacknowledged batch; progress deliberately
+    // reports acknowledged commits rather than promising the batch was rolled back.
+    await log.sync();
+    await db.close();
+  });
+
+  it.each([NaN, Infinity, -Infinity])('continues after safely rejecting a non-finite value (%s)', async (value) => {
+    const data = new MockFile(4096);
+    const log = new MockFile(4096);
+    const db = await SimpleDbms.create(data, log);
+    const result = await bulkImportArray(
+      db,
+      [
+        { id: 'a', score: 1 },
+        { id: 'invalid', score: value },
+        { id: 'b', score: 2 },
+      ],
+      { collection: 'people', batchSize: 10 },
+    );
+    expect(result).toMatchObject({ totalImported: 2, batchesCommitted: 1, failedCount: 1 });
+    expect(db.isHealthy).toBe(true);
+    await db.close();
+    const reopened = await SimpleDbms.open(data, log);
+    const ids: string[] = [];
+    for await (const json of reopened.cursor('people', 'id')) ids.push((JSON.parse(json) as { id: string }).id);
+    expect(ids).toEqual(['a', 'b']);
+    await reopened.close();
+  });
+});
 
 describe('Bulk Import', () => {
   let db: SimpleDbms;

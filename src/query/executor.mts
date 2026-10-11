@@ -101,7 +101,7 @@ export class QueryMutationError extends Error {
   ) {
     const message = cause instanceof Error ? cause.message : String(cause);
     super(
-      `${kind.toUpperCase()} failed after ${affectedIds.length} document(s) completed: ${message}. Partial changes may be staged; discard this session and reopen the last committed database.`,
+      `${kind.toUpperCase()} failed after ${affectedIds.length} document(s) completed: ${message}. Partial changes may be staged; no successful commit was acknowledged for this operation.`,
       { cause },
     );
     this.name = 'QueryMutationError';

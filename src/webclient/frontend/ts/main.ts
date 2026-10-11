@@ -1,6 +1,6 @@
 /* eslint-disable */
 // @ts-nocheck
-import { api } from './api-client.js';
+import { api as requestApi } from './api-client.js';
 import { destroyAiCharts, drawChart } from './charts.js';
 import { createCompressionLab } from './compression-lab.js';
 import {
@@ -24,6 +24,42 @@ import {
 import { getSqlMutationKind } from './sql-ui.js';
 import { openSqlReference } from './sql-reference.js';
 import { mergeScopedModel } from './model-editor.js';
+
+async function api(path, options = {}) {
+  const context = captureRequestContext('database');
+  try {
+    return await requestApi(path, options);
+  } catch (error) {
+    if (error.connection && state.connected && isCurrentRequestContext(context)) {
+      if (path === '/api/query') {
+        state.sqlHistory.unshift({
+          sql: options.body?.sql || pendingSql,
+          ok: false,
+          ts: Date.now(),
+          error: error.message,
+          affectedIds: error.affectedIds,
+        });
+        state.sqlHistory = state.sqlHistory.slice(0, 10);
+      }
+      showDisconnectedConnection(error.connection.filepath, error.message);
+    }
+    throw error;
+  }
+}
+
+function showDisconnectedConnection(filepath, error = null) {
+  const sqlDraft = pendingSql;
+  const sqlHistory = state.sqlHistory;
+  resetConnectionView();
+  pendingSql = sqlDraft;
+  state.sqlHistory = sqlHistory;
+  if (filepath) $('#connect-filepath').value = filepath;
+  if (error) {
+    $('#connect-err').textContent = error;
+    $('#connect-err').classList.remove('hidden');
+  }
+  openModal('modal-connect');
+}
 
 function toast(msg, kind = '', title = '') {
   const div = document.createElement('div');
@@ -539,7 +575,7 @@ function renderDocumentCompressionControls(collection, documentValue, meta) {
     <h3>Field compression <span class="actions"><label style="font-size:11px;color:var(--t3);text-transform:none;letter-spacing:0;">Workload <span id="doc-cmp-workload-label">${workload}%</span></label></span></h3>
     <div class="pbody">
       <input id="doc-cmp-workload" type="range" min="0" max="100" value="${workload}" style="width:100%;margin-bottom:8px;">
-      <p style="font-size:12px;color:var(--t3);margin:0 0 8px;">Choose per-field overrides while editing. <strong>inherit</strong> keeps the collection default; <strong>off</strong> stores this write uncompressed.</p>
+      <p style="font-size:12px;color:var(--t3);margin:0 0 8px;">Choose per-field overrides while editing. <strong>Keep stored codec</strong> preserves the field's current compression; <strong>off</strong> stores this write uncompressed.</p>
       <div style="display:flex;flex-direction:column;gap:6px;">
         ${fields
           .map(
@@ -548,7 +584,7 @@ function renderDocumentCompressionControls(collection, documentValue, meta) {
             ) => `<div style="display:grid;grid-template-columns:1fr 145px auto;gap:8px;align-items:center;border:1px solid var(--bd);background:var(--bg2);padding:7px;border-radius:4px;">
           <div><strong style="font-size:12px;">${esc(field)}</strong><div style="font-size:11px;color:var(--t3);">${isImageField(field, documentValue) ? 'image field' : detectType(documentValue[field])}${current[field] ? ` · currently ${esc(current[field])}` : ''}</div></div>
           <select data-doc-compression-field="${esc(field)}" style="height:30px;border:1px solid var(--bd);background:var(--bg);color:var(--t1);border-radius:3px;">
-            ${COMPRESSION_OPTIONS.map((option) => `<option value="${option}">${option}</option>`).join('')}
+            ${COMPRESSION_OPTIONS.map((option) => `<option value="${option}">${option === 'inherit' ? 'Keep stored codec' : option}</option>`).join('')}
           </select>
           <button class="tbtn" data-doc-cmp-recommend="${esc(field)}" data-doc-cmp-collection="${esc(collection)}" style="border:1px solid var(--bd);background:var(--bg);height:30px;">Recommend</button>
         </div>`,
@@ -1007,8 +1043,7 @@ async function refreshDatabaseStatus() {
     const status = await api('/api/database/status');
     if (!isCurrentRequestContext(context) || request !== databaseStatusRequest) return null;
     if (!status.connected) {
-      resetConnectionView();
-      openModal('modal-connect');
+      showDisconnectedConnection(status.filepath, status.recoveryError);
       return null;
     }
     if (status.filepath !== state.filepath) {

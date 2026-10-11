@@ -162,6 +162,14 @@ export class ApiRouter {
     private readonly conv?: ConversationalService,
   ) {}
 
+  private errorBody(error: string, extra: JsonBody = {}): JsonBody {
+    if (!this.db.isConnected && this.db.filepath) {
+      this.conv?.onDisconnect();
+      return { error, ...extra, connected: false, filepath: this.db.filepath };
+    }
+    return { error, ...extra };
+  }
+
   private async runDatabaseExclusive<T>(operation: string, task: () => Promise<T>): Promise<T> {
     const maybeExclusive = this.db as DatabaseService & {
       runExclusiveOperation?: <Result>(operation: string, task: () => Promise<Result>) => Promise<Result>;
@@ -298,7 +306,7 @@ export class ApiRouter {
       // ── Everything below requires an active connection ─────
 
       if (!this.db.isConnected) {
-        sendError(res, 400, 'No database connected');
+        sendJSON(res, 400, this.errorBody('No database connected'));
         return;
       }
 
@@ -525,8 +533,8 @@ export class ApiRouter {
           });
         } catch (err) {
           if (err instanceof QueryMutationError) {
-            sendJSON(res, 400, { error: err.message, affectedIds: err.affectedIds });
-          } else sendError(res, 400, err instanceof Error ? err.message : String(err));
+            sendJSON(res, 400, this.errorBody(err.message, { affectedIds: err.affectedIds }));
+          } else sendJSON(res, 400, this.errorBody(err instanceof Error ? err.message : String(err)));
         }
         return;
       }
@@ -897,11 +905,11 @@ export class ApiRouter {
         error instanceof DatabaseInputError ||
         error instanceof IndexValidationError
       ) {
-        sendError(res, error instanceof ApiHttpError ? error.statusCode : 400, error.message);
+        sendJSON(res, error instanceof ApiHttpError ? error.statusCode : 400, this.errorBody(error.message));
         return;
       }
       console.error('API Error:', error);
-      sendError(res, 500, `Internal server error: ${String(error)}`);
+      sendJSON(res, 500, this.errorBody(`Internal server error: ${String(error)}`));
     }
   }
 }

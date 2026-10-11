@@ -257,41 +257,48 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     await this.openTree(rootBlock);
     const oldNode = await this.loadNode(blockNumber);
     const kind: BlockNodeKind = oldNode.isLeaf ? 'btree-leaf' : 'btree-internal';
-    const newNode = oldNode.isLeaf
-      ? await this.copyLeafToFreshBlock(oldNode, options)
-      : await this.copyInternalToFreshBlock(oldNode, options);
-    const newBlockNumber = newNode.getBlockNumber();
-    let newRootBlock = rootBlock;
+    // Traversal above is preflight. Allocation and reference updates below can
+    // leave partial state even when relocation is called without DbmsBack.
+    try {
+      const newNode = oldNode.isLeaf
+        ? await this.copyLeafToFreshBlock(oldNode, options)
+        : await this.copyInternalToFreshBlock(oldNode, options);
+      const newBlockNumber = newNode.getBlockNumber();
+      let newRootBlock = rootBlock;
 
-    if (rootBlock === blockNumber) {
-      newRootBlock = newBlockNumber;
-      this.currentRoot = newNode;
-    } else {
-      const parent = await this.findParentNode(rootBlock, blockNumber);
-      if (!parent) {
-        throw new Error(`Could not find B+ tree parent for block ${blockNumber}`);
+      if (rootBlock === blockNumber) {
+        newRootBlock = newBlockNumber;
+        this.currentRoot = newNode;
+      } else {
+        const parent = await this.findParentNode(rootBlock, blockNumber);
+        if (!parent) {
+          throw new Error(`Could not find B+ tree parent for block ${blockNumber}`);
+        }
+        if (!parent.replaceChildBlockNumber(blockNumber, newBlockNumber, newNode)) {
+          throw new Error(`Failed to update B+ tree parent for block ${blockNumber}`);
+        }
       }
-      if (!parent.replaceChildBlockNumber(blockNumber, newBlockNumber, newNode)) {
-        throw new Error(`Failed to update B+ tree parent for block ${blockNumber}`);
+
+      if (oldNode.isLeaf) {
+        const previousLeaf = await this.findLeafPointingTo(rootBlock, blockNumber);
+        if (previousLeaf) {
+          previousLeaf.setNextLeafBlockNumber(newBlockNumber);
+        }
       }
+
+      this.invalidateNode(blockNumber);
+      await this.file.freeBlock(blockNumber);
+
+      return {
+        kind,
+        oldBlockNumber: blockNumber,
+        newBlockNumber,
+        newRootBlock,
+      };
+    } catch (error) {
+      this.file.markMutationFailed(error);
+      throw error;
     }
-
-    if (oldNode.isLeaf) {
-      const previousLeaf = await this.findLeafPointingTo(rootBlock, blockNumber);
-      if (previousLeaf) {
-        previousLeaf.setNextLeafBlockNumber(newBlockNumber);
-      }
-    }
-
-    this.invalidateNode(blockNumber);
-    await this.file.freeBlock(blockNumber);
-
-    return {
-      kind,
-      oldBlockNumber: blockNumber,
-      newBlockNumber,
-      newRootBlock,
-    };
   }
 
   /**

@@ -69,6 +69,41 @@ async function verifyDurableBaseline(fixture: Awaited<ReturnType<typeof createFi
 }
 
 describe('B+ tree structural failure safety', () => {
+  it('keeps relocation traversal failures healthy before allocation or reference changes', async () => {
+    const fixture = await createFixture(6);
+    const rootBlock = fixture.tree.getRoot().getBlockNumber();
+    const error = new Error('injected relocation traversal failure');
+    const failure = vi.spyOn(fixture.storage, 'loadNode').mockRejectedValueOnce(error);
+    await expect(fixture.storage.relocateNode(rootBlock, rootBlock)).rejects.toBe(error);
+    failure.mockRestore();
+    expect(fixture.file.isHealthy).toBe(true);
+    expect(await fixture.tree.get(fixture.keys[0])).toEqual(value);
+    await fixture.file.commit();
+    fixture.storage.dispose();
+    await fixture.file.close();
+  });
+
+  it('blocks direct commits when relocation fails after changing a parent pointer', async () => {
+    const fixture = await createFixture(6);
+    const rootBlock = fixture.tree.getRoot().getBlockNumber();
+    const target = (await fixture.storage.listNodeBlocks(rootBlock)).find((node) => node.kind === 'btree-leaf');
+    expect(target).toBeDefined();
+    const error = new Error('injected relocation parent update failure');
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- The mock explicitly supplies the original node as this.
+    const original = BlockInternalNode.prototype.replaceChildBlockNumber;
+    const failure = vi.spyOn(BlockInternalNode.prototype, 'replaceChildBlockNumber');
+    failure.mockImplementationOnce(function (this: BlockInternalNode, ...args) {
+      original.apply(this, args);
+      throw error;
+    });
+    try {
+      await expect(fixture.storage.relocateNode(rootBlock, target!.blockNumber)).rejects.toBe(error);
+    } finally {
+      failure.mockRestore();
+    }
+    await verifyDurableBaseline(fixture);
+  });
+
   it('blocks commits when creating a tree fails after staging a block allocation', async () => {
     const fixture = await createFixture(3);
     const error = new Error('injected tree creation allocation failure');

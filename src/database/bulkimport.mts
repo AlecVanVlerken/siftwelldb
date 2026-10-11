@@ -47,6 +47,26 @@ export interface BulkImportResult {
   errors: string[];
 }
 
+/** Known progress when an import stops before it can finish safely. */
+export interface BulkImportProgress extends BulkImportResult {
+  /** Successful inserts included in acknowledged commits, excluding the pending batch. */
+  totalCommitted: number;
+}
+
+export class BulkImportError extends Error {
+  constructor(
+    readonly progress: BulkImportProgress,
+    cause: unknown,
+  ) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `Bulk import stopped: ${message}. ${progress.totalCommitted} document(s) acknowledged committed; ${progress.totalImported - progress.totalCommitted} successful insert(s) lack an acknowledged commit.`,
+      { cause },
+    );
+    this.name = 'BulkImportError';
+  }
+}
+
 /**
  * Bulk import an array of documents into a collection.
  *
@@ -88,31 +108,53 @@ export async function bulkImportStream(
   stream: AsyncIterable<Record<string, unknown>> | Iterable<Record<string, unknown>>,
   options: BulkImportOptions,
 ): Promise<BulkImportResult> {
+  db.assertHealthy();
   const batchSize = options.batchSize ?? 100;
   const { collection, onBatchComplete } = options;
 
   let totalImported = 0;
+  let totalCommitted = 0;
   let batchCount = 0;
   let currentBatch = 0;
   let failedCount = 0;
   const errors: string[] = [];
 
-  for await (const doc of stream) {
-    try {
-      await db.insertDocumentObject(collection, doc);
-      currentBatch++;
-      totalImported++;
-    } catch (err) {
-      failedCount++;
-      const msg = err instanceof Error ? err.message : String(err);
-      const docId = typeof doc['id'] === 'string' ? doc['id'] : 'unknown';
-      errors.push(`Document ${docId}: ${msg}`);
-      continue;
+  try {
+    for await (const doc of stream) {
+      try {
+        await db.insertDocumentObject(collection, doc);
+        currentBatch++;
+        totalImported++;
+      } catch (err) {
+        failedCount++;
+        const msg = err instanceof Error ? err.message : String(err);
+        const rawId = doc !== null && typeof doc === 'object' ? doc['id'] : undefined;
+        const docId = typeof rawId === 'string' || typeof rawId === 'number' ? rawId : 'unknown';
+        errors.push(`Document ${docId}: ${msg}`);
+        if (!db.isHealthy) throw err;
+        continue;
+      }
+
+      if (currentBatch >= batchSize) {
+        await db.commit();
+        batchCount++;
+        totalCommitted += currentBatch;
+        if (onBatchComplete) {
+          onBatchComplete({
+            batchCount: currentBatch,
+            totalImported,
+            batchNumber: batchCount,
+          });
+        }
+        currentBatch = 0;
+      }
     }
 
-    if (currentBatch >= batchSize) {
+    // Commit any remaining documents only after the stream finishes safely.
+    if (currentBatch > 0) {
       await db.commit();
       batchCount++;
+      totalCommitted += currentBatch;
       if (onBatchComplete) {
         onBatchComplete({
           batchCount: currentBatch,
@@ -120,21 +162,12 @@ export async function bulkImportStream(
           batchNumber: batchCount,
         });
       }
-      currentBatch = 0;
     }
-  }
-
-  // Commit any remaining documents
-  if (currentBatch > 0) {
-    await db.commit();
-    batchCount++;
-    if (onBatchComplete) {
-      onBatchComplete({
-        batchCount: currentBatch,
-        totalImported,
-        batchNumber: batchCount,
-      });
-    }
+  } catch (cause) {
+    throw new BulkImportError(
+      { totalImported, totalCommitted, batchesCommitted: batchCount, failedCount, errors },
+      cause,
+    );
   }
 
   return {

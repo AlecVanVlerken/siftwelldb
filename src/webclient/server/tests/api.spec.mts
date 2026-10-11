@@ -144,6 +144,42 @@ describe('readLimit', () => {
 });
 
 describe('ApiRouter', () => {
+  it('reports backend disconnection and preserves completed SQL IDs after an unsafe failure', async () => {
+    let connected = true;
+    let conversationalDetached = false;
+    const db = createConnectedDbStub({
+      query() {
+        connected = false;
+        return Promise.reject(new QueryMutationError('update', [7], new Error('unsafe secondary update')));
+      },
+    });
+    Object.defineProperty(db, 'isConnected', { get: () => connected });
+    const router = new ApiRouter(
+      db,
+      createConversationalStub({
+        onDisconnect() {
+          conversationalDetached = true;
+        },
+      }),
+    );
+    const res = await handle(router, 'POST', '/api/query', JSON.stringify({ sql: 'UPDATE docs SET score = 1' }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toMatchObject({
+      affectedIds: [7],
+      connected: false,
+      filepath: 'data.db',
+    });
+    expect(conversationalDetached).toBe(true);
+  });
+
+  it('keeps safe SQL validation errors free of a disconnect instruction', async () => {
+    const router = new ApiRouter(
+      createConnectedDbStub({ query: () => Promise.reject(new Error('invalid field value')) }),
+    );
+    const res = await handle(router, 'POST', '/api/query', JSON.stringify({ sql: 'UPDATE docs SET score = 1' }));
+    expect(JSON.parse(res.body)).toEqual({ error: 'invalid field value' });
+  });
+
   it.each([{}, { all: false }, { ids: [] }, { all: true, ids: ['a'] }, { ids: [{}] }])(
     'rejects ambiguous or invalid bulk selection %j',
     async (body) => {

@@ -271,8 +271,9 @@ describe('WAL reliability with real files and injected failures', () => {
         await expect(service.insertDocument('docs', { id: 2, score: 2 })).rejects.toThrow('commit data write failed');
         const pending = await readFile(join(directory, 'wal'));
         expect(pending.length).toBeGreaterThan(0);
-        await expect(service.insertDocument('docs', { id: 3, score: 3 })).rejects.toThrow(/recovery/i);
-        await expect(service.query('SELECT * FROM docs')).rejects.toThrow(/recovery/i);
+        expect(service.isConnected).toBe(false);
+        await expect(service.insertDocument('docs', { id: 3, score: 3 })).rejects.toThrow('No database connected');
+        await expect(service.query('SELECT * FROM docs')).rejects.toThrow('No database connected');
         await expect(database.commit()).rejects.toThrow(/recovery/i);
         expect(() => database.setFieldCompressionDefaults('docs', {})).toThrow(/recovery/i);
         expect(await readFile(join(directory, 'wal'))).toEqual(pending);

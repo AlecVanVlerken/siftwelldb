@@ -2,10 +2,13 @@ type ApiOptions = Omit<RequestInit, 'body'> & {
   body?: BodyInit | Record<string, unknown>;
 };
 
+export type DisconnectedConnection = { connected: false; filepath: string | null };
+
 export class ApiError extends Error {
   constructor(
     message: string,
     readonly affectedIds?: Array<string | number>,
+    readonly connection?: DisconnectedConnection,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -61,7 +64,16 @@ export async function api<T = Record<string, unknown>>(path: string, opts: ApiOp
       )
         ? json.affectedIds
         : undefined;
-    throw new ApiError(message, affectedIds);
+    const connection: DisconnectedConnection | undefined =
+      json &&
+      typeof json === 'object' &&
+      'connected' in json &&
+      json.connected === false &&
+      'filepath' in json &&
+      (typeof json.filepath === 'string' || json.filepath === null)
+        ? { connected: false, filepath: json.filepath }
+        : undefined;
+    throw new ApiError(message, affectedIds, connection);
   }
 
   return json as T;

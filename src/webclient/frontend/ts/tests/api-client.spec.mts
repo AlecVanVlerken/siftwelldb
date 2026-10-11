@@ -28,6 +28,35 @@ describe('api client', () => {
     await expect(api('/api/query')).rejects.toMatchObject({ message: 'Partial SQL write', affectedIds: [7, 'a'] });
   });
 
+  it('preserves backend connection metadata so unsafe failures can open the reconnect dialog', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        '{"error":"Close and reopen the database","affectedIds":[7],"connected":false,"filepath":"data.db"}',
+        { status: 400 },
+      ),
+    );
+    await expect(api('/api/query')).rejects.toMatchObject({
+      message: 'Close and reopen the database',
+      affectedIds: [7],
+      connection: { connected: false, filepath: 'data.db' },
+    });
+  });
+
+  it('leaves ordinary validation errors without a disconnect instruction', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"error":"Field is too large"}', { status: 400 }));
+    await expect(api('/api/documents/books')).rejects.toMatchObject({
+      message: 'Field is too large',
+      connection: undefined,
+    });
+  });
+
+  it('ignores malformed connection metadata', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{"error":"Failed","connected":false,"filepath":42}', { status: 500 }),
+    );
+    await expect(api('/api/documents/books')).rejects.toMatchObject({ connection: undefined });
+  });
+
   it.each([new Blob(['image bytes']), new URLSearchParams({ q: 'books' })])(
     'preserves a native request body instead of converting it to JSON',
     async (body) => {
