@@ -1,4 +1,5 @@
 import { fmtSize, isImageField } from './format.js';
+import { createDictionary } from './state.js';
 
 export type JsonObject = Record<string, unknown>;
 
@@ -23,7 +24,7 @@ export function imagePlaceholder(fieldName: string, value: string): string {
 }
 
 export function compactDocumentImages(document: JsonObject): { document: JsonObject; imagePayloads: ImagePayloads } {
-  const imagePayloads: ImagePayloads = {};
+  const imagePayloads: ImagePayloads = createDictionary();
   const compacted = Object.fromEntries(
     Object.entries(document).map(([key, value]) => {
       if (!isImageField(key, document) || typeof value !== 'string' || value.length === 0) return [key, value];
@@ -35,7 +36,10 @@ export function compactDocumentImages(document: JsonObject): { document: JsonObj
   return { document: compacted, imagePayloads };
 }
 
-function restoreCompactedDocumentImages(document: JsonObject, imagePayloads: ImagePayloads = {}): JsonObject {
+function restoreCompactedDocumentImages(
+  document: JsonObject,
+  imagePayloads: ImagePayloads = createDictionary(),
+): JsonObject {
   return Object.fromEntries(
     Object.entries(document).map(([key, value]) => {
       if (!isImageField(key, document)) return [key, value];
@@ -60,7 +64,7 @@ export function parseJsonObjectInput(raw: string): JsonObjectParseResult {
     return { ok: false, error: 'Top-level value must be a JSON object.' };
   }
 
-  return { ok: true, value: parsed as JsonObject };
+  return { ok: true, value: createDictionary(parsed as JsonObject) };
 }
 
 export function validateDocumentInput(
@@ -79,8 +83,8 @@ export function validateDocumentInput(
   if (hasId && typeof id !== 'string' && (typeof id !== 'number' || !Number.isFinite(id))) {
     return { ok: false, error: 'Document "id" must be a string or a finite number.' };
   }
-  if (typeof id === 'string' && id.trim() === '') {
-    return { ok: false, error: 'Document "id" must not be empty.' };
+  if (typeof id === 'string' && !id.isWellFormed()) {
+    return { ok: false, error: 'Document "id" must not contain unpaired UTF-16 surrogates.' };
   }
   if (options.existingId !== undefined && id !== options.existingId) {
     return { ok: false, error: `The "id" field is read-only and must remain ${JSON.stringify(options.existingId)}.` };
@@ -110,7 +114,7 @@ export function buildDocumentTemplate(collection: string, docs: JsonObject[] = [
   const existingIds = new Set(docs.map((doc) => String(doc['id'])));
   let sequence = 1;
   while (existingIds.has(`${prefix}-${sequence}`)) sequence++;
-  const template: JsonObject = { id: `${prefix}-${sequence}` };
+  const template: JsonObject = createDictionary({ id: `${prefix}-${sequence}` });
   const keys = Array.from(new Set(docs.flatMap((doc) => Object.keys(doc)))).filter((key) => key !== 'id');
 
   for (const key of keys) {

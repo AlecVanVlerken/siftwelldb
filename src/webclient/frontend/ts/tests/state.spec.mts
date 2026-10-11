@@ -10,6 +10,26 @@ import {
 beforeEach(() => resetDisconnectedState());
 
 describe('frontend state', () => {
+  it('stores collection and field names as own properties in prototype-free dictionaries', () => {
+    for (const name of ['__proto__', 'constructor', 'toString', 'a:b']) {
+      expect(state.docsByColl[name]).toBeUndefined();
+      expect(state.countsByColl[name]).toBeUndefined();
+      expect(state.compression.recommendations[name]).toBeUndefined();
+      state.docsByColl[name] = [{ id: name }];
+      state.countsByColl[name] = 1;
+      state.treeExpanded[name] = true;
+      state.modelPromptDismissed[name] = true;
+      state.compression.defaults[name] = 'gzip';
+      state.compression.recommendations[name] = { recommended: 'gzip' };
+      expect(state.docsByColl[name]).toEqual([{ id: name }]);
+      expect(state.compression.defaults[name]).toBe('gzip');
+    }
+    expect(Object.getPrototypeOf(state.docsByColl)).toBeNull();
+    resetDisconnectedState();
+    expect(state.docsByColl['__proto__']).toBeUndefined();
+    expect(state.compression.defaults['constructor']).toBeUndefined();
+    expect(Object.prototype).not.toHaveProperty('recommended');
+  });
   it('resets connection-scoped state on disconnect', () => {
     state.connected = true;
     state.filepath = 'data.db';

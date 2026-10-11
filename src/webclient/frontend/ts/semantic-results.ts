@@ -1,5 +1,22 @@
 import { detectType, esc, fmtNum, imageDataUrlFromValue, isImageField } from './format.js';
 
+export function semanticIndexLabel(key: string): string {
+  try {
+    const identity: unknown = JSON.parse(key);
+    if (
+      Array.isArray(identity) &&
+      identity.length === 2 &&
+      typeof identity[0] === 'string' &&
+      typeof identity[1] === 'string'
+    ) {
+      return `${JSON.stringify(identity[0])} (${identity[1]})`;
+    }
+  } catch {
+    // Older status responses may still contain a display name.
+  }
+  return key;
+}
+
 export function parseSemanticResult(raw: string): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(raw);

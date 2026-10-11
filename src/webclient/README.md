@@ -99,8 +99,8 @@ It excludes primary IDs and image fields. Every target is checked for existence,
 field presence and safe index-key size before mutations begin. Bulk routes are
 `POST /api/documents/:collection/bulk-delete` and `bulk-edit`, accepting either
 `{all: true}` or `{ids: [...]}`; edits additionally accept `field` and `value`.
-Numeric IDs retain their type through these routes, independently of the current
-SQL mutation limitation. Engine mutations run sequentially with one final commit;
+Numeric IDs retain their type through these routes and SQL mutations.
+Engine mutations run sequentially with one final commit;
 this does not add transaction rollback for unexpected failures midway through a
 batch. The UI reloads current data after either success or failure.
 
@@ -111,6 +111,36 @@ does not compact or shrink the database. The top-right menu retains background
 compaction and full vacuum; the manual incremental-step action has been removed.
 Routine daemon request, seeding, search and compaction progress output is silent;
 errors remain available in the terminal and through the existing UI feedback.
+
+## Exact document addresses
+
+The frontend addresses individual documents with JSON-encoded query parameters:
+
+```typescript
+const address = new URLSearchParams({ collection: JSON.stringify(collection), id: JSON.stringify(id) });
+// GET or DELETE: /api/document?{address}
+// GET metadata: /api/document/metadata?{address}
+// POST field edit or replacement: /api/document/edit?{address}
+```
+
+The edit body remains `{ field, value }` or `{ document, compression? }`.
+GET `/api/document` returns `{ document }`; `encoded=true` requests the existing
+encoded representation. IDs `""`, `"metadata"`, `"edit"`, `"."`, `".."`, punctuation
+and Unicode use the same routes. JSON `42` and `"42"` retain their distinct types;
+the backend enforces the collection's primary ID type. Malformed surrogate IDs
+and invalid address types return input errors before mutation.
+
+Collection operations use `/api/documents?collection=<JSON string>` for listing
+and insertion, with `/bulk-delete`, `/bulk-edit`, `/search`, `/search/photos` and
+`/search/image` suffixes. `/api/collection?collection=<JSON string>` deletes the
+exact collection; `/indexes`, `/storage` and GET `/compression` suffixes expose
+its settings. Encode query values with `URLSearchParams`, including collection
+names that are empty, dot segments or contain URL punctuation.
+
+Ordinary legacy `/api/documents/:collection/...` and
+`/api/collections/:collection/...` routes remain supported. Legacy path IDs have
+no type tag, so their numeric interpretation follows the persisted primary index.
+Use the canonical query addresses to preserve explicit ID types and all names.
 
 ## Integration boundaries
 

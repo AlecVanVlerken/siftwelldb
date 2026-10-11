@@ -8,6 +8,32 @@ import {
 } from '../document-editor.js';
 
 describe('document-editor helpers', () => {
+  it.each(['', ' ', '.', '..', 'metadata', 'edit', '雪😀'])(
+    'accepts supported backend IDs for creation and editing: %j',
+    (id) => {
+      expect(validateDocumentInput(JSON.stringify({ id }), { existingId: id })).toEqual({ ok: true, value: { id } });
+    },
+  );
+
+  it.each(['\uD800', '\uD801', '\uDC00'])('rejects malformed Unicode ID %j without normalizing it', (id) => {
+    expect(validateDocumentInput(JSON.stringify({ id }))).toMatchObject({ ok: false });
+  });
+
+  it('keeps special field names in templates and editable input without changing object prototypes', () => {
+    const source = JSON.parse('{"id":"a","__proto__":"value","constructor":5,"toString":true}') as Record<
+      string,
+      unknown
+    >;
+    const template = buildDocumentTemplate('docs', [source]);
+    expect(Object.keys(template)).toEqual(['id', '__proto__', 'constructor', 'toString']);
+    expect(Object.getOwnPropertyDescriptor(template, '__proto__')?.value).toBe('');
+    const parsed = parseJsonObjectInput('{"id":"a"}');
+    if (!parsed.ok) throw new Error(parsed.error);
+    parsed.value['__proto__'] = 'new value';
+    expect(Object.getPrototypeOf(parsed.value)).toBeNull();
+    expect(JSON.parse(JSON.stringify(parsed.value))).toEqual(JSON.parse('{"id":"a","__proto__":"new value"}'));
+    expect(Object.prototype).not.toHaveProperty('id');
+  });
   it('parses only top-level JSON objects', () => {
     expect(parseJsonObjectInput('{"id":"a"}')).toEqual({ ok: true, value: { id: 'a' } });
     expect(parseJsonObjectInput('[1,2]')).toEqual({ ok: false, error: 'Top-level value must be a JSON object.' });

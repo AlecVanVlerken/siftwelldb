@@ -62,6 +62,7 @@ function createDbStub(overrides: Partial<DatabaseService> = {}): DatabaseService
 
 function createConnectedDbStub(overrides: Partial<DatabaseService> = {}): DatabaseService {
   return createDbStub({
+    resolveLegacyDocumentID: (_collection, id) => Promise.resolve(id),
     get isConnected() {
       return true;
     },
@@ -118,6 +119,20 @@ async function handle(router: ApiRouter, method: string, path: string, body = ''
 }
 
 describe('readLimit', () => {
+  it.each(['metadata', 'edit'])('deletes reserved-looking document ID %s through the legacy route', async (id) => {
+    const deleted: Array<string | number> = [];
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        deleteDocument: (_collection, documentId) => {
+          deleted.push(documentId);
+          return Promise.resolve();
+        },
+      }),
+    );
+    const response = await handle(router, 'DELETE', `/api/documents/books/${id}`);
+    expect(response.statusCode).toBe(200);
+    expect(deleted).toEqual([id]);
+  });
   it('reports numeric completed IDs and a readable error for a late SQL failure', async () => {
     const router = new ApiRouter(
       createConnectedDbStub({
@@ -463,7 +478,7 @@ describe('ApiRouter', () => {
     expect(calls).toEqual(['delete:books', 'prune:books', 'release']);
   });
 
-  it.each([null, [], { title: 'unknown' }, { title: 'off' }, { id: 'gzip' }, { '': 'gzip' }])(
+  it.each([null, [], { title: 'unknown' }, { title: 'off' }, { id: 'gzip' }])(
     'rejects invalid default maps before saving: %j',
     async (defaults) => {
       const res = await handle(
@@ -552,7 +567,7 @@ describe('ApiRouter', () => {
 
   it('replaces a document in one edit request', async () => {
     let replaced: unknown;
-    let replacedId = '';
+    let replacedId: string | number = '';
     const router = new ApiRouter(
       createConnectedDbStub({
         replaceDocument(_collection, id, document) {

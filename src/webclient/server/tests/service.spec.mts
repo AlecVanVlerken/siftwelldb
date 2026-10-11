@@ -48,7 +48,7 @@ function nameIndex(db: SimpleDbms): {
       { tree: { insert(key: Buffer, pointer: Buffer): Promise<void>; delete(key: Buffer): Promise<boolean> } }
     >;
   };
-  const entry = cache.treeCache.get('people:name');
+  const entry = cache.treeCache.get(JSON.stringify(['people', 'name']));
   if (!entry) throw new Error('Expected the secondary name index');
   return entry.tree;
 }

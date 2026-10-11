@@ -25,7 +25,7 @@ export function createCompressionLab(actions) {
     if (state.lab.busy) return;
     const context = captureRequestContext();
     const collection = state.selectedCol;
-    if (!collection) {
+    if (collection === null) {
       state.lab.error = 'Select a collection first.';
       renderLab();
       return;
@@ -56,7 +56,7 @@ export function createCompressionLab(actions) {
   async function applyLabAdvice() {
     if (state.lab.busy || actions.isCompressionBusy()) return;
     const collection = state.selectedCol;
-    if (!collection) {
+    if (collection === null) {
       actions.toast('Select a collection first.', 'warn');
       return;
     }
@@ -90,7 +90,7 @@ export function createCompressionLab(actions) {
   function renderLab() {
     const report = state.lab.report;
     const collection = state.selectedCol;
-    if (!collection) {
+    if (collection === null) {
       $('#cnt').innerHTML =
         `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>The Compression Lab is collection-scoped. Pick a collection in the object explorer, then open the Lab tab.</p></div></div>`;
       return;

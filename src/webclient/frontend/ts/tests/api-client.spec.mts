@@ -1,11 +1,51 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api } from '../api-client.js';
+import { api, collectionUrl, documentsUrl, documentUrl } from '../api-client.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe('api client', () => {
+  it.each(['.', '..', '', '__proto__', 'a/b?#+% 雪😀', '\uD800'])(
+    'uses exact JSON collection names across frontend collection requests: %j',
+    async (collection) => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(new Response('{}')));
+      for (const path of [
+        collectionUrl(collection),
+        collectionUrl(collection, 'indexes'),
+        collectionUrl(collection, 'storage'),
+        collectionUrl(collection, 'compression'),
+        documentsUrl(collection),
+        documentsUrl(collection, 'bulk-edit'),
+        documentsUrl(collection, 'search/image'),
+      ]) {
+        await api(path);
+        const [request] = fetchMock.mock.calls.at(-1)!;
+        if (typeof request !== 'string') throw new Error('Expected a frontend URL string');
+        const url = new URL(request, 'http://localhost');
+        expect(JSON.parse(url.searchParams.get('collection')!)).toBe(collection);
+        expect(url.pathname).not.toContain(collection === '.' || collection === '..' ? collection : '%');
+      }
+    },
+  );
+  it.each(['', 'metadata', 'edit', '.', '..', 'normal-id', 'a/b?#% +', '雪😀', 42, '42'])(
+    'preserves the exact document address in actual frontend requests: %j',
+    async (id) => {
+      const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(new Response('{}')));
+      const collection = '../a/b?#雪';
+      for (const operation of [undefined, 'metadata', 'edit'] as const) {
+        await api(documentUrl(collection, id, operation), { method: operation === 'edit' ? 'POST' : 'GET' });
+        const [request] = fetchMock.mock.calls.at(-1)!;
+        if (typeof request !== 'string') throw new Error('Expected a frontend URL string');
+        const url = new URL(request, 'http://localhost');
+        expect(url.pathname).toBe(`/api/document${operation ? `/${operation}` : ''}`);
+        expect(JSON.parse(url.searchParams.get('collection')!)).toBe(collection);
+        expect(JSON.parse(url.searchParams.get('id')!)).toBe(id);
+      }
+      await api(documentUrl(collection, id), { method: 'DELETE' });
+      expect(fetchMock.mock.calls.at(-1)?.[1]?.method).toBe('DELETE');
+    },
+  );
   it('serializes object bodies as JSON', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
 

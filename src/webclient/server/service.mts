@@ -20,7 +20,7 @@ import {
   type FieldCompressionDefaults,
   type FieldCompressionOverrides,
 } from '../../database/compression.mjs';
-import { imageMimeForField, isImageField } from '../../database/document.mjs';
+import { imageMimeForField, isImageField, validateDocumentId } from '../../database/document.mjs';
 import { generateWikiArticles } from '../fixtures/wiki.mjs';
 import { RealFile } from '../../storage/file.mjs';
 import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../../compaction/compaction.mjs';
@@ -561,7 +561,7 @@ export class DatabaseService {
 
   // ── Collections ──────────────────────────────────────────────
 
-  /** Return the list of collection names, hiding internal _-prefixed ones. */
+  /** Return user collections; the backend excludes reserved metadata entries. */
   async getCollections(): Promise<string[]> {
     return this.runExclusive('list-collections', async () => this.getCollectionsUnlocked());
   }
@@ -569,7 +569,7 @@ export class DatabaseService {
   private async getCollectionsUnlocked(): Promise<string[]> {
     this.ensureConnected();
     const all = await this.dbms!.getCollections();
-    return all.filter((c) => !c.startsWith('_'));
+    return all;
   }
 
   /** Delete an entire collection. */
@@ -607,7 +607,6 @@ export class DatabaseService {
         Array.isArray(defaults) ||
         Object.entries(defaults).some(
           ([field, codec]) =>
-            !field.trim() ||
             field === 'id' ||
             field === '_order_' ||
             field.startsWith('_layout_') ||
@@ -739,7 +738,7 @@ export class DatabaseService {
       this.ensureConnected();
 
       const report = await this.recommendCollectionLabUnlocked(request);
-      const defaults: Record<string, CompressionAlgorithm> = {};
+      const defaults = Object.create(null) as Record<string, CompressionAlgorithm>;
       for (const field of report.perField) {
         defaults[field.field] = field.recommended;
       }
@@ -760,7 +759,7 @@ export class DatabaseService {
    * document's head block: `chainLength × blockSize`. Excludes any
    * index entries shared across the collection.
    */
-  async getDocumentStoredBytes(collection: string, id: string): Promise<number> {
+  async getDocumentStoredBytes(collection: string, id: string | number): Promise<number> {
     return this.runExclusive('document-storage', async () => {
       this.ensureConnected();
       return this.dbms!.getDocumentStoredBytes(collection, id);
@@ -769,7 +768,7 @@ export class DatabaseService {
 
   async getDocumentMetadata(
     collection: string,
-    id: string,
+    id: string | number,
   ): Promise<{ storedSize: number; blockSize: number; compressions: Record<string, string> }> {
     return this.runExclusive('document-metadata', async () => {
       this.ensureConnected();
@@ -778,7 +777,7 @@ export class DatabaseService {
         string,
         unknown
       >;
-      const compressions: Record<string, string> = {};
+      const compressions = Object.create(null) as Record<string, string>;
       for (const [key, value] of Object.entries(encoded)) {
         if (key === 'id' || value === null || typeof value !== 'object' || !('payloadBase64' in value)) continue;
         const compression = (value as { compression?: string }).compression;
@@ -990,10 +989,27 @@ export class DatabaseService {
   }
 
   /** Retrieve a specific document by its ID. */
-  async getDocumentById(collection: string, id: string, options?: { encoded?: boolean }): Promise<string> {
+  async getDocumentById(collection: string, id: string | number, options?: { encoded?: boolean }): Promise<string> {
     return this.runExclusive('get-document', async () => {
       this.ensureConnected();
       return this.dbms!.getDocumentById(collection, id, options);
+    });
+  }
+
+  /** Historical path IDs have no type tag; resolve them only for legacy routes. */
+  async resolveLegacyDocumentID(collection: string, id: string): Promise<string | number> {
+    return this.runExclusive('legacy-document-address', () => {
+      this.ensureConnected();
+      try {
+        validateDocumentId(id);
+        const type = this.dbms!.describeCollection(collection).find((field) => field.name === 'id')?.type;
+        if (!type) throw new Error('Collection does not exist');
+        const resolved = type === 'number' ? Number(id) : id;
+        validateDocumentId(resolved);
+        return Promise.resolve(resolved);
+      } catch (error) {
+        throw new DatabaseInputError(error instanceof Error ? error.message : String(error));
+      }
     });
   }
 
@@ -1004,7 +1020,7 @@ export class DatabaseService {
    * DBMS removes normal lookup paths and tombstones the semantic entry, while
    * full vacuum later removes the retained tombstone storage.
    */
-  async deleteDocument(collection: string, id: string): Promise<void> {
+  async deleteDocument(collection: string, id: string | number): Promise<void> {
     await this.runExclusive('delete-document', async () => {
       this.ensureConnected();
       await this.dbms!.deleteDocumentById(collection, id);
@@ -1022,7 +1038,7 @@ export class DatabaseService {
   ): Promise<{ affected: number }> {
     const result = await this.runExclusive('bulk-documents', async () => {
       this.ensureConnected();
-      if (edit && (!edit.field.trim() || edit.field === 'id')) {
+      if (edit && edit.field === 'id') {
         throw new DatabaseInputError('Choose a field other than the primary ID');
       }
       const ids: Array<string | number> = [];
@@ -1067,7 +1083,7 @@ export class DatabaseService {
   }
 
   /** Edit a single field in a document by ID. */
-  async editDocument(collection: string, id: string, field: string, value: unknown): Promise<void> {
+  async editDocument(collection: string, id: string | number, field: string, value: unknown): Promise<void> {
     await this.runExclusive('edit-document', async () => {
       this.ensureConnected();
       const existing = JSON.parse(await this.dbms!.getDocumentById(collection, id)) as Record<string, unknown>;
@@ -1086,7 +1102,7 @@ export class DatabaseService {
    */
   async replaceDocument(
     collection: string,
-    id: string,
+    id: string | number,
     newDocument: unknown,
     compression?: FieldCompressionOverrides,
   ): Promise<void> {

@@ -4,6 +4,23 @@ type ApiOptions = Omit<RequestInit, 'body'> & {
 
 export type DisconnectedConnection = { connected: false; filepath: string | null };
 
+/** Keep document identity out of path segments and preserve its JSON type. */
+export function documentUrl(collection: string, id: string | number, operation?: 'metadata' | 'edit'): string {
+  const address = new URLSearchParams({ collection: JSON.stringify(collection), id: JSON.stringify(id) });
+  return `/api/document${operation ? `/${operation}` : ''}?${address}`;
+}
+
+export function collectionUrl(collection: string, operation?: 'storage' | 'indexes' | 'compression'): string {
+  return `/api/collection${operation ? `/${operation}` : ''}?${new URLSearchParams({ collection: JSON.stringify(collection) })}`;
+}
+
+export function documentsUrl(
+  collection: string,
+  operation?: 'bulk-delete' | 'bulk-edit' | 'search' | 'search/photos' | 'search/image',
+): string {
+  return `/api/documents${operation ? `/${operation}` : ''}?${new URLSearchParams({ collection: JSON.stringify(collection) })}`;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,

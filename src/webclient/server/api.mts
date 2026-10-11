@@ -14,7 +14,7 @@ import {
   type FieldCompressionDefaults,
   type FieldCompressionOverrides,
 } from '../../database/compression.mjs';
-import { isFieldValue, parseRawDocument } from '../../database/document.mjs';
+import { isFieldValue, parseRawDocument, validateDocumentId } from '../../database/document.mjs';
 import { IndexValidationError } from '../../database/dbmsback.mjs';
 
 const ENV_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../.env');
@@ -124,6 +124,31 @@ function validateDocument(collection: string, value: unknown): void {
   }
 }
 
+function readAddressCollection(url: URL): string {
+  const collections = url.searchParams.getAll('collection');
+  if (collections.length !== 1) throw new ApiHttpError(400, 'Provide one JSON collection name');
+  try {
+    const collection: unknown = JSON.parse(collections[0]);
+    if (typeof collection !== 'string') throw new Error('Collection name must be a string');
+    return collection;
+  } catch (error) {
+    throw new ApiHttpError(400, error instanceof Error ? error.message : String(error));
+  }
+}
+
+function readDocumentAddress(url: URL): { collection: string; id: string | number } {
+  const collection = readAddressCollection(url);
+  const ids = url.searchParams.getAll('id');
+  if (ids.length !== 1) throw new ApiHttpError(400, 'Provide one JSON document id');
+  try {
+    const id: unknown = JSON.parse(ids[0]);
+    validateDocumentId(id);
+    return { collection, id };
+  } catch (error) {
+    throw new ApiHttpError(400, error instanceof Error ? error.message : String(error));
+  }
+}
+
 /**
  * Send a JSON response.
  *
@@ -192,9 +217,31 @@ export class ApiRouter {
    */
   async handle(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
     const method = req.method ?? 'GET';
-    const pathname = url.pathname;
+    let pathname = url.pathname;
+    let addressedCollection: string | undefined;
+    const readCollectionSegment = (segment: string): string => addressedCollection ?? decodeURIComponent(segment);
 
     try {
+      // Canonical collection routes keep names out of URL path normalization.
+      // Reuse the legacy handlers after decoding; this string is never reparsed as a URL.
+      const collectionRoute = pathname.match(/^\/api\/collection(?:\/(storage|indexes|compression))?$/);
+      const documentsRoute =
+        pathname === '/api/documents' || url.searchParams.has('collection')
+          ? pathname.match(/^\/api\/documents(?:\/(bulk-delete|bulk-edit|search(?:\/(photos|image))?))?$/)
+          : null;
+      if (collectionRoute || documentsRoute) {
+        addressedCollection = readAddressCollection(url);
+        const suffix = collectionRoute?.[1] ?? documentsRoute?.[1];
+        if (suffix === 'compression') {
+          if (method !== 'GET') {
+            sendError(res, 404, 'API endpoint not found');
+            return;
+          }
+          pathname = '/api/compression/defaults';
+        } else {
+          pathname = `/api/${collectionRoute ? 'collections' : 'documents'}/@addressed@${suffix ? `/${suffix}` : ''}`;
+        }
+      }
       // ── Connection management ──────────────────────────────
 
       if (method === 'GET' && pathname === '/api/compression/profiles') {
@@ -332,8 +379,8 @@ export class ApiRouter {
       }
 
       if (method === 'GET' && pathname === '/api/compression/defaults') {
-        const collection = url.searchParams.get('collection');
-        if (!collection) {
+        const collection = addressedCollection ?? url.searchParams.get('collection');
+        if (collection === null) {
           sendError(res, 400, 'Missing collection');
           return;
         }
@@ -346,13 +393,12 @@ export class ApiRouter {
         const body = await parseBody(req);
         const collection = body['collection'];
         const defaults = body['defaults'];
-        if (typeof collection !== 'string' || !collection.trim()) throw new ApiHttpError(400, 'Missing collection');
+        if (typeof collection !== 'string') throw new ApiHttpError(400, 'Missing collection');
         if (defaults === null || typeof defaults !== 'object' || Array.isArray(defaults)) {
           throw new ApiHttpError(400, 'defaults must be a JSON object');
         }
         for (const [field, codec] of Object.entries(defaults)) {
           if (
-            !field.trim() ||
             field === 'id' ||
             field === '_order_' ||
             field.startsWith('_layout_') ||
@@ -378,11 +424,11 @@ export class ApiRouter {
         const draftValue = body['draftValue'];
         const sampleSize = body['sampleSize'];
 
-        if (typeof collection !== 'string' || collection.length === 0) {
+        if (typeof collection !== 'string') {
           sendError(res, 400, 'Missing collection');
           return;
         }
-        if (typeof field !== 'string' || field.length === 0) {
+        if (typeof field !== 'string') {
           sendError(res, 400, 'Missing field');
           return;
         }
@@ -416,7 +462,7 @@ export class ApiRouter {
         const workload = body['workload'];
         const sampleSize = body['sampleSize'];
 
-        if (typeof collection !== 'string' || collection.length === 0) {
+        if (typeof collection !== 'string') {
           sendError(res, 400, 'Missing collection');
           return;
         }
@@ -440,7 +486,7 @@ export class ApiRouter {
         const workload = body['workload'];
         const sampleSize = body['sampleSize'];
 
-        if (typeof collection !== 'string' || collection.length === 0) {
+        if (typeof collection !== 'string') {
           sendError(res, 400, 'Missing collection');
           return;
         }
@@ -495,7 +541,7 @@ export class ApiRouter {
 
       const fieldIndexMatch = pathname.match(/^\/api\/collections\/([^/]+)\/indexes$/);
       if (fieldIndexMatch && (method === 'GET' || method === 'PUT')) {
-        const collection = decodeURIComponent(fieldIndexMatch[1]);
+        const collection = readCollectionSegment(fieldIndexMatch[1]);
         if (method === 'GET') {
           sendJSON(res, 200, { fields: await this.db.getFieldIndexConfig(collection) });
         } else {
@@ -564,7 +610,7 @@ export class ApiRouter {
       // DELETE /api/collections/:collection
       const collectionDeleteMatch = pathname.match(/^\/api\/collections\/([^/]+)$/);
       if (method === 'DELETE' && collectionDeleteMatch) {
-        const collection = decodeURIComponent(collectionDeleteMatch[1]);
+        const collection = readCollectionSegment(collectionDeleteMatch[1]);
         await this.db.deleteCollection(
           collection,
           this.conv ? () => this.conv!.removeCollection(collection) : undefined,
@@ -578,11 +624,14 @@ export class ApiRouter {
       const collectionMatch = pathname.match(/^\/api\/documents\/([^/]+)$/);
       const documentMatch = pathname.match(/^\/api\/documents\/([^/]+)\/([^/]+)$/);
       const editMatch = pathname.match(/^\/api\/documents\/([^/]+)\/([^/]+)\/edit$/);
+      const exactDocument = pathname === '/api/document';
+      const exactMetadata = pathname === '/api/document/metadata';
+      const exactEdit = pathname === '/api/document/edit';
 
       // GET /api/documents/:collection/wordsearch?word=...&limit=...&offset=...
       const wordSearchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/wordsearch$/);
       if (method === 'GET' && wordSearchMatch) {
-        const collection = decodeURIComponent(wordSearchMatch[1]);
+        const collection = readCollectionSegment(wordSearchMatch[1]);
         const word = url.searchParams.get('word') ?? '';
         const limit = readLimit(url, 50, 10000);
         const offset = readOffset(url) ?? 0;
@@ -599,7 +648,7 @@ export class ApiRouter {
       // GET /api/documents/:collection/contentsearch?word=...&limit=...&offset=...
       const contentSearchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/contentsearch$/);
       if (method === 'GET' && contentSearchMatch) {
-        const collection = decodeURIComponent(contentSearchMatch[1]);
+        const collection = readCollectionSegment(contentSearchMatch[1]);
         const word = url.searchParams.get('word') ?? '';
         const limit = readLimit(url, 50, 10000);
         const offset = readOffset(url) ?? 0;
@@ -615,7 +664,7 @@ export class ApiRouter {
       // GET /api/documents/:collection/search
       const searchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search$/);
       if (method === 'GET' && searchMatch) {
-        const collection = decodeURIComponent(searchMatch[1]);
+        const collection = readCollectionSegment(searchMatch[1]);
         const query = url.searchParams.get('q');
         const limit = readLimit(url, 10, 100);
 
@@ -633,7 +682,7 @@ export class ApiRouter {
       // GET /api/documents/:collection/search/photos
       const photoSearchMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search\/photos$/);
       if (method === 'GET' && photoSearchMatch) {
-        const collection = decodeURIComponent(photoSearchMatch[1]);
+        const collection = readCollectionSegment(photoSearchMatch[1]);
         const query = url.searchParams.get('q');
         const limit = readLimit(url, 10, 100);
 
@@ -651,7 +700,7 @@ export class ApiRouter {
       // POST /api/documents/:collection/search/image
       const searchImageMatch = pathname.match(/^\/api\/documents\/([^/]+)\/search\/image$/);
       if (method === 'POST' && searchImageMatch) {
-        const collection = decodeURIComponent(searchImageMatch[1]);
+        const collection = readCollectionSegment(searchImageMatch[1]);
         const limit = readLimit(url, 10, 100);
         const body = await parseBody(req, IMAGE_JSON_BODY_LIMIT_BYTES);
         const base64Image = body['image'];
@@ -671,7 +720,7 @@ export class ApiRouter {
 
       // GET /api/documents/:collection?cursor=...&limit=...&iterableKey=...&sortBy=...&sortDir=asc|desc
       if (method === 'GET' && collectionMatch) {
-        const collection = decodeURIComponent(collectionMatch[1]);
+        const collection = readCollectionSegment(collectionMatch[1]);
         const iterableKey = url.searchParams.get('iterableKey') ?? 'id';
         const cursor = url.searchParams.get('cursor') ?? undefined;
         const limit = readLimit(url, 100, 10000);
@@ -698,7 +747,7 @@ export class ApiRouter {
       // POST /api/documents/:collection
       const bulkMatch = pathname.match(/^\/api\/documents\/([^/]+)\/bulk-(delete|edit)$/);
       if (method === 'POST' && bulkMatch) {
-        const collection = decodeURIComponent(bulkMatch[1]);
+        const collection = readCollectionSegment(bulkMatch[1]);
         const body = await parseBody(req);
         const ids = body['ids'];
         const all = body['all'];
@@ -714,6 +763,13 @@ export class ApiRouter {
         ) {
           throw new ApiHttpError(400, 'Provide either all: true or a nonempty list of at most 10000 document IDs');
         }
+        if (Array.isArray(ids)) {
+          try {
+            ids.forEach((id: unknown) => validateDocumentId(id));
+          } catch (error) {
+            throw new ApiHttpError(400, error instanceof Error ? error.message : String(error));
+          }
+        }
         const selection = all === true ? { all: true as const } : { ids: ids as Array<string | number> };
         let edit: { field: string; value: unknown } | undefined;
         if (bulkMatch[2] === 'edit') {
@@ -721,7 +777,6 @@ export class ApiRouter {
           const value = body['value'];
           if (
             typeof field !== 'string' ||
-            !field.trim() ||
             field === 'id' ||
             !(['string', 'boolean'].includes(typeof value) || (typeof value === 'number' && Number.isFinite(value)))
           ) {
@@ -735,7 +790,7 @@ export class ApiRouter {
 
       // POST /api/documents/:collection
       if (method === 'POST' && collectionMatch) {
-        const collection = decodeURIComponent(collectionMatch[1]);
+        const collection = readCollectionSegment(collectionMatch[1]);
         const body = await parseBody(req);
         const document = body['document'];
         const compression = readCompression(body['compression']);
@@ -750,9 +805,23 @@ export class ApiRouter {
       }
 
       // DELETE /api/documents/:collection/:id
-      if (method === 'DELETE' && documentMatch && !pathname.endsWith('/metadata') && !pathname.endsWith('/edit')) {
-        const collection = decodeURIComponent(documentMatch[1]);
-        const id = decodeURIComponent(documentMatch[2]);
+      if ((method === 'GET' && exactDocument) || (method === 'DELETE' && (exactDocument || documentMatch))) {
+        const { collection, id } = exactDocument
+          ? readDocumentAddress(url)
+          : {
+              collection: readCollectionSegment(documentMatch![1]),
+              id: await this.db.resolveLegacyDocumentID(
+                readCollectionSegment(documentMatch![1]),
+                decodeURIComponent(documentMatch![2]),
+              ),
+            };
+        if (method === 'GET') {
+          const document = await this.db.getDocumentById(collection, id, {
+            encoded: url.searchParams.get('encoded') === 'true',
+          });
+          sendJSON(res, 200, { document: JSON.parse(document) });
+          return;
+        }
         await this.db.deleteDocument(collection, id);
         sendJSON(res, 200, { message: 'Document deleted' });
         return;
@@ -760,9 +829,16 @@ export class ApiRouter {
 
       // GET /api/documents/:collection/:id/metadata
       const metaMatch = pathname.match(/^\/api\/documents\/([^/]+)\/([^/]+)\/metadata$/);
-      if (method === 'GET' && metaMatch) {
-        const collection = decodeURIComponent(metaMatch[1]);
-        const id = decodeURIComponent(metaMatch[2]);
+      if (method === 'GET' && (exactMetadata || metaMatch)) {
+        const { collection, id } = exactMetadata
+          ? readDocumentAddress(url)
+          : {
+              collection: readCollectionSegment(metaMatch![1]),
+              id: await this.db.resolveLegacyDocumentID(
+                readCollectionSegment(metaMatch![1]),
+                decodeURIComponent(metaMatch![2]),
+              ),
+            };
 
         sendJSON(res, 200, await this.db.getDocumentMetadata(collection, id));
         return;
@@ -771,7 +847,7 @@ export class ApiRouter {
       // GET /api/collections/:collection/storage
       const storageMatch = pathname.match(/^\/api\/collections\/([^/]+)\/storage$/);
       if (method === 'GET' && storageMatch) {
-        const collection = decodeURIComponent(storageMatch[1]);
+        const collection = readCollectionSegment(storageMatch[1]);
         const storage = await this.db.getCollectionStorage(collection);
         sendJSON(res, 200, storage);
         return;
@@ -782,9 +858,16 @@ export class ApiRouter {
       // Two body shapes:
       //   { document: {...} }       → whole-document replace (preferred)
       //   { field: ..., value: ... } → legacy single-field edit (kept for callers)
-      if (method === 'POST' && editMatch) {
-        const collection = decodeURIComponent(editMatch[1]);
-        const id = decodeURIComponent(editMatch[2]);
+      if (method === 'POST' && (exactEdit || editMatch)) {
+        const { collection, id } = exactEdit
+          ? readDocumentAddress(url)
+          : {
+              collection: readCollectionSegment(editMatch![1]),
+              id: await this.db.resolveLegacyDocumentID(
+                readCollectionSegment(editMatch![1]),
+                decodeURIComponent(editMatch![2]),
+              ),
+            };
         const body = await parseBody(req);
         const document = body['document'];
         if (document !== undefined) {
@@ -795,14 +878,14 @@ export class ApiRouter {
           const compression = readCompression(body['compression']);
           validateDocument(collection, document);
           const replacementId = (document as Record<string, unknown>)['id'];
-          if (String(replacementId) !== id) throw new ApiHttpError(400, 'Document id cannot be changed');
+          if (replacementId !== id) throw new ApiHttpError(400, 'Document id cannot be changed');
           await this.db.replaceDocument(collection, id, document, compression);
           sendJSON(res, 200, { message: 'Document replaced' });
           return;
         }
         const field = body['field'];
         const value = body['value'];
-        if (typeof field !== 'string' || !field) {
+        if (typeof field !== 'string') {
           sendError(res, 400, 'Missing field (or document)');
           return;
         }
@@ -833,7 +916,7 @@ export class ApiRouter {
         // GET /api/conversational/model/collection/:name
         const collModelMatch = pathname.match(/^\/api\/conversational\/model\/collection\/([^/]+)$/);
         if (method === 'GET' && collModelMatch) {
-          const collection = decodeURIComponent(collModelMatch[1]);
+          const collection = readCollectionSegment(collModelMatch[1]);
           sendJSON(res, 200, { hasModel: this.conv.hasExploreForCollection(collection) });
           return;
         }
@@ -882,8 +965,7 @@ export class ApiRouter {
                 return { role, text: String(m['text']) };
               })
             : [];
-          const collection =
-            typeof body['collection'] === 'string' && body['collection'].length > 0 ? body['collection'] : undefined;
+          const collection = typeof body['collection'] === 'string' ? body['collection'] : undefined;
 
           const response = await this.runDatabaseExclusive('conversational-ask', () =>
             this.conv!.ask(question, history, collection),

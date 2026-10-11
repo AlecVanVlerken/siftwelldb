@@ -1,3 +1,8 @@
+/** Dictionaries indexed by database names must never consult inherited properties. */
+export function createDictionary<T>(values: Record<string, T> = {}): Record<string, T> {
+  return Object.assign(Object.create(null) as Record<string, T>, values);
+}
+
 export type WebclientState = {
   connected: boolean;
   filepath: string | null;
@@ -48,8 +53,8 @@ export const state: WebclientState = {
   filepath: null,
   geminiKeySet: false,
   collections: [],
-  countsByColl: {},
-  docsByColl: {},
+  countsByColl: createDictionary(),
+  docsByColl: createDictionary(),
   model: null,
   selectedCol: null,
   tab: 'overview',
@@ -59,8 +64,8 @@ export const state: WebclientState = {
   selectedDocIndex: null,
   dataFilter: '',
   dataSort: null,
-  treeExpanded: {},
-  modelPromptDismissed: {},
+  treeExpanded: createDictionary(),
+  modelPromptDismissed: createDictionary(),
   modelGenerating: false,
   seedBusy: false,
   search: {
@@ -76,8 +81,8 @@ export const state: WebclientState = {
   databaseStatus: null,
   compression: {
     workload: 0.5,
-    recommendations: {},
-    defaults: {},
+    recommendations: createDictionary(),
+    defaults: createDictionary(),
   },
   lab: {
     collection: 'wiki_lab',
@@ -132,8 +137,8 @@ export function resetDisconnectedState(): void {
   state.connected = false;
   state.filepath = null;
   state.collections = [];
-  state.docsByColl = {};
-  state.countsByColl = {};
+  state.docsByColl = createDictionary();
+  state.countsByColl = createDictionary();
   state.model = null;
   state.selectedCol = null;
   state.tab = 'overview';
@@ -143,8 +148,8 @@ export function resetDisconnectedState(): void {
   state.selectedDocIndex = null;
   state.dataFilter = '';
   state.dataSort = null;
-  state.treeExpanded = {};
-  state.modelPromptDismissed = {};
+  state.treeExpanded = createDictionary();
+  state.modelPromptDismissed = createDictionary();
   state.modelGenerating = false;
   state.seedBusy = false;
   state.search = {
@@ -158,8 +163,8 @@ export function resetDisconnectedState(): void {
     embedStatus: state.search.embedStatus,
   };
   state.databaseStatus = null;
-  state.compression.recommendations = {};
-  state.compression.defaults = {};
+  state.compression.recommendations = createDictionary();
+  state.compression.defaults = createDictionary();
   state.lab.report = null;
   state.lab.error = null;
   state.lab.collection = 'wiki_lab';

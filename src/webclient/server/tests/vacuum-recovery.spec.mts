@@ -210,7 +210,7 @@ describe('recoverable vacuum replacement on real files', () => {
       await service.setFieldIndexed('books', '_payload', false);
       for (let i = 0; i < 12; i++)
         await service.insertDocument('books', { id: i, score: i % 2, _payload: 'x'.repeat(8000) });
-      for (let i = 0; i < 8; i++) await service.deleteDocument('books', String(i));
+      for (let i = 0; i < 8; i++) await service.deleteDocument('books', i);
       const result = await service.vacuum();
       expect(result.bytesSaved).toBeGreaterThan(0);
       expect((await service.getDocuments('books')).total).toBe(4);

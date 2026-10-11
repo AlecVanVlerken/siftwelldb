@@ -1,12 +1,13 @@
 /* eslint-disable */
 // @ts-nocheck
-import { api as requestApi } from './api-client.js';
+import { api as requestApi, collectionUrl, documentsUrl, documentUrl } from './api-client.js';
 import { destroyAiCharts, drawChart } from './charts.js';
 import { createCompressionLab } from './compression-lab.js';
 import {
   hasImageField,
   parseSemanticResult,
   renderSemanticCell,
+  semanticIndexLabel,
   semanticResultColumns,
   semanticTypeBadge,
 } from './semantic-results.js';
@@ -16,6 +17,7 @@ import { detectType, docSize, esc, fmtNum, fmtSize, imageDataUrlFromValue, isIma
 import { openModal, closeModal } from './modals.js';
 import {
   captureRequestContext,
+  createDictionary,
   invalidateRequestContext,
   isCurrentRequestContext,
   resetDisconnectedState,
@@ -75,8 +77,8 @@ $('#connect-sql-reference').addEventListener('click', openSqlReference);
 
 let documentModalMode = 'document';
 let documentModalRequest = 0;
-let documentModalImagePayloads = {};
-let drawerEditImagePayloads = {};
+let documentModalImagePayloads = createDictionary();
+let drawerEditImagePayloads = createDictionary();
 const COMPRESSION_OPTIONS = ['inherit', 'off', 'none', 'gzip', 'deflate', 'brotli', 'zstd-fast', 'zstd'];
 const DOCUMENT_PAGE_SIZE = 100;
 const documentPages = new Map();
@@ -146,8 +148,8 @@ function resetConnectionView() {
   compressionBusy = false;
   compressionDefaultsError = null;
   compressionDefaultsRequest++;
-  documentModalImagePayloads = {};
-  drawerEditImagePayloads = {};
+  documentModalImagePayloads = createDictionary();
+  drawerEditImagePayloads = createDictionary();
   for (const id of ['doc-save', 'mdl-save', 'mdl-gen', 'mdl-reload']) $('#' + id).disabled = false;
   $('#mdl-json').readOnly = false;
   closeDrawer();
@@ -174,8 +176,8 @@ function resetSelectionView() {
   state.chatHistory = [];
   state.dataFilter = '';
   state.dataSort = null;
-  state.compression.recommendations = {};
-  state.compression.defaults = {};
+  state.compression.recommendations = createDictionary();
+  state.compression.defaults = createDictionary();
   compressionBusy = false;
   compressionDefaultsError = null;
   compressionDefaultsRequest++;
@@ -197,9 +199,7 @@ async function loadCollectionDocuments(c, append = false) {
   const previous = state.docsByColl[c] || [];
   const limit = append ? DOCUMENT_PAGE_SIZE : Math.min(10000, Math.max(DOCUMENT_PAGE_SIZE, previous.length));
   const offset = append ? previous.length : 0;
-  const { documents, total, hasMore } = await api(
-    `/api/documents/${encodeURIComponent(c)}?limit=${limit}&offset=${offset}`,
-  );
+  const { documents, total, hasMore } = await api(`${documentsUrl(c)}&limit=${limit}&offset=${offset}`);
   if (!isCurrentRequestContext(context) || documentRequests.get(c) !== request) return false;
   const parsed = (documents || []).map((d) => JSON.parse(d));
   const next = append ? [...previous, ...parsed] : parsed;
@@ -328,7 +328,7 @@ async function loadCollections() {
       }),
     );
     if (!isCurrentRequestContext(context) || request !== collectionsRequest) return;
-    if (state.selectedCol && !live.has(state.selectedCol)) {
+    if (state.selectedCol !== null && !live.has(state.selectedCol)) {
       resetSelectionView();
       state.selectedCol = null;
       state.tab = 'overview';
@@ -428,7 +428,7 @@ async function seedSemanticImageDemo() {
 }
 
 function isValidCollectionName(name) {
-  return /^[A-Za-z][A-Za-z0-9_]*$/.test(name);
+  return typeof name === 'string' && name.length > 0;
 }
 
 function showDocumentModalError(message) {
@@ -438,7 +438,7 @@ function showDocumentModalError(message) {
 }
 
 function readCompressionOverrides(root = document) {
-  const overrides = {};
+  const overrides = createDictionary();
   root.querySelectorAll('[data-doc-compression-field]').forEach((select) => {
     const value = select.value;
     if (value && value !== 'inherit') overrides[select.dataset.docCompressionField] = value;
@@ -492,7 +492,7 @@ function wireFieldIndexControls(root, collection, config, refresh, current = () 
           progress.textContent = requested ? 'Building index… This may take time.' : 'Removing index…';
           root.appendChild(progress);
           try {
-            const result = await api(`/api/collections/${encodeURIComponent(collection)}/indexes`, {
+            const result = await api(collectionUrl(collection, 'indexes'), {
               method: 'PUT',
               body: { field: checkbox.dataset.fieldIndex, indexed: requested },
             });
@@ -530,7 +530,8 @@ async function wireDocumentIndexControls(textarea, root, collection, current = (
   const context = captureRequestContext();
   root.textContent = 'Loading field settings…';
   try {
-    const { fields: config } = await api(`/api/collections/${encodeURIComponent(collection)}/indexes`);
+    const { fields } = await api(collectionUrl(collection, 'indexes'));
+    const config = createDictionary(fields);
     if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
     const renderSettings = () => {
       if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
@@ -543,7 +544,7 @@ async function wireDocumentIndexControls(textarea, root, collection, current = (
     root.addEventListener('field-index-updated', async () => {
       if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
       try {
-        const updated = await api(`/api/collections/${encodeURIComponent(collection)}/indexes`);
+        const updated = await api(collectionUrl(collection, 'indexes'));
         if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
         Object.assign(config, updated.fields);
         renderSettings();
@@ -569,7 +570,7 @@ function renderDocumentCompressionControls(collection, documentValue, meta) {
       typeof documentValue[key] === 'string',
   );
   if (!fields.length) return '<div class="empty-state" style="padding:10px;"><p>No compressible fields yet.</p></div>';
-  const current = meta?.compressions || {};
+  const current = createDictionary(meta?.compressions);
   const workload = Math.round(state.compression.workload * 100);
   return `<div class="psec" style="margin-top:10px;">
     <h3>Field compression <span class="actions"><label style="font-size:11px;color:var(--t3);text-transform:none;letter-spacing:0;">Workload <span id="doc-cmp-workload-label">${workload}%</span></label></span></h3>
@@ -691,7 +692,7 @@ function openCollectionDocumentModal() {
   $('#doc-modal-sub').textContent = 'Collections are created by inserting their first JSON document.';
   $('#doc-collection-wrap').classList.remove('hidden');
   $('#doc-collection').value = '';
-  documentModalImagePayloads = {};
+  documentModalImagePayloads = createDictionary();
   $('#doc-json').value = JSON.stringify({ id: 'first-document' }, null, 2);
   resetDocumentImageAttachment();
   $('#doc-err').classList.add('hidden');
@@ -701,7 +702,7 @@ function openCollectionDocumentModal() {
 }
 
 function openAddDocumentModal() {
-  if (!state.selectedCol) {
+  if (state.selectedCol === null) {
     toast('Select a collection first.', 'warn');
     return;
   }
@@ -731,7 +732,7 @@ function openAddDocumentModal() {
 }
 
 $('#doc-collection').addEventListener('input', () => {
-  const collection = $('#doc-collection').value.trim();
+  const collection = $('#doc-collection').value;
   const request = ++documentModalRequest;
   $('#doc-indexes').innerHTML = '';
   if (isValidCollectionName(collection))
@@ -739,7 +740,7 @@ $('#doc-collection').addEventListener('input', () => {
       $('#doc-json'),
       $('#doc-indexes'),
       collection,
-      () => request === documentModalRequest && $('#doc-collection').value.trim() === collection,
+      () => request === documentModalRequest && $('#doc-collection').value === collection,
     );
 });
 
@@ -748,13 +749,9 @@ async function saveDocumentModal() {
   const context = captureRequestContext();
   const request = documentModalRequest;
   const mode = documentModalMode;
-  const collection = $('#doc-collection').value.trim();
-  if (!collection) {
+  const collection = $('#doc-collection').value;
+  if (!collection && mode === 'collection') {
     showDocumentModalError('Collection name is required.');
-    return;
-  }
-  if (!isValidCollectionName(collection)) {
-    showDocumentModalError('Start the collection name with a letter; use only letters, numbers and underscores.');
     return;
   }
 
@@ -767,7 +764,7 @@ async function saveDocumentModal() {
   const save = $('#doc-save');
   save.disabled = true;
   try {
-    await api(`/api/documents/${encodeURIComponent(collection)}`, {
+    await api(documentsUrl(collection), {
       method: 'POST',
       body: { document: parsed.value },
     });
@@ -815,8 +812,8 @@ function selectCollection(c) {
   state.search.elapsedMs = null;
   state.chatHistory = [];
   state.selectedDoc = null;
-  state.compression.recommendations = {};
-  state.compression.defaults = {};
+  state.compression.recommendations = createDictionary();
+  state.compression.defaults = createDictionary();
   state.lab.collection = c;
   state.lab.report = null;
   state.lab.error = null;
@@ -944,7 +941,7 @@ function renderTree() {
         async () => {
           const context = captureRequestContext('database');
           try {
-            await api(`/api/collections/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' });
+            await api(collectionUrl(b.dataset.del), { method: 'DELETE' });
             if (!isCurrentRequestContext(context)) return;
             toast(`Dropped “${b.dataset.del}”`, 'ok');
             invalidateStorageCache(b.dataset.del);
@@ -966,10 +963,10 @@ function renderTree() {
 
 function renderTabs() {
   const otabs = $('#otabs');
-  const dis = !state.selectedCol;
+  const dis = state.selectedCol === null;
   otabs.innerHTML = `
     <button class="ot ${state.tab === 'overview' ? 'on' : ''}" data-t="overview"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>Overview</button>
-    <button class="ot ${state.tab === 'data' ? 'on' : ''}" data-t="data" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span>Data${state.selectedCol ? `<span class="badge">${(state.docsByColl[state.selectedCol] || []).length}</span>` : ''}</button>
+    <button class="ot ${state.tab === 'data' ? 'on' : ''}" data-t="data" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span>Data${state.selectedCol !== null ? `<span class="badge">${(state.docsByColl[state.selectedCol] || []).length}</span>` : ''}</button>
     <button class="ot ${state.tab === 'fields' ? 'on' : ''}" data-t="fields" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>Fields</button>
     <button class="ot ${state.tab === 'compression' ? 'on' : ''}" data-t="compression" ${dis ? 'disabled' : ''}>Compression</button>
     <button class="ot ${state.tab === 'lab' ? 'on' : ''}" data-t="lab" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6L4 19a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3L14 8V2"/><path d="M8 14h8"/></svg></span>Lab</button>
@@ -977,7 +974,7 @@ function renderTabs() {
     <button class="ot ${state.tab === 'search' ? 'on' : ''}" data-t="search" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4-4"/></svg></span>Semantic Search</button>
     <button class="ot ${state.tab === 'ai' ? 'on' : ''}" data-t="ai"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>AI Chat</button>
     <div class="sp"></div>
-    <div class="meta">${state.selectedCol ? `Selected · <strong style="color:var(--ac)">${esc(state.selectedCol)}</strong>` : ''}</div>`;
+    <div class="meta">${state.selectedCol !== null ? `Selected · <strong style="color:var(--ac)">${esc(state.selectedCol)}</strong>` : ''}</div>`;
   $$('.ot[data-t]').forEach((b) =>
     b.addEventListener('click', () => {
       if (b.hasAttribute('disabled')) return;
@@ -1020,7 +1017,7 @@ async function getCollectionStorage(c) {
   const epoch = storageEpoch;
   if (storageCache.has(c)) return storageCache.get(c);
   try {
-    const s = await api(`/api/collections/${encodeURIComponent(c)}/storage`);
+    const s = await api(collectionUrl(c, 'storage'));
     if (!isCurrentRequestContext(context) || epoch !== storageEpoch) return null;
     storageCache.set(c, s);
     return s;
@@ -1031,7 +1028,7 @@ async function getCollectionStorage(c) {
 }
 function invalidateStorageCache(c) {
   storageEpoch++;
-  if (c) storageCache.delete(c);
+  if (c !== undefined && c !== null) storageCache.delete(c);
   else storageCache.clear();
 }
 
@@ -1109,7 +1106,7 @@ async function setAutoCompaction(enabled) {
     state.databaseStatus = { ...(state.databaseStatus || {}), incrementalCompaction: result.incrementalCompaction };
     renderConnectionMaintenanceMenu();
     toast(result.message || 'Background incremental compaction updated', 'ok');
-    if (!state.selectedCol && state.tab === 'overview') renderOverview();
+    if (state.selectedCol === null && state.tab === 'overview') renderOverview();
   } catch (e) {
     if (!isCurrentRequestContext(context)) return;
     toast('Background incremental compaction setting failed: ' + e.message, 'err');
@@ -1130,7 +1127,7 @@ function renderDatabaseTools(status = state.databaseStatus) {
       <div class="kpis" style="margin-bottom:12px;">
         <div class="kpi"><div class="l">Database file</div><div class="v">${fmtSize(size?.dataFileBytes)}</div><div class="d">${size ? `${size.usedBlocks ?? 0} used · ${size.freeBlocks ?? 0} free blocks` : 'status unavailable'}</div></div>
         <div class="kpi"><div class="l">Amplification</div><div class="v">${size?.amplification ? size.amplification.toFixed(2) : '—'}</div><div class="d">${size?.freeTailBlocks ?? 0} free tail block${size?.freeTailBlocks === 1 ? '' : 's'}</div></div>
-        <div class="kpi"><div class="l">Semantic indexes</div><div class="v" style="font-size:15px;">${status?.semanticIndexes?.length ?? 0}</div><div class="d">${status?.semanticIndexes?.length ? status.semanticIndexes.map((x) => esc(x)).join(', ') : 'none yet'}</div></div>
+        <div class="kpi"><div class="l">Semantic indexes</div><div class="v" style="font-size:15px;">${status?.semanticIndexes?.length ?? 0}</div><div class="d">${status?.semanticIndexes?.length ? status.semanticIndexes.map((x) => esc(semanticIndexLabel(x))).join(', ') : 'none yet'}</div></div>
       </div>
     </div>
   </div>`;
@@ -1168,7 +1165,7 @@ function wireDatabaseTools() {
 function renderOverview() {
   const c = state.selectedCol;
   const context = captureRequestContext();
-  if (!c) {
+  if (c === null) {
     const totalDocs = state.collections.reduce(
       (s, x) => s + (typeof state.countsByColl[x] === 'number' ? state.countsByColl[x] : 0),
       0,
@@ -1534,7 +1531,7 @@ function confirmBulkMutation(edit) {
       closeDrawer();
       if (state.tab === 'data') renderData();
       try {
-        const result = await api(`/api/documents/${encodeURIComponent(collection)}/bulk-${edit ? 'edit' : 'delete'}`, {
+        const result = await api(documentsUrl(collection, `bulk-${edit ? 'edit' : 'delete'}`), {
           method: 'POST',
           body: { ...selection, ...(edit || {}) },
         });
@@ -1571,7 +1568,7 @@ $('#bulk-edit-save').addEventListener('click', () => {
       throw new Error('Use a JSON string, number or boolean. For example: "shipped", 25 or true.');
     }
     const field = $('#bulk-field').value;
-    if (!field) throw new Error('Choose a field.');
+    if ($('#bulk-field').selectedIndex < 0) throw new Error('Choose a field.');
     closeModal('modal-bulk-edit');
     confirmBulkMutation({ field, value });
   } catch (error) {
@@ -1606,7 +1603,7 @@ async function renderDrawer() {
   const c = state.selectedCol;
   let meta = null;
   try {
-    meta = await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/metadata`);
+    meta = await api(documentUrl(c, d.id, 'metadata'));
   } catch {
     meta = null;
   }
@@ -1742,7 +1739,7 @@ $('#dr-edit').addEventListener('click', () => {
     const save = $('#edit-save');
     save.disabled = true;
     try {
-      await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}/edit`, {
+      await api(documentUrl(c, d.id, 'edit'), {
         method: 'POST',
         body: { document: parsed, compression },
       });
@@ -1786,7 +1783,7 @@ $('#dr-del').addEventListener('click', () => {
   confirmAction(`Delete document “${d.id}”?`, 'This cannot be undone.', async () => {
     if (!isCurrentRequestContext(context)) return;
     try {
-      await api(`/api/documents/${encodeURIComponent(c)}/${encodeURIComponent(String(d.id))}`, {
+      await api(documentUrl(c, d.id), {
         method: 'DELETE',
       });
       if (!isCurrentRequestContext(context)) return;
@@ -1812,7 +1809,7 @@ function renderFields() {
   const c = state.selectedCol;
   const context = captureRequestContext();
   const storage = storageCache.get(c);
-  const config = storage?.fieldIndexes;
+  const config = storage?.fieldIndexes === undefined ? undefined : createDictionary(storage.fieldIndexes);
   const docs = state.docsByColl[c] || [];
   if (docs.length === 0 && !config) {
     $('#cnt').innerHTML =
@@ -1868,7 +1865,7 @@ function renderFields() {
       ${rows}
     </div>
   </div>`;
-  wireFieldIndexControls($('#cnt'), c, config || {}, () => {
+  wireFieldIndexControls($('#cnt'), c, config || createDictionary(), () => {
     if (state.tab === 'fields') renderFields();
   });
   if (!storageCache.has(c)) {
@@ -1887,9 +1884,9 @@ async function loadCompressionDefaults(c) {
   const context = captureRequestContext();
   const request = ++compressionDefaultsRequest;
   try {
-    const { defaults } = await api(`/api/compression/defaults?collection=${encodeURIComponent(c)}`);
+    const { defaults } = await api(collectionUrl(c, 'compression'));
     if (!isCurrentRequestContext(context) || request !== compressionDefaultsRequest) return;
-    state.compression.defaults = defaults || {};
+    state.compression.defaults = createDictionary(defaults);
     compressionDefaultsError = null;
     compressionDefaultsLoadedFor = c;
   } catch (e) {
@@ -1901,7 +1898,7 @@ async function loadCompressionDefaults(c) {
 
 async function recommendFieldCompression(field) {
   const c = state.selectedCol;
-  if (!c || recommendingFields.has(field)) return;
+  if (c === null || recommendingFields.has(field)) return;
   const context = captureRequestContext();
   const workload = state.compression.workload;
   recommendingFields.add(field);
@@ -1933,7 +1930,7 @@ async function recommendFieldCompression(field) {
 
 async function applyCompressionAdvice() {
   const c = state.selectedCol;
-  if (!c || compressionBusy) return;
+  if (c === null || compressionBusy) return;
   const context = captureRequestContext();
   compressionBusy = true;
   if (state.tab === 'compression') renderCompression();
@@ -1979,7 +1976,7 @@ function renderRecommendationCard(field, recommendation) {
 function renderCompression() {
   const c = state.selectedCol;
   const context = captureRequestContext();
-  if (!c) {
+  if (c === null) {
     $('#cnt').innerHTML =
       `<div class="ov"><div class="empty-state"><h4>Select a collection</h4><p>Compression recommendations are calculated from collection fields.</p></div></div>`;
     return;
@@ -2033,7 +2030,7 @@ function renderCompression() {
   $('#cmp-back')?.addEventListener('click', selectRoot);
   $('#cmp-workload')?.addEventListener('input', (e) => {
     state.compression.workload = Number(e.target.value) / 100;
-    state.compression.recommendations = {};
+    state.compression.recommendations = createDictionary();
     $('#cmp-workload-label').textContent = `${e.target.value}%`;
   });
   $('#cmp-workload')?.addEventListener('change', renderCompression);
@@ -2062,7 +2059,7 @@ function renderCompression() {
           },
         });
         if (!isCurrentRequestContext(context)) return;
-        state.compression.defaults = defaults;
+        state.compression.defaults = createDictionary(defaults);
         toast('Compression default saved', 'ok');
       } catch (e) {
         if (!isCurrentRequestContext(context)) return;
@@ -2091,14 +2088,14 @@ function renderCompression() {
 // ─────────────────────────────────────────────────────────────────
 function modelModalJsonForCurrentContext() {
   if (!state.model) return '';
-  if (!state.selectedCol) return JSON.stringify(state.model, null, 2);
+  if (state.selectedCol === null) return JSON.stringify(state.model, null, 2);
   const explore = getExplore(state.selectedCol);
   return explore ? JSON.stringify({ explores: [explore] }, null, 2) : '';
 }
 
 function modelModalStatusForCurrentContext() {
   if (!state.model) return 'No model loaded';
-  if (state.selectedCol && !getExplore(state.selectedCol)) {
+  if (state.selectedCol !== null && !getExplore(state.selectedCol)) {
     return `No schema model for ${state.selectedCol}. Generate from data to create one.`;
   }
   return `${state.model.explores.length} explore${state.model.explores.length === 1 ? '' : 's'} · ${state.model.explores.reduce((s, e) => s + e.fields.length, 0)} fields total`;
@@ -2141,7 +2138,7 @@ async function generateModel() {
     const { model, enriched } = await api('/api/conversational/model/generate', { method: 'POST' });
     if (!isCurrentRequestContext(context)) return;
     state.model = model;
-    if (state.selectedCol) state.modelPromptDismissed[state.selectedCol] = false;
+    if (state.selectedCol !== null) state.modelPromptDismissed[state.selectedCol] = false;
     if (enriched) toast('Schema model generated and enriched.', 'ok');
     else toast('Basic schema model generated. Descriptions/synonyms not added — set a Gemini key to enrich.', 'warn');
   } catch (e) {
@@ -2434,7 +2431,7 @@ function renderSemanticSearch() {
   const s = state.search;
   const mode = s.mode || 'text';
   const pill = embedStatusPill(mode, !!s.image);
-  const imageDocCount = c ? (state.docsByColl[c] || []).filter(hasImageField).length : 0;
+  const imageDocCount = c !== null ? (state.docsByColl[c] || []).filter(hasImageField).length : 0;
   const placeholders = {
     text: 'Zoek op betekenis...',
     image: 'Zoek foto op beschrijving...',
@@ -2459,18 +2456,18 @@ function renderSemanticSearch() {
       <div class="modes ss-modes">
         ${['text', 'image'].map((m) => `<button class="${mode === m ? 'on' : ''}" data-ss-mode="${m}">${m === 'text' ? 'Tekst' : 'Foto'}</button>`).join('')}
       </div>
-      <input type="text" id="ss-q" placeholder="${c ? esc(placeholders[mode]) : 'Select a collection in the sidebar first…'}" value="${esc(s.query)}" ${c && !s.busy ? '' : 'disabled'}/>
+      <input type="text" id="ss-q" placeholder="${c !== null ? esc(placeholders[mode]) : 'Select a collection in the sidebar first…'}" value="${esc(s.query)}" ${c !== null && !s.busy ? '' : 'disabled'}/>
       ${
         mode === 'image'
           ? `<label class="attach ${s.image ? 'has-image' : ''}" title="Attach an image for image-to-image search">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>
         ${s.image ? esc(s.image.name) : 'Attach image'}
-        <input type="file" id="ss-img" accept="image/*" style="display:none;" ${c ? '' : 'disabled'}/>
+        <input type="file" id="ss-img" accept="image/*" style="display:none;" ${c !== null ? '' : 'disabled'}/>
       </label>
       ${s.image ? `<button type="button" class="clear-img" id="ss-img-clear" title="Remove attached image" aria-label="Remove attached image">✕</button>` : ''}`
           : ''
       }
-      <button class="go" id="ss-go" ${c && !s.busy ? '' : 'disabled'}>Search</button>
+      <button class="go" id="ss-go" ${c !== null && !s.busy ? '' : 'disabled'}>Search</button>
     </div>
     <div class="ss-status">
       ${s.image ? `<span class="preview"><img src="${esc(s.image.dataUrl)}" alt=""/> using image embedding</span>` : ''}
@@ -2560,7 +2557,7 @@ function renderSemanticSearch() {
 }
 
 function renderSemanticSearchBody(c, s) {
-  if (!c) {
+  if (c === null) {
     return `<div class="ss-empty"><h4>Pick a collection to search</h4><p>Semantic search ranks documents in the selected collection by similarity to your query. Text search loads MiniLM; photo and image search load CLIP. The first use may need a model download.</p></div>`;
   }
   if (s.error) {
@@ -2609,15 +2606,16 @@ function renderSemanticSearchBody(c, s) {
 function semanticMissingIndex(collection, mode, hasImageUpload) {
   const indexes = state.databaseStatus?.semanticIndexes;
   if (!Array.isArray(indexes)) return null;
-  const needed = hasImageUpload || mode === 'image' ? `${collection}::image` : `${collection}::text`;
+  const indexKind = hasImageUpload || mode === 'image' ? 'image' : 'text';
+  const needed = JSON.stringify([collection, indexKind]);
   if (indexes.includes(needed)) return null;
-  const legacy = indexes.includes(collection);
-  const kind = needed.endsWith('::image') ? 'CLIP image' : 'MiniLM text';
+  const legacy = indexes.includes(JSON.stringify([collection, 'default']));
+  const kind = indexKind === 'image' ? 'CLIP image' : 'MiniLM text';
   return {
     title: `${kind} index missing`,
     body: legacy
-      ? `This database still has the old legacy semantic index for <code>${esc(collection)}</code>, but the new search uses <code>${esc(needed)}</code>. Run a manual compact/rebuild to recreate semantic indexes with the new layout.`
-      : `No <code>${esc(needed)}</code> index exists yet. Insert or replace matching documents, or run a manual compact/rebuild to recreate semantic indexes for existing data.`,
+      ? `This database still has the old legacy semantic index for <code>${esc(JSON.stringify(collection))}</code>, but search uses the ${esc(indexKind)} index. Run a manual compact/rebuild to recreate semantic indexes with the new layout.`
+      : `No ${esc(indexKind)} index exists for <code>${esc(JSON.stringify(collection))}</code> yet. Insert or replace matching documents, or run a manual compact/rebuild to recreate semantic indexes for existing data.`,
   };
 }
 
@@ -2634,7 +2632,7 @@ function readFileDataUrl(file) {
 async function runSemanticSearch() {
   const c = state.selectedCol;
   const s = state.search;
-  if (!state.connected || state.tab !== 'search' || !c || s.busy) return;
+  if (!state.connected || state.tab !== 'search' || c === null || s.busy) return;
   if (!s.query.trim() && !s.image) {
     s.error = 'Type a query or attach an image first.';
     renderSemanticSearch();
@@ -2672,19 +2670,19 @@ async function runSemanticSearch() {
   try {
     let resp;
     if (image) {
-      resp = await api(`/api/documents/${encodeURIComponent(c)}/search/image?limit=20`, {
+      resp = await api(`${documentsUrl(c, 'search/image')}&limit=20`, {
         method: 'POST',
         body: { image: image.buffer },
         signal: controller.signal,
       });
     } else if (mode === 'image') {
       const q = encodeURIComponent(query);
-      resp = await api(`/api/documents/${encodeURIComponent(c)}/search/photos?q=${q}&limit=10`, {
+      resp = await api(`${documentsUrl(c, 'search/photos')}&q=${q}&limit=10`, {
         signal: controller.signal,
       });
     } else {
       const q = encodeURIComponent(query);
-      resp = await api(`/api/documents/${encodeURIComponent(c)}/search?q=${q}&limit=20`, {
+      resp = await api(`${documentsUrl(c, 'search')}&q=${q}&limit=20`, {
         signal: controller.signal,
       });
     }
@@ -2820,7 +2818,7 @@ function renderAi() {
   // Wiring for the per-collection model-generation prompt card.
   $('#ai-model-yes')?.addEventListener('click', generateModel);
   $('#ai-model-no')?.addEventListener('click', () => {
-    if (c) state.modelPromptDismissed[c] = true;
+    if (c !== null) state.modelPromptDismissed[c] = true;
     renderAi();
   });
   $('#ai-model-settings')?.addEventListener('click', () => openModal('modal-settings'));
@@ -2857,7 +2855,7 @@ function renderModelPromptCard(c) {
 }
 
 function renderAiEmpty(c, exploreForCol) {
-  if (!c) {
+  if (c === null) {
     return `<div class="ai-empty"><h4>Pick a collection</h4><p>Select a collection in the sidebar to chat about its data.</p></div>`;
   }
   if (!exploreForCol) {
@@ -2935,7 +2933,7 @@ function renderAiResultCell(key, value, row = null) {
 }
 
 async function sendChat() {
-  if (!state.connected || state.tab !== 'ai' || !state.selectedCol) return;
+  if (!state.connected || state.tab !== 'ai' || state.selectedCol === null) return;
   const input = $('#ai-q');
   const q = input?.value.trim();
   if (!q || aiBusy) return;
@@ -3232,7 +3230,7 @@ setInterval(async () => {
   statusPolling = true;
   try {
     const status = await refreshDatabaseStatus();
-    if (status && !state.selectedCol && state.tab === 'overview') renderOverview();
+    if (status && state.selectedCol === null && state.tab === 'overview') renderOverview();
   } finally {
     statusPolling = false;
   }
