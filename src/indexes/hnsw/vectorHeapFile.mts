@@ -2,14 +2,34 @@
 //@date: 2026-02-18
 
 import type { FreeBlockFile } from '../../storage/blocks/freeblockfile.mjs';
+import { BlockType } from '../../storage/blocks/layout.mjs';
 import { VectorSerializer } from './vectorSerializer.mjs';
+import { HnswCompatibilityError } from './hnswGraphStorage.mjs';
 
 /**
  * Magic byte written at usable[0] (= raw byte 1) of every VectorHeapFile page.
  * Allows VectorHeapFile.scan() to skip pages owned by other subsystems when
  * operating inside a shared FreeBlockFile.
  */
-const HNSW_VECTOR_PAGE_MAGIC = 0xa5;
+const LEGACY_VECTOR_PAGE_MAGIC = 0xa5;
+const HNSW_VECTOR_PAGE_MAGIC = 0xa6;
+const PAGE_HEADER_SIZE = 7;
+const LEGACY_PAGE_HEADER_SIZE = 3;
+
+/** Validate configuration before embeddings or document mutations begin. */
+export function validateVectorDimension(dimension: number, blockSize: number): void {
+  if (!Number.isInteger(dimension) || dimension < 1 || dimension > 0xffffffff) {
+    throw new HnswCompatibilityError('HNSW vector dimension must be a positive uint32 integer.');
+  }
+  const vectorByteSize = VectorSerializer.byteSize(dimension);
+  // One vector needs the page header and at least one bitmap byte.
+  if (vectorByteSize + PAGE_HEADER_SIZE + 1 > blockSize - 1) {
+    throw new Error(
+      `Block size ${blockSize} is too small for dimension ${dimension} ` +
+        `(vectorByteSize=${vectorByteSize}). Increase the block size.`,
+    );
+  }
+}
 
 export interface VectorPointer {
   pageId: number;
@@ -31,10 +51,14 @@ export interface VectorPointer {
  * Page layout (within usable area = bytes [1, blockSize-1] of a raw block;
  * byte 0 is the block-type byte owned by FreeBlockFile):
  *
- *   Offset 0    : page magic (HNSW_VECTOR_PAGE_MAGIC = 0xa5)
- *   Offset 1–2  : usedCount   (uint16 LE) — number of occupied slots
- *   Offset 3 … 2+bitmapBytes : slot bitmap (1 bit per slot, 1=occupied)
- *   Offset 3+bitmapBytes … : vector data  (slotsPerPage × vectorByteSize bytes)
+ *   Offset 0    : page magic (HNSW_VECTOR_PAGE_MAGIC = 0xa6)
+ *   Offset 1–4  : vector dimension (uint32 LE)
+ *   Offset 5–6  : usedCount (uint16 LE) — number of occupied slots
+ *   Offset 7 … 6+bitmapBytes : slot bitmap (1 bit per slot, 1=occupied)
+ *   Offset 7+bitmapBytes … : vector data (slotsPerPage × vectorByteSize bytes)
+ *
+ * Legacy 0xa5 pages keep their original layout. Pointer access requires an
+ * independently persisted graph dimension; scans skip these untagged pages.
  */
 export class VectorHeapFile {
   /** Number of float32 values per vector slot. */
@@ -47,6 +71,9 @@ export class VectorHeapFile {
   readonly slotsPerPage: number;
   /** Byte offset (in usable area) where vector data starts. */
   private readonly dataOffset: number;
+  private readonly legacySlotsPerPage: number;
+  private readonly legacyDataOffset: number;
+  private legacyDimensionVerified = false;
 
   /** In-memory hint: the last block where we found/created free space. */
   private insertHint: number = 0;
@@ -55,23 +82,27 @@ export class VectorHeapFile {
     private readonly file: FreeBlockFile,
     dimension: number,
   ) {
+    validateVectorDimension(dimension, file._getBlockSize());
     this.dimension = dimension;
     this.vectorByteSize = VectorSerializer.byteSize(dimension);
     const blockSize = file._getBlockSize();
     // usable area = blockSize − 1 (byte 0 is block-type, owned by FreeBlockFile)
-    // page header = 1 byte magic + 2 bytes usedCount + bitmapBytes
-    // n * vectorByteSize + ceil(n/8) ≤ blockSize − 4
-    // n ≤ (blockSize − 4) × 8 / (vectorByteSize × 8 + 1)
-    this.slotsPerPage = Math.floor(((blockSize - 4) * 8) / (this.vectorByteSize * 8 + 1));
-    if (this.slotsPerPage < 1) {
-      throw new Error(
-        `Block size ${blockSize} is too small for dimension ${dimension} ` +
-          `(vectorByteSize=${this.vectorByteSize}). Increase the block size.`,
+    // n * vectorByteSize + ceil(n/8) <= usable bytes minus page header.
+    this.slotsPerPage = Math.floor(((blockSize - 1 - PAGE_HEADER_SIZE) * 8) / (this.vectorByteSize * 8 + 1));
+    this.bitmapBytes = Math.ceil(this.slotsPerPage / 8);
+    this.dataOffset = PAGE_HEADER_SIZE + this.bitmapBytes;
+    this.legacySlotsPerPage = Math.floor(((blockSize - 4) * 8) / (this.vectorByteSize * 8 + 1));
+    this.legacyDataOffset = LEGACY_PAGE_HEADER_SIZE + Math.ceil(this.legacySlotsPerPage / 8);
+  }
+
+  /** HNSWIndex.open calls this only after validating persisted graph metadata. */
+  acceptPersistedDimension(storedDimension: number): void {
+    if (storedDimension !== this.dimension) {
+      throw new HnswCompatibilityError(
+        `HNSW vector dimension mismatch: stored ${storedDimension}, configured ${this.dimension}.`,
       );
     }
-    this.bitmapBytes = Math.ceil(this.slotsPerPage / 8);
-    // magic(1) + usedCount(2) + bitmap
-    this.dataOffset = 3 + this.bitmapBytes;
+    this.legacyDimensionVerified = true;
   }
 
   // LOW-LEVEL PAGE HELPERS
@@ -88,17 +119,52 @@ export class VectorHeapFile {
    */
   private async readPage(pageId: number): Promise<Buffer> {
     const inCache = this._pageCache.get(pageId);
-    if (inCache !== undefined) return inCache;
+    if (inCache !== undefined) {
+      this.validatePageDimension(inCache);
+      return inCache;
+    }
     const dirty = this.file._getDirtyBlock(pageId);
     if (dirty !== undefined) {
       const usable = dirty.subarray(1);
+      this.validatePageDimension(usable);
       this._pageCache.set(pageId, usable);
       return usable;
     }
     const raw = await this.file.readBlock(pageId);
     const usable = raw.subarray(1);
+    this.validatePageDimension(usable);
     this._pageCache.set(pageId, usable);
     return usable;
+  }
+
+  private validatePageDimension(usable: Buffer): void {
+    if (usable[0] === LEGACY_VECTOR_PAGE_MAGIC) {
+      if (!this.legacyDimensionVerified) {
+        throw new HnswCompatibilityError('Legacy HNSW vector page has no independently persisted dimension.');
+      }
+      return;
+    }
+    if (usable[0] !== HNSW_VECTOR_PAGE_MAGIC) throw new HnswCompatibilityError('Not an HNSW vector page.');
+    const storedDimension = usable.readUInt32LE(1);
+    if (storedDimension !== this.dimension) {
+      throw new HnswCompatibilityError(
+        `HNSW vector page dimension mismatch: stored ${storedDimension}, configured ${this.dimension}.`,
+      );
+    }
+  }
+
+  private headerSize(usable: Buffer): number {
+    return usable[0] === LEGACY_VECTOR_PAGE_MAGIC ? LEGACY_PAGE_HEADER_SIZE : PAGE_HEADER_SIZE;
+  }
+
+  private pageCapacity(usable: Buffer): number {
+    return usable[0] === LEGACY_VECTOR_PAGE_MAGIC ? this.legacySlotsPerPage : this.slotsPerPage;
+  }
+
+  private validateSlot(usable: Buffer, slotId: number): void {
+    if (!Number.isInteger(slotId) || slotId < 0 || slotId >= this.pageCapacity(usable)) {
+      throw new HnswCompatibilityError(`Invalid HNSW vector slot ${slotId}.`);
+    }
   }
 
   /**
@@ -111,6 +177,7 @@ export class VectorHeapFile {
     const raw = await this.file.readBlock(pageId);
     if (raw.readUInt8(0) !== 0x02) return null; // 0x02 = BlockType.Data
     if (raw.readUInt8(1) !== HNSW_VECTOR_PAGE_MAGIC) return null; // not a vector page
+    if (raw.readUInt32LE(2) !== this.dimension) return null; // another dimension's heap
     return raw.subarray(1);
   }
 
@@ -141,36 +208,38 @@ export class VectorHeapFile {
     // Mark this as a VectorHeapFile page so scan() can identify it in a
     // shared FBF where multiple subsystems coexist.
     buf.writeUInt8(HNSW_VECTOR_PAGE_MAGIC, 0);
+    buf.writeUInt32LE(this.dimension, 1);
     return buf;
   }
 
-  // usedCount lives at usable[1..2] (usable[0] is the page magic byte)
+  // usedCount follows the magic and optional persisted dimension.
   private getUsedCount(usable: Buffer): number {
-    return usable.readUInt16LE(1);
+    return usable.readUInt16LE(this.headerSize(usable) - 2);
   }
 
   private setUsedCount(usable: Buffer, count: number): void {
-    usable.writeUInt16LE(count, 1);
+    usable.writeUInt16LE(count, this.headerSize(usable) - 2);
   }
 
-  // Bitmap starts at usable[3] (magic[0] + usedCount[1..2])
+  // Bitmap follows the page header.
   private isBitSet(usable: Buffer, slotId: number): boolean {
-    const byte = usable.readUInt8(3 + Math.floor(slotId / 8));
+    const byte = usable.readUInt8(this.headerSize(usable) + Math.floor(slotId / 8));
     return (byte & (1 << slotId % 8)) !== 0;
   }
 
   private setBit(usable: Buffer, slotId: number): void {
-    const byteIdx = 3 + Math.floor(slotId / 8);
+    const byteIdx = this.headerSize(usable) + Math.floor(slotId / 8);
     usable.writeUInt8(usable.readUInt8(byteIdx) | (1 << slotId % 8), byteIdx);
   }
 
   private clearBit(usable: Buffer, slotId: number): void {
-    const byteIdx = 3 + Math.floor(slotId / 8);
+    const byteIdx = this.headerSize(usable) + Math.floor(slotId / 8);
     usable.writeUInt8(usable.readUInt8(byteIdx) & ~(1 << slotId % 8), byteIdx);
   }
 
-  private vectorOffset(slotId: number): number {
-    return this.dataOffset + slotId * this.vectorByteSize;
+  private vectorOffset(usable: Buffer, slotId: number): number {
+    const offset = usable[0] === LEGACY_VECTOR_PAGE_MAGIC ? this.legacyDataOffset : this.dataOffset;
+    return offset + slotId * this.vectorByteSize;
   }
 
   // FINDING A FREE SLOT
@@ -179,8 +248,8 @@ export class VectorHeapFile {
    * Find the first free slot in an existing page, or return -1 if full.
    */
   private findFreeSlot(usable: Buffer): number {
-    if (this.getUsedCount(usable) >= this.slotsPerPage) return -1;
-    for (let s = 0; s < this.slotsPerPage; s++) {
+    if (this.getUsedCount(usable) >= this.pageCapacity(usable)) return -1;
+    for (let s = 0; s < this.pageCapacity(usable); s++) {
       if (!this.isBitSet(usable, s)) return s;
     }
     return -1;
@@ -239,7 +308,7 @@ export class VectorHeapFile {
     slotId: number,
     vector: Float32Array,
   ): Promise<VectorPointer> {
-    VectorSerializer.serialize(vector, usable, this.vectorOffset(slotId));
+    VectorSerializer.serialize(vector, usable, this.vectorOffset(usable, slotId));
     this.setBit(usable, slotId);
     this.setUsedCount(usable, this.getUsedCount(usable) + 1);
     await this.writePage(pageId, usable);
@@ -251,10 +320,11 @@ export class VectorHeapFile {
    */
   async get(ptr: VectorPointer): Promise<Float32Array> {
     const usable = await this.readPage(ptr.pageId);
+    this.validateSlot(usable, ptr.slotId);
     if (!this.isBitSet(usable, ptr.slotId)) {
       throw new Error(`Slot (pageId=${ptr.pageId}, slotId=${ptr.slotId}) is not occupied.`);
     }
-    return VectorSerializer.deserialize(usable, this.vectorOffset(ptr.slotId), this.dimension);
+    return VectorSerializer.deserialize(usable, this.vectorOffset(usable, ptr.slotId), this.dimension);
   }
 
   /**
@@ -262,7 +332,12 @@ export class VectorHeapFile {
    * If the page becomes completely empty, the underlying block is freed.
    */
   async delete(ptr: VectorPointer): Promise<void> {
+    // A page whose last slot was deleted is already on the free list.
+    const raw = this.file._getDirtyBlock(ptr.pageId) ?? (await this.file.readBlock(ptr.pageId));
+    const blockType = raw.readUInt8(0) as BlockType;
+    if (blockType === BlockType.Free) return;
     const usable = await this.readPage(ptr.pageId);
+    this.validateSlot(usable, ptr.slotId);
     if (!this.isBitSet(usable, ptr.slotId)) return; // already free — idempotent
     this.clearBit(usable, ptr.slotId);
     const newCount = this.getUsedCount(usable) - 1;
@@ -306,10 +381,11 @@ export class VectorHeapFile {
       throw new Error(`Vector dimension mismatch: expected ${this.dimension}, got ${vector.length}`);
     }
     const usable = await this.readPage(ptr.pageId);
+    this.validateSlot(usable, ptr.slotId);
     if (!this.isBitSet(usable, ptr.slotId)) {
       throw new Error(`Slot (pageId=${ptr.pageId}, slotId=${ptr.slotId}) is not occupied.`);
     }
-    VectorSerializer.serialize(vector, usable, this.vectorOffset(ptr.slotId));
+    VectorSerializer.serialize(vector, usable, this.vectorOffset(usable, ptr.slotId));
     await this.writePage(ptr.pageId, usable);
   }
 
@@ -325,7 +401,7 @@ export class VectorHeapFile {
       if (this.getUsedCount(usable) === 0) continue;
       for (let slotId = 0; slotId < this.slotsPerPage; slotId++) {
         if (this.isBitSet(usable, slotId)) {
-          const vector = VectorSerializer.deserialize(usable, this.vectorOffset(slotId), this.dimension);
+          const vector = VectorSerializer.deserialize(usable, this.vectorOffset(usable, slotId), this.dimension);
           yield { ptr: { pageId, slotId }, vector };
         }
       }

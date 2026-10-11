@@ -51,7 +51,7 @@ export type HnswGraphStructureSnapshot = {
  *
  * **STORAGE MODEL**
  * Both graph nodes (HNSWGraphStorage, magic 0xa3) and raw vectors
- * (VectorHeapFile, magic 0xa5) share the single FreeBlockFile owned by
+ * (VectorHeapFile, dimension-tagged magic 0xa6) share the single FreeBlockFile owned by
  * DbmsBack.  All dirty pages — from both storage objects — are flushed by
  * one WAL commit.  In normal usage `DbmsBack.commit()` handles this
  * automatically; `HNSWIndex.commit()` is provided only for standalone
@@ -118,6 +118,7 @@ export class HNSWIndex {
    * `HNSWGraphStorage` and `VectorHeapFile`.
    */
   static create(graphStorage: HNSWGraphStorage, vectorHeap: VectorHeapFile, params: HNSWParams): HNSWIndex {
+    graphStorage.setNewVectorDimension(vectorHeap.dimension);
     const { M, efConstruction, efSearch } = params;
     return new HNSWIndex(graphStorage, vectorHeap, M, efConstruction, efSearch);
   }
@@ -134,6 +135,9 @@ export class HNSWIndex {
     vectorHeap: VectorHeapFile,
     params: Pick<HNSWParams, 'efSearch' | 'distanceFn'> & { efConstruction?: number },
   ): Promise<HNSWIndex> {
+    // Validate persisted identity before native allocation or any vector reads.
+    graphStorage.assertVectorDimension(vectorHeap.dimension);
+    vectorHeap.acceptPersistedDimension(graphStorage.vectorDimension!);
     const { efSearch, efConstruction = graphStorage.M * 2 } = params;
     const index = new HNSWIndex(graphStorage, vectorHeap, graphStorage.M, efConstruction, efSearch);
     try {

@@ -44,8 +44,9 @@ export type HnswGraphNodeRelocationResult = {
 // unified mode), metadata is written to a dedicated allocated block rather
 // than the FBF client area (which DbmsBack uses for its own JSON meta).
 //
-// Layout of the 22-byte metadata payload stored in the dedicated block
-// (bytes [1..22] of the raw block, i.e. the usable area):
+// The original 22-byte metadata prefix is unchanged. New indexes append a
+// dimension marker and uint32 dimension; absence means an unknown legacy
+// dimension, never the dimension of the current embedding configuration.
 //   [0-3]  M              (uint32 LE)
 //   [4-7]  maxStoredLevel (uint32 LE)
 //   [8-11] nodeSize       (uint32 LE, validation)
@@ -53,7 +54,8 @@ export type HnswGraphNodeRelocationResult = {
 //   [16-19] entryPointLow  (uint32 LE) — low  32 bits of entry-point NodeId
 //   [20]   hasEntryPoint  (uint8)
 //   [21]   currentMaxLevel (uint8)
-const META_SIZE = 22;
+const LEGACY_META_SIZE = 22;
+const META_SIZE = 30;
 const META_M = 0;
 const META_MAX_LEVEL = 4;
 const META_NODE_SIZE = 8;
@@ -61,6 +63,16 @@ const META_EP_HIGH = 12;
 const META_EP_LOW = 16;
 const META_HAS_EP = 20;
 const META_CURRENT_MAX_LEVEL = 21;
+const META_DIMENSION_MARKER = 22;
+const META_DIMENSION = 26;
+const DIMENSION_MARKER = Buffer.from('HVD1');
+
+export class HnswCompatibilityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HnswCompatibilityError';
+  }
+}
 
 // ** Per-node slot layout (within usable page area) **
 // Each page starts with a 1-byte magic marker (HNSW_GRAPH_PAGE_MAGIC) at
@@ -166,6 +178,10 @@ export class HNSWGraphStorage {
    * from the known block). saveMetadata() writes to this block.
    */
   private _metaBlockId: number = 0;
+  private _vectorDimension: number | null = null;
+  private newlyCreated = false;
+  private dimensionSaveHook: (() => Promise<void>) | undefined;
+  private dimensionNeedsSave = false;
 
   private constructor(
     private readonly file: FreeBlockFile,
@@ -204,8 +220,15 @@ export class HNSWGraphStorage {
    *
    * Call `await fbf.commit()` + `await fbf.close()` when done.
    */
-  static async create(file: FreeBlockFile, M: number, maxStoredLevel: number): Promise<HNSWGraphStorage> {
+  static async create(
+    file: FreeBlockFile,
+    M: number,
+    maxStoredLevel: number,
+    vectorDimension?: number,
+  ): Promise<HNSWGraphStorage> {
     const gs = new HNSWGraphStorage(file, M, maxStoredLevel);
+    gs.newlyCreated = true;
+    if (vectorDimension !== undefined) gs.setNewVectorDimension(vectorDimension);
     // Allocate a dedicated metadata block from the shared FBF.
     gs._metaBlockId = await file.allocateBlock();
     await gs.saveMetadata();
@@ -254,6 +277,13 @@ export class HNSWGraphStorage {
       gs._entryPoint = high * 4294967296 + low;
     }
     gs._currentMaxLevel = clientArea.readUInt8(META_CURRENT_MAX_LEVEL);
+    if (clientArea.subarray(META_DIMENSION_MARKER, META_DIMENSION).equals(DIMENSION_MARKER)) {
+      const dimension = clientArea.readUInt32LE(META_DIMENSION);
+      if (dimension === 0) throw new HnswCompatibilityError('HNSW stored vector dimension must be positive.');
+      gs._vectorDimension = dimension;
+    } else if (clientArea.subarray(META_DIMENSION_MARKER, META_SIZE).some((value) => value !== 0)) {
+      throw new HnswCompatibilityError('Unsupported HNSW vector dimension metadata.');
+    }
     return gs;
   }
 
@@ -264,10 +294,52 @@ export class HNSWGraphStorage {
     return this._metaBlockId;
   }
 
+  get vectorDimension(): number | null {
+    return this._vectorDimension;
+  }
+
+  /** Bind only a newly created graph; existing unknown layouts cannot be guessed. */
+  setNewVectorDimension(dimension: number): void {
+    if (!Number.isInteger(dimension) || dimension < 1 || dimension > 0xffffffff) {
+      throw new HnswCompatibilityError('HNSW vector dimension must be a positive uint32 integer.');
+    }
+    if (this._vectorDimension !== null) {
+      this.assertVectorDimension(dimension);
+      return;
+    }
+    if (!this.newlyCreated) {
+      throw new HnswCompatibilityError('Cannot establish the vector dimension of an existing legacy HNSW graph.');
+    }
+    this._vectorDimension = dimension;
+    // HNSWIndex.create is synchronous. Persist this binding on the next shared
+    // commit even if the empty index never inserts a vector or saves metadata.
+    if (this._metaBlockId !== 0) {
+      this.dimensionNeedsSave = true;
+      this.dimensionSaveHook = async () => {
+        if (this.dimensionNeedsSave) await this.saveMetadata();
+      };
+      this.file.addPreCommitHook(this.dimensionSaveHook);
+    }
+  }
+
+  assertVectorDimension(dimension: number): void {
+    if (this._vectorDimension === null) {
+      throw new HnswCompatibilityError(
+        'Legacy HNSW index has no persisted vector dimension. Open without semantic indexing to preserve document access; the stored vectors cannot be decoded safely.',
+      );
+    }
+    if (this._vectorDimension !== dimension) {
+      throw new HnswCompatibilityError(
+        `HNSW vector dimension mismatch: stored ${this._vectorDimension}, configured ${dimension}.`,
+      );
+    }
+  }
+
   async freeMetadataBlock(): Promise<void> {
     if (this._metaBlockId === 0) return;
     await this.file.freeBlock(this._metaBlockId);
     this._metaBlockId = 0;
+    this.removeDimensionSaveHook();
   }
 
   async relocateMetadata(options: { maxBlockExclusive?: number } = {}): Promise<number | null> {
@@ -345,7 +417,7 @@ export class HNSWGraphStorage {
    * Must call `index.commit()` afterwards to flush to disk.
    */
   async saveMetadata(): Promise<void> {
-    const metaBuf = Buffer.alloc(META_SIZE);
+    const metaBuf = Buffer.alloc(this._vectorDimension === null ? LEGACY_META_SIZE : META_SIZE);
     metaBuf.writeUInt32LE(this.M, META_M);
     metaBuf.writeUInt32LE(this.maxStoredLevel, META_MAX_LEVEL);
     metaBuf.writeUInt32LE(this.nodeSize, META_NODE_SIZE);
@@ -359,9 +431,21 @@ export class HNSWGraphStorage {
       metaBuf.writeUInt8(0, META_HAS_EP);
     }
     metaBuf.writeUInt8(this._currentMaxLevel, META_CURRENT_MAX_LEVEL);
+    if (this._vectorDimension !== null) {
+      DIMENSION_MARKER.copy(metaBuf, META_DIMENSION_MARKER);
+      metaBuf.writeUInt32LE(this._vectorDimension, META_DIMENSION);
+    }
     // Write to the dedicated metadata block (not the FBF client area, which is
     // reserved for DbmsBack's JSON meta in the unified single-FBF design).
     await this.file.writeBlock(this._metaBlockId, metaBuf);
+    this.dimensionNeedsSave = false;
+  }
+
+  private removeDimensionSaveHook(): void {
+    if (this.dimensionSaveHook !== undefined) {
+      this.file.removePreCommitHook(this.dimensionSaveHook);
+      this.dimensionSaveHook = undefined;
+    }
   }
 
   // ** Low-level page helpers **
