@@ -6,6 +6,9 @@ export interface NodeStorage<
 > {
   readonly compareKeys: (a: K, b: K) => number;
   readonly keySize: (key: K) => number;
+  /** Persistent storage can reject access after a partially failed mutation. */
+  assertHealthy?(): void;
+  markMutationFailed?(cause: unknown): void;
   getMaxKeySize(): number;
   createTree(): Promise<LeafNodeType>;
   allocateInternalNode(nodes: (LeafNodeType | InternalNodeType)[], keys: K[]): Promise<InternalNodeType>;

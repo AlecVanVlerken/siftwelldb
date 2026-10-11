@@ -75,6 +75,8 @@ const BLOCK_NODE_TYPE_INTERNAL = 0x01;
 
 export type BlockNodeStorageOptions = {
   compareKeys?: (a: Buffer, b: Buffer) => number;
+  /** A private index build can discard all owned nodes before publishing its root. */
+  unpublished?: boolean;
 };
 
 export type BlockNodeKind = 'btree-leaf' | 'btree-internal';
@@ -108,6 +110,9 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   private readonly blockSize: number;
   private currentRoot: BlockLeafNode | BlockInternalNode | null = null;
   private readonly preCommitHook: () => Promise<void>;
+  private unpublished: boolean;
+  private buildFailure: Error | undefined;
+  private readonly ownedBlocks = new Set<number>();
 
   // Cache for loaded nodes to avoid repeated disk reads
   private readonly nodeCache: Map<number, BlockLeafNode | BlockInternalNode> = new Map();
@@ -117,6 +122,7 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     options: BlockNodeStorageOptions = {},
   ) {
     this.compareKeys = options.compareKeys ?? ((a, b) => Buffer.compare(a, b));
+    this.unpublished = options.unpublished ?? false;
     this.blockSize = file._getBlockSize();
     this.preCommitHook = () => this.flushDirtyNodes();
     // Register pre-commit hook so flushDirtyNodes() runs whenever file.commit() is called,
@@ -129,18 +135,59 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     return this.blockSize - 20;
   }
 
+  assertHealthy(): void {
+    this.file.assertHealthy();
+    if (this.buildFailure) throw this.buildFailure;
+  }
+
+  markMutationFailed(cause: unknown): void {
+    if (this.unpublished) {
+      this.buildFailure ??= new Error('Unpublished B+ tree construction failed; discard it before continuing.', {
+        cause,
+      });
+    } else {
+      this.file.markMutationFailed(cause);
+    }
+  }
+
+  /** Enable ordinary failure protection only after the private build has completed. */
+  publish(): void {
+    this.assertHealthy();
+    this.unpublished = false;
+    this.ownedBlocks.clear();
+  }
+
+  private async allocateNodeBlock(): Promise<number> {
+    this.assertHealthy();
+    this.file._ensureOpen();
+    try {
+      const blockNumber = await this.file.allocateBlock();
+      if (this.unpublished) this.ownedBlocks.add(blockNumber);
+      return blockNumber;
+    } catch (error) {
+      // A failed allocator may have staged a block whose number was never returned.
+      this.file.markMutationFailed(error);
+      throw error;
+    }
+  }
+
   /**
    * Create a new empty tree.
    * Returns the root node. The caller should store the root block number.
    */
   async createTree(): Promise<BlockLeafNode> {
-    const blockNumber = await this.file.allocateBlock();
-    const root = this.createLeafNode(blockNumber);
-    await root.initEmpty();
-    this.currentRoot = root;
-    // Cache the newly created root
-    this.nodeCache.set(blockNumber, root);
-    return root;
+    this.file._ensureOpen();
+    try {
+      const blockNumber = await this.allocateNodeBlock();
+      const root = this.createLeafNode(blockNumber);
+      this.nodeCache.set(blockNumber, root);
+      await root.initEmpty();
+      this.currentRoot = root;
+      return root;
+    } catch (error) {
+      this.markMutationFailed(error);
+      throw error;
+    }
   }
 
   /**
@@ -153,11 +200,10 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
   }
 
   async allocateInternalNode(nodes: (BlockLeafNode | BlockInternalNode)[], keys: Buffer[]): Promise<BlockInternalNode> {
-    const blockNumber = await this.file.allocateBlock();
+    const blockNumber = await this.allocateNodeBlock();
     const node = this.createInternalNode(blockNumber);
-    await node.initWith(nodes, keys);
-    // Cache the newly allocated node
     this.nodeCache.set(blockNumber, node);
+    await node.initWith(nodes, keys);
     return node;
   }
 
@@ -172,22 +218,26 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
 
   async releaseRoot(root: BlockLeafNode | BlockInternalNode): Promise<void> {
     const blockNumber = root.getBlockNumber();
+    try {
+      await this.file.freeBlock(blockNumber);
+    } catch (error) {
+      this.file.markMutationFailed(error);
+      throw error;
+    }
     this.invalidateNode(blockNumber);
     if (this.currentRoot?.getBlockNumber() === blockNumber) {
       this.currentRoot = null;
     }
-    await this.file.freeBlock(blockNumber);
   }
 
   /**
    * Allocate a new leaf node.
    */
   async allocateLeafNode(): Promise<BlockLeafNode> {
-    const blockNumber = await this.file.allocateBlock();
+    const blockNumber = await this.allocateNodeBlock();
     const node = this.createLeafNode(blockNumber);
-    await node.initEmpty();
-    // Cache the newly allocated node
     this.nodeCache.set(blockNumber, node);
+    await node.initEmpty();
     return node;
   }
 
@@ -203,6 +253,7 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
     blockNumber: number,
     options: BlockNodeRelocationOptions = {},
   ): Promise<BlockNodeRelocationResult> {
+    if (this.unpublished) throw new Error('Unpublished B+ trees must be published before relocation.');
     await this.openTree(rootBlock);
     const oldNode = await this.loadNode(blockNumber);
     const kind: BlockNodeKind = oldNode.isLeaf ? 'btree-leaf' : 'btree-internal';
@@ -258,6 +309,10 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    * Load a node from disk by block number.
    */
   async loadNode(blockNumber: number): Promise<BlockLeafNode | BlockInternalNode> {
+    this.assertHealthy();
+    if (this.unpublished && !this.ownedBlocks.has(blockNumber)) {
+      throw new Error('Unpublished B+ trees cannot load nodes belonging to existing trees.');
+    }
     // Check cache first
     const cached = this.nodeCache.get(blockNumber);
     if (cached) {
@@ -304,7 +359,7 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
       this.blockSize,
       (bn) => this.loadNode(bn),
       async () => {
-        const bn = await this.file.allocateBlock();
+        const bn = await this.allocateNodeBlock();
         const node = this.createInternalNode(bn);
         this.nodeCache.set(bn, node);
         return node;
@@ -317,6 +372,7 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    * Remove a node from the cache when it is freed (e.g., after merge).
    */
   private invalidateNode(blockNumber: number): void {
+    this.ownedBlocks.delete(blockNumber);
     this.nodeCache.delete(blockNumber);
   }
 
@@ -429,21 +485,39 @@ export class BlockNodeStorage implements NodeStorage<Buffer, Buffer, BlockLeafNo
    * is serialised to the dirty-block map before the WAL write begins.
    */
   async flushDirtyNodes(): Promise<void> {
+    this.assertHealthy();
     for (const node of this.nodeCache.values()) {
       await node.flush();
     }
   }
 
   dispose(): void {
+    // A failed private build must be discarded completely before detaching its commit hook.
+    if (this.buildFailure || (this.unpublished && this.ownedBlocks.size > 0)) {
+      this.file.markMutationFailed(
+        this.buildFailure ?? new Error('Unpublished B+ tree disposed without discarding its allocated blocks.'),
+      );
+    }
     this.nodeCache.clear();
+    this.ownedBlocks.clear();
     this.currentRoot = null;
     this.file.removePreCommitHook(this.preCommitHook);
   }
 
   /** Discard a newly built, unpublished tree, including nodes not yet linked after a failed split. */
   async discardNewTree(): Promise<void> {
-    const blocks = [...this.nodeCache.keys()];
+    if (!this.unpublished) throw new Error('Only unpublished B+ trees can be discarded.');
+    this.file.assertHealthy();
+    try {
+      for (const block of this.ownedBlocks) {
+        await this.file.freeBlock(block);
+        this.ownedBlocks.delete(block);
+      }
+    } catch (error) {
+      this.file.markMutationFailed(error);
+      throw error;
+    }
+    this.buildFailure = undefined;
     this.dispose();
-    for (const block of blocks) await this.file.freeBlock(block);
   }
 }

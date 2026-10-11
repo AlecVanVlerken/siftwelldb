@@ -464,9 +464,13 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       throw new Error('Internal node can only be deallocated when it has exactly one child.');
     }
     const child = await this.getChildAt(0);
-    // Invalidate this node from cache before freeing
+    try {
+      await this.file.freeBlock(this.blockNumber);
+    } catch (error) {
+      this.file.markMutationFailed(error);
+      throw error;
+    }
     this.onNodeFreed?.(this.blockNumber);
-    await this.file.freeBlock(this.blockNumber);
     return child;
   }
 
@@ -513,9 +517,13 @@ export class BlockInternalNode implements InternalNode<Buffer, Buffer, BlockLeaf
       this.childrenLoaded.set(blockNum, child);
     }
     this.dirty = true;
-    // Invalidate the merged node from cache before freeing its block
+    try {
+      await this.file.freeBlock(nextNode.blockNumber);
+    } catch (error) {
+      this.file.markMutationFailed(error);
+      throw error;
+    }
     this.onNodeFreed?.(nextNode.blockNumber);
-    await this.file.freeBlock(nextNode.blockNumber);
   }
 
   replaceChildren(

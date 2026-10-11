@@ -426,9 +426,13 @@ export class BlockLeafNode implements LeafNode<Buffer, Buffer, BlockLeafNode, Bl
     this.entries.push(...nextNode.entries);
     this.nextLeafBlock = nextNode.nextLeafBlock;
     this.dirty = true;
-    // Invalidate the merged node from cache before freeing its block
+    try {
+      await this.file.freeBlock(nextNode.blockNumber);
+    } catch (error) {
+      this.file.markMutationFailed(error);
+      throw error;
+    }
     this.onNodeFreed?.(nextNode.blockNumber);
-    await this.file.freeBlock(nextNode.blockNumber);
   }
 
   getEntryCount(): number {

@@ -1,12 +1,23 @@
 // author: Thomas Dumon
 // date: 2025-12-07
 
-import { FreeBlockFile, type FreeBlockFileStats } from '../storage/blocks/freeblockfile.mjs';
+import {
+  FreeBlockFile,
+  MutationRecoveryRequiredError,
+  type FreeBlockFileStats,
+} from '../storage/blocks/freeblockfile.mjs';
 import { AtomicFile, RecoveryRequiredError } from '../storage/wal/atomicfile.mjs';
 import { BlockReadError } from '../storage/blocks/io.mjs';
 import { type File } from '../storage/file.mjs';
 import { allocateBlock } from '../storage/blocks/freelist.mjs';
-import { Document, type FieldValue, imageMimeForField, isImageField, supportsFieldIndex } from './document.mjs';
+import {
+  Document,
+  type FieldValue,
+  imageMimeForField,
+  isImageField,
+  supportsFieldIndex,
+  validateDocumentValues,
+} from './document.mjs';
 import {
   RecordStore,
   RecordReadError,
@@ -135,11 +146,41 @@ export class DbmsBack {
   private recordStore: RecordStore;
   private metaCache: MetaCache = {};
   private mutationQueue: Promise<void> = Promise.resolve();
+  private mutationStarted = false;
+
+  assertHealthy(): void {
+    this.freeblockFile.assertHealthy();
+  }
+
+  get isHealthy(): boolean {
+    return this.freeblockFile.isHealthy;
+  }
+
+  /** Called only after preflight, immediately before a potentially partial write. */
+  private beginMutation(): void {
+    this.mutationStarted = true;
+  }
 
   private mutate<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.mutationQueue.then(() => {
-      this.atomicFile.assertHealthy();
-      return operation();
+    const result = this.mutationQueue.then(async () => {
+      this.assertHealthy();
+      this.mutationStarted = false;
+      try {
+        return await operation();
+      } catch (error) {
+        if (this.mutationStarted) this.freeblockFile.markMutationFailed(error);
+        try {
+          this.assertHealthy();
+        } catch (healthError) {
+          // WAL failures already carry a recovery gate. Preserve the original
+          // I/O failure for this operation; subsequent calls report recovery.
+          if (healthError instanceof RecoveryRequiredError) throw error;
+          throw healthError;
+        }
+        throw error;
+      } finally {
+        this.mutationStarted = false;
+      }
     });
     this.mutationQueue = result.then(
       () => undefined,
@@ -150,7 +191,6 @@ export class DbmsBack {
 
   private dataFile: File;
   private logFile: File;
-  private atomicFile: AtomicFile;
 
   // Cache for BlockNodeStorage instances: key = "collection:field"
   private storageCache: Map<string, BlockNodeStorage> = new Map();
@@ -173,7 +213,6 @@ export class DbmsBack {
     this.logFile = logFile;
 
     const atomicFile = new AtomicFile(this.dataFile, this.logFile);
-    this.atomicFile = atomicFile;
     this.freeblockFile = new FreeBlockFile(atomicFile, 4096);
     this.recordStore = new RecordStore(this.freeblockFile);
     this.hnswConfig = hnswConfig;
@@ -231,11 +270,12 @@ export class DbmsBack {
       if (dbmsback.hnswConfig) {
         for (const collection of dbmsback.getPendingSemanticCollections()) {
           try {
-            await dbmsback.rebuildSemanticCollection(collection);
+            await dbmsback.mutate(() => dbmsback.rebuildSemanticCollection(collection));
           } catch (error) {
             if (
               error instanceof BlockReadError ||
               error instanceof RecordReadError ||
+              error instanceof MutationRecoveryRequiredError ||
               error instanceof RecoveryRequiredError
             )
               throw error;
@@ -260,6 +300,7 @@ export class DbmsBack {
    * @returns A Promise that resolves to an array of collection names.
    */
   getCollections(): Promise<string[]> {
+    this.assertHealthy();
     const keys = Object.keys(this.metaCache).filter((k) => !k.startsWith('__'));
     return Promise.resolve(keys);
   }
@@ -280,6 +321,7 @@ export class DbmsBack {
     }
 
     const collectionMeta = { ...this.getCollectionMeta(collection) };
+    this.beginMutation();
 
     const hnswMeta = this.getExistingHnswMeta();
     if (hnswMeta) {
@@ -524,6 +566,7 @@ export class DbmsBack {
   }
 
   getFieldIndexConfig(collection: string): Record<string, boolean> {
+    this.assertHealthy();
     if (RESERVED_META_KEYS.has(collection))
       throw new IndexValidationError('This collection name is reserved for database metadata.');
     return { ...this.getIndexingMeta().fields[collection], id: true };
@@ -555,6 +598,8 @@ export class DbmsBack {
 
   /** Shared preflight for public, SQL, import and web mutations, before record/index writes. */
   validateDocument(document: Document): void {
+    this.assertHealthy();
+    validateDocumentValues(document);
     const id = document.getId();
     this.validateIndexValue('id', id, id);
     const roots = this.metaCache[document.getCollectionName()] as Record<string, [number, string]> | undefined;
@@ -608,7 +653,12 @@ export class DbmsBack {
         form = nextForm;
       }
       if (form) {
-        const storage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(form) });
+        const storage = new BlockNodeStorage(this.freeblockFile, {
+          compareKeys: getCompareFunction(form),
+          unpublished: true,
+        });
+        const previouslyStarted = this.mutationStarted;
+        this.beginMutation();
         try {
           const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
           built = { storage, tree };
@@ -622,12 +672,21 @@ export class DbmsBack {
             );
           }
           await storage.flushDirtyNodes();
+          storage.publish();
         } catch (error) {
-          await storage.discardNewTree();
+          try {
+            await storage.discardNewTree();
+            // All allocations of the unpublished tree were tracked and freed.
+            this.freeblockFile.assertHealthy();
+            this.mutationStarted = previouslyStarted;
+          } catch (cleanupError) {
+            throw new AggregateError([error, cleanupError], 'Index build and cleanup failed.');
+          }
           throw error;
         }
       }
     }
+    this.beginMutation();
     const collectionMeta = this.getCollectionMeta(collection);
     if (!indexed && collectionMeta[field]) {
       const [root, oldForm] = collectionMeta[field];
@@ -650,6 +709,8 @@ export class DbmsBack {
   /** Preserve an existing collection's primary type when vacuum copies zero documents. */
   ensurePrimaryIndex(collection: string, type: 'string' | 'number'): Promise<void> {
     return this.mutate(async () => {
+      this.getFieldIndexConfig(collection);
+      this.beginMutation();
       const meta = this.getCollectionMeta(collection);
       if (meta['id']) return;
       const form = type === 'number' ? 'N' : 'S';
@@ -733,7 +794,7 @@ export class DbmsBack {
   }
 
   setFieldCompressionDefaults(collection: string, defaults: FieldCompressionDefaults): void {
-    this.atomicFile.assertHealthy();
+    this.assertHealthy();
     for (const algorithm of Object.values(defaults)) {
       if (!SUPPORTED_COMPRESSION_ALGORITHMS.has(algorithm)) {
         throw new Error(`Unsupported compression algorithm: ${algorithm}`);
@@ -744,6 +805,7 @@ export class DbmsBack {
   }
 
   getFieldCompressionDefaults(collection: string): FieldCompressionDefaults {
+    this.assertHealthy();
     return { ...this.getCompressionDefaults(collection) };
   }
 
@@ -845,6 +907,7 @@ export class DbmsBack {
   }
 
   async recommendCompression(request: CompressionRecommendationRequest): Promise<CompressionRecommendation> {
+    this.assertHealthy();
     const sampleLimit = Math.max(1, Math.floor(request.sampleSize ?? 50));
     const samples: CompressionSample[] = [];
     const storageTotals: CompressionStorageTotals = new Map();
@@ -923,12 +986,14 @@ export class DbmsBack {
   }
 
   private async commitInternal(): Promise<void> {
+    this.beginMutation();
     // Flush all dirty B+tree nodes to the FBF dirty-block cache before committing.
     for (const storage of this.storageCache.values()) {
       await storage.flushDirtyNodes();
     }
-    await this.metaWriteJSON(this.metaCache);
+    await this.metaWriteJSONInternal(this.metaCache);
     await this.freeblockFile.commit();
+    this.mutationStarted = false;
   }
 
   /**
@@ -963,6 +1028,7 @@ export class DbmsBack {
     };
     // Serialize/compress before allocating records, so codec failures also leave no partial mutation.
     this.recordStore.estimateRecordStorage(document, writeOptions);
+    this.beginMutation();
     const documentLocation = await this.recordStore.writeRecord(document, writeOptions);
     const collectionMeta = this.getCollectionMeta(collectionName);
     const config = this.getFieldIndexConfig(collectionName);
@@ -1007,6 +1073,7 @@ export class DbmsBack {
     collection: string,
     encoded = false,
   ): Promise<Document | EncodedDocument> {
+    this.assertHealthy();
     // ga naar root voor id
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
@@ -1043,7 +1110,7 @@ export class DbmsBack {
 
   /** An index reference is a promise of a live record, never ordinary absence. */
   private async readIndexedDocument(pointer: number, collection: string): Promise<Document> {
-    this.atomicFile.assertHealthy();
+    this.assertHealthy();
     const document = await this.recordStore.readRecord(pointer);
     if (!document) {
       throw new Error(`Index in collection "${collection}" references missing record at block ${pointer}`);
@@ -1058,7 +1125,7 @@ export class DbmsBack {
   }
 
   private async readIndexedEncodedDocument(pointer: number, collection: string): Promise<EncodedDocument> {
-    this.atomicFile.assertHealthy();
+    this.assertHealthy();
     const document = await this.recordStore.readRecordEncoded(pointer);
     if (!document) {
       throw new Error(`Index in collection "${collection}" references missing encoded record at block ${pointer}`);
@@ -1071,7 +1138,7 @@ export class DbmsBack {
 
   /** Counts live primary references without decoding records, for vacuum completeness checks. */
   async getPrimaryReferenceCount(collection: string): Promise<number> {
-    this.atomicFile.assertHealthy();
+    this.assertHealthy();
     if (!this.hasCollectionMeta(collection)) return 0;
     const idMeta = this.getCollectionMeta(collection)['id'];
     if (!idMeta) return 0;
@@ -1092,6 +1159,7 @@ export class DbmsBack {
    * just want the document should use `getDocument` instead.
    */
   async getDocumentBlockId(collection: string, documentId: number | string): Promise<number | null> {
+    this.assertHealthy();
     if (!this.hasCollectionMeta(collection)) return null;
     const collectionMeta = this.getCollectionMeta(collection);
     if (!('id' in collectionMeta)) return null;
@@ -1121,6 +1189,7 @@ export class DbmsBack {
    * Returns 0 for unknown collections.
    */
   async getCollectionRecordBytes(collection: string): Promise<number> {
+    this.assertHealthy();
     if (!this.hasCollectionMeta(collection)) return 0;
     const collectionMeta = this.getCollectionMeta(collection);
     if (!('id' in collectionMeta)) return 0;
@@ -1183,6 +1252,7 @@ export class DbmsBack {
     const collectionHasHnsw = hnswIndexKeys.length > 0;
 
     // Delete from id B+ tree
+    this.beginMutation();
     await idTree.delete(idBuffer);
     metaData[0] = idTree.getRoot().getBlockNumber();
 
@@ -1265,6 +1335,7 @@ export class DbmsBack {
 
     const documentPointer = documentPointerBuffer.readUInt32BE(0);
     let tombstoned = false;
+    this.beginMutation();
     for (const indexKey of hnswIndexKeys) {
       const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
       tombstoned = (await hnswIdx.tombstone(documentPointer)) || tombstoned;
@@ -1289,6 +1360,7 @@ export class DbmsBack {
     if (!this.hnswConfig) {
       throw new Error('Cannot ensure HNSW collection without hnswConfig');
     }
+    this.beginMutation();
 
     if (this.hnswConfig.textIndex || this.hnswConfig.imageIndex) {
       if (this.textHnswConfig()) await this.getOrCreateHnswIndex(this.textHnswIndexKey(collection));
@@ -1333,6 +1405,7 @@ export class DbmsBack {
 
     const document = await this.readIndexedDocument(oldPointer, collection);
     const encodedDocument = await this.readIndexedEncodedDocument(oldPointer, collection);
+    this.beginMutation();
 
     const newPointer =
       options.maxBlockExclusive === undefined
@@ -1418,6 +1491,7 @@ export class DbmsBack {
 
     const [rootBlock, vorm] = fieldMeta;
     const storage = this.getOrCreateStorage(collection, field, vorm);
+    this.beginMutation();
     const result = await storage.relocateNode(rootBlock, blockNumber, options);
     fieldMeta[0] = result.newRootBlock;
     this.treeCache.delete(`${collection}:${field}`);
@@ -1425,6 +1499,7 @@ export class DbmsBack {
   }
 
   async listHnswRelocationTargets(collection: string): Promise<HnswRelocationTarget[]> {
+    this.assertHealthy();
     if (!this.hnswConfig) {
       throw new Error('Cannot inspect HNSW relocation targets without hnswConfig');
     }
@@ -1461,6 +1536,7 @@ export class DbmsBack {
   }
 
   async inspectHnswGraphStructureSnapshot(collection: string): Promise<HnswGraphStructureSnapshot> {
+    this.assertHealthy();
     if (!this.hnswConfig) {
       throw new Error('Cannot inspect HNSW graph structure without hnswConfig');
     }
@@ -1490,6 +1566,7 @@ export class DbmsBack {
     const hnswIdx = await this.getOrCreateHnswIndex(target.collection);
     if (target.kind === 'hnsw-meta') {
       const [oldBlockNumber, vorm] = hnswMeta[target.collection];
+      this.beginMutation();
       const newBlockNumber = await hnswIdx.relocateMetadata({ maxBlockExclusive: target.maxBlockExclusive });
       if (newBlockNumber === null) return false;
       hnswMeta[target.collection] = [newBlockNumber, vorm];
@@ -1499,6 +1576,7 @@ export class DbmsBack {
     }
 
     const nodeId = await this.resolveHnswRelocationNodeId(target);
+    this.beginMutation();
     if (target.kind === 'hnsw-graph') {
       const newNodeId = await hnswIdx.relocateGraphNode(nodeId, { maxBlockExclusive: target.maxBlockExclusive });
       const newBlockNumber = Math.floor(newNodeId / 4294967296);
@@ -1518,6 +1596,7 @@ export class DbmsBack {
   async trimFreeTail(): Promise<number> {
     return this.mutate(async () => {
       await this.commitInternal();
+      this.beginMutation();
       const result = await this.freeblockFile.trimFreeTail();
       return result.removedBlocks;
     });
@@ -1585,6 +1664,7 @@ export class DbmsBack {
   }
 
   async listHnswRelocationCandidateTargets(limit = 16): Promise<RelocationTarget[]> {
+    this.assertHealthy();
     if (!this.hnswConfig) {
       return [];
     }
@@ -1731,13 +1811,7 @@ export class DbmsBack {
       throw new Error('Cannot change document ID or collection name during edit.');
     }
 
-    this.validateDocument(newDocumentObj);
-    const vectors = await this.prepareSemanticVectors(newDocumentObj);
-    this.recordStore.estimateRecordStorage(newDocumentObj, {
-      compressionDefaults: this.getCompressionDefaults(collection),
-    });
-    await this.deleteDocumentInternal(existingDocument.getId(), existingDocument.getCollectionName());
-    await this.insertDocumentInternal(newDocumentObj, undefined, { semanticVectors: vectors });
+    await this.replaceDocumentByIDInternal(collection, id, newDocumentObj, undefined, true);
   }
 
   /**
@@ -1770,6 +1844,7 @@ export class DbmsBack {
     compression?: FieldCompressionOverrides,
     preserveCompression = false,
   ): Promise<void> {
+    this.validateDocument(newDocument);
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
     }
@@ -1796,7 +1871,6 @@ export class DbmsBack {
       };
     }
 
-    this.validateDocument(newDocument);
     const vectors = await this.prepareSemanticVectors(newDocument);
     this.recordStore.estimateRecordStorage(newDocument, {
       compressionDefaults: this.getCompressionDefaults(collection),
@@ -1818,7 +1892,7 @@ export class DbmsBack {
     iterableKey: string,
     value?: string | number | Buffer,
   ): Promise<AsyncIterable<Document>> {
-    this.atomicFile.assertHealthy();
+    this.assertHealthy();
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
     }
@@ -1867,6 +1941,7 @@ export class DbmsBack {
    * @throws If HNSW is not configured.
    */
   async semanticSearch(collection: string, query: string, k: number): Promise<Document[]> {
+    this.assertHealthy();
     if (this.getPendingSemanticCollections().includes(collection))
       throw new Error(
         `Semantic reindex pending for \"${collection}\". Reopen with the original working embedding configuration to finish migration.`,
@@ -1892,6 +1967,7 @@ export class DbmsBack {
   }
 
   async semanticImageTextSearch(collection: string, query: string, k: number): Promise<Document[]> {
+    this.assertHealthy();
     if (this.getPendingSemanticCollections().includes(collection))
       throw new Error(
         `Semantic reindex pending for \"${collection}\". Reopen with the original working embedding configuration to finish migration.`,
@@ -1927,6 +2003,7 @@ export class DbmsBack {
    * @returns Up to `k` Documents ordered by similarity (closest first).
    */
   async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<Document[]> {
+    this.assertHealthy();
     if (this.getPendingSemanticCollections().includes(collection))
       throw new Error(
         `Semantic reindex pending for \"${collection}\". Reopen with the original working embedding configuration to finish migration.`,
@@ -1976,6 +2053,7 @@ export class DbmsBack {
   }
 
   getPendingSemanticCollections(): string[] {
+    this.assertHealthy();
     return [...this.getIndexingMeta().semanticPending];
   }
 
@@ -2026,6 +2104,9 @@ export class DbmsBack {
   private async rebuildSemanticCollection(collection: string): Promise<void> {
     const staged = new Map<string, { index: HNSWIndex; root: number }>();
     const oldKeys = this.hnswIndexKeysForCollection(collection);
+    const previouslyStarted = this.mutationStarted;
+    let allocating = false;
+    let inserting = false;
     try {
       if (this.getCollectionMeta(collection)['id']) {
         for await (const document of await this.cursor(collection, 'id')) {
@@ -2034,6 +2115,8 @@ export class DbmsBack {
             let target = staged.get(indexKey);
             if (!target) {
               const config = this.hnswConfigForIndexKey(indexKey)!;
+              this.beginMutation();
+              allocating = true;
               const graph = await HNSWGraphStorage.create(
                 this.freeblockFile,
                 config.M ?? 16,
@@ -2046,8 +2129,11 @@ export class DbmsBack {
               });
               target = { index, root: graph.metaBlockId };
               staged.set(indexKey, target);
+              allocating = false;
             }
+            inserting = true;
             await target.index.insert(pointer!, vector);
+            inserting = false;
           }
         }
       }
@@ -2056,8 +2142,12 @@ export class DbmsBack {
         await index.dropStorage();
         index.dispose();
       }
+      // A failed structural insertion can own allocations not yet linked into
+      // the graph; dropping registered nodes cannot prove complete restoration.
+      if (!allocating && !inserting) this.mutationStarted = previouslyStarted;
       throw error;
     }
+    this.beginMutation();
     for (const indexKey of oldKeys) {
       const index = await this.getOrCreateHnswIndex(indexKey);
       await index.dropStorage();
@@ -2154,6 +2244,7 @@ export class DbmsBack {
     const maxStoredLevel = cfg.maxStoredLevel ?? 4;
     const efConstruction = cfg.efConstruction ?? 200;
     const efSearch = cfg.efSearch ?? 50;
+    this.beginMutation();
 
     // Both graph storage and vector heap live inside the shared FBF.
     const graphStorage = await HNSWGraphStorage.create(this.freeblockFile, M, maxStoredLevel);
@@ -2184,6 +2275,7 @@ export class DbmsBack {
    * Return a snapshot of regular collection metadata for the vacuum subsystem.
    */
   getVacuumCollectionMetaSnapshot(): Record<string, Record<string, [number, string]>> {
+    this.assertHealthy();
     const result: Record<string, Record<string, [number, string]>> = {};
 
     for (const [key, value] of Object.entries(this.metaCache)) {
@@ -2207,6 +2299,7 @@ export class DbmsBack {
    * Return a snapshot of compression metadata for the vacuum subsystem.
    */
   getVacuumCompressionMetaSnapshot(): Record<string, FieldCompressionDefaults> {
+    this.assertHealthy();
     const result: Record<string, FieldCompressionDefaults> = {};
     for (const [collection, defaults] of Object.entries(this.getCompressionMeta())) {
       result[collection] = { ...defaults };
@@ -2218,6 +2311,7 @@ export class DbmsBack {
    * Return a snapshot of HNSW metadata for the vacuum subsystem.
    */
   getVacuumHnswMetaSnapshot(): Record<string, [number, string]> {
+    this.assertHealthy();
     const result: Record<string, [number, string]> = {};
     for (const [collection, meta] of Object.entries(this.getHnswMeta())) {
       result[collection] = [...meta] as [number, string];
@@ -2268,6 +2362,7 @@ export class DbmsBack {
    * Return the names of all collections in the database.
    */
   listCollections(): string[] {
+    this.assertHealthy();
     return Object.keys(this.metaCache).filter((k) => !RESERVED_META_KEYS.has(k) && this.hasCollectionMeta(k));
   }
 
@@ -2281,6 +2376,7 @@ export class DbmsBack {
    * sample-based refinement can correct that.
    */
   describeCollection(collection: string): { name: string; type: 'string' | 'number' }[] {
+    this.assertHealthy();
     if (!this.hasCollectionMeta(collection)) return [];
     const meta = this.getCollectionMeta(collection);
     const fields: { name: string; type: 'string' | 'number' }[] = [];
@@ -2338,7 +2434,11 @@ export class DbmsBack {
    * Writes the meta information to the database.
    * @param meta - The meta information to write as a JSON object.
    */
-  async metaWriteJSON(meta: MetaCache): Promise<void> {
+  metaWriteJSON(meta: MetaCache): Promise<void> {
+    return this.mutate(() => this.metaWriteJSONInternal(meta));
+  }
+
+  private async metaWriteJSONInternal(meta: MetaCache): Promise<void> {
     // convert meta to binary
     const jsonString = JSON.stringify(meta);
     const binary = Buffer.from(jsonString);
@@ -2358,6 +2458,7 @@ export class DbmsBack {
     }
     const jsonString2 = binaryBlockIds.subarray(0, jsonLength).toString();
     const metaBlockIds = JSON.parse(jsonString2) as number[];
+    this.beginMutation();
 
     // if amountOfBlocks > metaBlockIds.length, allocate more blocks
     // if amountOfBlocks < metaBlockIds.length, free some blocks

@@ -68,6 +68,14 @@ still rejects the commit until recovery completes cleanup. These guarantees
 depend on the filesystem honoring file synchronization. They do not provide
 rollback for arbitrary failures during staged B+ tree/document mutations.
 
+Structural B+ tree failures and partially failed database mutations also mark
+the shared FreeBlockFile unsafe. Its health check blocks cached reads, writes
+and commits before precommit hooks run, so removing an index cache cannot
+make an incomplete mutation committable. This logical failure state is never
+cleared in place: close without committing and use fresh block/index caches
+on reopen. Staged changes are discarded; any WAL already submitted by a
+failed commit remains governed by redo recovery above.
+
 ## Authors
 
 - Alec Van Vlerken

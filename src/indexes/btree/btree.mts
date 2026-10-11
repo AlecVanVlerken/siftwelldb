@@ -37,6 +37,7 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
    * Get the current root node.
    */
   getRoot(): L | I {
+    this.storage.assertHealthy?.();
     return this.root;
   }
 
@@ -56,8 +57,13 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
     if (isAtKey) {
       throw new Error('Duplicate keys are not allowed in B+ trees.');
     }
-    const descriptor = await cursor.insert(key, value);
-    await this.propagateChange(path, descriptor);
+    try {
+      const descriptor = await cursor.insert(key, value);
+      await this.propagateChange(path, descriptor);
+    } catch (error) {
+      this.storage.markMutationFailed?.(error);
+      throw error;
+    }
   }
 
   async delete(key: K): Promise<boolean> {
@@ -66,9 +72,14 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
     if (!isAtKey) {
       return false;
     }
-    await cursor.removeKeyValuePairAfter();
-    const descriptor = leaf.describe();
-    await this.propagateChange(path, descriptor);
+    try {
+      await cursor.removeKeyValuePairAfter();
+      const descriptor = leaf.describe();
+      await this.propagateChange(path, descriptor);
+    } catch (error) {
+      this.storage.markMutationFailed?.(error);
+      throw error;
+    }
     return true;
   }
 
@@ -83,8 +94,13 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
     if (!isAtKey) {
       return false;
     }
-    const descriptor = await cursor.updateValueAfter(value);
-    await this.propagateChange(path, descriptor);
+    try {
+      const descriptor = await cursor.updateValueAfter(value);
+      await this.propagateChange(path, descriptor);
+    } catch (error) {
+      this.storage.markMutationFailed?.(error);
+      throw error;
+    }
     return true;
   }
 
@@ -94,7 +110,9 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
       fromKey === undefined ? { cursor: leaf.getCursorBeforeFirst() } : await leaf.getCursorBeforeKey(fromKey);
     let cursor = cursorInfo.cursor;
     while (true) {
+      this.storage.assertHealthy?.();
       while (!cursor.isAfterLast()) {
+        this.storage.assertHealthy?.();
         const [key, value] = cursor.getKeyValuePairAfter();
         if (fromKey === undefined || this.storage.compareKeys(key, fromKey) >= 0) {
           yield [key, value];
@@ -113,6 +131,7 @@ export class BPlusTree<K, V, L extends LeafNode<K, V, L, I>, I extends InternalN
     leaf: L;
     path: PathEntry<K, V, L, I>[];
   }> {
+    this.storage.assertHealthy?.();
     const path: PathEntry<K, V, L, I>[] = [];
     let node: L | I = this.root;
     while (!node.isLeaf) {

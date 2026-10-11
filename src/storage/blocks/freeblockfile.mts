@@ -38,6 +38,16 @@ export type FreeBlockFileStats = {
   freeTailBlocks: number;
 };
 
+export class MutationRecoveryRequiredError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `Database mutation failed after changes may have been staged; close and reopen before continuing. ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = 'MutationRecoveryRequiredError';
+  }
+}
+
 export class FreeBlockFile {
   private file: AtomicFile;
   private blockSize: number;
@@ -46,6 +56,26 @@ export class FreeBlockFile {
   private highestDirtyBlock: number = -1;
 
   private isOpen = false;
+  private mutationFailure: MutationRecoveryRequiredError | undefined;
+
+  /** Logical mutation failures and WAL failures share the same read/write gate. */
+  assertHealthy(): void {
+    this.file.assertHealthy();
+    if (this.mutationFailure) throw this.mutationFailure;
+  }
+
+  get isHealthy(): boolean {
+    try {
+      this.assertHealthy();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  markMutationFailed(cause: unknown): void {
+    this.mutationFailure ??= new MutationRecoveryRequiredError(cause);
+  }
 
   // Cached physical block count to avoid repeated stat() calls
   // Updated on open() and commit()
@@ -92,6 +122,7 @@ export class FreeBlockFile {
    * @author Arthur Cukier
    */
   async create() {
+    this.assertHealthy();
     try {
       await this.file.create();
       this.isOpen = true;
@@ -119,6 +150,8 @@ export class FreeBlockFile {
    * @author Arthur Cukier
    */
   async open() {
+    // A fresh AtomicFile.open may recover WAL state, but cannot repair logical caches.
+    if (this.mutationFailure) throw this.mutationFailure;
     if (this.isOpen) throw new Error('File already open');
     try {
       await this.file.open();
@@ -257,7 +290,7 @@ export class FreeBlockFile {
   }
 
   async commit(): Promise<void> {
-    this.file.assertHealthy();
+    this.assertHealthy();
     for (const hook of this._preCommitHooks) {
       await hook();
     }
@@ -479,7 +512,7 @@ export class FreeBlockFile {
 
   _ensureOpen(): void {
     if (!this.isOpen) throw new Error('File not open');
-    this.file.assertHealthy();
+    this.assertHealthy();
   }
 
   private async readHeaderBlock(): Promise<Buffer> {

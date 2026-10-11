@@ -20,7 +20,7 @@ import { FreeBlockFile } from './freeblockfile.mjs';
  * Atomically persists all staged block modifications.
  */
 export async function commit(fbf: FreeBlockFile): Promise<void> {
-  fbf._getFile().assertHealthy();
+  fbf.assertHealthy();
   const dirty = fbf._getDirtyBlocks();
   if (dirty.size === 0) return;
   fbf._ensureOpen();

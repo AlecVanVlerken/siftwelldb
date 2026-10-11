@@ -34,7 +34,29 @@ export function supportsFieldIndex(field: string, value: FieldValue, fields: Rec
 }
 
 export function isFieldValue(value: unknown): value is FieldValue {
-  return ['string', 'number', 'boolean'].includes(typeof value) || Buffer.isBuffer(value);
+  return (
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value)) ||
+    Buffer.isBuffer(value)
+  );
+}
+
+function validateDocumentId(id: unknown): asserts id is RawId {
+  if (id === undefined || id === null) throw new Error('Document must have an id');
+  if (typeof id !== 'string' && typeof id !== 'number') throw new Error('Document id must be a string or number');
+  if (typeof id === 'number' && !Number.isFinite(id)) throw new Error('Document id must be finite');
+}
+
+function validateFieldValue(field: string, value: unknown): asserts value is FieldValue {
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new Error(`Field ${field} must be finite`);
+  if (!isFieldValue(value)) throw new Error(`Unsupported value type for field ${field}`);
+}
+
+/** Shared value preflight, including programmatically constructed Documents. */
+export function validateDocumentValues(document: Document): void {
+  validateDocumentId(document.getId());
+  for (const [field, value] of Object.entries(document.getFields())) validateFieldValue(field, value);
 }
 
 /**
@@ -123,23 +145,19 @@ export function parseRawDocument(collection: string, raw: unknown): Document {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Document must be an object');
 
   const rawId = (raw as Record<string, unknown>)['id'];
-  if (rawId === undefined || rawId === null) throw new Error('Document must have an id');
-  if (typeof rawId !== 'string' && typeof rawId !== 'number') throw new Error('Document id must be a string or number');
-  if (typeof rawId === 'number' && !Number.isFinite(rawId)) throw new Error('Document id must be finite');
+  validateDocumentId(rawId);
 
   const iterableEntries: [string, FieldValue][] = [];
   const nonIterableEntries: [string, FieldValue][] = [];
   const rawRecord = raw as Record<string, unknown>;
   for (const [key, value] of Object.entries(rawRecord)) {
     if (key === 'id') continue;
-    if (typeof value === 'number' && !Number.isFinite(value)) throw new Error(`Field ${key} must be finite`);
+    validateFieldValue(key, value);
 
     let fieldValue: FieldValue;
     if (isImageField(key, rawRecord) && typeof value === 'string') {
       // Image field supplied as base64 string → decode to Buffer.
       fieldValue = Buffer.from(value, 'base64');
-    } else if (!isFieldValue(value)) {
-      throw new Error(`Unsupported value type for field ${key}`);
     } else {
       fieldValue = value;
     }

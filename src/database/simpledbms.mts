@@ -131,6 +131,7 @@ import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
  *   HNSW vectors together via the WAL.
  */
 export type { HnswConfig };
+export { MutationRecoveryRequiredError } from '../storage/blocks/freeblockfile.mjs';
 export type {
   CompressionRecommendation,
   CompressionRecommendationItem,
@@ -528,6 +529,15 @@ export class SimpleDbms {
    */
   async commit(): Promise<void> {
     await this.dbmsback.commit();
+  }
+
+  /** An unsafe session must be closed and replaced with a freshly opened instance. */
+  assertHealthy(): void {
+    this.dbmsback.assertHealthy();
+  }
+
+  get isHealthy(): boolean {
+    return this.dbmsback.isHealthy;
   }
 
   async runIncrementalCompactionStep(policy?: IncrementalCompactionPolicy): Promise<IncrementalCompactionResult> {
