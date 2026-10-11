@@ -146,7 +146,8 @@ export class FreeBlockFile {
    * @author Arthur Cukier
    */
   async close() {
-    if (!this.isOpen) return;
+    // Initialization can fail with a handle still awaiting a successful close.
+    // AtomicFile tracks each handle and safely skips those already closed.
     await this.file.close();
     this.isOpen = false;
   }

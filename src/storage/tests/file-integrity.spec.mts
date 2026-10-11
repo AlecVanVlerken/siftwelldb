@@ -205,6 +205,26 @@ describe('RealFile complete positional I/O', () => {
 });
 
 describe('RealFile-backed AtomicFile transfer failures', () => {
+  it('retries closing a handle left open by failed FreeBlockFile initialization', async () => {
+    const dataHandle = new ControlledHandle();
+    const logHandle = new ControlledHandle();
+    logHandle.contents = Buffer.from('incomplete WAL');
+    dataHandle.closeError = new Error('temporary close failure');
+    const dataClose = vi.spyOn(dataHandle, 'close');
+    const logClose = vi.spyOn(logHandle, 'close');
+    const file = new FreeBlockFile(new AtomicFile(withHandle(dataHandle), withHandle(logHandle)), 512);
+
+    await expect(file.open()).rejects.toThrow('WAL is invalid or incomplete');
+    expect(dataClose).toHaveBeenCalledTimes(1);
+    expect(logClose).toHaveBeenCalledTimes(1);
+    dataHandle.closeError = null;
+    await file.close();
+    expect(dataClose).toHaveBeenCalledTimes(2);
+    expect(logClose).toHaveBeenCalledTimes(1);
+    await file.close();
+    expect(dataClose).toHaveBeenCalledTimes(2);
+  });
+
   it('completes short WAL and data writes before reporting a successful commit', async () => {
     const dataHandle = new ControlledHandle();
     const logHandle = new ControlledHandle();

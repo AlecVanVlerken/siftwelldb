@@ -18,6 +18,30 @@ uncompressed fields and per-document overrides. Collection defaults are copied
 for future writes; they do not recompress existing documents with a different
 codec during vacuum. HNSW indexes are still rebuilt from live documents.
 
+Unreadable live records abort copying or validation. Both stages check their
+document counts against independent primary-index reference counts. A failed
+copy closes its incomplete target and leaves the source database in place.
+
+The webclient service replaces closed data/WAL pairs using a synchronized
+`.vacuum-state.json` manifest and per-operation temporary/backup files. Sizes and
+SHA-256 fingerprints identify both complete generations. Startup restores the
+original pair while the manifest is `prepared`; after the replacement has reopened
+and the `verified` decision is published, it keeps the replacement. Recovery
+verifies the selected pair before removing backups and removes the manifest last.
+Interrupted recovery or cleanup can be retried.
+
+Unknown generations, missing required files, invalid manifests, and orphan vacuum
+artifacts cause explicit errors and retain recovery evidence. Connect and
+force-create refuse these artifacts; a missing data file with an existing WAL
+also refuses automatic database creation. Recovery assumes exclusive ownership
+of the database files, as ordinary database access does.
+
+Real-process termination tests cover the replacement and rollback checkpoints.
+Files are synchronized before publication; directories are synchronized where
+supported. Node cannot synchronize directories on Windows, so directory-entry
+durability across power loss is not guaranteed there. The restart protocol does
+not repair damaged media or make multiple renames power-loss atomic.
+
 Unit tests live in `vacuum/tests/`, `incremental/tests/`, and `relocation/tests/`.
 The public entry point is tested by `tests/compaction.spec.mts`. Performance benchmarks live separately under
 `benchmarks/full-vacuum/` and `benchmarks/incremental-compaction/`.

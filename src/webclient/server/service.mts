@@ -31,6 +31,14 @@ import { QueryMutationError } from '../../query/executor.mjs';
 import { compareValues } from '../../query/expressions.mjs';
 import { getClipHnswConfig } from './embedding-config.mjs';
 import { generateDemoEmployees, generateSemanticKnowledgeDemoDocuments } from './demo-data.mjs';
+import {
+  assertNoVacuumArtifacts,
+  finishVacuumReplacement,
+  installVacuumReplacement,
+  prepareVacuumReplacement,
+  recoverVacuumReplacement,
+  vacuumPaths,
+} from './vacuum-recovery.mjs';
 
 export type LabPolicyKey = 'none-uniform' | 'gzip-uniform' | 'zstd-uniform' | 'gzip-everything' | 'advisor-mix';
 
@@ -120,16 +128,6 @@ async function deleteIfExists(filePath: string): Promise<void> {
     await fs.unlink(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-}
-
-async function renameIfExists(source: string, target: string): Promise<boolean> {
-  try {
-    await fs.rename(source, target);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw error;
   }
 }
 
@@ -322,6 +320,8 @@ export class DatabaseService {
 
       const hnswConfig = await this.getHnswConfig();
 
+      await recoverVacuumReplacement(filepath, () => this.verifyVacuumFiles(filepath));
+
       // Check file existence right before opening to avoid race conditions
       // (e.g. file state changing during the slow HNSW model loading above).
       let fileExists = false;
@@ -341,6 +341,13 @@ export class DatabaseService {
         this.onDatabaseOpened();
         return 'Connected to existing database';
       } else {
+        // A WAL without its data file is recovery evidence, never a fresh DB.
+        try {
+          await fs.access(this.logFilepath(filepath));
+          throw new Error('Database data file is missing but its WAL exists. Existing files were retained.');
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        }
         this.dbms = await this.openDatabaseFiles(dataFile, logFile, hnswConfig, true);
         this.currentFilepath = filepath;
         this.onDatabaseOpened();
@@ -356,6 +363,7 @@ export class DatabaseService {
     return this.runExclusive('create', async () => {
       await this.closeInternal();
 
+      await assertNoVacuumArtifacts(filepath);
       await deleteIfExists(filepath);
       await deleteIfExists(this.logFilepath(filepath));
 
@@ -384,6 +392,7 @@ export class DatabaseService {
       if (!filepath) throw new Error('No filepath available');
       await this.closeInternal();
 
+      await assertNoVacuumArtifacts(filepath);
       await deleteIfExists(filepath);
       await deleteIfExists(this.logFilepath(filepath));
 
@@ -460,22 +469,15 @@ export class DatabaseService {
       const filepath = this.currentFilepath;
       if (!filepath) throw new Error('No filepath available');
 
-      const logPath = this.logFilepath(filepath);
       const before = await this.databaseSizeInfo(filepath);
-      const stamp = Date.now().toString(36);
-      const tempPath = `${filepath}.vacuum-${stamp}.tmp`;
-      const tempLogPath = `${logPath}.vacuum-${stamp}.tmp`;
-      const backupPath = `${filepath}.vacuum-${stamp}.bak`;
-      const backupLogPath = `${logPath}.vacuum-${stamp}.bak`;
-      const tempDataFile = new RealFile(tempPath);
-      const tempLogFile = new RealFile(tempLogPath);
+      await assertNoVacuumArtifacts(filepath);
+      const paths = vacuumPaths(filepath);
+      const tempDataFile = new RealFile(paths.tempData);
+      const tempLogFile = new RealFile(paths.tempLog);
       const started = performance.now();
       let compacted: SimpleDbms | null = null;
       let originalClosed = false;
-      let dataBackedUp = false;
-      let logBackedUp = false;
-      let dataInstalled = false;
-      let logInstalled = false;
+      let preparationAttempted = false;
 
       try {
         compacted = await this.dbms!.vacuumCompactInto(tempDataFile, tempLogFile);
@@ -485,28 +487,19 @@ export class DatabaseService {
         await this.closeInternal();
         originalClosed = true;
 
-        await fs.rename(filepath, backupPath);
-        dataBackedUp = true;
-        logBackedUp = await renameIfExists(logPath, backupLogPath);
-
-        await fs.rename(tempPath, filepath);
-        dataInstalled = true;
-        await fs.rename(tempLogPath, logPath);
-        logInstalled = true;
+        preparationAttempted = true;
+        const manifest = await prepareVacuumReplacement(paths);
+        await installVacuumReplacement(paths);
 
         const hnswConfig = await this.getHnswConfig();
-        this.dbms = await this.openDatabaseFiles(new RealFile(filepath), new RealFile(logPath), hnswConfig);
+        this.dbms = await this.openDatabaseFiles(new RealFile(filepath), new RealFile(paths.log), hnswConfig);
         this.currentFilepath = filepath;
-        this.onDatabaseOpened();
 
         const after = await this.databaseSizeInfo(filepath);
-        // Keep the original pair until the replacement has reopened successfully.
-        // A cleanup failure leaves a recoverable backup, not a failed database swap.
-        for (const backup of [backupPath, backupLogPath]) {
-          await deleteIfExists(backup).catch((error: unknown) => {
-            console.warn(`Vacuum completed, but could not remove backup ${backup}:`, error);
-          });
-        }
+        // Do not expose a writable DB until the verified decision and cleanup
+        // are complete: later writes would invalidate recovery fingerprints.
+        await finishVacuumReplacement(paths, manifest);
+        this.onDatabaseOpened();
         const summary = {
           filepath,
           before,
@@ -531,26 +524,33 @@ export class DatabaseService {
         if (originalClosed) {
           try {
             await this.closeInternal();
-            if (dataInstalled) await deleteIfExists(filepath);
-            if (logInstalled) await deleteIfExists(logPath);
-            if (dataBackedUp) await fs.rename(backupPath, filepath);
-            if (logBackedUp) await fs.rename(backupLogPath, logPath);
-            this.dbms = await this.openDatabaseFiles(
-              new RealFile(filepath),
-              new RealFile(logPath),
-              await this.getHnswConfig(),
-            );
+            const reopen = async () => {
+              this.dbms = await this.openDatabaseFiles(
+                new RealFile(filepath),
+                new RealFile(paths.log),
+                await this.getHnswConfig(),
+              );
+            };
+            if (preparationAttempted) {
+              await recoverVacuumReplacement(filepath, () => this.verifyVacuumFiles(filepath));
+              await reopen();
+            } else {
+              await deleteIfExists(paths.tempData);
+              await deleteIfExists(paths.tempLog);
+              await reopen();
+            }
             this.currentFilepath = filepath;
             this.onDatabaseOpened();
           } catch (restoreError) {
+            await this.closeInternal().catch(() => undefined);
             throw new AggregateError(
               [error, restoreError],
-              'Vacuum failed and the original database could not be reopened. Backup files were retained.',
+              'Vacuum failed and recovery could not complete. Recovery files were retained; the database is disconnected.',
             );
           }
         }
-        await deleteIfExists(tempPath);
-        await deleteIfExists(tempLogPath);
+        await deleteIfExists(paths.tempData);
+        await deleteIfExists(paths.tempLog);
         throw error;
       }
     });
@@ -940,8 +940,9 @@ export class DatabaseService {
       for (const id of docIds) {
         try {
           documents.push(await this.dbms!.getDocumentById(collection, id));
-        } catch {
+        } catch (error) {
           // Article deleted after indexing — skip silently
+          if (!(error instanceof Error) || !error.message.startsWith('Document not found')) throw error;
         }
       }
       return { documents, total, hasMore };
@@ -962,8 +963,9 @@ export class DatabaseService {
       for (const id of docIds) {
         try {
           documents.push(await this.dbms!.getDocumentById(collection, id));
-        } catch {
+        } catch (error) {
           // Article deleted after indexing — skip silently
+          if (!(error instanceof Error) || !error.message.startsWith('Document not found')) throw error;
         }
       }
       return { documents, total, hasMore };
@@ -1641,6 +1643,27 @@ export class DatabaseService {
       // Opening can fail after only one file handle was acquired.
       await Promise.allSettled([dataFile.close(), logFile.close()]);
       throw error;
+    }
+  }
+
+  /** Verify recovery without semantic reindexing changing the fingerprinted generation. */
+  private async verifyVacuumFiles(filepath: string): Promise<void> {
+    const database = await this.openDatabaseFiles(
+      new RealFile(filepath),
+      new RealFile(this.logFilepath(filepath)),
+      undefined,
+    );
+    try {
+      for (const collection of database.listCollections()) {
+        for (const field of database.describeCollection(collection)) {
+          for await (const document of database.cursor(collection, field.name)) {
+            // Exhaust required records and index pages; a corrupt live reference must abort cleanup.
+            void document;
+          }
+        }
+      }
+    } finally {
+      await database.close();
     }
   }
 }
