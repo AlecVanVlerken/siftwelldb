@@ -5,6 +5,7 @@ import { parseRawDocument, type Document } from '../document.mjs';
 import type { RecordStore } from '../../storage/records/recordstore.mjs';
 import { HnswIndexNative } from '../../indexes/hnsw/hnswNative.mjs';
 import type { HNSWIndex } from '../../indexes/hnsw/hnswIndex.mjs';
+import { semanticIndexKey } from '../identity.mjs';
 
 const body = 'unindexed rabbit habitat '.repeat(500);
 const encode = (text: string) => Promise.resolve(new Float32Array([text.includes('rabbit') ? 0 : 10, 0, 0, 0]));
@@ -137,7 +138,9 @@ describe('field indexing with retained HNSW tombstones', () => {
     await db.deleteDocument('dead', 'articles');
     const foreign = await db.inspectHnswGraphStructureSnapshot('other');
     const results = await semanticIds(db);
-    const index = (db as unknown as { hnswIndexCache: Map<string, HNSWIndex> }).hnswIndexCache.get('articles')!;
+    const index = (db as unknown as { hnswIndexCache: Map<string, HNSWIndex> }).hnswIndexCache.get(
+      semanticIndexKey('articles', 'default'),
+    )!;
     const native = (index as unknown as { rustIdx: HnswIndexNative }).rustIdx;
     await db.setFieldIndexed('articles', 'title', false);
     const tombstone = (await db.inspectHnswGraphStructure('articles')).find((node) => node.deleted)!;

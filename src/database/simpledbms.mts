@@ -383,7 +383,7 @@ export class SimpleDbms {
    * Returns the physical on-disk byte footprint of a single document
    * (`chainLength × blockSize`). Throws if the document does not exist.
    */
-  async getDocumentStoredBytes(collection: string, id: string): Promise<number> {
+  async getDocumentStoredBytes(collection: string, id: RawId): Promise<number> {
     return this.dbmsback.getDocumentStoredBytes(collection, id);
   }
 
@@ -636,13 +636,9 @@ export class SimpleDbms {
       payloadBase64: entry.payloadBase64,
     });
 
-    const fields: Record<string, unknown> = {};
-    for (const entry of document.iterableEntries) {
-      fields[entry.key] = toFieldValue(entry);
-    }
-    for (const entry of document.nonIterableEntries) {
-      fields[entry.key] = toFieldValue(entry);
-    }
+    const fields = Object.fromEntries(
+      [...document.iterableEntries, ...document.nonIterableEntries].map((entry) => [entry.key, toFieldValue(entry)]),
+    );
 
     return {
       id: document.id,

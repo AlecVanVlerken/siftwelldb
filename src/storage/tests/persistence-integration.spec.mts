@@ -11,6 +11,7 @@ import { HNSWGraphStorage } from '../../indexes/hnsw/hnswGraphStorage.mjs';
 import { HNSWNode } from '../../indexes/hnsw/hnswNode.mjs';
 import { SimpleDbms } from '../../database/simpledbms.mjs';
 import type { DbmsBack, HnswConfig } from '../../database/dbmsback.mjs';
+import { semanticIndexKey } from '../../database/identity.mjs';
 
 async function collect<T>(entries: AsyncIterable<T>): Promise<T[]> {
   const result = [];
@@ -97,10 +98,10 @@ describe('storage failure propagation through persistent indexes', () => {
     const db = await SimpleDbms.create(data, log, config);
     await db.insertDocumentObject('docs', { id: 'A', title: 'document A' });
     await db.commit();
-    const meta = (db as unknown as { dbmsback: DbmsBack }).dbmsback as unknown as {
-      metaCache: { __hnsw__: Record<string, [number, string]> };
-    };
-    const graphBlock = Object.values(meta.metaCache.__hnsw__)[0][0];
+    const backend = (db as unknown as { dbmsback: DbmsBack }).dbmsback;
+    const graphBlock = backend.getVacuumHnswMetaSnapshot()[semanticIndexKey('docs', 'default')][0];
+    expect(Number.isSafeInteger(graphBlock)).toBe(true);
+    expect(graphBlock).toBeGreaterThan(0);
     await db.close();
     const read = data.read.bind(data);
     const readSpy = vi.spyOn(data, 'read').mockImplementation((buffer, options) => {

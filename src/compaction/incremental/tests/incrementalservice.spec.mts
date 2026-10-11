@@ -176,6 +176,19 @@ describe('IncrementalCompactionService', () => {
     assert.strictEqual(fake.commits(), 1);
   });
 
+  it('preserves the exact logical collection and semantic index kind through planned relocation', async () => {
+    const fake = makeFakeSource({
+      hnsw: [{ kind: 'hnsw-vector', collection: 'a::b::image', indexKind: 'text', nodeId: 4, blockNumber: 8 }],
+    });
+    const result = await runIncrementalCompactionStep(fake.source, { maxAmplification: 0.5, targetBatchUnits: 2 });
+    assert.strictEqual(result.relocatedHnswUnits, 1);
+    assert.strictEqual(fake.hnswRelocations[0].collection, 'a::b::image');
+    assert.strictEqual(fake.hnswRelocations[0].indexKind, 'text');
+    assert.strictEqual(fake.hnswRelocations[0].kind, 'hnsw-vector');
+    assert.strictEqual(fake.hnswRelocations[0].maxBlockExclusive, 3);
+    assert.strictEqual(fake.commits(), 1);
+  });
+
   it('dispatches tail reclamation batches', async () => {
     const fake = makeFakeSource({
       freeTailBlocks: 2,

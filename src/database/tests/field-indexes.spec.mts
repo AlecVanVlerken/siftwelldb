@@ -6,6 +6,7 @@ import { parseRawDocument, Document } from '../document.mjs';
 import { BlockNodeStorage } from '../../indexes/btree/nodestorage.mjs';
 import { QueryLanguage } from '../../query/querylanguage.mjs';
 import { bulkImportArray } from '../bulkimport.mjs';
+import { indexCacheKey } from '../identity.mjs';
 
 const longBody = 'long article about rabbits '.repeat(500);
 const encoder = (text: string) => Promise.resolve(new Float32Array(text.includes('rabbit') ? [1, 0, 0] : [0, 1, 0]));
@@ -290,7 +291,7 @@ describe('index policy migration', () => {
       >;
       secondaryIndexKeyBuffer(form: string, value: string, id: string): Buffer;
     };
-    const titleTree = internal.treeCache.get('articles:title')!.tree;
+    const titleTree = internal.treeCache.get(indexCacheKey('articles', 'title'))!.tree;
     const excludedKey = internal.secondaryIndexKeyBuffer('SS', 'excluded previously', 'b');
     const pointer = (await titleTree.get(excludedKey))!;
     await titleTree.delete(excludedKey);

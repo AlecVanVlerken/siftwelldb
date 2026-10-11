@@ -7,6 +7,7 @@ import { describe, it } from 'vitest';
 import { MockFile } from '../../../../tests/helpers/mockfile.mjs';
 import { DbmsBack, type HnswConfig } from '../../../database/dbmsback.mjs';
 import { JSONtoDocument } from '../../../database/document.mjs';
+import { semanticIndexKey } from '../../../database/identity.mjs';
 import { relocateHnswUnits } from '../../compaction.mjs';
 
 function makeEmbedding(text: string, dimension = 4): Float32Array {
@@ -326,7 +327,7 @@ describe('HnswRelocator', () => {
     const before = (await db.semanticSearch('articles', 'alpha metadata relocation target', 2)).map((doc) =>
       String(doc.getId()),
     );
-    const oldMetaBlock = db.getVacuumHnswMetaSnapshot()['articles'][0];
+    const oldMetaBlock = db.getVacuumHnswMetaSnapshot()[semanticIndexKey('articles', 'default')][0];
 
     const moved = await db.relocateHnswUnit({
       collection: 'articles',
@@ -336,7 +337,7 @@ describe('HnswRelocator', () => {
     });
     await db.commit();
 
-    const newMetaBlock = db.getVacuumHnswMetaSnapshot()['articles'][0];
+    const newMetaBlock = db.getVacuumHnswMetaSnapshot()[semanticIndexKey('articles', 'default')][0];
     assert.strictEqual(moved, true);
     assert(newMetaBlock < oldMetaBlock);
     assert.deepStrictEqual(

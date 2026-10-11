@@ -397,11 +397,13 @@ export class RecordStore {
   }
 
   private resolveCompressionAlgorithm(key: string, options?: RecordWriteOptions): CompressionAlgorithm {
-    const override = options?.compressionOverrides?.[key];
+    const overrides = options?.compressionOverrides;
+    const override = overrides && Object.hasOwn(overrides, key) ? overrides[key] : undefined;
     if (override === 'off') return 'none';
     if (override) return override;
 
-    return options?.compressionDefaults?.[key] ?? 'none';
+    const defaults = options?.compressionDefaults;
+    return (defaults && Object.hasOwn(defaults, key) ? defaults[key] : undefined) ?? 'none';
   }
 
   private async readStoredDocument(blockID: number): Promise<StoredDocumentV2 | null> {

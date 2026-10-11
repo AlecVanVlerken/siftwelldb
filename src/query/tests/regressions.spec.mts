@@ -40,15 +40,17 @@ describe('query correctness regressions', () => {
     expect((await sql.execute(`EXPLAIN ${query}`))[1]['detail']).toContain('full scan');
     await db.setFieldIndexed('encoded', 'tag', false);
     expect(await sql.execute(query)).toEqual([{ id: 'a' }, { id: 'b' }]);
-    await db.insertDocumentObject('encodedids', { id: '\ud800', score: 1 });
+    await db.insertDocumentObject('encodedids', { id: '\ud800\udc00', score: 1 });
     await db.insertDocumentObject('encodedids', { id: '\ue000', score: 2 });
-    expect(await sql.execute("SELECT score FROM encodedids WHERE id < '\ue000'")).toEqual([{ score: 1 }]);
+    const idQuery = "SELECT score FROM encodedids WHERE id > '\ud800' ORDER BY score";
+    expect(await sql.execute(idQuery)).toEqual([{ score: 1 }, { score: 2 }]);
+    expect((await sql.execute(`EXPLAIN ${idQuery}`))[1]['detail']).toContain('full scan');
     await db.commit();
     await db.close();
     db = await SimpleDbms.open(data, log);
     sql = new QueryLanguage(db);
     expect(await sql.execute(query)).toEqual([{ id: 'a' }, { id: 'b' }]);
-    expect(await sql.execute("SELECT score FROM encodedids WHERE id < '\ue000'")).toEqual([{ score: 1 }]);
+    expect(await sql.execute(idQuery)).toEqual([{ score: 1 }, { score: 2 }]);
   });
   it('preserves arbitrary binary fields and their stored type during SQL UPDATE and reopen', async () => {
     const bytes = Buffer.from([0, 255, 1, 128, 42]);

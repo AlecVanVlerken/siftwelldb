@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import type { SimpleDbms } from '../database/simpledbms.mjs';
 import type { FieldValue } from '../database/document.mjs';
 import type { LLMProvider } from './llmProvider.mjs';
+import { safeDictionary } from '../database/identity.mjs';
 
 export type FieldType = 'string' | 'number' | 'boolean';
 
@@ -163,7 +164,7 @@ export async function generateSemanticModel(dbms: SimpleDbms): Promise<SemanticM
 
     for (const mf of metaFields) {
       let type: FieldType = mf.type;
-      if (samples.some((sample) => mf.name in sample && typeof sample[mf.name] === 'boolean')) {
+      if (samples.some((sample) => Object.hasOwn(sample, mf.name) && typeof sample[mf.name] === 'boolean')) {
         type = 'boolean';
       }
       fieldMap.set(mf.name, {
@@ -245,7 +246,7 @@ async function sampleDocuments(dbms: SimpleDbms, collection: string): Promise<Re
   try {
     const cursor = dbms.cursor(collection, 'id', undefined);
     for await (const json of cursor) {
-      samples.push(JSON.parse(json) as Record<string, FieldValue>);
+      samples.push(safeDictionary(JSON.parse(json) as Record<string, FieldValue>));
       if (samples.length >= SAMPLE_ROW_LIMIT) break;
     }
   } catch {
@@ -355,8 +356,8 @@ async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: F
   const numericFieldNames = new Set(fields.filter((f) => f.type === 'number').map((f) => f.name));
 
   const sampleRows: Record<string, FieldValue>[] = [];
-  const distinctSets: Record<string, Set<string>> = {};
-  const numAccum: Record<string, { sum: number; min: number; max: number; count: number }> = {};
+  const distinctSets = safeDictionary<Set<string>>();
+  const numAccum = safeDictionary<{ sum: number; min: number; max: number; count: number }>();
 
   for (const n of stringFieldNames) distinctSets[n] = new Set();
   for (const n of numericFieldNames) numAccum[n] = { sum: 0, min: Infinity, max: -Infinity, count: 0 };
@@ -365,7 +366,7 @@ async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: F
   try {
     const cursor = dbms.cursor(collection, 'id', undefined);
     for await (const json of cursor) {
-      const doc = JSON.parse(json) as Record<string, FieldValue>;
+      const doc = safeDictionary(JSON.parse(json) as Record<string, FieldValue>);
       if (sampleRows.length < 10) sampleRows.push(redactImageValues(doc));
       rowCount++;
       for (const n of stringFieldNames) {
@@ -387,10 +388,10 @@ async function collectFieldStats(dbms: SimpleDbms, collection: string, fields: F
     /* empty collection or no id index */
   }
 
-  const distinctStringValues: Record<string, string[]> = {};
+  const distinctStringValues = safeDictionary<string[]>();
   for (const [k, s] of Object.entries(distinctSets)) distinctStringValues[k] = [...s].sort();
 
-  const numericStats: Record<string, { min: number; max: number; avg: number }> = {};
+  const numericStats = safeDictionary<{ min: number; max: number; avg: number }>();
   for (const [k, a] of Object.entries(numAccum)) {
     if (a.count > 0) numericStats[k] = { min: a.min, max: a.max, avg: Math.round(a.sum / a.count) };
   }
@@ -511,7 +512,7 @@ export async function enrichModelWithLLM(
   dbms: SimpleDbms,
   llm: LLMProvider,
 ): Promise<SemanticModel> {
-  const stats: Record<string, FieldStats> = {};
+  const stats = safeDictionary<FieldStats>();
   for (const explore of model.explores) {
     stats[explore.collection] = await collectFieldStats(dbms, explore.collection, explore.fields);
   }

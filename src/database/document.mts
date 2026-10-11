@@ -42,10 +42,23 @@ export function isFieldValue(value: unknown): value is FieldValue {
   );
 }
 
-function validateDocumentId(id: unknown): asserts id is RawId {
+/** Validate exact identities before UTF-8 primary or composite key encoding. */
+export function validateDocumentId(id: unknown): asserts id is RawId {
   if (id === undefined || id === null) throw new Error('Document must have an id');
   if (typeof id !== 'string' && typeof id !== 'number') throw new Error('Document id must be a string or number');
   if (typeof id === 'number' && !Number.isFinite(id)) throw new Error('Document id must be finite');
+  if (typeof id === 'string') {
+    for (let index = 0; index < id.length; index++) {
+      const unit = id.charCodeAt(index);
+      if (unit >= 0xd800 && unit <= 0xdbff) {
+        const next = id.charCodeAt(++index);
+        if (next >= 0xdc00 && next <= 0xdfff) continue;
+      } else if (unit < 0xdc00 || unit > 0xdfff) {
+        continue;
+      }
+      throw new Error('Document id must not contain an unpaired UTF-16 surrogate');
+    }
+  }
 }
 
 function validateFieldValue(field: string, value: unknown): asserts value is FieldValue {
@@ -216,9 +229,8 @@ export function JSONtoDocument(input: string, collection: string): Document {
  */
 export function documentToJSON(document: Document): string {
   const raw = document.asDocument();
-  const serialisable: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(raw)) {
-    serialisable[key] = Buffer.isBuffer(value) ? value.toString('base64') : value;
-  }
+  const serialisable = Object.fromEntries(
+    Object.entries(raw).map(([key, value]) => [key, Buffer.isBuffer(value) ? value.toString('base64') : value]),
+  );
   return JSON.stringify(serialisable);
 }

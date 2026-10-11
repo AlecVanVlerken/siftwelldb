@@ -16,8 +16,16 @@ import {
   imageMimeForField,
   isImageField,
   supportsFieldIndex,
+  validateDocumentId,
   validateDocumentValues,
 } from './document.mjs';
+import {
+  indexCacheKey,
+  safeDictionary,
+  semanticIndexIdentity,
+  semanticIndexKey,
+  type SemanticIndexKind,
+} from './identity.mjs';
 import {
   RecordStore,
   RecordReadError,
@@ -31,7 +39,7 @@ import type { BlockLeafNode } from '../indexes/btree/leafnode.mjs';
 import type { BlockInternalNode } from '../indexes/btree/internalnode.mjs';
 import { HNSWIndex, type HnswGraphStructureNode, type HnswGraphStructureSnapshot } from '../indexes/hnsw/hnswIndex.mjs';
 import { HNSWGraphStorage } from '../indexes/hnsw/hnswGraphStorage.mjs';
-import { VectorHeapFile } from '../indexes/hnsw/vectorHeapFile.mjs';
+import { VectorHeapFile, validateVectorDimension } from '../indexes/hnsw/vectorHeapFile.mjs';
 import {
   COMPRESSION_ALGORITHMS,
   type CompressionAlgorithm,
@@ -126,6 +134,8 @@ type CachedTree = {
 };
 
 type MetaCache = Record<string, unknown>;
+
+type HnswMeta = { version: 1; indexes: Record<string, [number, string]> };
 type CompressionStorageTotals = Map<CompressionAlgorithm, CompressionStorageEstimate>;
 type IndexingMeta = {
   version: 1;
@@ -144,7 +154,7 @@ export class IndexValidationError extends Error {}
 export class DbmsBack {
   private freeblockFile: FreeBlockFile;
   private recordStore: RecordStore;
-  private metaCache: MetaCache = {};
+  private metaCache: MetaCache = safeDictionary();
   private mutationQueue: Promise<void> = Promise.resolve();
   private mutationStarted = false;
 
@@ -192,10 +202,10 @@ export class DbmsBack {
   private dataFile: File;
   private logFile: File;
 
-  // Cache for BlockNodeStorage instances: key = "collection:field"
+  // Cache keys encode [collection, field] without delimiter ambiguities.
   private storageCache: Map<string, BlockNodeStorage> = new Map();
 
-  // Cache for B+ trees: key = "collection:field"
+  // B+ trees use the same exact collection/field identities.
   private treeCache: Map<string, CachedTree> = new Map();
 
   // HNSW fields
@@ -226,7 +236,11 @@ export class DbmsBack {
     await this.freeblockFile.create(); // must be async
     const initialMeta = Buffer.from(JSON.stringify([]));
     await this.freeblockFile.writeClientArea(initialMeta);
-    this.metaCache[INDEXING_META_KEY] = { version: 1, fields: {}, semanticPending: [] } satisfies IndexingMeta;
+    this.metaCache[INDEXING_META_KEY] = {
+      version: 1,
+      fields: safeDictionary(),
+      semanticPending: [],
+    } satisfies IndexingMeta;
   }
 
   /**
@@ -240,6 +254,7 @@ export class DbmsBack {
     try {
       await dbmsback.freeblockFile.open();
       dbmsback.metaCache = await dbmsback.metaReadJSON();
+      await dbmsback.normalizeMetadata();
       const migrating = !dbmsback.metaCache[INDEXING_META_KEY];
       await dbmsback.migrateFieldIndexes();
       const pendingBefore = dbmsback.getPendingSemanticCollections().length;
@@ -301,7 +316,7 @@ export class DbmsBack {
    */
   getCollections(): Promise<string[]> {
     this.assertHealthy();
-    const keys = Object.keys(this.metaCache).filter((k) => !k.startsWith('__'));
+    const keys = Object.keys(this.metaCache).filter((k) => !RESERVED_META_KEYS.has(k));
     return Promise.resolve(keys);
   }
 
@@ -392,13 +407,13 @@ export class DbmsBack {
 
   private clearCollectionCaches(collection: string): void {
     for (const [key, storage] of [...this.storageCache.entries()]) {
-      if (key.startsWith(`${collection}:`)) {
+      if ((JSON.parse(key) as [string, string])[0] === collection) {
         storage.dispose();
         this.storageCache.delete(key);
       }
     }
     for (const key of [...this.treeCache.keys()]) {
-      if (key.startsWith(`${collection}:`)) {
+      if ((JSON.parse(key) as [string, string])[0] === collection) {
         this.treeCache.delete(key);
       }
     }
@@ -427,7 +442,7 @@ export class DbmsBack {
    * @returns The cached or newly created BlockNodeStorage.
    */
   private getOrCreateStorage(collection: string, field: string, vorm: string): BlockNodeStorage {
-    const cacheKey = `${collection}:${field}`;
+    const cacheKey = indexCacheKey(collection, field);
     let storage = this.storageCache.get(cacheKey);
     if (!storage) {
       storage = new BlockNodeStorage(this.freeblockFile, { compareKeys: getCompareFunction(vorm) });
@@ -450,7 +465,7 @@ export class DbmsBack {
     vorm: string,
     rootBlock: number,
   ): Promise<BPlusTree<Buffer, Buffer, BlockLeafNode, BlockInternalNode>> {
-    const cacheKey = `${collection}:${field}`;
+    const cacheKey = indexCacheKey(collection, field);
     const cached = this.treeCache.get(cacheKey);
     if (cached) {
       return cached.tree;
@@ -469,7 +484,7 @@ export class DbmsBack {
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       return raw as Record<string, [number, string]>;
     }
-    const created: Record<string, [number, string]> = {};
+    const created: Record<string, [number, string]> = safeDictionary();
     this.metaCache[collection] = created;
     return created;
   }
@@ -478,6 +493,81 @@ export class DbmsBack {
     if (RESERVED_META_KEYS.has(collection)) return false;
     const raw = this.metaCache[collection];
     return !!raw && typeof raw === 'object' && !Array.isArray(raw);
+  }
+
+  /** Rehydrate only user-keyed metadata maps; their JSON representation is unchanged. */
+  private async normalizeMetadata(): Promise<void> {
+    this.metaCache = safeDictionary(this.metaCache);
+    for (const [collection, roots] of Object.entries(this.metaCache)) {
+      if (!RESERVED_META_KEYS.has(collection) && roots && typeof roots === 'object' && !Array.isArray(roots)) {
+        this.metaCache[collection] = safeDictionary(roots as Record<string, [number, string]>);
+      }
+    }
+    const compression = this.metaCache[COMPRESSION_META_KEY] as Record<string, FieldCompressionDefaults> | undefined;
+    if (compression) {
+      this.metaCache[COMPRESSION_META_KEY] = safeDictionary(
+        Object.fromEntries(
+          Object.entries(compression).map(([collection, defaults]) => [collection, safeDictionary(defaults)]),
+        ),
+      );
+    }
+    const indexing = this.metaCache[INDEXING_META_KEY] as IndexingMeta | undefined;
+    if (indexing) {
+      indexing.fields = safeDictionary(
+        Object.fromEntries(
+          Object.entries(indexing.fields).map(([collection, fields]) => [collection, safeDictionary(fields)]),
+        ),
+      );
+    }
+    const raw = this.metaCache[HNSW_META_KEY];
+    if (!raw) return;
+    const persisted = raw as HnswMeta;
+    if (Object.hasOwn(persisted, 'version') && typeof persisted.version === 'number') {
+      if (
+        persisted.version !== 1 ||
+        !persisted.indexes ||
+        typeof persisted.indexes !== 'object' ||
+        Array.isArray(persisted.indexes)
+      ) {
+        throw new Error('Unsupported semantic index namespace metadata.');
+      }
+      persisted.indexes = safeDictionary(persisted.indexes);
+      for (const key of Object.keys(persisted.indexes)) semanticIndexIdentity(key);
+      return;
+    }
+    // A suffix may belong to a qualified index or to a literal collection name.
+    // Live records with matching primary references establish ownership without
+    // decoding vectors. Empty graphs and unverified anchors cannot establish it.
+    const indexes: HnswMeta['indexes'] = safeDictionary();
+    for (const [key, root] of Object.entries(raw as Record<string, [number, string]>)) {
+      const suffix = key.match(/^(.*)::(text|image)$/s);
+      let identity = semanticIndexKey(key, 'default');
+      if (suffix) {
+        const graph = await HNSWGraphStorage.open(this.freeblockFile, root[0]);
+        const owners = new Set<string>();
+        for await (const node of graph.scanNodes()) {
+          if (node.deleted) continue; // Historic tombstone record pointers may have been reused.
+          const document = await this.recordStore.readRecord(node.docId);
+          if (
+            !document ||
+            (await this.getDocumentBlockId(document.getCollectionName(), document.getId())) !== node.docId
+          )
+            throw new Error(
+              `Legacy semantic index "${key}" has ambiguous collection ownership; stored data was retained.`,
+            );
+          owners.add(document.getCollectionName());
+        }
+        const [owner] = owners;
+        if (owners.size !== 1 || (owner !== key && owner !== suffix[1])) {
+          throw new Error(
+            `Legacy semantic index "${key}" has ambiguous collection ownership; stored data was retained.`,
+          );
+        }
+        identity = owner === key ? identity : semanticIndexKey(owner, suffix[2] as 'text' | 'image');
+      }
+      indexes[identity] = root;
+    }
+    this.metaCache[HNSW_META_KEY] = { version: 1, indexes } satisfies HnswMeta;
   }
 
   private getIndexingMeta(): IndexingMeta {
@@ -490,12 +580,12 @@ export class DbmsBack {
       if (this.getIndexingMeta().version !== 1) throw new Error('Unsupported collection indexing metadata version.');
       return;
     }
-    const fields: IndexingMeta['fields'] = {};
+    const fields: IndexingMeta['fields'] = safeDictionary();
     const missingEntries: Array<{ collection: string; field: string; key: Buffer; pointer: number }> = [];
     const staleEntries: Array<{ collection: string; field: string; key: Buffer }> = [];
     for (const collection of this.listCollections()) {
       const roots = this.getCollectionMeta(collection);
-      const config = Object.fromEntries(Object.keys(roots).map((field) => [field, true]));
+      const config = safeDictionary(Object.fromEntries(Object.keys(roots).map((field) => [field, true])));
       config['id'] = true;
       if (roots['id']) {
         for await (const document of await this.cursor(collection, 'id')) {
@@ -569,7 +659,7 @@ export class DbmsBack {
     this.assertHealthy();
     if (RESERVED_META_KEYS.has(collection))
       throw new IndexValidationError('This collection name is reserved for database metadata.');
-    return { ...this.getIndexingMeta().fields[collection], id: true };
+    return Object.assign(safeDictionary(this.getIndexingMeta().fields[collection]), { id: true });
   }
 
   private indexedFields(document: Document): string[] {
@@ -620,13 +710,22 @@ export class DbmsBack {
     }
   }
 
+  private validatePrimaryId(collection: string, id: unknown): asserts id is string | number {
+    validateDocumentId(id);
+    const roots = this.hasCollectionMeta(collection) ? this.getCollectionMeta(collection) : undefined;
+    const form = roots?.['id']?.[1];
+    if (form && form !== (typeof id === 'string' ? 'S' : 'N')) {
+      throw new IndexValidationError('Document id type must match the collection primary index.');
+    }
+  }
+
   /** Build privately, then publish a complete root. The regular WAL commit persists the change. */
   setFieldIndexed(collection: string, field: string, indexed: boolean): Promise<void> {
     return this.mutate(() => this.setFieldIndexedInternal(collection, field, indexed));
   }
 
   private async setFieldIndexedInternal(collection: string, field: string, indexed: boolean): Promise<void> {
-    if (!field.trim() || typeof indexed !== 'boolean')
+    if (typeof field !== 'string' || typeof indexed !== 'boolean')
       throw new IndexValidationError('Choose a field and an Indexed setting.');
     if (indexed && isImageField(field))
       throw new IndexValidationError(`Field "${field}" contains binary/image data and cannot be indexed.`);
@@ -693,17 +792,17 @@ export class DbmsBack {
       const storage = this.getOrCreateStorage(collection, field, oldForm);
       const blocks = await storage.listNodeBlocks(root);
       storage.dispose();
-      this.storageCache.delete(`${collection}:${field}`);
-      this.treeCache.delete(`${collection}:${field}`);
+      this.storageCache.delete(indexCacheKey(collection, field));
+      this.treeCache.delete(indexCacheKey(collection, field));
       delete collectionMeta[field];
       for (const block of blocks) await this.freeblockFile.freeBlock(block.blockNumber);
     }
     if (built && form) {
       collectionMeta[field] = [built.tree.getRoot().getBlockNumber(), form];
-      this.storageCache.set(`${collection}:${field}`, built.storage);
-      this.treeCache.set(`${collection}:${field}`, built);
+      this.storageCache.set(indexCacheKey(collection, field), built.storage);
+      this.treeCache.set(indexCacheKey(collection, field), built);
     }
-    this.getIndexingMeta().fields[collection] = { ...current, [field]: indexed };
+    this.getIndexingMeta().fields[collection] = Object.assign(safeDictionary(current), { [field]: indexed });
   }
 
   /** Preserve an existing collection's primary type when vacuum copies zero documents. */
@@ -716,7 +815,7 @@ export class DbmsBack {
       const form = type === 'number' ? 'N' : 'S';
       const storage = this.getOrCreateStorage(collection, 'id', form);
       const tree = await BPlusTree.create<Buffer, Buffer, BlockLeafNode, BlockInternalNode>(storage);
-      this.treeCache.set(`${collection}:id`, { storage, tree });
+      this.treeCache.set(indexCacheKey(collection, 'id'), { storage, tree });
       meta['id'] = [tree.getRoot().getBlockNumber(), form];
     });
   }
@@ -724,31 +823,31 @@ export class DbmsBack {
   private getHnswMeta(): Record<string, [number, string]> {
     const raw = this.metaCache[HNSW_META_KEY];
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      return raw as Record<string, [number, string]>;
+      return (raw as HnswMeta).indexes;
     }
-    const created: Record<string, [number, string]> = {};
-    this.metaCache[HNSW_META_KEY] = created;
+    const created: Record<string, [number, string]> = safeDictionary();
+    this.metaCache[HNSW_META_KEY] = { version: 1, indexes: created } satisfies HnswMeta;
     return created;
   }
 
   private getExistingHnswMeta(): Record<string, [number, string]> | null {
     const raw = this.metaCache[HNSW_META_KEY];
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      return raw as Record<string, [number, string]>;
+      return (raw as HnswMeta).indexes;
     }
     return null;
   }
 
   private textHnswIndexKey(collection: string): string {
-    return this.hnswConfig?.textIndex ? `${collection}::text` : collection;
+    return semanticIndexKey(collection, this.hnswConfig?.textIndex ? 'text' : 'default');
   }
 
   private imageHnswIndexKey(collection: string): string {
-    return this.hnswConfig?.imageIndex ? `${collection}::image` : collection;
+    return semanticIndexKey(collection, this.hnswConfig?.imageIndex ? 'image' : 'default');
   }
 
   private collectionFromHnswIndexKey(indexKey: string): string {
-    return indexKey.replace(/::(?:text|image)$/, '');
+    return semanticIndexIdentity(indexKey)[0];
   }
 
   private hnswIndexKeysForCollection(
@@ -756,7 +855,7 @@ export class DbmsBack {
     meta: Record<string, [number, string]> | null = this.getExistingHnswMeta(),
   ): string[] {
     if (!meta) return [];
-    return Object.keys(meta).filter((key) => key === collection || key.startsWith(`${collection}::`));
+    return Object.keys(meta).filter((key) => this.collectionFromHnswIndexKey(key) === collection);
   }
 
   private textHnswConfig(): HnswIndexConfig | undefined {
@@ -773,8 +872,9 @@ export class DbmsBack {
   }
 
   private hnswConfigForIndexKey(indexKey: string): HnswIndexConfig | HnswImageIndexConfig | undefined {
-    if (indexKey.endsWith('::text')) return this.textHnswConfig();
-    if (indexKey.endsWith('::image')) return this.imageHnswConfig();
+    const [, kind] = semanticIndexIdentity(indexKey);
+    if (kind === 'text') return this.textHnswConfig();
+    if (kind === 'image') return this.imageHnswConfig();
     return this.hnswConfig;
   }
 
@@ -783,30 +883,32 @@ export class DbmsBack {
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
       return raw as Record<string, FieldCompressionDefaults>;
     }
-    const created: Record<string, FieldCompressionDefaults> = {};
+    const created: Record<string, FieldCompressionDefaults> = safeDictionary();
     this.metaCache[COMPRESSION_META_KEY] = created;
     return created;
   }
 
   private getCompressionDefaults(collection: string): FieldCompressionDefaults {
     const compressionMeta = this.getCompressionMeta();
-    return compressionMeta[collection] ?? {};
+    return compressionMeta[collection] ?? safeDictionary();
   }
 
   setFieldCompressionDefaults(collection: string, defaults: FieldCompressionDefaults): void {
     this.assertHealthy();
+    if (RESERVED_META_KEYS.has(collection))
+      throw new IndexValidationError('This collection name is reserved for database metadata.');
     for (const algorithm of Object.values(defaults)) {
       if (!SUPPORTED_COMPRESSION_ALGORITHMS.has(algorithm)) {
         throw new Error(`Unsupported compression algorithm: ${algorithm}`);
       }
     }
     const compressionMeta = this.getCompressionMeta();
-    compressionMeta[collection] = { ...defaults };
+    compressionMeta[collection] = safeDictionary(defaults);
   }
 
   getFieldCompressionDefaults(collection: string): FieldCompressionDefaults {
     this.assertHealthy();
-    return { ...this.getCompressionDefaults(collection) };
+    return safeDictionary(this.getCompressionDefaults(collection));
   }
 
   private createCompressionStorageEstimate(): CompressionStorageEstimate {
@@ -1046,7 +1148,7 @@ export class DbmsBack {
       } else {
         const storage = this.getOrCreateStorage(collectionName, field, form);
         tree = await BPlusTree.create(storage);
-        this.treeCache.set(`${collectionName}:${field}`, { storage, tree });
+        this.treeCache.set(indexCacheKey(collectionName, field), { storage, tree });
       }
       const key = field === 'id' ? toBuffer(form, documentId) : this.secondaryIndexKeyBuffer(form, value, documentId);
       await tree.insert(key, this.recordPointerBuffer(documentLocation));
@@ -1074,6 +1176,7 @@ export class DbmsBack {
     encoded = false,
   ): Promise<Document | EncodedDocument> {
     this.assertHealthy();
+    this.validatePrimaryId(collection, documentId);
     // ga naar root voor id
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
@@ -1115,6 +1218,7 @@ export class DbmsBack {
     if (!document) {
       throw new Error(`Index in collection "${collection}" references missing record at block ${pointer}`);
     }
+    validateDocumentId(document.getId());
     if (
       document.getCollectionName() !== collection ||
       (await this.getDocumentBlockId(collection, document.getId())) !== pointer
@@ -1130,6 +1234,7 @@ export class DbmsBack {
     if (!document) {
       throw new Error(`Index in collection "${collection}" references missing encoded record at block ${pointer}`);
     }
+    validateDocumentId(document.id);
     if (document.collection !== collection || (await this.getDocumentBlockId(collection, document.id)) !== pointer) {
       throw new Error(`Index in collection "${collection}" references a non-live encoded document at block ${pointer}`);
     }
@@ -1160,6 +1265,7 @@ export class DbmsBack {
    */
   async getDocumentBlockId(collection: string, documentId: number | string): Promise<number | null> {
     this.assertHealthy();
+    this.validatePrimaryId(collection, documentId);
     if (!this.hasCollectionMeta(collection)) return null;
     const collectionMeta = this.getCollectionMeta(collection);
     if (!('id' in collectionMeta)) return null;
@@ -1222,6 +1328,7 @@ export class DbmsBack {
   }
 
   private async deleteDocumentInternal(documentId: number | string, collection: string): Promise<void> {
+    this.validatePrimaryId(collection, documentId);
     // Check if collection exists
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
@@ -1312,6 +1419,7 @@ export class DbmsBack {
   }
 
   private async tombstoneSemanticEntryInternal(documentId: number | string, collection: string): Promise<boolean> {
+    this.validatePrimaryId(collection, documentId);
     if (!this.hnswConfig) {
       throw new Error('Cannot tombstone semantic entry without hnswConfig');
     }
@@ -1335,6 +1443,7 @@ export class DbmsBack {
 
     const documentPointer = documentPointerBuffer.readUInt32BE(0);
     let tombstoned = false;
+    await this.readIndexedDocument(documentPointer, collection);
     this.beginMutation();
     for (const indexKey of hnswIndexKeys) {
       const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
@@ -1357,18 +1466,18 @@ export class DbmsBack {
   }
 
   private async ensureHnswCollectionInternal(collection: string): Promise<void> {
+    if (RESERVED_META_KEYS.has(collection))
+      throw new IndexValidationError('This collection name is reserved for database metadata.');
     if (!this.hnswConfig) {
       throw new Error('Cannot ensure HNSW collection without hnswConfig');
     }
-    this.beginMutation();
-
     if (this.hnswConfig.textIndex || this.hnswConfig.imageIndex) {
       if (this.textHnswConfig()) await this.getOrCreateHnswIndex(this.textHnswIndexKey(collection));
       if (this.imageHnswConfig()) await this.getOrCreateHnswIndex(this.imageHnswIndexKey(collection));
       return;
     }
 
-    await this.getOrCreateHnswIndex(collection);
+    await this.getOrCreateHnswIndex(semanticIndexKey(collection, 'default'));
   }
 
   /**
@@ -1494,7 +1603,7 @@ export class DbmsBack {
     this.beginMutation();
     const result = await storage.relocateNode(rootBlock, blockNumber, options);
     fieldMeta[0] = result.newRootBlock;
-    this.treeCache.delete(`${collection}:${field}`);
+    this.treeCache.delete(indexCacheKey(collection, field));
     return result.newBlockNumber;
   }
 
@@ -1505,48 +1614,54 @@ export class DbmsBack {
     }
 
     const hnswMeta = this.getExistingHnswMeta();
-    if (!hnswMeta || !(collection in hnswMeta)) {
-      return [];
+    if (!hnswMeta) return [];
+    const targets: HnswRelocationTarget[] = [];
+    for (const indexKey of this.hnswIndexKeysForCollection(collection)) {
+      const [, indexKind] = semanticIndexIdentity(indexKey);
+      const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
+      const [metaBlock] = hnswMeta[indexKey];
+      targets.push({ collection, indexKind, kind: 'hnsw-meta', blockNumber: metaBlock, hnswUnitState: 'live' });
+      targets.push(
+        ...(await hnswIdx.listRelocationTargets()).map((target) => ({
+          collection,
+          indexKind,
+          kind: target.kind,
+          nodeId: target.nodeId,
+          blockNumber: target.blockNumber,
+          hnswUnitState: target.hnswUnitState,
+        })),
+      );
     }
-
-    const hnswIdx = await this.getOrCreateHnswIndex(collection);
-    const [metaBlock] = hnswMeta[collection];
-    const targets: HnswRelocationTarget[] = [
-      {
-        collection,
-        kind: 'hnsw-meta',
-        blockNumber: metaBlock,
-        hnswUnitState: 'live',
-      },
-    ];
-    targets.push(
-      ...(await hnswIdx.listRelocationTargets()).map((target) => ({
-        collection,
-        kind: target.kind,
-        nodeId: target.nodeId,
-        blockNumber: target.blockNumber,
-        hnswUnitState: target.hnswUnitState,
-      })),
-    );
     return targets;
   }
 
-  async inspectHnswGraphStructure(collection: string): Promise<HnswGraphStructureNode[]> {
-    return (await this.inspectHnswGraphStructureSnapshot(collection)).nodes;
+  async inspectHnswGraphStructure(
+    collection: string,
+    indexKind?: SemanticIndexKind,
+  ): Promise<HnswGraphStructureNode[]> {
+    return (await this.inspectHnswGraphStructureSnapshot(collection, indexKind)).nodes;
   }
 
-  async inspectHnswGraphStructureSnapshot(collection: string): Promise<HnswGraphStructureSnapshot> {
+  async inspectHnswGraphStructureSnapshot(
+    collection: string,
+    indexKind?: SemanticIndexKind,
+  ): Promise<HnswGraphStructureSnapshot> {
     this.assertHealthy();
     if (!this.hnswConfig) {
       throw new Error('Cannot inspect HNSW graph structure without hnswConfig');
     }
 
     const hnswMeta = this.getExistingHnswMeta();
-    if (!hnswMeta || !(collection in hnswMeta)) {
+    const indexKey = this.hnswInspectionKey(collection, indexKind);
+    if (!hnswMeta || !Object.hasOwn(hnswMeta, indexKey)) {
       throw new Error('HNSW index does not exist for collection');
     }
 
-    return await (await this.getOrCreateHnswIndex(collection)).inspectGraphStructureSnapshot();
+    return await (await this.getOrCreateHnswIndex(indexKey)).inspectGraphStructureSnapshot();
+  }
+
+  private hnswInspectionKey(collection: string, indexKind?: SemanticIndexKind): string {
+    return semanticIndexKey(collection, indexKind ?? (this.hnswConfig?.textIndex ? 'text' : 'default'));
   }
 
   relocateHnswUnit(target: HnswRelocationTarget): Promise<boolean> {
@@ -1559,17 +1674,18 @@ export class DbmsBack {
     }
 
     const hnswMeta = this.getExistingHnswMeta();
-    if (!hnswMeta || !(target.collection in hnswMeta)) {
+    const indexKey = this.hnswInspectionKey(target.collection, target.indexKind);
+    if (!hnswMeta || !Object.hasOwn(hnswMeta, indexKey)) {
       throw new Error('HNSW index does not exist for collection');
     }
 
-    const hnswIdx = await this.getOrCreateHnswIndex(target.collection);
+    const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
     if (target.kind === 'hnsw-meta') {
-      const [oldBlockNumber, vorm] = hnswMeta[target.collection];
+      const [oldBlockNumber, vorm] = hnswMeta[indexKey];
       this.beginMutation();
       const newBlockNumber = await hnswIdx.relocateMetadata({ maxBlockExclusive: target.maxBlockExclusive });
       if (newBlockNumber === null) return false;
-      hnswMeta[target.collection] = [newBlockNumber, vorm];
+      hnswMeta[indexKey] = [newBlockNumber, vorm];
       return target.maxBlockExclusive === undefined
         ? newBlockNumber !== oldBlockNumber
         : newBlockNumber < oldBlockNumber;
@@ -1675,11 +1791,12 @@ export class DbmsBack {
     }
 
     const targets: RelocationTarget[] = [];
-    for (const collection of Object.keys(hnswMeta)) {
+    for (const collection of new Set(Object.keys(hnswMeta).map((key) => this.collectionFromHnswIndexKey(key)))) {
       for (const target of await this.listHnswRelocationTargets(collection)) {
         targets.push({
           kind: target.kind,
           collection,
+          indexKind: target.indexKind,
           blockNumber: target.blockNumber,
           nodeId: target.nodeId,
           hnswUnitState: target.hnswUnitState,
@@ -1694,18 +1811,22 @@ export class DbmsBack {
     if (target.kind === 'hnsw-meta') {
       throw new Error('HNSW metadata relocation does not use a node id');
     }
-    if (target.nodeId !== undefined) {
-      return target.nodeId;
-    }
-    if (target.blockNumber === undefined) {
+    if (target.nodeId === undefined && target.blockNumber === undefined) {
       throw new Error('HNSW relocation target requires nodeId or blockNumber');
     }
 
     const candidates = await this.listHnswRelocationTargets(target.collection);
+    const indexKey = this.hnswInspectionKey(target.collection, target.indexKind);
     const match = candidates.find(
-      (candidate) => candidate.kind === target.kind && candidate.blockNumber === target.blockNumber,
+      (candidate) =>
+        candidate.kind === target.kind &&
+        (target.nodeId === undefined || candidate.nodeId === target.nodeId) &&
+        (target.blockNumber === undefined || candidate.blockNumber === target.blockNumber) &&
+        this.hnswInspectionKey(candidate.collection, candidate.indexKind) === indexKey,
     );
     if (!match || match.nodeId === undefined) {
+      if (target.nodeId !== undefined)
+        throw new Error(`No ${target.kind} unit with node ${target.nodeId} belongs to this semantic index`);
       throw new Error(`No ${target.kind} unit found at block ${target.blockNumber}`);
     }
     return match.nodeId;
@@ -1721,6 +1842,7 @@ export class DbmsBack {
     idBuffer: Buffer;
     idMetaData: [number, string];
   }> {
+    this.validatePrimaryId(collection, id);
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
     }
@@ -1844,6 +1966,7 @@ export class DbmsBack {
     compression?: FieldCompressionOverrides,
     preserveCompression = false,
   ): Promise<void> {
+    this.validatePrimaryId(collection, id);
     this.validateDocument(newDocument);
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
@@ -1851,7 +1974,7 @@ export class DbmsBack {
     if (newDocument.getCollectionName() !== collection) {
       throw new Error('Cannot change collection name during replace.');
     }
-    if (String(newDocument.getId()) !== String(id)) {
+    if (newDocument.getId() !== id) {
       throw new Error('Cannot change document ID during replace.');
     }
     // Confirm the existing document is there; otherwise treat it as
@@ -1893,6 +2016,7 @@ export class DbmsBack {
     value?: string | number | Buffer,
   ): Promise<AsyncIterable<Document>> {
     this.assertHealthy();
+    if (iterableKey === 'id' && value !== undefined) this.validatePrimaryId(collection, value);
     if (!this.hasCollectionMeta(collection)) {
       throw new Error('Collection does not exist');
     }
@@ -2079,14 +2203,18 @@ export class DbmsBack {
     const single = !this.hnswConfig.textIndex && !this.hnswConfig.imageIndex;
     const imageConfig = this.imageHnswConfig();
     if (single && images.length > 0 && imageConfig) {
+      validateVectorDimension(imageConfig.dimension, this.getBlockSize());
       const vector = await this.embedImages(imageConfig, images);
-      if (vector) vectors.push({ indexKey: collection, vector });
+      if (vector) vectors.push({ indexKey: semanticIndexKey(collection, 'default'), vector });
     } else {
       const text = this.extractText(document);
       const config = this.textHnswConfig();
-      if (text !== null && config)
+      if (text !== null && config) {
+        validateVectorDimension(config.dimension, this.getBlockSize());
         vectors.push({ indexKey: this.textHnswIndexKey(collection), vector: await config.embeddingFn(text) });
+      }
       if (!single && imageConfig && images.length > 0) {
+        validateVectorDimension(imageConfig.dimension, this.getBlockSize());
         const vector = await this.embedImages(imageConfig, images);
         if (vector) vectors.push({ indexKey: this.imageHnswIndexKey(collection), vector });
       }
@@ -2115,14 +2243,16 @@ export class DbmsBack {
             let target = staged.get(indexKey);
             if (!target) {
               const config = this.hnswConfigForIndexKey(indexKey)!;
+              const heap = new VectorHeapFile(this.freeblockFile, config.dimension);
               this.beginMutation();
               allocating = true;
               const graph = await HNSWGraphStorage.create(
                 this.freeblockFile,
                 config.M ?? 16,
                 config.maxStoredLevel ?? 4,
+                config.dimension,
               );
-              const index = HNSWIndex.create(graph, new VectorHeapFile(this.freeblockFile, config.dimension), {
+              const index = HNSWIndex.create(graph, heap, {
                 M: config.M ?? 16,
                 efConstruction: config.efConstruction ?? 200,
                 efSearch: config.efSearch ?? 50,
@@ -2244,11 +2374,11 @@ export class DbmsBack {
     const maxStoredLevel = cfg.maxStoredLevel ?? 4;
     const efConstruction = cfg.efConstruction ?? 200;
     const efSearch = cfg.efSearch ?? 50;
+    const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
     this.beginMutation();
 
     // Both graph storage and vector heap live inside the shared FBF.
-    const graphStorage = await HNSWGraphStorage.create(this.freeblockFile, M, maxStoredLevel);
-    const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
+    const graphStorage = await HNSWGraphStorage.create(this.freeblockFile, M, maxStoredLevel, cfg.dimension);
 
     // Persist the metadata block number so we can reopen on next open().
     this.getHnswMeta()[indexKey] = [graphStorage.metaBlockId, 'hnsw'];
@@ -2276,13 +2406,13 @@ export class DbmsBack {
    */
   getVacuumCollectionMetaSnapshot(): Record<string, Record<string, [number, string]>> {
     this.assertHealthy();
-    const result: Record<string, Record<string, [number, string]>> = {};
+    const result: Record<string, Record<string, [number, string]>> = safeDictionary();
 
     for (const [key, value] of Object.entries(this.metaCache)) {
       if (RESERVED_META_KEYS.has(key)) continue;
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         const collectionMeta = value as Record<string, [number, string]>;
-        const copiedCollectionMeta: Record<string, [number, string]> = {};
+        const copiedCollectionMeta: Record<string, [number, string]> = safeDictionary();
 
         for (const [field, tuple] of Object.entries(collectionMeta)) {
           copiedCollectionMeta[field] = [...tuple] as [number, string];
@@ -2300,9 +2430,9 @@ export class DbmsBack {
    */
   getVacuumCompressionMetaSnapshot(): Record<string, FieldCompressionDefaults> {
     this.assertHealthy();
-    const result: Record<string, FieldCompressionDefaults> = {};
+    const result: Record<string, FieldCompressionDefaults> = safeDictionary();
     for (const [collection, defaults] of Object.entries(this.getCompressionMeta())) {
-      result[collection] = { ...defaults };
+      result[collection] = safeDictionary(defaults);
     }
     return result;
   }
@@ -2312,7 +2442,7 @@ export class DbmsBack {
    */
   getVacuumHnswMetaSnapshot(): Record<string, [number, string]> {
     this.assertHealthy();
-    const result: Record<string, [number, string]> = {};
+    const result: Record<string, [number, string]> = safeDictionary();
     for (const [collection, meta] of Object.entries(this.getHnswMeta())) {
       result[collection] = [...meta] as [number, string];
     }

@@ -200,7 +200,9 @@ describe('SimpleDbms', () => {
       const doc = { id: 123, name: 'Test', value: 456 };
       await simpleDbms.insertDocument('test', JSON.stringify(doc));
 
-      const result = await simpleDbms.getDocumentById('test', '123');
+      await expect(simpleDbms.getDocumentById('test', '123')).rejects.toThrow('Document id type must match');
+      expect(simpleDbms.isHealthy).toBe(true);
+      const result = await simpleDbms.getDocumentById('test', 123);
       expect(JSON.parse(result)).toEqual(doc);
     });
 
@@ -718,9 +720,13 @@ describe('SimpleDbms', () => {
       await simpleDbms.insertDocument('numeric', JSON.stringify(doc2));
       await simpleDbms.insertDocument('numeric', JSON.stringify(doc3));
 
-      const result1 = await simpleDbms.getDocumentById('numeric', '1');
-      const result2 = await simpleDbms.getDocumentById('numeric', '2');
-      const result100 = await simpleDbms.getDocumentById('numeric', '100');
+      for (const alias of ['1', '2', '100']) {
+        await expect(simpleDbms.getDocumentById('numeric', alias)).rejects.toThrow('Document id type must match');
+      }
+      expect(simpleDbms.isHealthy).toBe(true);
+      const result1 = await simpleDbms.getDocumentById('numeric', 1);
+      const result2 = await simpleDbms.getDocumentById('numeric', 2);
+      const result100 = await simpleDbms.getDocumentById('numeric', 100);
 
       expect(JSON.parse(result1)).toEqual(doc1);
       expect(JSON.parse(result2)).toEqual(doc2);
@@ -746,9 +752,12 @@ describe('SimpleDbms', () => {
       const doc = { id: 42, name: 'Answer', value: 42 };
       await simpleDbms.insertDocument('numeric', JSON.stringify(doc));
 
-      await simpleDbms.deleteDocumentById('numeric', '42');
+      await expect(simpleDbms.deleteDocumentById('numeric', '42')).rejects.toThrow('Document id type must match');
+      expect(simpleDbms.isHealthy).toBe(true);
+      expect(JSON.parse(await simpleDbms.getDocumentById('numeric', 42))).toEqual(doc);
+      await simpleDbms.deleteDocumentById('numeric', 42);
 
-      await expect(simpleDbms.getDocumentById('numeric', '42')).rejects.toThrow();
+      await expect(simpleDbms.getDocumentById('numeric', 42)).rejects.toThrow('Document not found');
     });
   });
 
@@ -763,9 +772,9 @@ describe('SimpleDbms', () => {
       await simpleDbms.insertDocument('coords', JSON.stringify(doc3));
 
       // Verify retrieval (NN keys are created internally)
-      const result1 = await simpleDbms.getDocumentById('coords', '1');
-      const result2 = await simpleDbms.getDocumentById('coords', '2');
-      const result3 = await simpleDbms.getDocumentById('coords', '3');
+      const result1 = await simpleDbms.getDocumentById('coords', 1);
+      const result2 = await simpleDbms.getDocumentById('coords', 2);
+      const result3 = await simpleDbms.getDocumentById('coords', 3);
 
       expect(JSON.parse(result1)).toEqual(doc1);
       expect(JSON.parse(result2)).toEqual(doc2);

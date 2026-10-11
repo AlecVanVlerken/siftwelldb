@@ -6,6 +6,7 @@ import { describe, it, beforeEach } from 'vitest';
 
 import { MockFile } from '../../../tests/helpers/mockfile.mjs';
 import { DbmsBack, type HnswConfig } from '../../database/dbmsback.mjs';
+import { safeDictionary } from '../../database/identity.mjs';
 import { JSONtoDocument, type Document } from '../../database/document.mjs';
 import { vacuumCompactInto } from '../compaction.mjs';
 import type { VacuumProgress } from '../vacuum/vacuumtypes.mjs';
@@ -145,7 +146,7 @@ describe('compaction.mjs', () => {
     assert.strictEqual(result.validated, true);
 
     const compressionMeta = result.target.getVacuumCompressionMetaSnapshot();
-    assert.deepStrictEqual(compressionMeta['articles'], { title: 'gzip' });
+    assert.deepStrictEqual(compressionMeta['articles'], safeDictionary({ title: 'gzip' }));
   });
 
   it('forwards errors from the vacuum service', async () => {

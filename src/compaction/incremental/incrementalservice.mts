@@ -179,6 +179,7 @@ export class IncrementalCompactionService {
         return {
           collection: target.collection,
           kind: target.kind,
+          indexKind: target.indexKind,
           blockNumber: target.blockNumber,
           nodeId: target.nodeId,
           maxBlockExclusive: target.maxBlockExclusive,

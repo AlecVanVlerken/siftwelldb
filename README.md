@@ -101,7 +101,7 @@ Enabling an index validates and backfills existing documents. Disabling it frees
 
 With an embedding configuration, HNSW automatically uses eligible textual fields independently of these settings, including underscore-prefixed text. Images retain their separate encoder. Model input limits still apply. In the webclient, use the **Indexed** checkboxes in Fields or the document editor; changes apply to the collection and wait for backend completion.
 
-Existing databases migrate their field settings from persisted index roots and stored fields. Names and record, B+ tree, HNSW, WAL and block formats remain unchanged. Legacy semantic indexes are rebuilt once when the original embedding configuration is available; pending migration is exposed by `getPendingSemanticCollections()` and the database status API, and semantic search reports it explicitly. Normal reopen and B+ tree toggles do not rebuild current semantic indexes. Full vacuum copies the settings before rebuilding records, and incremental compaction repairs references only for existing indexes.
+Existing databases migrate their field settings from persisted index roots and stored fields. Record, B+ tree, WAL and block formats remain unchanged. Semantic indexes with verified persisted dimensions can finish a pending field migration when the original working embedding configuration is available; pending migration is exposed by `getPendingSemanticCollections()` and the database status API. Graphs without dimension evidence stay disabled rather than guessing. Normal reopen and B+ tree toggles do not rebuild current semantic indexes. Full vacuum copies the settings before rebuilding records, and incremental compaction repairs references only for existing indexes.
 
 Semantic deletion retains graph nodes, vectors and their record-pointer anchors as tombstones, without rebuilding the collection graph. Incremental compaction moves retained graph/vector units; full vacuum copies live logical documents and reclaims tombstones and retained dead records. Offline semantic mutations remain pending until reopening with a working embedding configuration.
 
@@ -109,7 +109,17 @@ Document mutations validate supported values, finite numbers, index keys, compre
 
 If a record, index or semantic mutation fails after changes may have begun, the session rejects subsequent reads, writes and commits, including direct block-file commits. `db.isHealthy` and `db.assertHealthy()` expose this state. Close without committing, then open a fresh database instance; logical staged changes, including earlier uncommitted successful operations, are discarded. Validation failures and completely discarded unpublished index builds remain usable. Bulk import continues after safe document rejections, but stops on an unsafe failure and throws `BulkImportError` with completed insertion and acknowledged-commit counts. The webclient closes unsafe sessions, stops maintenance and retains the database path for explicit reconnect.
 
-This protection is not per-operation rollback or SQL statement atomicity. A failure during WAL commit still follows storage recovery: a complete submitted write set can be applied on reopen even when its commit was not acknowledged. Already acknowledged commits are retained. Record, B+ tree, HNSW, WAL and block formats remain compatible.
+This protection is not per-operation rollback or SQL statement atomicity. A failure during WAL commit still follows storage recovery: a complete submitted write set can be applied on reopen even when its commit was not acknowledged. Already acknowledged commits are retained.
+
+## Identifier consistency
+
+Collection and field names are exact, case-sensitive strings. Names such as `__proto__`, `constructor`, `toString`, punctuation, empty strings and distinct Unicode spellings are safe metadata keys. Only the existing collection names `__hnsw__`, `__compression__` and `__indexing__` are reserved for database metadata. User-keyed dictionaries have no inherited properties, and B+ tree caches encode the collection and field as a JSON tuple, so delimiters in names cannot cause collisions.
+
+Document IDs are finite numbers or well-formed Unicode strings, including empty strings and valid surrogate pairs. Each collection retains the primary ID type established by its first document; lookups and writes reject the other type instead of coercing it. String IDs retain their existing UTF-8 key encoding, case sensitivity and Unicode spelling. Unpaired UTF-16 surrogates are rejected before mutations and on ID lookup. Legacy malformed IDs are not renamed or silently re-keyed: document operations and vacuum report an explicit validation error when encountering such a record, leaving the source data available for recovery.
+
+Semantic metadata now stores a versioned map keyed by `[collection, "default" | "text" | "image"]` JSON tuples. Deletion, reindexing, tombstones, relocation and vacuum use exact collection ownership. Legacy flat names with no semantic suffix migrate directly. For `collection::text` or `collection::image`, live graph records with matching primary references must establish the exact owner; empty, tombstoned-only or unverified graphs refuse opening with a compatibility error and retain the stored data. Relocation targets carry a logical collection and optional `indexKind`; graph inspection takes the same optional kind instead of interpreting suffixes in collection names.
+
+The webclient uses JSON-typed query addresses so IDs and collection names are never altered by URL path normalization. See the [HTTP addressing contract](src/webclient/README.md#exact-document-addresses).
 
 ## Query language CLI
 
@@ -182,7 +192,9 @@ Many benchmark plotting scripts are Python programs. Install their Python depend
 
 ## HNSW note
 
-Semantic search is optional. If you create or reopen a database with HNSW enabled, you must pass the same `HnswConfig` shape and vector dimension each time. The HNSW configuration is not persisted inside the database file.
+Semantic search is optional. Each graph persists its vector dimension, and new vector pages carry their own dimension tag. Opening checks the graph before native allocation or vector decoding; incompatible dimensions disable semantic operations for that session while ordinary document access remains available. Matching dimensions do not prove that two embedding models share a vector space: keep the original model and `HnswConfig` shape.
+
+Legacy graphs without stored dimension evidence remain intact and disabled. Their dimension cannot safely be inferred from the current configuration, vector bytes, or an empty/tombstoned graph. Recovery requires an explicitly verified source or exporting readable documents into a fresh database with the intended configuration. Graph metadata and vector-page extensions require the updated reader for semantic operations; document records, B+ trees and WAL retain their existing formats. See [HNSW dimension compatibility](src/indexes/hnsw/README.md).
 
 ## Related docs
 

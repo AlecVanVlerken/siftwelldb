@@ -28,6 +28,7 @@
 
 import type { DbmsBack } from '../../database/dbmsback.mjs';
 import type { FieldCompressionDefaults } from '../../database/compression.mjs';
+import { safeDictionary, semanticIndexIdentity } from '../../database/identity.mjs';
 
 /**
  * Snapshot type for regular collection metadata.
@@ -91,8 +92,8 @@ export class CollectionCatalog {
       collections.add(collection);
     }
 
-    for (const collection of Object.keys(this.getHnswMetaSnapshot())) {
-      collections.add(this.logicalCollectionFromHnswKey(collection));
+    for (const indexKey of Object.keys(this.getHnswMetaSnapshot())) {
+      collections.add(semanticIndexIdentity(indexKey)[0]);
     }
 
     return Array.from(collections).sort();
@@ -111,9 +112,10 @@ export class CollectionCatalog {
    */
   getCompressionDefaults(collection: string): FieldCompressionDefaults | undefined {
     const compressionMeta = this.getCompressionMetaSnapshot();
+    if (!Object.hasOwn(compressionMeta, collection)) return undefined;
     const defaults = compressionMeta[collection];
     if (!defaults) return undefined;
-    return { ...defaults };
+    return safeDictionary(defaults);
   }
 
   /**
@@ -126,7 +128,7 @@ export class CollectionCatalog {
    */
   hasHnsw(collection: string): boolean {
     const hnswMeta = this.getHnswMetaSnapshot();
-    return collection in hnswMeta || `${collection}::text` in hnswMeta || `${collection}::image` in hnswMeta;
+    return Object.keys(hnswMeta).some((indexKey) => semanticIndexIdentity(indexKey)[0] === collection);
   }
 
   /**
@@ -138,12 +140,6 @@ export class CollectionCatalog {
    */
   hasAnyHnswCollections(): boolean {
     return Object.keys(this.getHnswMetaSnapshot()).length > 0;
-  }
-
-  private logicalCollectionFromHnswKey(indexKey: string): string {
-    if (indexKey.endsWith('::text')) return indexKey.slice(0, -'::text'.length);
-    if (indexKey.endsWith('::image')) return indexKey.slice(0, -'::image'.length);
-    return indexKey;
   }
 
   /**
@@ -158,7 +154,7 @@ export class CollectionCatalog {
    * @author Alec Van Vlerken
    */
   hasCollectionMeta(collection: string): boolean {
-    return collection in this.getCollectionMetaSnapshot();
+    return Object.hasOwn(this.getCollectionMetaSnapshot(), collection);
   }
 
   /**
@@ -174,8 +170,10 @@ export class CollectionCatalog {
    * @author Alec Van Vlerken
    */
   hasIdTree(collection: string): boolean {
-    const collectionMeta = this.getCollectionMetaSnapshot()[collection];
-    return !!collectionMeta && 'id' in collectionMeta;
+    const snapshot = this.getCollectionMetaSnapshot();
+    if (!Object.hasOwn(snapshot, collection)) return false;
+    const collectionMeta = snapshot[collection];
+    return !!collectionMeta && Object.hasOwn(collectionMeta, 'id');
   }
 
   /**
@@ -189,7 +187,9 @@ export class CollectionCatalog {
    * @author Alec Van Vlerken
    */
   getIndexedFields(collection: string): string[] {
-    const collectionMeta = this.getCollectionMetaSnapshot()[collection];
+    const snapshot = this.getCollectionMetaSnapshot();
+    if (!Object.hasOwn(snapshot, collection)) return [];
+    const collectionMeta = snapshot[collection];
     if (!collectionMeta) return [];
     return Object.keys(collectionMeta).sort();
   }

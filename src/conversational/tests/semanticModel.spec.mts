@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,6 +6,7 @@ import { RealFile } from '../../storage/file.mjs';
 import { SimpleDbms } from '../../database/simpledbms.mjs';
 import {
   generateSemanticModel,
+  enrichModelWithLLM,
   modelToSchemaPrompt,
   parseSemanticModel,
   type FieldDefinition,
@@ -131,4 +132,58 @@ describe('generateSemanticModel', () => {
     expect(prompt).not.toContain(rabbitBase64.slice(0, 40));
     await db.close();
   });
+});
+
+describe('semantic model statistics with prototype-looking names', () => {
+  it.each(['__proto__', 'constructor', 'toString'])(
+    'includes exact field statistics for collection %s without altering prototypes',
+    async (collection) => {
+      const prototypeBefore = Object.getOwnPropertyDescriptors(Object.prototype);
+      const model: SemanticModel = {
+        explores: [
+          {
+            collection,
+            label: collection,
+            fields: [
+              { name: '__proto__', type: 'string', label: 'Prototype field' },
+              { name: 'constructor', type: 'number', label: 'Constructor field' },
+              { name: 'toString', type: 'string', label: 'String field' },
+            ],
+          },
+        ],
+      };
+      const rows = [
+        JSON.stringify(
+          Object.fromEntries([
+            ['__proto__', 'alpha'],
+            ['constructor', 10],
+            ['toString', 'left'],
+          ]),
+        ),
+        JSON.stringify(
+          Object.fromEntries([
+            ['__proto__', 'beta'],
+            ['constructor', 20],
+            ['toString', 'right'],
+          ]),
+        ),
+      ];
+      const db = {
+        cursor: () =>
+          (async function* () {
+            for (const row of rows) yield await Promise.resolve(row);
+          })(),
+      } as unknown as SimpleDbms;
+      const generate = vi.fn((_system: string, _prompt: string) => Promise.resolve({ text: JSON.stringify(model) }));
+      const llm = { generate, chat: () => Promise.resolve({ text: '' }) };
+      expect(await enrichModelWithLLM(model, db, llm)).toBe(model);
+      expect(generate).toHaveBeenCalledOnce();
+      const prompt = generate.mock.calls[0][1];
+      expect(prompt).toContain(`Collection: "${collection}" (2 rows)`);
+      expect(prompt).toContain('  - __proto__ (string)\n    Distinct values (2): alpha, beta');
+      expect(prompt).toContain('  - constructor (number)\n    Range: min=10, max=20, avg=15');
+      expect(prompt).toContain('  - toString (string)\n    Distinct values (2): left, right');
+      expect(Object.getOwnPropertyDescriptors(Object.prototype)).toEqual(prototypeBefore);
+    },
+  );
 });

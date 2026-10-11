@@ -3,12 +3,15 @@ import { MockFile } from '../../../tests/helpers/mockfile.mjs';
 import { SimpleDbms } from '../simpledbms.mjs';
 import { BulkImportError, bulkImportArray, bulkImportStream, parseJsonLines, streamJsonLines } from '../bulkimport.mjs';
 import type { DbmsBack } from '../dbmsback.mjs';
+import { indexCacheKey } from '../identity.mjs';
 
 type InsertionTree = { insert(key: Buffer, pointer: Buffer): Promise<void> };
 
 function secondaryTree(db: SimpleDbms): InsertionTree {
   const back = (db as unknown as { dbmsback: DbmsBack }).dbmsback;
-  const entry = (back as unknown as { treeCache: Map<string, { tree: InsertionTree }> }).treeCache.get('people:name');
+  const entry = (back as unknown as { treeCache: Map<string, { tree: InsertionTree }> }).treeCache.get(
+    indexCacheKey('people', 'name'),
+  );
   if (!entry) throw new Error('Expected the secondary name index');
   return entry.tree;
 }

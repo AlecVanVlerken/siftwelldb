@@ -4,6 +4,7 @@ import { MockFile } from '../../../tests/helpers/mockfile.mjs';
 import { DbmsBack, type HnswConfig } from '../../database/dbmsback.mjs';
 import { parseRawDocument, type Document } from '../../database/document.mjs';
 import { vacuumCompactInto } from '../compaction.mjs';
+import { semanticIndexKey } from '../../database/identity.mjs';
 
 function keywordVector(input: string): Float32Array {
   const lower = input.toLowerCase();
@@ -100,9 +101,9 @@ describe('full vacuum HNSW tombstone cleanup', () => {
       expect((await reopened.semanticImageSearch('photos', Buffer.from([1, 2]), 5)).map((doc) => doc.getId())).toEqual([
         'photo2',
       ]);
-      expect(await reopened.inspectHnswGraphStructure('articles::image')).toEqual([]);
-      expect(await reopened.inspectHnswGraphStructure('empty::text')).toEqual([]);
-      expect(await reopened.inspectHnswGraphStructure('empty::image')).toEqual([]);
+      expect((await reopened.inspectHnswGraphStructureSnapshot('articles', 'image')).nodes).toEqual([]);
+      expect((await reopened.inspectHnswGraphStructureSnapshot('empty', 'text')).nodes).toEqual([]);
+      expect((await reopened.inspectHnswGraphStructureSnapshot('empty', 'image')).nodes).toEqual([]);
       expect(await reopened.semanticSearch('empty', 'alpha', 5)).toEqual([]);
       expect(await reopened.semanticImageSearch('articles', Buffer.from([1, 2]), 5)).toEqual([]);
     } finally {
@@ -188,7 +189,9 @@ describe('full vacuum HNSW tombstone cleanup', () => {
     });
 
     expect(result.documentsCopied).toBe(0);
-    expect(result.target.getVacuumHnswMetaSnapshot()).toHaveProperty('articles');
+    expect(Object.hasOwn(result.target.getVacuumHnswMetaSnapshot(), semanticIndexKey('articles', 'default'))).toBe(
+      true,
+    );
     expect(await result.target.inspectHnswGraphStructure('articles')).toEqual([]);
     expect(await result.target.semanticSearch('articles', 'alpha topic', 3)).toEqual([]);
 
@@ -196,7 +199,7 @@ describe('full vacuum HNSW tombstone cleanup', () => {
     await result.target.close();
 
     const reopened = await DbmsBack.open(temp.dataFile, temp.logFile, hnswConfig);
-    expect(reopened.getVacuumHnswMetaSnapshot()).toHaveProperty('articles');
+    expect(Object.hasOwn(reopened.getVacuumHnswMetaSnapshot(), semanticIndexKey('articles', 'default'))).toBe(true);
     expect(await reopened.inspectHnswGraphStructure('articles')).toEqual([]);
     expect(await reopened.semanticSearch('articles', 'alpha topic', 3)).toEqual([]);
 

@@ -9,6 +9,8 @@
  * and tail reclamation physically trims free suffixes.
  */
 
+import type { SemanticIndexKind } from '../../database/identity.mjs';
+
 export type RecordRelocationTarget = {
   collection: string;
   id: string | number;
@@ -35,6 +37,7 @@ export type HnswUnitCompactionState = 'live' | 'tombstoned-retained' | 'reclaima
 
 export type HnswRelocationTarget = {
   collection: string;
+  indexKind?: SemanticIndexKind;
   kind: 'hnsw-graph' | 'hnsw-vector' | 'hnsw-meta';
   blockNumber?: number;
   nodeId?: number;
@@ -100,6 +103,7 @@ export type RelocationTarget = {
   blockNumber?: number;
   maxBlockExclusive?: number;
   collection?: string;
+  indexKind?: SemanticIndexKind;
   field?: string;
   documentId?: string | number;
   nodeId?: number;

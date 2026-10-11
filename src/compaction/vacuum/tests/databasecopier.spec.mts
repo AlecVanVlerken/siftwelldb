@@ -6,6 +6,7 @@ import { describe, it, beforeEach } from 'vitest';
 
 import { MockFile } from '../../../../tests/helpers/mockfile.mjs';
 import { DbmsBack, type HnswConfig } from '../../../database/dbmsback.mjs';
+import { safeDictionary } from '../../../database/identity.mjs';
 import { Document, JSONtoDocument } from '../../../database/document.mjs';
 import { CollectionCatalog } from '../collectioncatalog.mjs';
 import { DatabaseCopier } from '../databasecopier.mjs';
@@ -124,7 +125,7 @@ describe('databasecopier.mjs', () => {
     assert.strictEqual(result.documentsCopied, 0);
 
     const targetCompression = target.getVacuumCompressionMetaSnapshot();
-    assert.deepStrictEqual(targetCompression['articles'], { title: 'gzip' });
+    assert.deepStrictEqual(targetCompression['articles'], safeDictionary({ title: 'gzip' }));
   });
 
   it('returns correct collection and document counts for mixed collections', async () => {
@@ -178,7 +179,7 @@ describe('databasecopier.mjs', () => {
     await copier.copyAll();
 
     const targetCompression = target.getVacuumCompressionMetaSnapshot();
-    assert.deepStrictEqual(targetCompression['articles'], { title: 'gzip' });
+    assert.deepStrictEqual(targetCompression['articles'], safeDictionary({ title: 'gzip' }));
 
     const copied = (await target.getDocument('1', 'articles')) as Document;
     assert.strictEqual(copied.getId(), '1');

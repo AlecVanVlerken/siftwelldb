@@ -100,7 +100,7 @@ describe('SQL cross-feature persistence', () => {
       await db.commit();
       const expected = await db.getDocumentObjectById('articles', 42);
       const encoded = storedFields(await db.getDocumentById('articles', 42, { encoded: true }));
-      const graph = await backend().inspectHnswGraphStructure('articles::text');
+      const graph = await backend().inspectHnswGraphStructure('articles', 'text');
       expect(graph.some((node) => node.deleted)).toBe(true);
       const semantic = await db.semanticSearch('articles', 'fox', 10);
       expect(semantic.map((row) => decodedRow(row)['id']).sort()).toEqual([42, 44]);
@@ -147,9 +147,9 @@ describe('SQL cross-feature persistence', () => {
       await check();
       await reopen();
       await check();
-      expect((await backend().inspectHnswGraphStructure('articles::text')).filter((node) => node.deleted)).toHaveLength(
-        graph.filter((node) => node.deleted).length,
-      );
+      expect(
+        (await backend().inspectHnswGraphStructure('articles', 'text')).filter((node) => node.deleted),
+      ).toHaveLength(graph.filter((node) => node.deleted).length);
       const vacuumData = new RealFile(path.join(directory, 'vacuum.db'));
       const vacuumLog = new RealFile(path.join(directory, 'vacuum.log'));
       const vacuum = await vacuumCompactInto({
@@ -167,8 +167,8 @@ describe('SQL cross-feature persistence', () => {
       db = await SimpleDbms.open(data, log, config);
       sql = new QueryLanguage(db);
       await check();
-      expect((await backend().inspectHnswGraphStructure('articles::text')).every((node) => !node.deleted)).toBe(true);
-      expect(await backend().inspectHnswGraphStructure('empty::text')).toEqual([]);
+      expect((await backend().inspectHnswGraphStructure('articles', 'text')).every((node) => !node.deleted)).toBe(true);
+      expect(await backend().inspectHnswGraphStructure('empty', 'text')).toEqual([]);
     } finally {
       await db.close();
       await rm(directory, { recursive: true, force: true });

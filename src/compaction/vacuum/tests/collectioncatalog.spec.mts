@@ -7,6 +7,7 @@ import { describe, it } from 'vitest';
 import { CollectionCatalog } from '../collectioncatalog.mjs';
 import type { DbmsBack } from '../../../database/dbmsback.mjs';
 import type { FieldCompressionDefaults } from '../../../database/compression.mjs';
+import { safeDictionary, semanticIndexKey } from '../../../database/identity.mjs';
 
 type CollectionMetaSnapshot = Record<string, Record<string, [number, string]>>;
 type HnswMetaSnapshot = Record<string, [number, string]>;
@@ -63,7 +64,7 @@ describe('collectioncatalog.mjs', () => {
       {},
       {},
       {
-        images: [42, 'hnsw'],
+        [semanticIndexKey('images', 'default')]: [42, 'hnsw'],
       },
     );
 
@@ -83,7 +84,7 @@ describe('collectioncatalog.mjs', () => {
         articles: { title: 'gzip' },
       },
       {
-        articles: [42, 'hnsw'],
+        [semanticIndexKey('articles', 'default')]: [42, 'hnsw'],
       },
     );
 
@@ -135,7 +136,7 @@ describe('collectioncatalog.mjs', () => {
     catalog = new CollectionCatalog(source);
 
     const defaults = catalog.getCompressionDefaults('articles');
-    assert.deepStrictEqual(defaults, { title: 'gzip', body: 'deflate' });
+    assert.deepStrictEqual(defaults, safeDictionary({ title: 'gzip', body: 'deflate' }));
     assert.notStrictEqual(defaults, source.getVacuumCompressionMetaSnapshot()['articles']);
   });
 
@@ -147,7 +148,7 @@ describe('collectioncatalog.mjs', () => {
       {},
       {},
       {
-        images: [42, 'hnsw'],
+        [semanticIndexKey('images', 'default')]: [42, 'hnsw'],
       },
     );
 
@@ -161,7 +162,7 @@ describe('collectioncatalog.mjs', () => {
       {},
       {},
       {
-        images: [42, 'hnsw'],
+        [semanticIndexKey('images', 'default')]: [42, 'hnsw'],
       },
     );
 
@@ -185,7 +186,7 @@ describe('collectioncatalog.mjs', () => {
       {},
       {},
       {
-        images: [42, 'hnsw'],
+        [semanticIndexKey('images', 'default')]: [42, 'hnsw'],
       },
     );
 
@@ -294,5 +295,51 @@ describe('collectioncatalog.mjs', () => {
     catalog = new CollectionCatalog(source);
 
     assert.deepStrictEqual(catalog.getIndexedFields('articles'), ['author', 'id', 'title']);
+  });
+
+  it('keeps collection suffixes and HNSW kinds distinct during collection discovery', () => {
+    catalog = new CollectionCatalog(
+      makeSource(
+        {},
+        {},
+        {
+          [semanticIndexKey('a', 'text')]: [1, 'hnsw'],
+          [semanticIndexKey('a::text', 'default')]: [2, 'hnsw'],
+          [semanticIndexKey('a::b', 'image')]: [3, 'hnsw'],
+          [semanticIndexKey('__proto__', 'image')]: [4, 'hnsw'],
+        },
+      ),
+    );
+    assert.deepStrictEqual(catalog.listCollections(), ['__proto__', 'a', 'a::b', 'a::text']);
+    for (const collection of ['__proto__', 'a', 'a::b', 'a::text'])
+      assert.strictEqual(catalog.hasHnsw(collection), true);
+    assert.strictEqual(catalog.hasHnsw('a::image'), false);
+    assert.strictEqual(catalog.hasHnsw('constructor'), false);
+  });
+
+  it('ignores inherited collection and field properties and copies explicit prototype-looking keys safely', () => {
+    catalog = new CollectionCatalog(makeSource());
+    for (const collection of ['__proto__', 'constructor', 'toString']) {
+      assert.strictEqual(catalog.hasCollectionMeta(collection), false);
+      assert.strictEqual(catalog.hasIdTree(collection), false);
+      assert.deepStrictEqual(catalog.getIndexedFields(collection), []);
+      assert.strictEqual(catalog.getCompressionDefaults(collection), undefined);
+    }
+    const collectionMeta = safeDictionary<Record<string, [number, string]>>();
+    collectionMeta['__proto__'] = Object.fromEntries([
+      ['id', [1, 'S']],
+      ['constructor', [2, 'SS']],
+      ['__proto__', [3, 'SS']],
+    ]) as Record<string, [number, string]>;
+    const compression = safeDictionary<FieldCompressionDefaults>();
+    compression['__proto__'] = Object.fromEntries([['__proto__', 'gzip']]) as FieldCompressionDefaults;
+    catalog = new CollectionCatalog(makeSource(collectionMeta, compression));
+    assert.strictEqual(catalog.hasCollectionMeta('__proto__'), true);
+    assert.strictEqual(catalog.hasIdTree('__proto__'), true);
+    assert.deepStrictEqual(catalog.getIndexedFields('__proto__'), ['__proto__', 'constructor', 'id']);
+    const copied = catalog.getCompressionDefaults('__proto__')!;
+    assert.strictEqual(Object.getPrototypeOf(copied), null);
+    assert.strictEqual(copied['__proto__'], 'gzip');
+    assert.strictEqual(Object.hasOwn(Object.prototype, 'id'), false);
   });
 });
