@@ -145,6 +145,23 @@ type IndexingMeta = {
 type SemanticVector = { indexKey: string; vector: Float32Array };
 export class IndexValidationError extends Error {}
 
+export class InvalidCursorError extends IndexValidationError {
+  constructor(reason: string) {
+    super(`Invalid or unsupported cursor: ${reason}`);
+  }
+}
+
+/** Logical position in the persisted index ordering, independent of record locations. */
+export interface IndexCursorPosition {
+  form: string;
+  key: Buffer;
+}
+
+export interface IndexCursorEntry {
+  document: Document;
+  position: IndexCursorPosition;
+}
+
 /**
  * DbmsBack class
  *
@@ -2015,13 +2032,36 @@ export class DbmsBack {
     iterableKey: string,
     value?: string | number | Buffer,
   ): Promise<AsyncIterable<Document>> {
+    const entries = await this.iterateCursorEntries(collection, iterableKey, value);
+    return (async function* () {
+      for await (const entry of entries) yield entry.document;
+    })();
+  }
+
+  /** Iterate strictly after a complete logical key, or from the beginning. */
+  cursorWithPosition(
+    collection: string,
+    iterableKey: string,
+    after?: IndexCursorPosition,
+  ): Promise<AsyncIterable<IndexCursorEntry>> {
+    return this.iterateCursorEntries(collection, iterableKey, undefined, after);
+  }
+
+  private async iterateCursorEntries(
+    collection: string,
+    iterableKey: string,
+    value?: string | number | Buffer,
+    after?: IndexCursorPosition,
+  ): Promise<AsyncIterable<IndexCursorEntry>> {
     this.assertHealthy();
     if (iterableKey === 'id' && value !== undefined) this.validatePrimaryId(collection, value);
     if (!this.hasCollectionMeta(collection)) {
+      if (after !== undefined) throw new InvalidCursorError('collection no longer exists');
       throw new Error('Collection does not exist');
     }
     const collectionMeta = this.getCollectionMeta(collection);
     if (!(iterableKey in collectionMeta)) {
+      if (after !== undefined) throw new InvalidCursorError('index no longer exists');
       // A policy can be configured before the first document creates its primary tree.
       if (iterableKey === 'id' && !collectionMeta['id']) return (async function* () {})();
       throw new Error('Iterable key does not exist in collection');
@@ -2031,13 +2071,25 @@ export class DbmsBack {
     const keyRoot = keyMetaData[0];
     const keyVorm = keyMetaData[1];
 
+    if (after !== undefined) {
+      if (after.form !== keyVorm) throw new InvalidCursorError('index key type has changed');
+      validateCompleteCursorKey(after.key, keyVorm);
+      if (after.key.length > Math.floor((this.getBlockSize() - 10) / 2) - 8) {
+        throw new InvalidCursorError('index key exceeds the supported size');
+      }
+    }
+
     const keyTree = await this.getOrCreateTree(collection, iterableKey, keyVorm, keyRoot);
 
-    const startKeyBuffer: Buffer | undefined = value !== undefined ? toBuffer(keyVorm, value) : undefined;
+    const startKeyBuffer = after?.key ?? (value !== undefined ? toBuffer(keyVorm, value) : undefined);
     const asyncGenerator = keyTree.iterate(startKeyBuffer);
+    const compare = getCompareFunction(keyVorm);
 
     const documentGenerator = async function* (this: DbmsBack) {
       for await (const [key, documentPointerBuffer] of asyncGenerator) {
+        // The B+ tree seek is inclusive. Exclude the saved key only when it is
+        // actually encountered; if it was deleted, keep the first successor.
+        if (after !== undefined && compare(key, after.key) <= 0) continue;
         const documentPointer = documentPointerBuffer.readUInt32BE(0);
         const document = await this.readIndexedDocument(documentPointer, collection);
         if (iterableKey === 'id' && !key.equals(toBuffer(keyVorm, document.getId()))) {
@@ -2045,7 +2097,7 @@ export class DbmsBack {
             `Primary index in collection "${collection}" references a different document at block ${documentPointer}`,
           );
         }
-        yield document;
+        yield { document, position: { form: keyVorm, key: Buffer.from(key) } };
       }
     }.bind(this);
 
@@ -2626,11 +2678,42 @@ export class DbmsBack {
   }
 }
 
-/**
- * Gets the comparison function for the specified key form.
- * @param form - The key form string.
- * @returns A comparison function for the specified key form.
- */
+/** Reject partial or malformed positions before invoking B+ tree key comparators. */
+function validateCompleteCursorKey(key: Buffer, form: string): void {
+  if (!Buffer.isBuffer(key)) throw new InvalidCursorError('missing index key');
+  let offset = 0;
+  const readNumber = () => {
+    if (offset + 8 > key.length || !Number.isFinite(key.readDoubleBE(offset))) {
+      throw new InvalidCursorError('invalid numeric key component');
+    }
+    offset += 8;
+  };
+  const readString = (lengthPrefixed: boolean) => {
+    let length = key.length - offset;
+    if (lengthPrefixed) {
+      if (offset + 2 > key.length) throw new InvalidCursorError('incomplete string key component');
+      length = key.readUInt16BE(offset);
+      offset += 2;
+    }
+    if (offset + length > key.length) throw new InvalidCursorError('incomplete string key component');
+    const bytes = key.subarray(offset, offset + length);
+    if (!Buffer.from(bytes.toString('utf8'), 'utf8').equals(bytes)) {
+      throw new InvalidCursorError('invalid UTF-8 key component');
+    }
+    offset += length;
+  };
+  if (form === 'S') readString(false);
+  else if (form === 'N') readNumber();
+  else if (['SS', 'SN', 'NS', 'NN'].includes(form)) {
+    for (const component of form) {
+      if (component === 'S') readString(true);
+      else readNumber();
+    }
+  } else throw new InvalidCursorError('unsupported index key type');
+  if (offset !== key.length) throw new InvalidCursorError('unexpected trailing key bytes');
+}
+
+/** Gets the existing index comparison function for the specified key form. */
 function getCompareFunction(form: string): (a: Buffer, b: Buffer) => number {
   //als "N" => de key is een number
   //compare two buffers as numbers, should be 8 bytes each 64-bit float

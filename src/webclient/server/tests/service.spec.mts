@@ -6,6 +6,7 @@ import { DatabaseService } from '../service.mjs';
 import { SimpleDbms } from '../../../database/simpledbms.mjs';
 import { DbmsBack } from '../../../database/dbmsback.mjs';
 import { RealFile } from '../../../storage/file.mjs';
+import { MockFile } from '../../../../tests/helpers/mockfile.mjs';
 
 vi.mock('../embedding-config.mjs', () => ({
   getClipHnswConfig: () => ({
@@ -33,6 +34,16 @@ function setFakeDbms(service: DatabaseService, dbms: FakeDbms): ServiceInternals
   const internals = service as unknown as ServiceInternals;
   internals.dbms = dbms;
   Object.assign(dbms, { isHealthy: true, assertHealthy() {} });
+  // Count and demo fixtures only request first pages of their string ID index.
+  Object.assign(dbms, {
+    async *cursorWithPosition(collection: string, field: string, after?: unknown) {
+      if (field !== 'id' || after !== undefined) throw new Error('Unsupported stub cursor');
+      for await (const document of dbms.cursor(collection, field)) {
+        const { id } = JSON.parse(document) as { id: string };
+        yield { document, position: { form: 'S', key: Buffer.from(id) } };
+      }
+    },
+  });
   internals.recordBytesCache = new Map();
   return internals;
 }
@@ -67,34 +78,35 @@ async function* documents(values: string[]): AsyncIterable<string> {
 describe('DatabaseService', () => {
   it('returns the requested cursor page with the full collection count', async () => {
     const service = new DatabaseService();
-    const seen: Array<[string, string, string | undefined]> = [];
-    setFakeDbms(service, {
-      cursor(collection, iterableKey, value) {
-        seen.push([collection, iterableKey, value]);
-        return documents([
-          JSON.stringify({ id: 'a', title: 'A' }),
-          JSON.stringify({ id: 'b', title: 'B' }),
-          JSON.stringify({ id: 'c', title: 'C' }),
-        ]);
-      },
-      deleteDocumentById() {
-        return Promise.resolve();
-      },
-      commit() {
-        return Promise.resolve();
-      },
-    });
-
-    await expect(service.getDocuments('books', 'title', 'A', 2)).resolves.toEqual({
-      documents: [JSON.stringify({ id: 'b', title: 'B' }), JSON.stringify({ id: 'c', title: 'C' })],
-      hasMore: false,
-      total: 3,
-      nextCursor: undefined,
-    });
-    expect(seen).toEqual([
-      ['books', 'id', undefined],
-      ['books', 'title', 'A'],
-    ]);
+    const db = await SimpleDbms.create(new MockFile(256), new MockFile(4096));
+    (service as unknown as ServiceInternals).dbms = db;
+    try {
+      for (const [id, title] of [
+        ['a', 'A'],
+        ['b', 'B'],
+        ['c', 'C'],
+      ])
+        await db.insertDocumentObject('books', { id, title });
+      const cursor = vi.spyOn(db, 'cursor');
+      const positioned = vi.spyOn(db, 'cursorWithPosition');
+      const first = await service.getDocuments('books', 'title', undefined, 1);
+      expect(first.documents).toEqual([JSON.stringify({ id: 'a', title: 'A' })]);
+      await expect(service.getDocuments('books', 'title', first.nextCursor, 2)).resolves.toEqual({
+        documents: [JSON.stringify({ id: 'b', title: 'B' }), JSON.stringify({ id: 'c', title: 'C' })],
+        hasMore: false,
+        total: 3,
+        nextCursor: undefined,
+      });
+      expect(cursor).toHaveBeenCalledExactlyOnceWith('books', 'id');
+      expect(positioned).toHaveBeenLastCalledWith('books', 'title', {
+        form: 'SS',
+        key: Buffer.from([0, 1, 65, 0, 1, 97]),
+      });
+      cursor.mockRestore();
+      positioned.mockRestore();
+    } finally {
+      await db.close();
+    }
   });
 
   it('sorts documents numerically ascending when sortBy targets a number field', async () => {
@@ -358,7 +370,9 @@ describe('DatabaseService with real database files', () => {
       expect((await service.getDocuments('people')).documents).toEqual([
         JSON.stringify({ id: 'safe', name: 'existing', score: 1 }),
       ]);
-      expect((await service.getDocuments('people', 'name', 'existing')).total).toBe(1);
+      const secondaryPage = await service.getDocuments('people', 'name');
+      expect(secondaryPage.total).toBe(1);
+      expect(secondaryPage.documents).toEqual([JSON.stringify({ id: 'safe', name: 'existing', score: 1 })]);
       await service.insertDocument('people', { id: 'later', name: 'later', score: 3 });
       await service.disconnect();
       await service.connect(filepath);

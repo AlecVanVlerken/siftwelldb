@@ -142,6 +142,8 @@ Ordinary legacy `/api/documents/:collection/...` and
 no type tag, so their numeric interpretation follows the persisted primary index.
 Use the canonical query addresses to preserve explicit ID types and all names.
 
+For cursor listing, request `/api/documents?collection=<JSON string>&iterableKey=<field>&limit=<positive integer>` and pass the returned opaque `nextCursor` unchanged as the `cursor` parameter. Tokens include the complete logical index key, so repeated secondary values progress by document ID and deletion of the saved entry retains its next surviving successor. Tokens are versioned and bound to their exact collection and field; invalid, legacy bare-value or duplicated cursor parameters return HTTP 400. `hasMore: false` omits `nextCursor`. Commit/reopen and physical relocation retain logical continuation. These pages are not snapshots; indexed-value updates can move documents across the saved position. The grid continues using offset pagination, and explicit sorting also uses offset mode. Cursor and offset parameters cannot be combined.
+
 ## Integration boundaries
 
 The frontend uses the existing HTTP router, `DatabaseService`, and

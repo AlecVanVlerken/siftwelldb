@@ -1,7 +1,7 @@
 // author: Thomas Dumon
 // date: 2025-12-07
 
-import { DbmsBack, type HnswConfig } from './dbmsback.mjs';
+import { DbmsBack, type HnswConfig, type IndexCursorPosition } from './dbmsback.mjs';
 
 /**
  * Configuration for HNSW semantic search.
@@ -421,6 +421,22 @@ export class SimpleDbms {
 
         for await (const document of backendCursor) {
           yield documentToJSON(document);
+        }
+      },
+    };
+  }
+
+  /** Index-ordered JSON documents with complete positions for cursor pagination. */
+  cursorWithPosition(
+    collection: string,
+    iterableKey: string,
+    after?: IndexCursorPosition,
+  ): AsyncIterable<{ document: string; position: IndexCursorPosition }> {
+    const backendCursorPromise = this.dbmsback.cursorWithPosition(collection, iterableKey, after);
+    return {
+      async *[Symbol.asyncIterator]() {
+        for await (const { document, position } of await backendCursorPromise) {
+          yield { document: documentToJSON(document), position };
         }
       },
     };

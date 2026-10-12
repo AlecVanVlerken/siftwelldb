@@ -722,7 +722,9 @@ export class ApiRouter {
       if (method === 'GET' && collectionMatch) {
         const collection = readCollectionSegment(collectionMatch[1]);
         const iterableKey = url.searchParams.get('iterableKey') ?? 'id';
-        const cursor = url.searchParams.get('cursor') ?? undefined;
+        const cursors = url.searchParams.getAll('cursor');
+        if (cursors.length > 1) throw new ApiHttpError(400, 'Provide at most one cursor token');
+        const cursor = cursors[0];
         const limit = readLimit(url, 100, 10000);
         const offset = readOffset(url);
         if (cursor !== undefined && offset !== undefined) {

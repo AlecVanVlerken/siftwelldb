@@ -121,6 +121,14 @@ Semantic metadata now stores a versioned map keyed by `[collection, "default" | 
 
 The webclient uses JSON-typed query addresses so IDs and collection names are never altered by URL path normalization. See the [HTTP addressing contract](src/webclient/README.md#exact-document-addresses).
 
+## Cursor pagination
+
+`fetchPageCursor(db, { collection, iterableKey, limit, afterCursor? })` returns index-ordered JSON documents, `hasMore` and an opaque `nextCursor` string. Pass that string unchanged to resume. A version 1 token carries the exact collection, field, persisted key form and complete B+ tree key bytes, including the document ID component of secondary keys. Resumption seeks strictly after that logical key using the existing index comparator. Duplicate field values advance by their ID tie-breaker, and deleting the last emitted entry does not skip its surviving successor. Seeking costs O(log N), followed by reading the page and one lookahead entry; API total counts can require a separate initial scan.
+
+Tokens remain usable after commit/reopen, record or index relocation and full vacuum when the logical collection/index key form is retained. Malformed tokens, wrong collection/field bindings, incomplete composite keys and changed or removed index forms produce explicit cursor errors. Legacy bare field-value tokens are unsupported because they cannot identify a unique secondary position; restart from the first page.
+
+Pagination is not a snapshot. Inserts at keys after the saved position can appear on subsequent pages; inserts before it are not revisited. Updating an indexed value across that position can omit or repeat that document. A deleted entry continues from its old key's next surviving successor. For an unchanged dataset, concatenated pages exactly match full traversal of the same index. Ordinary inclusive `cursor()` seeks, SQL `LIMIT`/`OFFSET`, and the webclient's offset-based grid browsing retain their existing behavior.
+
 ## Query language CLI
 
 The SQL-like query engine has a CLI entry point:

@@ -842,7 +842,7 @@ export class DatabaseService {
     sortBy?: string,
     sortDir: 'asc' | 'desc' = 'asc',
     offset?: number,
-  ): Promise<{ documents: string[]; total: number; hasMore: boolean; nextCursor?: string | number }> {
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean; nextCursor?: string }> {
     return this.runExclusive('get-documents', async () =>
       this.getDocumentsUnlocked(collection, iterableKey, cursor, limit, sortBy, sortDir, offset),
     );
@@ -856,15 +856,15 @@ export class DatabaseService {
     sortBy?: string,
     sortDir: 'asc' | 'desc' = 'asc',
     offset?: number,
-  ): Promise<{ documents: string[]; total: number; hasMore: boolean; nextCursor?: string | number }> {
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean; nextCursor?: string }> {
     this.ensureConnected();
 
     if (sortBy) {
       return this.scanAndSortDocuments(collection, sortBy, sortDir, limit, offset ?? 0);
     }
 
-    const total = await this.getDocumentCountUnlocked(collection);
     if (offset !== undefined) {
+      const total = await this.getDocumentCountUnlocked(collection);
       const documents: string[] = [];
       let seen = 0;
       for await (const json of this.dbms!.cursor(collection, iterableKey)) {
@@ -877,6 +877,7 @@ export class DatabaseService {
     }
 
     const page = await fetchPageCursor(this.dbms!, { collection, iterableKey, limit, afterCursor: cursor });
+    const total = await this.getDocumentCountUnlocked(collection);
     return { documents: page.data, total, hasMore: page.hasMore, nextCursor: page.nextCursor };
   }
 
@@ -905,7 +906,7 @@ export class DatabaseService {
     sortDir: 'asc' | 'desc',
     limit: number,
     offset: number,
-  ): Promise<{ documents: string[]; total: number; hasMore: boolean; nextCursor?: string | number }> {
+  ): Promise<{ documents: string[]; total: number; hasMore: boolean; nextCursor?: string }> {
     const direction = sortDir === 'desc' ? -1 : 1;
     const all: { json: string; key: unknown }[] = [];
     for await (const jsonStr of this.dbms!.cursor(collection, 'id')) {

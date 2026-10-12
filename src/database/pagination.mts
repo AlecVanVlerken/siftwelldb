@@ -9,17 +9,18 @@
  */
 
 import { SimpleDbms } from './simpledbms.mjs';
+import { InvalidCursorError, type IndexCursorPosition } from './dbmsback.mjs';
 
 /** A single page of results. */
 export interface Page<T = string> {
   /** The documents in this page (JSON strings). */
   data: T[];
-  /** Total number of documents returned so far (useful for offset mode). */
+  /** Number of documents in this page. */
   pageSize: number;
   /** Whether there are more pages after this one. */
   hasMore: boolean;
   /** Cursor token to pass for the next page (cursor mode only). */
-  nextCursor?: string | number;
+  nextCursor?: string;
 }
 
 /** Options for cursor-based pagination. */
@@ -28,7 +29,7 @@ export interface CursorPaginationOptions {
   iterableKey: string;
   /** How many documents per page. */
   limit: number;
-  /** Start from this key value (pass `nextCursor` from the previous page). */
+  /** Opaque token from `nextCursor`. Legacy bare key values are unsupported. */
   afterCursor?: string | number;
 }
 
@@ -46,7 +47,8 @@ export interface OffsetPaginationOptions {
  * Fetch a single page of results using cursor-based pagination.
  *
  * This is the preferred method for large datasets because it uses the B+ tree
- * iterator directly — no documents are skipped, so every page is O(limit).
+ * iterator directly: seeking costs O(log N), followed by the page plus one
+ * lookahead document. Tokens do not provide snapshot isolation.
  *
  * @param db      - An open SimpleDbms instance.
  * @param options - Cursor pagination options.
@@ -54,47 +56,63 @@ export interface OffsetPaginationOptions {
  */
 export async function fetchPageCursor(db: SimpleDbms, options: CursorPaginationOptions): Promise<Page> {
   const { collection, iterableKey, limit, afterCursor } = options;
-
-  // Start iterating from afterCursor (or from the beginning if undefined)
-  const iterable = db.cursor(collection, iterableKey, afterCursor);
-
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new InvalidCursorError('limit must be a positive integer');
+  const after = afterCursor === undefined ? undefined : decodeCursor(afterCursor, collection, iterableKey);
+  const iterable = db.cursorWithPosition(collection, iterableKey, after);
   const data: string[] = [];
-  let lastKey: string | number | undefined;
-  let skipFirst = afterCursor !== undefined;
-
-  for await (const jsonStr of iterable) {
-    // When resuming from afterCursor, skip the first element (we already sent it)
-    if (skipFirst) {
-      skipFirst = false;
-      continue;
-    }
-
-    data.push(jsonStr);
-
-    // Extract the key value for the next cursor
-    const parsed = JSON.parse(jsonStr) as Record<string, string | number>;
-    lastKey = parsed[iterableKey];
-
-    if (data.length >= limit + 1) {
-      // We fetched one extra to check if there are more results
+  let lastPosition: IndexCursorPosition | undefined;
+  let hasMore = false;
+  for await (const { document, position } of iterable) {
+    if (data.length === limit) {
+      hasMore = true;
       break;
     }
-  }
-
-  const hasMore = data.length > limit;
-  if (hasMore) {
-    data.pop(); // Remove the extra lookahead document
-    // Recalculate lastKey from the actual last document
-    const lastDoc = JSON.parse(data[data.length - 1]) as Record<string, string | number>;
-    lastKey = lastDoc[iterableKey];
+    data.push(document);
+    lastPosition = position;
   }
 
   return {
     data,
     pageSize: data.length,
     hasMore,
-    nextCursor: hasMore ? lastKey : undefined,
+    nextCursor: hasMore && lastPosition ? encodeCursor(collection, iterableKey, lastPosition) : undefined,
   };
+}
+
+function encodeCursor(collection: string, field: string, position: IndexCursorPosition): string {
+  return Buffer.from(
+    JSON.stringify({ v: 1, collection, field, form: position.form, key: position.key.toString('base64url') }),
+  ).toString('base64url');
+}
+
+function decodeCursor(token: string | number, collection: string, field: string): IndexCursorPosition {
+  try {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]+$/.test(token)) throw new Error();
+    const encoded = Buffer.from(token, 'base64url');
+    if (encoded.toString('base64url') !== token) throw new Error();
+    const json = encoded.toString('utf8');
+    if (!Buffer.from(json).equals(encoded)) throw new Error();
+    const value = JSON.parse(json) as Record<string, unknown>;
+    if (
+      value === null ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      Object.keys(value).length !== 5 ||
+      value['v'] !== 1 ||
+      value['collection'] !== collection ||
+      value['field'] !== field ||
+      typeof value['form'] !== 'string' ||
+      typeof value['key'] !== 'string' ||
+      !/^[A-Za-z0-9_-]*$/.test(value['key'])
+    ) {
+      throw new Error();
+    }
+    const key = Buffer.from(value['key'], 'base64url');
+    if (key.toString('base64url') !== value['key']) throw new Error();
+    return { form: value['form'], key };
+  } catch {
+    throw new InvalidCursorError('expected a version 1 token for this collection and index');
+  }
 }
 
 /**
