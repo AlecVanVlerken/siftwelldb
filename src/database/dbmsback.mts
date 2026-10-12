@@ -455,8 +455,8 @@ export class DbmsBack {
    * @returns A Promise that resolves when the database backend is closed.
    */
   async close(): Promise<void> {
-    this.relocationCandidates.clear();
     await this.mutationQueue;
+    this.relocationCandidates.clear();
     for (const index of this.hnswIndexCache.values()) index.dispose();
     this.hnswIndexCache.clear();
     await this.freeblockFile.close();

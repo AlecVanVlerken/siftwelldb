@@ -32,14 +32,14 @@ export class RelocationCandidates {
   private readonly heap: Entry[] = [];
   private readonly positions = new Map<string, number>();
   private readonly locations = new Map<string, Set<string>>();
-  private nextOrder = 0;
 
   constructor(targets: RelocationTarget[]) {
-    for (const target of targets) {
+    for (const [order, target] of targets.entries()) {
       const key = keyFor(target);
+      const entry = { key, target, order };
       this.positions.set(key, this.heap.length);
-      this.addLocation({ key, target, order: this.nextOrder });
-      this.heap.push({ key, target, order: this.nextOrder++ });
+      this.addLocation(entry);
+      this.heap.push(entry);
     }
     for (let index = Math.floor(this.heap.length / 2) - 1; index >= 0; index--) this.down(index);
   }

@@ -80,6 +80,15 @@ describe('Incremental compaction candidate discovery', () => {
     expect(graphs).not.toHaveBeenCalled();
   });
 
+  it('releases an inventory built by queued discovery while closing', async () => {
+    const db = await makeDb();
+    const discovery = db.listRecordRelocationTargets(1);
+    const closing = db.close();
+    expect(await discovery).toHaveLength(1);
+    await closing;
+    await expect(db.listRecordRelocationTargets(1)).rejects.toThrow(/Cannot read record/);
+  });
+
   it('keeps inventory private and preserves it through commit and tail trimming', async () => {
     const db = await makeDb();
     const reads = vi.spyOn(RecordStore.prototype, 'readRecord');
