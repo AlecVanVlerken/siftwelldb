@@ -60,6 +60,7 @@ import {
   type CompressionStorageEstimate,
 } from './compression-advisor.mjs';
 import type { VacuumProgress } from '../compaction/compaction.mjs';
+import { RelocationCandidates } from '../compaction/incremental/relocationcandidates.mjs';
 import type {
   HnswRelocationTarget,
   IncrementalCompactionPolicy,
@@ -174,6 +175,8 @@ export class DbmsBack {
   private metaCache: MetaCache = safeDictionary();
   private mutationQueue: Promise<void> = Promise.resolve();
   private mutationStarted = false;
+  private preserveRelocationCandidates = false;
+  private readonly relocationCandidates = new Map<'record' | 'btree' | 'hnsw', Promise<RelocationCandidates>>();
 
   assertHealthy(): void {
     this.freeblockFile.assertHealthy();
@@ -186,16 +189,21 @@ export class DbmsBack {
   /** Called only after preflight, immediately before a potentially partial write. */
   private beginMutation(): void {
     this.mutationStarted = true;
+    if (!this.preserveRelocationCandidates) this.relocationCandidates.clear();
   }
 
-  private mutate<T>(operation: () => Promise<T>): Promise<T> {
+  private mutate<T>(operation: () => Promise<T>, preserveCandidates = false): Promise<T> {
     const result = this.mutationQueue.then(async () => {
       this.assertHealthy();
       this.mutationStarted = false;
+      this.preserveRelocationCandidates = preserveCandidates;
       try {
         return await operation();
       } catch (error) {
-        if (this.mutationStarted) this.freeblockFile.markMutationFailed(error);
+        if (this.mutationStarted) {
+          this.relocationCandidates.clear();
+          this.freeblockFile.markMutationFailed(error);
+        }
         try {
           this.assertHealthy();
         } catch (healthError) {
@@ -207,6 +215,7 @@ export class DbmsBack {
         throw error;
       } finally {
         this.mutationStarted = false;
+        this.preserveRelocationCandidates = false;
       }
     });
     this.mutationQueue = result.then(
@@ -250,6 +259,7 @@ export class DbmsBack {
    * @returns A Promise that resolves when the database backend is created.
    */
   async create(): Promise<void> {
+    this.relocationCandidates.clear();
     await this.freeblockFile.create(); // must be async
     const initialMeta = Buffer.from(JSON.stringify([]));
     await this.freeblockFile.writeClientArea(initialMeta);
@@ -445,6 +455,7 @@ export class DbmsBack {
    * @returns A Promise that resolves when the database backend is closed.
    */
   async close(): Promise<void> {
+    this.relocationCandidates.clear();
     await this.mutationQueue;
     for (const index of this.hnswIndexCache.values()) index.dispose();
     this.hnswIndexCache.clear();
@@ -1101,7 +1112,7 @@ export class DbmsBack {
    * @returns A Promise that resolves when the commit is complete.
    */
   commit(): Promise<void> {
-    return this.mutate(() => this.commitInternal());
+    return this.mutate(() => this.commitInternal(), true);
   }
 
   private async commitInternal(): Promise<void> {
@@ -1513,7 +1524,7 @@ export class DbmsBack {
     id: string | number,
     options: RelocationOptions = {},
   ): Promise<DocumentRelocationResult> {
-    return this.mutate(() => this.relocateDocumentInternal(collection, id, options));
+    return this.mutate(() => this.relocateDocumentInternal(collection, id, options), true);
   }
 
   private async relocateDocumentInternal(
@@ -1572,10 +1583,17 @@ export class DbmsBack {
     await this.relocateHnswDocumentPointer(collection, oldPointer, newPointer);
     await this.recordStore.deleteRecord(oldPointer);
 
+    const candidates = this.relocationCandidates.get('record');
+    if (candidates) {
+      const chain = await this.recordStore.readRecordBlockChain(newPointer);
+      const target: RelocationTarget = { kind: 'record', collection, documentId: id, blockNumber: Math.max(...chain) };
+      (await candidates).replace(target, target);
+    }
+
     return {
       oldBlockNumber: oldPointer,
       newBlockNumber: newPointer,
-      relocated: options.maxBlockExclusive === undefined ? newPointer !== oldPointer : newPointer < oldPointer,
+      relocated: newPointer !== oldPointer,
     };
   }
 
@@ -1596,7 +1614,7 @@ export class DbmsBack {
     blockNumber: number,
     options: RelocationOptions = {},
   ): Promise<number> {
-    return this.mutate(() => this.relocateBtreeNodeInternal(collection, field, blockNumber, options));
+    return this.mutate(() => this.relocateBtreeNodeInternal(collection, field, blockNumber, options), true);
   }
 
   private async relocateBtreeNodeInternal(
@@ -1621,35 +1639,33 @@ export class DbmsBack {
     const result = await storage.relocateNode(rootBlock, blockNumber, options);
     fieldMeta[0] = result.newRootBlock;
     this.treeCache.delete(indexCacheKey(collection, field));
+    const candidates = this.relocationCandidates.get('btree');
+    if (candidates) {
+      const previous: RelocationTarget = { kind: result.kind, collection, field, blockNumber };
+      (await candidates).replace(previous, { ...previous, blockNumber: result.newBlockNumber });
+    }
     return result.newBlockNumber;
   }
 
   async listHnswRelocationTargets(collection: string): Promise<HnswRelocationTarget[]> {
-    this.assertHealthy();
-    if (!this.hnswConfig) {
-      throw new Error('Cannot inspect HNSW relocation targets without hnswConfig');
-    }
-
-    const hnswMeta = this.getExistingHnswMeta();
-    if (!hnswMeta) return [];
-    const targets: HnswRelocationTarget[] = [];
-    for (const indexKey of this.hnswIndexKeysForCollection(collection)) {
-      const [, indexKind] = semanticIndexIdentity(indexKey);
-      const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
-      const [metaBlock] = hnswMeta[indexKey];
-      targets.push({ collection, indexKind, kind: 'hnsw-meta', blockNumber: metaBlock, hnswUnitState: 'live' });
-      targets.push(
-        ...(await hnswIdx.listRelocationTargets()).map((target) => ({
+    return this.mutate(async () => {
+      if (!this.hnswConfig) throw new Error('Cannot inspect HNSW relocation targets without hnswConfig');
+      const meta = this.getExistingHnswMeta();
+      const targets: HnswRelocationTarget[] = [];
+      for (const indexKey of this.hnswIndexKeysForCollection(collection)) {
+        const [, indexKind] = semanticIndexIdentity(indexKey);
+        const index = await this.getOrCreateHnswIndex(indexKey);
+        targets.push({
           collection,
           indexKind,
-          kind: target.kind,
-          nodeId: target.nodeId,
-          blockNumber: target.blockNumber,
-          hnswUnitState: target.hnswUnitState,
-        })),
-      );
-    }
-    return targets;
+          kind: 'hnsw-meta',
+          blockNumber: meta![indexKey][0],
+          hnswUnitState: 'live',
+        });
+        targets.push(...(await index.listRelocationTargets()).map((target) => ({ ...target, collection, indexKind })));
+      }
+      return targets;
+    }, true);
   }
 
   async inspectHnswGraphStructure(
@@ -1682,7 +1698,7 @@ export class DbmsBack {
   }
 
   relocateHnswUnit(target: HnswRelocationTarget): Promise<boolean> {
-    return this.mutate(() => this.relocateHnswUnitInternal(target));
+    return this.mutate(() => this.relocateHnswUnitInternal(target), true);
   }
 
   private async relocateHnswUnitInternal(target: HnswRelocationTarget): Promise<boolean> {
@@ -1703,16 +1719,33 @@ export class DbmsBack {
       const newBlockNumber = await hnswIdx.relocateMetadata({ maxBlockExclusive: target.maxBlockExclusive });
       if (newBlockNumber === null) return false;
       hnswMeta[indexKey] = [newBlockNumber, vorm];
+      await this.replaceHnswRelocationCandidate(
+        { ...target, blockNumber: oldBlockNumber },
+        { ...target, blockNumber: newBlockNumber },
+      );
       return target.maxBlockExclusive === undefined
         ? newBlockNumber !== oldBlockNumber
         : newBlockNumber < oldBlockNumber;
     }
 
     const nodeId = await this.resolveHnswRelocationNodeId(target);
+    const previous = await hnswIdx.getRelocationTargetsForNode(nodeId);
     this.beginMutation();
     if (target.kind === 'hnsw-graph') {
       const newNodeId = await hnswIdx.relocateGraphNode(nodeId, { maxBlockExclusive: target.maxBlockExclusive });
       const newBlockNumber = Math.floor(newNodeId / 4294967296);
+      for (const unit of previous) {
+        await this.replaceHnswRelocationCandidate(
+          { ...unit, collection: target.collection, indexKind: target.indexKind },
+          {
+            ...unit,
+            collection: target.collection,
+            indexKind: target.indexKind,
+            nodeId: newNodeId,
+            blockNumber: unit.kind === 'hnsw-graph' ? newBlockNumber : unit.blockNumber,
+          },
+        );
+      }
       return (
         target.maxBlockExclusive === undefined ||
         target.blockNumber === undefined ||
@@ -1721,6 +1754,11 @@ export class DbmsBack {
     }
 
     const newPtr = await hnswIdx.relocateVectorForNode(nodeId, { maxBlockExclusive: target.maxBlockExclusive });
+    const vector = previous.find((unit) => unit.kind === 'hnsw-vector')!;
+    await this.replaceHnswRelocationCandidate(
+      { ...vector, collection: target.collection, indexKind: target.indexKind },
+      { ...vector, collection: target.collection, indexKind: target.indexKind, blockNumber: newPtr.pageId },
+    );
     return (
       target.maxBlockExclusive === undefined || target.blockNumber === undefined || newPtr.pageId < target.blockNumber
     );
@@ -1732,7 +1770,7 @@ export class DbmsBack {
       this.beginMutation();
       const result = await this.freeblockFile.trimFreeTail();
       return result.removedBlocks;
-    });
+    }, true);
   }
 
   async getCompactionStorageStats(): Promise<FreeBlockFileStats> {
@@ -1749,6 +1787,65 @@ export class DbmsBack {
   }
 
   async listRecordRelocationTargets(limit = 16): Promise<RelocationTarget[]> {
+    return this.listRelocationCandidates('record', limit);
+  }
+
+  async listBtreeRelocationTargets(limit = 16): Promise<RelocationTarget[]> {
+    return this.listRelocationCandidates('btree', limit);
+  }
+
+  async listHnswRelocationCandidateTargets(limit = 16): Promise<RelocationTarget[]> {
+    return this.listRelocationCandidates('hnsw', limit);
+  }
+
+  private listRelocationCandidates(kind: 'record' | 'btree' | 'hnsw', limit: number): Promise<RelocationTarget[]> {
+    return this.mutate(async () => {
+      if (!(limit > 0)) return [];
+      return (await this.getRelocationCandidates(kind)).top(limit);
+    }, true);
+  }
+
+  private async getRelocationCandidates(kind: 'record' | 'btree' | 'hnsw'): Promise<RelocationCandidates> {
+    let inventory = this.relocationCandidates.get(kind);
+    if (!inventory) {
+      const collect =
+        kind === 'record'
+          ? this.collectRecordRelocationCandidates()
+          : kind === 'btree'
+            ? this.collectBtreeRelocationCandidates()
+            : this.collectHnswRelocationCandidates();
+      inventory = collect.then((targets) => new RelocationCandidates(targets));
+      this.relocationCandidates.set(kind, inventory);
+    }
+    try {
+      return await inventory;
+    } catch (error) {
+      if (this.relocationCandidates.get(kind) === inventory) this.relocationCandidates.delete(kind);
+      throw error;
+    }
+  }
+
+  private async replaceHnswRelocationCandidate(
+    previous: HnswRelocationTarget,
+    target: HnswRelocationTarget,
+  ): Promise<void> {
+    const inventory = this.relocationCandidates.get('hnsw');
+    if (!inventory) return;
+    const indexKind = semanticIndexIdentity(this.hnswInspectionKey(target.collection, target.indexKind))[1];
+    (await inventory).replace(
+      { ...previous, indexKind },
+      {
+        kind: target.kind,
+        collection: target.collection,
+        indexKind,
+        nodeId: target.nodeId,
+        blockNumber: target.blockNumber,
+        hnswUnitState: target.hnswUnitState ?? 'live',
+      },
+    );
+  }
+
+  private async collectRecordRelocationCandidates(): Promise<RelocationTarget[]> {
     const targets: RelocationTarget[] = [];
 
     for (const collection of await this.getCollections()) {
@@ -1772,10 +1869,10 @@ export class DbmsBack {
       }
     }
 
-    return targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0)).slice(0, Math.max(0, limit));
+    return targets;
   }
 
-  async listBtreeRelocationTargets(limit = 16): Promise<RelocationTarget[]> {
+  private async collectBtreeRelocationCandidates(): Promise<RelocationTarget[]> {
     const targets: RelocationTarget[] = [];
 
     for (const [collection, collectionMeta] of Object.entries(this.getVacuumCollectionMetaSnapshot())) {
@@ -1793,10 +1890,10 @@ export class DbmsBack {
       }
     }
 
-    return targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0)).slice(0, Math.max(0, limit));
+    return targets;
   }
 
-  async listHnswRelocationCandidateTargets(limit = 16): Promise<RelocationTarget[]> {
+  private async collectHnswRelocationCandidates(): Promise<RelocationTarget[]> {
     this.assertHealthy();
     if (!this.hnswConfig) {
       return [];
@@ -1808,12 +1905,15 @@ export class DbmsBack {
     }
 
     const targets: RelocationTarget[] = [];
-    for (const collection of new Set(Object.keys(hnswMeta).map((key) => this.collectionFromHnswIndexKey(key)))) {
-      for (const target of await this.listHnswRelocationTargets(collection)) {
+    for (const [indexKey, [metaBlock]] of Object.entries(hnswMeta)) {
+      const [collection, indexKind] = semanticIndexIdentity(indexKey);
+      const index = await this.getOrCreateHnswIndex(indexKey);
+      targets.push({ kind: 'hnsw-meta', collection, indexKind, blockNumber: metaBlock, hnswUnitState: 'live' });
+      for (const target of await index.listRelocationTargets()) {
         targets.push({
           kind: target.kind,
           collection,
-          indexKind: target.indexKind,
+          indexKind,
           blockNumber: target.blockNumber,
           nodeId: target.nodeId,
           hnswUnitState: target.hnswUnitState,
@@ -1821,7 +1921,7 @@ export class DbmsBack {
       }
     }
 
-    return targets.sort((a, b) => (b.blockNumber ?? 0) - (a.blockNumber ?? 0)).slice(0, Math.max(0, limit));
+    return targets;
   }
 
   private async resolveHnswRelocationNodeId(target: HnswRelocationTarget): Promise<number> {
@@ -1832,15 +1932,26 @@ export class DbmsBack {
       throw new Error('HNSW relocation target requires nodeId or blockNumber');
     }
 
-    const candidates = await this.listHnswRelocationTargets(target.collection);
     const indexKey = this.hnswInspectionKey(target.collection, target.indexKind);
-    const match = candidates.find(
-      (candidate) =>
-        candidate.kind === target.kind &&
-        (target.nodeId === undefined || candidate.nodeId === target.nodeId) &&
-        (target.blockNumber === undefined || candidate.blockNumber === target.blockNumber) &&
-        this.hnswInspectionKey(candidate.collection, candidate.indexKind) === indexKey,
-    );
+    const matches = (candidate: HnswRelocationTarget): boolean =>
+      candidate.collection === target.collection &&
+      candidate.kind === target.kind &&
+      (target.nodeId === undefined || candidate.nodeId === target.nodeId) &&
+      (target.blockNumber === undefined || candidate.blockNumber === target.blockNumber) &&
+      this.hnswInspectionKey(candidate.collection, candidate.indexKind) === indexKey;
+    let match: HnswRelocationTarget | undefined;
+    if (target.nodeId !== undefined) {
+      const index = await this.getOrCreateHnswIndex(indexKey);
+      const units = await index.getRelocationTargetsForNode(target.nodeId);
+      match = units
+        .map((unit) => ({ ...unit, collection: target.collection, indexKind: target.indexKind }))
+        .find(matches);
+    } else {
+      const indexKind = semanticIndexIdentity(indexKey)[1];
+      match = (await this.getRelocationCandidates('hnsw')).atLocation({ ...target, indexKind }) as
+        | HnswRelocationTarget
+        | undefined;
+    }
     if (!match || match.nodeId === undefined) {
       if (target.nodeId !== undefined)
         throw new Error(`No ${target.kind} unit with node ${target.nodeId} belongs to this semantic index`);

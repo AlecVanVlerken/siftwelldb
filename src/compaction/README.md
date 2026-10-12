@@ -18,6 +18,31 @@ uncompressed fields and per-document overrides. Collection defaults are copied
 for future writes; they do not recompress existing documents with a different
 codec during vacuum. HNSW indexes are still rebuilt from live documents.
 
+Incremental candidate discovery retains one verified in-memory inventory per
+backend session for records, B+ tree nodes and HNSW graph/vector/metadata units.
+The first request inventories all eligible units; records are decoded and their
+complete chains checked, preserving live-record integrity errors. Indexed max
+heaps return the highest physical blocks without rewalking or resorting the
+database for each small batch. Tombstoned HNSW units remain eligible physical
+blockers. Deleted documents' retained record anchors remain allocated and are
+reclaimed by full vacuum, as before.
+
+Relocation updates only the moved chain or unit in these inventories, including
+both graph and vector node identities when a graph node moves. Commit and free
+tail trimming preserve them because eligible unit locations do not change.
+Ordinary writes, index changes and failed mutations discard them; reopen starts
+with no inventory. Candidate reads use the existing backend operation queue, so
+a write cannot change locations halfway through an inventory. Returned targets
+are copies. The old `CompactionState` cursor fields remain diagnostics; logical
+ID order cannot express physical-tail continuation.
+
+This amortizes candidate discovery across unchanged maintenance steps; the first
+request after a mutation still requires a global inventory and session memory
+proportional to eligible units. Free-list metrics and structure-specific
+reference repair during relocation retain their existing traversal costs.
+Incremental compaction can still stop at retained record anchors or other
+ineligible physical blockers; full vacuum remains the complete rebuild path.
+
 Unreadable live records abort copying or validation. Both stages check their
 document counts against independent primary-index reference counts. A failed
 copy closes its incomplete target and leaves the source database in place.

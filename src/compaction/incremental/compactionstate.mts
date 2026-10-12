@@ -7,6 +7,9 @@ export type RecordCursorState = {
 };
 
 export class CompactionState {
+  // Historical diagnostics, not physical continuation positions. Logical ID
+  // order cannot resume tail-priority traversal. DbmsBack retains the verified
+  // location heaps across maintenance calls and updates them after relocation.
   private lastRecordCursor: RecordCursorState = {};
   private lastTailScanBlock: number | undefined;
 

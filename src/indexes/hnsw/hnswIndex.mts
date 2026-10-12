@@ -383,6 +383,19 @@ export class HNSWIndex {
     return targets;
   }
 
+  /** Validate a physical node against this index's existing ownership map. */
+  async getRelocationTargetsForNode(nodeId: NodeId): Promise<HnswUnitLocation[]> {
+    const node = await this.graphStorage.getNode(nodeId);
+    if (this.nodeIdByDocId.get(node.docId) !== nodeId) {
+      throw new Error(`No HNSW unit with node ${nodeId} belongs to this semantic index`);
+    }
+    const hnswUnitState = node.deleted ? 'tombstoned-retained' : 'live';
+    return [
+      { kind: 'hnsw-graph', nodeId, blockNumber: decodeNodeId(nodeId).pageId, hnswUnitState },
+      { kind: 'hnsw-vector', nodeId, blockNumber: node.vectorPtr.pageId, hnswUnitState },
+    ];
+  }
+
   async relocateGraphNode(nodeId: NodeId, options: { maxBlockExclusive?: number } = {}): Promise<NodeId> {
     const result = await this.graphStorage.relocateNode(nodeId, options);
     this.nodeIdByDocId.set(result.docId, result.newNodeId);

@@ -41,7 +41,7 @@ export class IncrementalCompactionService {
     }
 
     const planner = new IncrementalPlanner(this.source, policy, this.state);
-    const batch = await planner.plan();
+    const batch = await planner.plan(metricsBefore);
     if (!batch || batch.targets.length === 0) {
       return {
         didWork: false,

@@ -14,8 +14,8 @@ export class IncrementalPlanner {
     private readonly state: CompactionState,
   ) {}
 
-  async plan(): Promise<RelocationBatch | null> {
-    const metrics = await new CompactionMetricsCollector(this.source).collect();
+  async plan(metrics?: IncrementalCompactionMetrics): Promise<RelocationBatch | null> {
+    metrics ??= await new CompactionMetricsCollector(this.source).collect();
     if (!this.policy.shouldCompact(metrics)) {
       return null;
     }
@@ -32,7 +32,9 @@ export class IncrementalPlanner {
       };
     }
 
-    const candidateLimit = Math.max(this.policy.targetBatchDocuments, this.policy.targetBatchUnits) * 16;
+    // Each inventory is tail-ordered. The highest L entries of each kind are
+    // sufficient to choose the highest L entries of their union.
+    const candidateLimit = this.getBatchLimit();
     const [recordCandidates, btreeCandidates, hnswCandidates] = await Promise.all([
       this.source.listRecordRelocationTargets(candidateLimit),
       this.source.listBtreeRelocationTargets(candidateLimit),
