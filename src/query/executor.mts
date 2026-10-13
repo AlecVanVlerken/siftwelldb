@@ -1,5 +1,6 @@
 import type { SimpleDbms } from '../database/simpledbms.mjs';
 import type { RawId } from '../database/document.mjs';
+import { isImageField, validateFieldValue } from '../database/document.mjs';
 import type { OrderByClause, ParsedQuery, ParsedSelect, QueryResultRow } from './ast.mjs';
 import { compareValues, evaluateWhere } from './expressions.mjs';
 import { executeGroupBy, GroupAggregator } from './aggregator.mjs';
@@ -137,7 +138,14 @@ export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Prom
             throw new Error(`Field ${field} cannot be edited on this document`);
           final[field] = value;
         }
-        dbms.validateDocument(parsed.collection, final);
+        // Explicit SQL image assignments retain the legacy base64 convention;
+        // untouched values already have their actual stored types.
+        for (const { field } of parsed.assignments) {
+          const value = final[field];
+          validateFieldValue(field, value);
+          if (typeof value === 'string' && isImageField(field, final)) final[field] = Buffer.from(value, 'base64');
+        }
+        dbms.validateDocument(parsed.collection, final, false);
         finalDocuments.push(final);
       }
       documents = finalDocuments;
@@ -147,7 +155,11 @@ export async function executeParsed(dbms: SimpleDbms, parsed: ParsedQuery): Prom
       for (const document of documents) {
         const id = document['id'] as RawId;
         if (parsed.kind === 'delete') await dbms.deleteDocumentById(parsed.collection, id);
-        else await dbms.replaceDocument(parsed.collection, id, document, { preserveCompression: true });
+        else
+          await dbms.replaceDocument(parsed.collection, id, document, {
+            preserveCompression: true,
+            decodeImageStrings: false,
+          });
         affectedIds.push(id);
       }
     } catch (error) {

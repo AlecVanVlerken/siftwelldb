@@ -65,3 +65,6 @@ describe('document.mts', () => {
     );
   });
 });
+it('rejects malformed Unicode field contents before UTF-8 encoding', () => {
+  expect(() => parseRawDocument('docs', { id: 'a', text: 'before\uD800after' })).toThrow(/unpaired UTF-16/);
+});

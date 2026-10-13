@@ -5,7 +5,19 @@ export type JsonObject = Record<string, unknown>;
 
 export type JsonObjectParseResult = { ok: true; value: JsonObject } | { ok: false; error: string };
 
-export type ImagePayloads = Record<string, string>;
+type BinaryValue = { $binary: string };
+export type ImagePayloads = Record<string, string | BinaryValue>;
+
+export function isBinaryValue(value: unknown): value is BinaryValue {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 1 &&
+    Object.hasOwn(value, '$binary') &&
+    typeof (value as BinaryValue).$binary === 'string'
+  );
+}
 
 function normalizeImageValue(value: unknown): unknown {
   if (typeof value !== 'string') return value;
@@ -23,13 +35,18 @@ export function imagePlaceholder(fieldName: string, value: string): string {
   return `[image: ${fieldName}, ${fmtSize(estimateBase64Bytes(value))}]`;
 }
 
-export function compactDocumentImages(document: JsonObject): { document: JsonObject; imagePayloads: ImagePayloads } {
+export function compactDocumentImages(
+  document: JsonObject,
+  editor = false,
+): { document: JsonObject; imagePayloads: ImagePayloads } {
   const imagePayloads: ImagePayloads = createDictionary();
   const compacted = Object.fromEntries(
     Object.entries(document).map(([key, value]) => {
-      if (!isImageField(key, document) || typeof value !== 'string' || value.length === 0) return [key, value];
-      const payload = String(normalizeImageValue(value));
-      imagePayloads[key] = payload;
+      if (!isImageField(key, document) || (typeof value !== 'string' && !isBinaryValue(value))) return [key, value];
+      if (editor && !isBinaryValue(value)) return [key, value];
+      const payload = isBinaryValue(value) ? value.$binary : String(normalizeImageValue(value));
+      if (!payload) return [key, value];
+      imagePayloads[key] = isBinaryValue(value) ? value : payload;
       return [key, imagePlaceholder(key, payload)];
     }),
   );
@@ -39,14 +56,16 @@ export function compactDocumentImages(document: JsonObject): { document: JsonObj
 function restoreCompactedDocumentImages(
   document: JsonObject,
   imagePayloads: ImagePayloads = createDictionary(),
+  editor = false,
 ): JsonObject {
   return Object.fromEntries(
     Object.entries(document).map(([key, value]) => {
-      if (!isImageField(key, document)) return [key, value];
       const existingPayload = imagePayloads[key];
-      if (typeof value === 'string' && existingPayload && value === imagePlaceholder(key, existingPayload)) {
+      const base64 = typeof existingPayload === 'string' ? existingPayload : existingPayload?.$binary;
+      if (typeof value === 'string' && base64 && value === imagePlaceholder(key, base64)) {
         return [key, existingPayload];
       }
+      if (editor || !isImageField(key, document)) return [key, value];
       return [key, normalizeImageValue(value)];
     }),
   );
@@ -69,7 +88,7 @@ export function parseJsonObjectInput(raw: string): JsonObjectParseResult {
 
 export function validateDocumentInput(
   raw: string,
-  options: { existingId?: unknown; requireId?: boolean; imagePayloads?: ImagePayloads } = {},
+  options: { existingId?: unknown; requireId?: boolean; imagePayloads?: ImagePayloads; editor?: boolean } = {},
 ): JsonObjectParseResult {
   const parsed = parseJsonObjectInput(raw);
   if (!parsed.ok) return parsed;
@@ -92,6 +111,9 @@ export function validateDocumentInput(
 
   for (const [field, fieldValue] of Object.entries(value)) {
     if (field === 'id') continue;
+    if (typeof fieldValue === 'string' && !fieldValue.isWellFormed())
+      return { ok: false, error: `Field ${JSON.stringify(field)} must not contain an unpaired UTF-16 surrogate.` };
+    if (options.editor && isBinaryValue(fieldValue)) continue;
     if (
       !['string', 'number', 'boolean'].includes(typeof fieldValue) ||
       (typeof fieldValue === 'number' && !Number.isFinite(fieldValue))
@@ -100,7 +122,7 @@ export function validateDocumentInput(
     }
   }
 
-  return { ok: true, value: restoreCompactedDocumentImages(value, options.imagePayloads) };
+  return { ok: true, value: restoreCompactedDocumentImages(value, options.imagePayloads, options.editor) };
 }
 
 function placeholderFor(value: unknown): unknown {

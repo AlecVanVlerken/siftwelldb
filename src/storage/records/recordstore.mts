@@ -1,7 +1,7 @@
 // author: Matisse De Gauquier
 // date: 2025-12-07
 
-import { Document, type RawId, type FieldValue } from '../../database/document.mjs';
+import { Document, validateDocumentValues, type RawId, type FieldValue } from '../../database/document.mjs';
 import { FreeBlockFile } from '../blocks/freeblockfile.mjs';
 import { getBlockCount, getBlockType } from '../blocks/io.mjs';
 import { BlockType } from '../blocks/layout.mjs';
@@ -302,6 +302,7 @@ export class RecordStore {
   }
 
   private serializeDocument(doc: Document, options?: RecordWriteOptions): Buffer {
+    validateDocumentValues(doc);
     const iterableEntries = this.serializeEntries(doc.getIterableKeys(), doc.getFields(), options);
     const nonIterableEntries = this.serializeEntries(doc.getNonIterableKeys(), doc.getFields(), options);
 

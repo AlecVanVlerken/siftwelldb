@@ -141,7 +141,14 @@ export type {
 } from './compression-advisor.mjs';
 export type { CompressionProfileSummary } from './compression-profiles.mjs';
 import { type File } from '../storage/file.mjs';
-import { documentToJSON, parseRawDocument, type Document, type FieldValue, type RawId } from './document.mjs';
+import {
+  documentToJSON,
+  parseRawDocument,
+  validateUnicodeString,
+  type Document,
+  type FieldValue,
+  type RawId,
+} from './document.mjs';
 import { JSONtoDocument } from './document.mjs';
 import { type FieldCompressionDefaults, type FieldCompressionOverrides } from './compression.mjs';
 import {
@@ -333,8 +340,8 @@ export class SimpleDbms {
     await this.dbmsback.setFieldIndexed(collection, field, indexed);
   }
 
-  validateDocument(collection: string, raw: unknown): void {
-    this.dbmsback.validateDocument(parseRawDocument(collection, raw));
+  validateDocument(collection: string, raw: unknown, decodeImageStrings = true): void {
+    this.dbmsback.validateDocument(parseRawDocument(collection, raw, decodeImageStrings));
   }
 
   getPendingSemanticCollections(): string[] {
@@ -387,9 +394,9 @@ export class SimpleDbms {
     collection: string,
     id: string | number,
     newDocument: unknown,
-    options?: { compression?: FieldCompressionOverrides; preserveCompression?: boolean },
+    options?: { compression?: FieldCompressionOverrides; preserveCompression?: boolean; decodeImageStrings?: boolean },
   ): Promise<void> {
-    const doc = parseRawDocument(collection, newDocument);
+    const doc = parseRawDocument(collection, newDocument, options?.decodeImageStrings ?? true);
     await this.dbmsback.replaceDocumentByID(collection, id, doc, options?.compression, options?.preserveCompression);
   }
 
@@ -507,6 +514,7 @@ export class SimpleDbms {
       return {
         async *[Symbol.asyncIterator]() {
           const cursor = await inner;
+          if (typeof value === 'string') validateUnicodeString(value, 'Index value');
           for await (const document of cursor) {
             const json = documentToJSON(document);
             const parsed = JSON.parse(json) as Record<string, unknown>;

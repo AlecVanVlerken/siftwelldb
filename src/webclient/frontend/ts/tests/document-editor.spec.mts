@@ -8,6 +8,54 @@ import {
 } from '../document-editor.js';
 
 describe('document-editor helpers', () => {
+  it('keeps plain strings in image-named fields unchanged in the typed editor', () => {
+    const document = { id: 'a', 'photo.jpg': 'data:image/jpeg;base64,AP+AKg==' };
+    const compacted = compactDocumentImages(document, true);
+    expect(compacted).toEqual({ document, imagePayloads: {} });
+    expect(validateDocumentInput(JSON.stringify(compacted.document), { editor: true })).toEqual({
+      ok: true,
+      value: document,
+    });
+    expect(validateDocumentInput('{"id":"a","photo.jpg":"AP+AKg=="}', { editor: true })).toEqual({
+      ok: true,
+      value: { id: 'a', 'photo.jpg': 'AP+AKg==' },
+    });
+  });
+  it('retains typed binary images through placeholders, including MIME metadata removal', () => {
+    const original = {
+      id: 'a',
+      title: 'original',
+      payload: { $binary: 'AP+AKg==' },
+      photo: { $binary: 'AP+AKg==' },
+      _photo_mime: 'image/png',
+      text: 'AP+AKg==',
+    };
+    const compacted = compactDocumentImages(original);
+    const edited: Record<string, unknown> = { ...compacted.document, title: 'changed' };
+    delete edited['_photo_mime'];
+    expect(
+      validateDocumentInput(JSON.stringify(edited), { editor: true, imagePayloads: compacted.imagePayloads }),
+    ).toEqual({
+      ok: true,
+      value: {
+        id: 'a',
+        title: 'changed',
+        payload: { $binary: 'AP+AKg==' },
+        photo: { $binary: 'AP+AKg==' },
+        text: 'AP+AKg==',
+      },
+    });
+    expect(validateDocumentInput(JSON.stringify(original))).toMatchObject({ ok: false });
+  });
+  it('allows intentional binary-to-string edits in the typed editor', () => {
+    expect(validateDocumentInput('{"id":"a","payload":"AP+AKg=="}', { editor: true })).toEqual({
+      ok: true,
+      value: { id: 'a', payload: 'AP+AKg==' },
+    });
+  });
+  it.each(['\uD800', '\uDFFF', 'before\uD800after', 'abc\uDC00xyz'])('rejects malformed field contents %j', (text) => {
+    expect(validateDocumentInput(JSON.stringify({ id: 'a', text }))).toMatchObject({ ok: false });
+  });
   it.each(['', ' ', '.', '..', 'metadata', 'edit', '雪😀'])(
     'accepts supported backend IDs for creation and editing: %j',
     (id) => {

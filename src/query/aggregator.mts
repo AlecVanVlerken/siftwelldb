@@ -8,10 +8,23 @@ type State = {
   scale: number;
   correction: number;
   residual: number;
+  residualCorrection: number;
   extreme: QueryResultRow[string];
   distinct?: Set<unknown>;
 };
 type Group = { row: QueryResultRow; states: State[] };
+
+const MIN_NORMAL = 2 ** -1022;
+
+function roundingError(sum: number, term: number, result: number): number {
+  return Math.abs(sum) >= Math.abs(term) ? sum - result + term : term - result + sum;
+}
+
+function addResidual(state: State, term: number): void {
+  const result = state.residual + term;
+  state.residualCorrection += roundingError(state.residual, term, result);
+  state.residual = result;
+}
 
 function groupKey(row: QueryResultRow, fields: string[]): string {
   return fields
@@ -48,6 +61,7 @@ export class GroupAggregator {
           scale: 0,
           correction: 0,
           residual: 0,
+          residualCorrection: 0,
           extreme: null,
           distinct: aggregate.distinct ? new Set() : undefined,
         })),
@@ -75,20 +89,26 @@ export class GroupAggregator {
             const scale = 2 ** Math.min(1023, Math.floor(Math.log2(Math.abs(value))));
             if (scale > state.scale) {
               const ratio = state.scale / scale;
-              if (state.sum !== 0 && state.sum * ratio === 0) state.residual += state.sum * state.scale;
-              if (state.correction !== 0 && state.correction * ratio === 0)
-                state.residual += state.correction * state.scale;
-              state.sum *= ratio;
-              state.correction *= ratio;
+              const sum = state.sum * ratio;
+              const correction = state.correction * ratio;
+              if (Math.abs(sum) < MIN_NORMAL) {
+                addResidual(state, state.sum * state.scale);
+                state.sum = 0;
+              } else state.sum = sum;
+              if (Math.abs(correction) < MIN_NORMAL) {
+                addResidual(state, state.correction * state.scale);
+                state.correction = 0;
+              } else state.correction = correction;
               state.scale = scale;
             }
             const term = value / state.scale;
-            if (term === 0) {
-              state.residual += value;
+            // Subnormal normalization can lose bits even when it stays nonzero.
+            if (Math.abs(term) < MIN_NORMAL) {
+              addResidual(state, value);
               continue;
             }
             const sum = state.sum + term;
-            state.correction += Math.abs(state.sum) >= Math.abs(term) ? state.sum - sum + term : term - sum + state.sum;
+            state.correction += roundingError(state.sum, term, sum);
             state.sum = sum;
           }
         }
@@ -110,14 +130,15 @@ export class GroupAggregator {
             ? state.count
             : func === 'SUM'
               ? state.count
-                ? total + state.residual
+                ? total + state.residual + state.residualCorrection
                 : null
               : func === 'AVG'
                 ? state.count
-                  ? (Number.isFinite(total)
-                      ? total / state.count
-                      : ((state.sum + state.correction) / state.count) * state.scale) +
-                    state.residual / state.count
+                  ? Number.isFinite(total)
+                    ? (total + state.residual + state.residualCorrection) / state.count
+                    : ((state.sum + state.correction) / state.count) * state.scale +
+                      state.residual / state.count +
+                      state.residualCorrection / state.count
                   : null
                 : state.extreme;
         const value = row[state.aggregate.alias];

@@ -284,7 +284,7 @@ describe('complete index cursor positions', () => {
         for (const [index, id] of documents.entries()) {
           await db.insertDocumentObject(collection, {
             id,
-            category: ['A', 'AA', 'A\0', '雪', '\ud800'][index % 5],
+            category: ['A', 'AA', 'A\0', '雪', '\ufffd'][index % 5],
             score: [false, 0, true, 1, -2, 0.25][index % 6],
           });
         }

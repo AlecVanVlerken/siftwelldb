@@ -18,6 +18,8 @@ import {
   supportsFieldIndex,
   validateDocumentId,
   validateDocumentValues,
+  validateFieldValue,
+  validateUnicodeString,
 } from './document.mjs';
 import {
   indexCacheKey,
@@ -2106,6 +2108,7 @@ export class DbmsBack {
     newValue: FieldValue,
   ): Promise<void> {
     const existingDocument = (await this.getDocument(id, collection, false)) as Document;
+    validateFieldValue(field, newValue);
     let processedValue = newValue;
     if (typeof newValue === 'string' && isImageField(field, existingDocument.getFields())) {
       processedValue = Buffer.from(newValue, 'base64');
@@ -3161,6 +3164,8 @@ function getCompareFunction(form: string): (a: Buffer, b: Buffer) => number {
  * @returns The resulting Buffer.
  */
 function toBuffer(vorm: string, input1: string | number | Buffer, input2?: string | number): Buffer {
+  if (typeof input1 === 'string') validateUnicodeString(input1, 'Index value');
+  if (typeof input2 === 'string') validateUnicodeString(input2, 'Index value');
   if (vorm === 'N') {
     const buffer = Buffer.alloc(8);
     buffer.writeDoubleBE(input1 as number, 0);

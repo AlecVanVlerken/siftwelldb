@@ -38,6 +38,16 @@ describe('finite numeric aggregates', () => {
     expect(aggregate([1e308, 1e308, -1e308], 'SUM')).toBe(1e308);
     expect(aggregate([1e308, 1, -1e308], 'SUM')).toBe(1);
   });
+  it('preserves small cancellation terms when normalization would be subnormal', () => {
+    for (const values of [
+      [Number.MAX_VALUE, 3e-16, -Number.MAX_VALUE],
+      [3e-16, Number.MAX_VALUE, -Number.MAX_VALUE],
+      [1, 3e-16, Number.MAX_VALUE, -Number.MAX_VALUE, -1],
+    ]) {
+      expect(aggregate(values, 'SUM')).toBe(3e-16);
+      expect(aggregate(values, 'AVG')).toBe(3e-16 / values.length);
+    }
+  });
   it('preserves grouping, HAVING aliases, DISTINCT and missing/nonnumeric semantics', () => {
     const query = parse(
       'SELECT team, AVG(score) AS average, COUNT(*) AS count FROM docs GROUP BY team HAVING average > 1e307',

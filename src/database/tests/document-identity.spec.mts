@@ -11,7 +11,7 @@ import { Document, documentToJSON, JSONtoDocument, parseRawDocument } from '../d
 import { SimpleDbms } from '../simpledbms.mjs';
 
 const malformedIds = ['\ud800', '\ud801', '\udfff', 'prefix\ud800suffix', '\ud800\ud800\udc00', '\udc00\ud800'];
-const malformedError = /Document id.*unpaired.*surrogate/i;
+const malformedError = /(?:Document id|Query string).*unpaired.*surrogate/i;
 
 async function collect(cursor: AsyncIterable<string>): Promise<Record<string, unknown>[]> {
   const documents: Record<string, unknown>[] = [];
@@ -240,20 +240,25 @@ describe('document identity validation', () => {
     };
     let db = new DbmsBack(new RealFile(dataPath), new RealFile(logPath), semantic);
     await db.create();
-    // eslint-disable-next-line @typescript-eslint/unbound-method -- The mock supplies its original instance with call.
-    const originalWrite = RecordStore.prototype.writeRecord;
     const legacyWrite = vi.spyOn(RecordStore.prototype, 'writeRecord').mockImplementationOnce(function (
       this: RecordStore,
       document: Document,
-      options,
     ) {
       // Old releases encoded this exact malformed ID into the U+FFFD primary key,
       // while JSON record storage retained the original surrogate escape.
-      return originalWrite.call(
-        this,
-        new Document(document.getCollectionName(), '\ud800', [['title', 'legacy contents']], []),
-        options,
-      );
+      return this.writeRecordEncoded({
+        collection: document.getCollectionName(),
+        id: '\ud800',
+        iterableEntries: [
+          {
+            key: 'title',
+            valueType: 'string',
+            compression: 'none',
+            payloadBase64: Buffer.from('legacy contents').toString('base64'),
+          },
+        ],
+        nonIterableEntries: [],
+      });
     });
     try {
       await db.insertDocument(parseRawDocument('docs', { id: '\ufffd', title: 'legacy contents' }));

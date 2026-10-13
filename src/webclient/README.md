@@ -5,6 +5,16 @@ Build with `npm run build`, then run `npx tsx src/webclient/server/daemon.mts` a
 `Open / create` opens an existing database or initializes a missing file; the
 separate create actions replace existing files after confirmation.
 
+The document editor fetches a fresh snapshot with `editor=true`. Binary values
+use `{"$binary":"canonical base64"}`; ordinary strings remain strings, even when
+they look like base64. Typed replacements require `editor: true` in the request
+body. Ordinary JSON responses and replacement requests retain their existing
+representation. Image placeholders preserve the typed original value. Removing
+a field deletes it; replacing its binary object with a string explicitly changes
+its type, subject to field-index validation. Stored compression codecs are kept
+unless overridden. Whole-document replacement retains its existing semantics:
+there is no version check, so concurrent changes after loading can be overwritten.
+
 ## Full sample database
 
 Run from the repository root:

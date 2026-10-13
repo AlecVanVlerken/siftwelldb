@@ -747,6 +747,39 @@ describe('DatabaseService with real database files', () => {
     expect(JSON.parse(await service.getDocumentById('books', 'b2'))).toMatchObject({ title: 'still writable' });
   });
 
+  it('preserves ordinary binary values through the editor round trip', async () => {
+    await service.create(filepath);
+    const payload = Buffer.from([0, 255, 128, 42]);
+    await service.rawDbms.insertDocumentObject('docs', { id: 'a', title: 'original', payload, text: 'AP+AKg==' });
+    await service.rawDbms.commit();
+    const edited = JSON.parse(await service.getDocumentById('docs', 'a', { editor: true })) as Record<string, unknown>;
+    edited['title'] = 'changed';
+    await service.replaceDocument('docs', 'a', edited, undefined, true);
+    expect(await service.rawDbms.getDocumentObjectById('docs', 'a')).toEqual({
+      id: 'a',
+      title: 'changed',
+      payload,
+      text: 'AP+AKg==',
+    });
+  });
+  it('keeps explicitly edited image fields as text in typed editor requests', async () => {
+    await service.create(filepath);
+    await service.insertDocument('docs', { id: 'a', title: 'original', 'photo.jpg': 'AP+AKg==' });
+    const edited = JSON.parse(await service.getDocumentById('docs', 'a', { editor: true })) as Record<string, unknown>;
+    edited['photo.jpg'] = 'AP+AKg==';
+    await service.replaceDocument('docs', 'a', edited, undefined, true);
+    expect((await service.rawDbms.getDocumentObjectById('docs', 'a'))['photo.jpg']).toBe('AP+AKg==');
+    await service.query("UPDATE docs SET title = 'changed' WHERE id = 'a'");
+    expect((await service.rawDbms.getDocumentObjectById('docs', 'a'))['photo.jpg']).toBe('AP+AKg==');
+    await service.insertDocument('docs', { id: 'b', photo: 'AP+AKg==', _photo_mime: 'image/jpeg' });
+    await service.query("UPDATE docs SET photo = 'KgD/gA==' WHERE id = 'b'");
+    expect((await service.rawDbms.getDocumentObjectById('docs', 'b'))['photo']).toEqual(Buffer.from([42, 0, 255, 128]));
+    await service.disconnect();
+    await service.connect(filepath);
+    expect((await service.rawDbms.getDocumentObjectById('docs', 'a'))['photo.jpg']).toBe('AP+AKg==');
+    expect((await service.rawDbms.getDocumentObjectById('docs', 'b'))['photo']).toEqual(Buffer.from([42, 0, 255, 128]));
+  });
+
   it('restores and reconnects the original pair if reopening the vacuum target fails', async () => {
     await service.create(filepath);
     await service.setFieldIndexed('books', '_payload', false);

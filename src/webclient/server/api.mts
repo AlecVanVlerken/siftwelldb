@@ -820,6 +820,7 @@ export class ApiRouter {
         if (method === 'GET') {
           const document = await this.db.getDocumentById(collection, id, {
             encoded: url.searchParams.get('encoded') === 'true',
+            editor: url.searchParams.get('editor') === 'true',
           });
           sendJSON(res, 200, { document: JSON.parse(document) });
           return;
@@ -878,10 +879,13 @@ export class ApiRouter {
             return;
           }
           const compression = readCompression(body['compression']);
-          validateDocument(collection, document);
+          if (body['editor'] !== undefined && typeof body['editor'] !== 'boolean')
+            throw new ApiHttpError(400, 'editor must be a boolean');
+          const editor = body['editor'] === true;
+          if (!editor) validateDocument(collection, document);
           const replacementId = (document as Record<string, unknown>)['id'];
           if (replacementId !== id) throw new ApiHttpError(400, 'Document id cannot be changed');
-          await this.db.replaceDocument(collection, id, document, compression);
+          await this.db.replaceDocument(collection, id, document, compression, editor);
           sendJSON(res, 200, { message: 'Document replaced' });
           return;
         }

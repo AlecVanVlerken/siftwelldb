@@ -12,7 +12,12 @@ import {
   semanticTypeBadge,
 } from './semantic-results.js';
 import { $, $$ } from './dom.js';
-import { buildDocumentTemplate, compactDocumentImages, validateDocumentInput } from './document-editor.js';
+import {
+  buildDocumentTemplate,
+  compactDocumentImages,
+  validateDocumentInput,
+  isBinaryValue,
+} from './document-editor.js';
 import { detectType, docSize, esc, fmtNum, fmtSize, imageDataUrlFromValue, isImageField } from './format.js';
 import { openModal, closeModal } from './modals.js';
 import {
@@ -526,7 +531,7 @@ function wireFieldIndexControls(root, collection, config, refresh, current = () 
   );
 }
 
-async function wireDocumentIndexControls(textarea, root, collection, current = () => true) {
+async function wireDocumentIndexControls(textarea, root, collection, current = () => true, editor = false) {
   const context = captureRequestContext();
   root.textContent = 'Loading field settings…';
   try {
@@ -535,7 +540,7 @@ async function wireDocumentIndexControls(textarea, root, collection, current = (
     if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
     const renderSettings = () => {
       if (!isCurrentRequestContext(context) || !root.isConnected || !current()) return;
-      const parsed = validateDocumentInput(textarea.value, { requireId: false });
+      const parsed = validateDocumentInput(textarea.value, { requireId: false, editor });
       if (!parsed.ok) return;
       const keys = Object.keys(parsed.value).filter((field) => !isImageMimeMetadata(field, parsed.value));
       root.innerHTML = `<div style="margin-top:10px;"><strong>Field indexes</strong>${fieldIndexRows(keys, parsed.value, config)}</div>`;
@@ -567,7 +572,7 @@ function renderDocumentCompressionControls(collection, documentValue, meta) {
       key !== 'id' &&
       !isImageMimeMetadata(key, documentValue) &&
       !isImageField(key, documentValue) &&
-      typeof documentValue[key] === 'string',
+      (typeof documentValue[key] === 'string' || isBinaryValue(documentValue[key])),
   );
   if (!fields.length) return '<div class="empty-state" style="padding:10px;"><p>No compressible fields yet.</p></div>';
   const current = createDictionary(meta?.compressions);
@@ -639,12 +644,17 @@ function resetDocumentImageAttachment() {
 }
 
 function mergeImageIntoJsonText(textarea, fieldName, dataUrl, mime, imagePayloads) {
-  const parsed = validateDocumentInput(textarea.value, { requireId: false, imagePayloads });
+  const editor = textarea.id === 'dr-edit-json';
+  const parsed = validateDocumentInput(textarea.value, {
+    requireId: false,
+    imagePayloads,
+    editor,
+  });
   if (!parsed.ok) throw new Error(parsed.error);
   const [, base64 = dataUrl] = dataUrl.match(/^data:image\/[a-z0-9.+-]+;base64,(.*)$/i) || [];
-  parsed.value[fieldName] = base64;
+  parsed.value[fieldName] = editor ? { $binary: base64 } : base64;
   parsed.value[imageMimeMetadataField(fieldName)] = mime;
-  const compacted = compactDocumentImages(parsed.value);
+  const compacted = compactDocumentImages(parsed.value, editor);
   Object.keys(imagePayloads).forEach((key) => delete imagePayloads[key]);
   Object.assign(imagePayloads, compacted.imagePayloads);
   textarea.value = JSON.stringify(compacted.document, null, 2);
@@ -1655,18 +1665,28 @@ async function renderDrawer() {
   `;
 }
 
-$('#dr-edit').addEventListener('click', () => {
+$('#dr-edit').addEventListener('click', async () => {
   const d = state.selectedDoc;
   if (!d) return;
   const request = ++drawerRequest;
   const context = captureRequestContext();
   const c = state.selectedCol;
-  const cleanDoc = { ...d };
-  const compactedDoc = compactDocumentImages(cleanDoc);
+  let cleanDoc;
+  try {
+    const response = await api(documentUrl(c, d.id) + '&editor=true');
+    if (!isCurrentRequestContext(context) || request !== drawerRequest || state.selectedDoc !== d) return;
+    cleanDoc = response.document;
+  } catch (error) {
+    if (isCurrentRequestContext(context) && request === drawerRequest)
+      toast('Could not load document: ' + error.message, 'err');
+    return;
+  }
+  const compactedDoc = compactDocumentImages(cleanDoc, true);
   drawerEditImagePayloads = compactedDoc.imagePayloads;
   const jsonStr = JSON.stringify(compactedDoc.document, null, 2);
   $('#dr-body').innerHTML = `
     <div class="dr-stats"><div class="dr-stat" style="grid-column:1/-1;"><div class="l">Editing</div><div class="v" style="font-size:13px;font-family:Consolas;color:var(--ac);">${esc(d.id)}</div></div></div>
+    <p style="font-size:11px;color:var(--t3);">Binary fields use <code>{"$binary":"base64"}</code>. Keep this form to preserve binary data; a quoted value changes the field to text.</p>
     <div style="font-size:11px;color:var(--t3);margin-bottom:6px;line-height:1.4;">Edit as JSON. Strings need quotes; numbers and booleans don't. The <code style="font-size:11px;background:var(--bg);padding:0 4px;border-radius:2px;">id</code> field is read-only and must not change.</div>
     <textarea id="dr-edit-json" spellcheck="false" style="width:100%;min-height:320px;padding:9px 11px;font-family:Consolas,monospace;font-size:12px;line-height:1.5;border:1px solid var(--bd);border-radius:3px;background:var(--bg2);resize:vertical;">${esc(jsonStr)}</textarea>
     <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin-top:10px;">
@@ -1693,7 +1713,7 @@ $('#dr-edit').addEventListener('click', () => {
   `;
   $('#edit-cancel').addEventListener('click', () => renderDrawer());
   wireDocumentCompressionControls();
-  void wireDocumentIndexControls($('#dr-edit-json'), $('#dr-edit-indexes'), c, () => request === drawerRequest);
+  void wireDocumentIndexControls($('#dr-edit-json'), $('#dr-edit-indexes'), c, () => request === drawerRequest, true);
   $('#dr-image-file').addEventListener('change', () =>
     attachImageToDocumentJson({
       textarea: $('#dr-edit-json'),
@@ -1722,6 +1742,7 @@ $('#dr-edit').addEventListener('click', () => {
     let parsed;
     const validated = validateDocumentInput($('#dr-edit-json').value, {
       existingId: d.id,
+      editor: true,
       imagePayloads: drawerEditImagePayloads,
     });
     if (!validated.ok) {
@@ -1741,7 +1762,7 @@ $('#dr-edit').addEventListener('click', () => {
     try {
       await api(documentUrl(c, d.id, 'edit'), {
         method: 'POST',
-        body: { document: parsed, compression },
+        body: { document: parsed, compression, editor: true },
       });
       if (!isCurrentRequestContext(context)) return;
       if (request !== drawerRequest || state.selectedDoc !== d) {

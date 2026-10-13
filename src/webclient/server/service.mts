@@ -21,7 +21,13 @@ import {
   type FieldCompressionDefaults,
   type FieldCompressionOverrides,
 } from '../../database/compression.mjs';
-import { imageMimeForField, isImageField, validateDocumentId } from '../../database/document.mjs';
+import {
+  imageMimeForField,
+  isImageField,
+  validateDocumentId,
+  documentObjectToEditorJSON,
+  decodeEditorDocument,
+} from '../../database/document.mjs';
 import { generateWikiArticles } from '../fixtures/wiki.mjs';
 import { RealFile } from '../../storage/file.mjs';
 import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../../compaction/compaction.mjs';
@@ -992,9 +998,14 @@ export class DatabaseService {
   }
 
   /** Retrieve a specific document by its ID. */
-  async getDocumentById(collection: string, id: string | number, options?: { encoded?: boolean }): Promise<string> {
+  async getDocumentById(
+    collection: string,
+    id: string | number,
+    options?: { encoded?: boolean; editor?: boolean },
+  ): Promise<string> {
     return this.runExclusive('get-document', async () => {
       this.ensureConnected();
+      if (options?.editor) return documentObjectToEditorJSON(await this.dbms!.getDocumentObjectById(collection, id));
       return this.dbms!.getDocumentById(collection, id, options);
     });
   }
@@ -1108,11 +1119,23 @@ export class DatabaseService {
     id: string | number,
     newDocument: unknown,
     compression?: FieldCompressionOverrides,
+    editor = false,
   ): Promise<void> {
     await this.runExclusive('replace-document', async () => {
       this.ensureConnected();
-      this.validateIndexedKeys(collection, newDocument);
-      await this.dbms!.replaceDocument(collection, id, newDocument, { compression, preserveCompression: true });
+      if (editor) {
+        try {
+          newDocument = decodeEditorDocument(newDocument);
+        } catch (error) {
+          throw new DatabaseInputError(error instanceof Error ? error.message : String(error));
+        }
+      }
+      this.validateIndexedKeys(collection, newDocument, !editor);
+      await this.dbms!.replaceDocument(collection, id, newDocument, {
+        compression,
+        preserveCompression: true,
+        decodeImageStrings: !editor,
+      });
       await this.dbms!.commit();
       this.invalidateCollectionStorage(collection);
     });
@@ -1655,9 +1678,9 @@ export class DatabaseService {
     this.documentCountCache.delete(collection);
   }
 
-  private validateIndexedKeys(collection: string, document: unknown): void {
+  private validateIndexedKeys(collection: string, document: unknown, decodeImageStrings = true): void {
     try {
-      this.dbms!.validateDocument(collection, document);
+      this.dbms!.validateDocument(collection, document, decodeImageStrings);
     } catch (error) {
       throw new DatabaseInputError(error instanceof Error ? error.message : String(error));
     }

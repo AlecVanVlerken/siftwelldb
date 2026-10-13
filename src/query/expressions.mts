@@ -1,7 +1,7 @@
 // author: Frederik Caeyman & Matisse De Gauquier
 // Value parsing, WHERE / HAVING evaluation, and the LIKE→RegExp helper.
 
-import { type FieldValue } from '../database/document.mjs';
+import { type FieldValue, validateUnicodeString } from '../database/document.mjs';
 import type {
   BetweenExpression,
   ComparisonExpression,
@@ -41,7 +41,10 @@ export function likeToRegex(pattern: string): RegExp {
 export function parseValue(raw: string): FieldValue {
   if (raw.startsWith("'") || raw.startsWith('"')) {
     const quoted = readQuotedString(raw, 0);
-    if (quoted.end === raw.length) return quoted.value;
+    if (quoted.end === raw.length) {
+      validateUnicodeString(quoted.value, 'Query string');
+      return quoted.value;
+    }
     throw new Error('Unexpected trailing text after string literal');
   }
 

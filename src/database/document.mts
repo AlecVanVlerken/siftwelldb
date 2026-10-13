@@ -47,21 +47,25 @@ export function validateDocumentId(id: unknown): asserts id is RawId {
   if (id === undefined || id === null) throw new Error('Document must have an id');
   if (typeof id !== 'string' && typeof id !== 'number') throw new Error('Document id must be a string or number');
   if (typeof id === 'number' && !Number.isFinite(id)) throw new Error('Document id must be finite');
-  if (typeof id === 'string') {
-    for (let index = 0; index < id.length; index++) {
-      const unit = id.charCodeAt(index);
-      if (unit >= 0xd800 && unit <= 0xdbff) {
-        const next = id.charCodeAt(++index);
-        if (next >= 0xdc00 && next <= 0xdfff) continue;
-      } else if (unit < 0xdc00 || unit > 0xdfff) {
-        continue;
-      }
-      throw new Error('Document id must not contain an unpaired UTF-16 surrogate');
+  if (typeof id === 'string') validateUnicodeString(id, 'Document id');
+}
+
+/** UTF-8 cannot preserve isolated UTF-16 surrogate code units. */
+export function validateUnicodeString(value: string, label = 'String'): void {
+  for (let index = 0; index < value.length; index++) {
+    const unit = value.charCodeAt(index);
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(++index);
+      if (next >= 0xdc00 && next <= 0xdfff) continue;
+    } else if (unit < 0xdc00 || unit > 0xdfff) {
+      continue;
     }
+    throw new Error(`${label} must not contain an unpaired UTF-16 surrogate`);
   }
 }
 
-function validateFieldValue(field: string, value: unknown): asserts value is FieldValue {
+export function validateFieldValue(field: string, value: unknown): asserts value is FieldValue {
+  if (typeof value === 'string') validateUnicodeString(value, `Field ${field}`);
   if (typeof value === 'number' && !Number.isFinite(value)) throw new Error(`Field ${field} must be finite`);
   if (!isFieldValue(value)) throw new Error(`Unsupported value type for field ${field}`);
 }
@@ -154,7 +158,7 @@ export class Document {
  * for RecordStore compatibility; collection metadata controls actual indexing.
  * Returns a Document instance.
  */
-export function parseRawDocument(collection: string, raw: unknown): Document {
+export function parseRawDocument(collection: string, raw: unknown, decodeImageStrings = true): Document {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Document must be an object');
 
   const rawId = (raw as Record<string, unknown>)['id'];
@@ -168,7 +172,7 @@ export function parseRawDocument(collection: string, raw: unknown): Document {
     validateFieldValue(key, value);
 
     let fieldValue: FieldValue;
-    if (isImageField(key, rawRecord) && typeof value === 'string') {
+    if (decodeImageStrings && isImageField(key, rawRecord) && typeof value === 'string') {
       // Image field supplied as base64 string → decode to Buffer.
       fieldValue = Buffer.from(value, 'base64');
     } else {
@@ -233,4 +237,36 @@ export function documentToJSON(document: Document): string {
     Object.entries(raw).map(([key, value]) => [key, Buffer.isBuffer(value) ? value.toString('base64') : value]),
   );
   return JSON.stringify(serialisable);
+}
+
+/** Opt-in editor values retain binary types without changing normal JSON. */
+export function documentObjectToEditorJSON(raw: Record<string, FieldValue>): string {
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(raw).map(([key, value]) => [
+        key,
+        Buffer.isBuffer(value) ? { $binary: value.toString('base64') } : value,
+      ]),
+    ),
+  );
+}
+
+export function decodeEditorDocument(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Document must be an object');
+  return Object.fromEntries(
+    Object.entries(raw as Record<string, unknown>).map(([key, value]) => {
+      if (value === null || typeof value !== 'object') return [key, value];
+      const base64 = (value as Record<string, unknown>)['$binary'];
+      if (
+        Array.isArray(value) ||
+        Object.keys(value).length !== 1 ||
+        !Object.hasOwn(value, '$binary') ||
+        typeof base64 !== 'string'
+      )
+        throw new Error(`Field ${key} must use {"$binary": "base64"} for binary data`);
+      const bytes = Buffer.from(base64, 'base64');
+      if (bytes.toString('base64') !== base64) throw new Error(`Field ${key} must contain canonical base64`);
+      return [key, bytes];
+    }),
+  );
 }

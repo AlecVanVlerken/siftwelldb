@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiRouter } from '../api.mjs';
 import { DatabaseService } from '../service.mjs';
 import { collectionUrl, documentsUrl, documentUrl } from '../../frontend/ts/api-client.js';
+import { compactDocumentImages, validateDocumentInput } from '../../frontend/ts/document-editor.js';
 
 vi.mock('../embedding-config.mjs', () => ({
   getClipHnswConfig: () => ({
@@ -54,6 +55,111 @@ describe('exact HTTP document addressing', () => {
     });
     return { status: response.status, body: (await response.json()) as Record<string, unknown> };
   }
+
+  it('round-trips typed editor values, codecs and intentional edits through HTTP and maintenance', async () => {
+    await service.setFieldIndexed('docs', 'notes', false);
+    const payload = Buffer.concat(Array<Buffer>(512).fill(Buffer.from([0, 255, 128, 42])));
+    const photo = Buffer.from([1, 2, 3, 255]);
+    const notes = 'leave uncompressed '.repeat(1000);
+    await service.rawDbms.insertDocumentObject(
+      'docs',
+      { id: 'a', title: 'original', payload, 'photo.jpg': photo, text: 'AP+AKg==', notes },
+      { compression: { payload: 'deflate', notes: 'none' } },
+    );
+    await service.rawDbms.commit();
+    const encoded = JSON.parse(await service.rawDbms.getDocumentById('docs', 'a', { encoded: true })) as Record<
+      string,
+      unknown
+    >;
+    const response = await request(documentUrl('docs', 'a') + '&editor=true');
+    expect(response.status).toBe(200);
+    const typed = response.body['document'] as Record<string, unknown>;
+    expect(typed['payload']).toEqual({ $binary: payload.toString('base64') });
+    expect(typed['text']).toBe('AP+AKg==');
+    const compacted = compactDocumentImages(typed);
+    const parsed = validateDocumentInput(JSON.stringify({ ...compacted.document, title: 'updated' }), {
+      editor: true,
+      imagePayloads: compacted.imagePayloads,
+    });
+    if (!parsed.ok) throw new Error(parsed.error);
+    expect(
+      (await request(documentUrl('docs', 'a', 'edit'), 'POST', { document: parsed.value, editor: true })).status,
+    ).toBe(200);
+    const check = async () => {
+      expect(await service.rawDbms.getDocumentObjectById('docs', 'a')).toEqual({
+        id: 'a',
+        title: 'updated',
+        payload,
+        'photo.jpg': photo,
+        text: 'AP+AKg==',
+        notes,
+      });
+      const stored = JSON.parse(await service.rawDbms.getDocumentById('docs', 'a', { encoded: true })) as Record<
+        string,
+        unknown
+      >;
+      expect(stored['payload']).toEqual(encoded['payload']);
+      expect(stored['notes']).toEqual(encoded['notes']);
+      expect((await service.query("SELECT id FROM docs WHERE title = 'updated'")).rows).toEqual([{ id: 'a' }]);
+      expect(
+        (await service.rawDbms.semanticSearch('docs', 'updated', 5)).map(
+          (raw) => (JSON.parse(raw) as { id: string }).id,
+        ),
+      ).toEqual(['a']);
+    };
+    await check();
+    await service.disconnect();
+    await service.connect(filepath);
+    await check();
+    await service.runIncrementalCompactionStep();
+    await check();
+    await service.vacuum();
+    await check();
+    const changed = (await request(documentUrl('docs', 'a') + '&editor=true')).body['document'] as Record<
+      string,
+      unknown
+    >;
+    changed['payload'] = 'AP+AKg==';
+    changed['text'] = { $binary: 'AP+AKg==' };
+    expect((await request(documentUrl('docs', 'a', 'edit'), 'POST', { document: changed, editor: true })).status).toBe(
+      400,
+    );
+    await service.setFieldIndexed('docs', 'text', false);
+    expect((await request(documentUrl('docs', 'a', 'edit'), 'POST', { document: changed, editor: true })).status).toBe(
+      200,
+    );
+    expect((await service.rawDbms.getDocumentObjectById('docs', 'a'))['payload']).toBe('AP+AKg==');
+    expect((await service.rawDbms.getDocumentObjectById('docs', 'a'))['text']).toEqual(Buffer.from([0, 255, 128, 42]));
+  });
+
+  it('rejects malformed typed values and Unicode over HTTP without changing stored data', async () => {
+    await service.insertDocument('docs', { id: 'a', text: 'original' });
+    for (const value of [{ $binary: 'not base64' }, { $binary: 'AA==', extra: true }, '\uD800']) {
+      expect(
+        (await request(documentUrl('docs', 'a', 'edit'), 'POST', { editor: true, document: { id: 'a', text: value } }))
+          .status,
+      ).toBe(400);
+      expect(JSON.parse(await service.getDocumentById('docs', 'a'))).toEqual({ id: 'a', text: 'original' });
+    }
+    expect(service.isConnected).toBe(true);
+  });
+
+  it('returns finite averages and explicit overflow errors through HTTP after reopen', async () => {
+    await service.insertDocument('large', { id: 1, score: 1e308 });
+    await service.insertDocument('large', { id: 2, score: 1e308 });
+    await service.disconnect();
+    await service.connect(filepath);
+    const average = await request('/api/query', 'POST', { sql: 'SELECT AVG(score) AS average FROM large' });
+    expect(average.status).toBe(200);
+    expect(average.body['rows']).toEqual([{ average: 1e308 }]);
+    const sum = await request('/api/query', 'POST', {
+      sql: 'SELECT AVG(score) AS average, SUM(score) AS total FROM large',
+    });
+    expect(sum.status).toBe(400);
+    expect(JSON.stringify(sum.body)).toMatch(/SUM.*finite/);
+    expect(sum.body).not.toHaveProperty('rows');
+    expect(service.isConnected).toBe(true);
+  });
 
   it.each(['', 'metadata', 'edit', '.', '..', 'normal-id', 'a/b?#+% 雪😀', 42, '42'])(
     'retrieves, edits, replaces, inspects and deletes exact ID %j after disk reopen',

@@ -123,6 +123,12 @@ Collection and field names are exact, case-sensitive strings. Names such as `__p
 
 Document IDs are finite numbers or well-formed Unicode strings, including empty strings and valid surrogate pairs. Each collection retains the primary ID type established by its first document; lookups and writes reject the other type instead of coercing it. String IDs retain their existing UTF-8 key encoding, case sensitivity and Unicode spelling. Unpaired UTF-16 surrogates are rejected before mutations and on ID lookup. Legacy malformed IDs are not renamed or silently re-keyed: document operations and vacuum report an explicit validation error when encountering such a record, leaving the source data available for recovery.
 
+String field contents follow the same Unicode well-formedness rule as IDs.
+Insert, edit, replacement, import, SQL literals and index lookups reject unpaired
+UTF-16 surrogates before UTF-8 encoding or mutation. Valid surrogate pairs and
+literal U+FFFD characters remain unchanged. RecordStore also checks decoded
+Document writes before allocation or compression; persistent formats are unchanged.
+
 Semantic metadata now stores a versioned map keyed by `[collection, "default" | "text" | "image"]` JSON tuples. Deletion, reindexing, tombstones, relocation and vacuum use exact collection ownership. Legacy flat names with no semantic suffix migrate directly. For `collection::text` or `collection::image`, live graph records with matching primary references must establish the exact owner; empty, tombstoned-only or unverified graphs refuse opening with a compatibility error and retain the stored data. Relocation targets carry a logical collection and optional `indexKind`; graph inspection takes the same optional kind instead of interpreting suffixes in collection names.
 
 The webclient uses JSON-typed query addresses so IDs and collection names are never altered by URL path normalization. See the [HTTP addressing contract](src/webclient/README.md#exact-document-addresses).
