@@ -86,7 +86,7 @@ describe('Incremental compaction candidate discovery', () => {
     const closing = db.close();
     expect(await discovery).toHaveLength(1);
     await closing;
-    await expect(db.listRecordRelocationTargets(1)).rejects.toThrow(/Cannot read record/);
+    await expect(db.listRecordRelocationTargets(1)).rejects.toThrow(/closing or closed/);
   });
 
   it('keeps inventory private and preserves it through commit and tail trimming', async () => {

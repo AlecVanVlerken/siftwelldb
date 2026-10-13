@@ -157,21 +157,25 @@ export class HnswIndexNative {
    * @returns `true` if the live entry was found.
    */
   delete(docId: number): boolean {
+    this.assertOpen();
     return (_fns['delete'](this.handle, docId) as number) === 1;
   }
 
   /** Relabel a live or tombstoned node in place; reject occupied destinations. */
   relabelDocument(oldDocId: number, newDocId: number): boolean {
+    this.assertOpen();
     return (_fns['relabelDocument'](this.handle, oldDocId, newDocId) as number) === 1;
   }
 
   /** Number of live (non-deleted) entries in the index. */
   get size(): number {
+    this.assertOpen();
     return _fns['size'](this.handle) as number;
   }
 
   /** Change the search beam width at runtime (higher = better recall, slower). */
   setEfSearch(ef: number): void {
+    this.assertOpen();
     _fns['setEfSearch'](this.handle, ef);
   }
 
@@ -192,6 +196,7 @@ export class HnswIndexNative {
    * Valid only until the next mutating call on this instance.
    */
   takeDirtyNodes(): Uint32Array {
+    this.assertOpen();
     const n = _fns['takeDirtyNodes'](this.handle, this._dirty_buf, 512) as number;
     return this._dirty_buf.subarray(0, n);
   }
@@ -200,11 +205,13 @@ export class HnswIndexNative {
 
   /** Get the level of `docId`. Returns -1 if not found. */
   getLevel(docId: number): number {
+    this.assertOpen();
     return _fns['getLevel'](this.handle, docId) as number;
   }
 
   /** Number of neighbors of `docId` at `layer`. Returns -1 if not found. */
   getNeighborCount(docId: number, layer: number): number {
+    this.assertOpen();
     return _fns['getNeighborCount'](this.handle, docId, layer) as number;
   }
 
@@ -215,6 +222,7 @@ export class HnswIndexNative {
    * Returns an empty view if the node is not found or the layer is out of range.
    */
   getNeighbors(docId: number, layer: number): Uint32Array {
+    this.assertOpen();
     const n = _fns['getNeighbors'](this.handle, docId, layer, this._nb_buf, 64) as number;
     if (n < 0) return this._nb_buf.subarray(0, 0);
     return this._nb_buf.subarray(0, n);
@@ -228,6 +236,7 @@ export class HnswIndexNative {
    * Valid only until the next call to this method.
    */
   getAllNeighbors(docId: number): Uint32Array {
+    this.assertOpen();
     const n = _fns['getAllNeighbors'](this.handle, docId, this._all_nb_buf, 100) as number;
     if (n <= 0) return this._all_nb_buf.subarray(0, 0);
     return this._all_nb_buf.subarray(0, n);
@@ -238,12 +247,14 @@ export class HnswIndexNative {
    * Returns `null` if the index is empty.
    */
   getEntryDocId(): number | null {
+    this.assertOpen();
     const id = _fns['getEntryDocId'](this.handle) as number;
     return id === 0xffffffff ? null : id;
   }
 
   /** Current maximum level in the graph. */
   getMaxLevel(): number {
+    this.assertOpen();
     return _fns['getMaxLevel'](this.handle) as number;
   }
 
@@ -260,6 +271,7 @@ export class HnswIndexNative {
   }
 
   private validateVector(vector: Float32Array): void {
+    this.assertOpen();
     // C ABI reads exactly dim floats from the pointer. Validate in JS before
     // a malformed encoder output can cause an out-of-bounds native read.
     if (vector.length !== this._dim) {
@@ -275,6 +287,7 @@ export class HnswIndexNative {
    * Call after `importNode` to restore persisted connections.
    */
   importSetNeighbors(docId: number, layer: number, neighborDocIds: number[]): void {
+    this.assertOpen();
     const buf = new Uint32Array(neighborDocIds);
     _fns['importSetNeighbors'](this.handle, docId, layer, buf, neighborDocIds.length);
   }
@@ -284,6 +297,7 @@ export class HnswIndexNative {
    * Pass `entryDocId = null` to indicate an empty index.
    */
   importFinish(entryDocId: number | null, maxLevel: number): void {
+    this.assertOpen();
     const ep = entryDocId !== null ? entryDocId : 0xffffffff;
     _fns['importFinish'](this.handle, ep, maxLevel);
   }
@@ -296,5 +310,9 @@ export class HnswIndexNative {
     if (this.closed) return;
     this.closed = true;
     _fns['destroy'](this.handle);
+  }
+
+  assertOpen(): void {
+    if (this.closed) throw new Error('Native HNSW index is closed.');
   }
 }

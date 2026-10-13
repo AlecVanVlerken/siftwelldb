@@ -156,6 +156,7 @@ export class HNSWIndex {
    * Throws if `docId` is already present.
    */
   async insert(docId: number, vector: Float32Array, options: { maxBlockExclusive?: number } = {}): Promise<void> {
+    this.rustIdx.assertOpen();
     if (vector.some((value) => !Number.isFinite(value))) {
       throw new Error('Vector values must be finite.');
     }
@@ -220,6 +221,7 @@ export class HNSWIndex {
    * Pure Rust — no FBF I/O.
    */
   async search(queryVector: Float32Array, k: number): Promise<number[]> {
+    this.rustIdx.assertOpen();
     if (k <= 0 || this.docIdIndex.size === 0) return [];
 
     const target = Math.min(k, this.docIdIndex.size);
@@ -253,6 +255,7 @@ export class HNSWIndex {
    * storage remain allocated until a later maintenance/vacuum phase.
    */
   async tombstone(docId: number): Promise<boolean> {
+    this.rustIdx.assertOpen();
     const nodeId = this.docIdIndex.get(docId);
     if (nodeId === undefined) return false;
 
@@ -423,7 +426,11 @@ export class HNSWIndex {
     return newPtr;
   }
 
-  async relocateMetadata(options: { maxBlockExclusive?: number } = {}): Promise<number | null> {
+  metadataBlocks(): number[] {
+    return this.graphStorage.metadataBlocks();
+  }
+
+  async relocateMetadata(options: { maxBlockExclusive?: number; blockNumber?: number } = {}): Promise<number | null> {
     return await this.graphStorage.relocateMetadata(options);
   }
 
@@ -434,10 +441,8 @@ export class HNSWIndex {
   async dropStorage(): Promise<void> {
     const nodes: HNSWNode[] = [];
 
-    if (this.graphStorage.entryPoint !== null) {
-      for await (const node of this.graphStorage.scanNodes()) {
-        nodes.push(node);
-      }
+    for await (const node of this.graphStorage.scanNodes()) {
+      nodes.push(node);
     }
 
     for (const node of nodes) {
@@ -458,7 +463,6 @@ export class HNSWIndex {
     await this.graphStorage.freeMetadataBlock();
 
     this.rustIdx.close();
-    this.rustIdx = new HnswIndexNative(this.vectorHeap.dimension, this.M, this.efConstruction, this.efSearch);
   }
 
   /**
@@ -803,6 +807,7 @@ export class HNSWIndex {
     // Pass 1: import every physical node into Rust. Tombstoned nodes are
     // retained as routing artifacts, while docIdIndex remains the live filter.
     for await (const node of this.graphStorage.scanNodes()) {
+      if (this.nodeIdByDocId.has(node.docId)) throw new Error('Duplicate persisted HNSW document identity.');
       const vector = await this.vectorHeap.get(node.vectorPtr);
       this.rustIdx.importNode(node.docId, node.level, vector, node.deleted);
       nodeIdToDocId.set(node.nodeId, node.docId);

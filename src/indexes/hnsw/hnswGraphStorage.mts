@@ -5,6 +5,7 @@ import type { FreeBlockFile } from '../../storage/blocks/freeblockfile.mjs';
 import { type NodeId, HNSWNode } from './hnswNode.mjs';
 import type { VectorPointer } from './vectorHeapFile.mjs';
 import { HnswIndexNative } from './hnswNative.mjs';
+import { HnswPageDirectory, HnswPageDirectoryError } from './hnswPageDirectory.mjs';
 
 /**
  * Magic byte written at usable[0] (= raw byte 1) of every HNSW graph node page.
@@ -182,6 +183,7 @@ export class HNSWGraphStorage {
   private newlyCreated = false;
   private dimensionSaveHook: (() => Promise<void>) | undefined;
   private dimensionNeedsSave = false;
+  private directory: HnswPageDirectory | undefined;
 
   private constructor(
     private readonly file: FreeBlockFile,
@@ -231,6 +233,7 @@ export class HNSWGraphStorage {
     if (vectorDimension !== undefined) gs.setNewVectorDimension(vectorDimension);
     // Allocate a dedicated metadata block from the shared FBF.
     gs._metaBlockId = await file.allocateBlock();
+    gs.directory = HnswPageDirectory.create(file, gs._metaBlockId);
     await gs.saveMetadata();
     return gs;
   }
@@ -284,6 +287,12 @@ export class HNSWGraphStorage {
     } else if (clientArea.subarray(META_DIMENSION_MARKER, META_SIZE).some((value) => value !== 0)) {
       throw new HnswCompatibilityError('Unsupported HNSW vector dimension metadata.');
     }
+    try {
+      gs.directory = await HnswPageDirectory.open(file, metaBlockId, clientArea);
+    } catch (error) {
+      if (error instanceof HnswPageDirectoryError) throw new HnswCompatibilityError(error.message);
+      throw error;
+    }
     return gs;
   }
 
@@ -296,6 +305,34 @@ export class HNSWGraphStorage {
 
   get vectorDimension(): number | null {
     return this._vectorDimension;
+  }
+
+  get hasCompleteMembership(): boolean {
+    return this.directory !== undefined;
+  }
+
+  ownedPageIds(): number[] {
+    return [...this.requireDirectory().pageIds()];
+  }
+
+  metadataBlocks(): number[] {
+    return this.requireDirectory().metadataBlocks();
+  }
+
+  /** Install only a completely verified legacy ownership assignment. */
+  async establishPageOwnership(pages: number[]): Promise<void> {
+    if (this.directory) throw new HnswCompatibilityError('HNSW page ownership is already established.');
+    this.directory = HnswPageDirectory.create(this.file, this._metaBlockId);
+    await this.saveMetadata();
+    for (const page of pages) await this.directory.add(page);
+  }
+
+  private requireDirectory(): HnswPageDirectory {
+    if (!this.directory)
+      throw new HnswCompatibilityError(
+        'Legacy HNSW membership ownership is unverified; semantic operations are disabled and stored allocations retained.',
+      );
+    return this.directory;
   }
 
   /** Bind only a newly created graph; existing unknown layouts cannot be guessed. */
@@ -337,24 +374,21 @@ export class HNSWGraphStorage {
 
   async freeMetadataBlock(): Promise<void> {
     if (this._metaBlockId === 0) return;
+    await this.requireDirectory().freeOverflow();
     await this.file.freeBlock(this._metaBlockId);
     this._metaBlockId = 0;
     this.removeDimensionSaveHook();
   }
 
-  async relocateMetadata(options: { maxBlockExclusive?: number } = {}): Promise<number | null> {
-    const oldBlockId = this._metaBlockId;
+  async relocateMetadata(options: { maxBlockExclusive?: number; blockNumber?: number } = {}): Promise<number | null> {
+    const oldBlockId = options.blockNumber ?? this._metaBlockId;
     if (oldBlockId === 0) return null;
-
-    const newBlockId =
-      options.maxBlockExclusive === undefined
-        ? await this.file.allocateBlock()
-        : await this.file.allocateBlockBelow(options.maxBlockExclusive);
+    const newBlockId = await this.requireDirectory().relocate(oldBlockId, options.maxBlockExclusive);
     if (newBlockId === null) return null;
-
-    this._metaBlockId = newBlockId;
-    await this.saveMetadata();
-    await this.file.freeBlock(oldBlockId);
+    if (oldBlockId === this._metaBlockId) {
+      this._metaBlockId = newBlockId;
+      await this.saveMetadata();
+    }
     return newBlockId;
   }
 
@@ -417,7 +451,8 @@ export class HNSWGraphStorage {
    * Must call `index.commit()` afterwards to flush to disk.
    */
   async saveMetadata(): Promise<void> {
-    const metaBuf = Buffer.alloc(this._vectorDimension === null ? LEGACY_META_SIZE : META_SIZE);
+    const metaBuf =
+      this.directory?.rootData ?? Buffer.alloc(this._vectorDimension === null ? LEGACY_META_SIZE : META_SIZE);
     metaBuf.writeUInt32LE(this.M, META_M);
     metaBuf.writeUInt32LE(this.maxStoredLevel, META_MAX_LEVEL);
     metaBuf.writeUInt32LE(this.nodeSize, META_NODE_SIZE);
@@ -451,6 +486,8 @@ export class HNSWGraphStorage {
   // ** Low-level page helpers **
 
   private async readPage(pageId: number): Promise<Buffer> {
+    if (this.directory && !this.directory.has(pageId))
+      throw new HnswCompatibilityError(`No HNSW graph page ${pageId} belongs to this semantic index.`);
     // Fast path: return pre-cached usable slice (no subarray() call).
     const cached = this._pageCache.get(pageId);
     if (cached !== undefined) return cached.usable;
@@ -462,6 +499,8 @@ export class HNSWGraphStorage {
       return usable;
     }
     const raw = await this.file.readBlock(pageId);
+    if (raw[0] !== 0x02 || raw[1] !== HNSW_GRAPH_PAGE_MAGIC)
+      throw new HnswCompatibilityError('HNSW graph reference points to a non-graph page.');
     const usable = raw.subarray(1);
     this._pageCache.set(pageId, { raw, usable });
     return usable;
@@ -655,6 +694,7 @@ export class HNSWGraphStorage {
    * `node.nodeId` will be set to the assigned NodeId.
    */
   async insertNode(node: HNSWNode, options: { maxBlockExclusive?: number } = {}): Promise<NodeId> {
+    const directory = this.requireDirectory();
     // Try insert hint first — O(1) fast path.
     if (
       this.insertHint > 0 &&
@@ -676,6 +716,7 @@ export class HNSWGraphStorage {
         ? await this.file.allocateBlock()
         : await this.allocatePageBelow(options.maxBlockExclusive);
     const usable = this.newPageBuffer();
+    await directory.add(pageId);
     await this.writePage(pageId, usable); // initial write so block exists
     this.insertHint = pageId;
     return this.writeNewNode(pageId, usable, 0, node);
@@ -696,6 +737,8 @@ export class HNSWGraphStorage {
    */
   async getNode(nodeId: NodeId): Promise<HNSWNode> {
     const { pageId, slotId } = decodeNodeId(nodeId);
+    if (this.directory && !this.directory.has(pageId))
+      throw new HnswCompatibilityError(`No HNSW graph page ${pageId} belongs to this semantic index.`);
     if (slotId < 0 || slotId >= this.slotsPerPage) {
       throw new Error(
         `HNSWGraphStorage: nodeId ${nodeId} has invalid slot ${slotId.toString()} ` +
@@ -738,8 +781,6 @@ export class HNSWGraphStorage {
   ): Promise<HnswGraphNodeRelocationResult> {
     const oldLocation = decodeNodeId(nodeId);
     const node = await this.getNode(nodeId);
-    // Load this graph's reachable pages before repairing incoming references.
-    for await (const existing of this.scanNodes()) void existing;
 
     const moved = new HNSWNode({
       nodeId: 0,
@@ -757,7 +798,7 @@ export class HNSWGraphStorage {
       await this.saveMetadata();
     }
 
-    for await (const candidate of this.scanPhysicalNodes({ knownPagesOnly: true })) {
+    for await (const candidate of this.scanNodes()) {
       if (candidate.nodeId === nodeId) {
         continue;
       }
@@ -972,6 +1013,7 @@ export class HNSWGraphStorage {
     const newCount = this.getUsedCount(usable) - 1;
     this.setUsedCount(usable, newCount);
     if (newCount === 0) {
+      await this.requireDirectory().remove(pageId);
       this._pageCache.delete(pageId); // drop cached pair, not just raw
       await this.file.freeBlock(pageId);
       if (this.insertHint === pageId) this.insertHint = 0;
@@ -981,7 +1023,7 @@ export class HNSWGraphStorage {
   }
 
   /**
-   * Async generator that yields nodes reachable from this graph's entry point.
+   * Enumerate every occupied slot on the graph's explicitly owned pages.
    *
    * All HNSW collections share one FreeBlockFile, so scans must stay scoped
    * to this collection-local graph instead of every HNSW graph page.
@@ -989,6 +1031,13 @@ export class HNSWGraphStorage {
    * and level histogram.
    */
   async *scanNodes(): AsyncGenerator<HNSWNode> {
+    for (const pageId of this.requireDirectory().pageIds()) {
+      for (const node of await this.readPhysicalPageNodes(pageId)) yield node;
+    }
+  }
+
+  /** Routing traversal is used only to establish legacy ownership evidence. */
+  async *scanReachableNodes(): AsyncGenerator<HNSWNode> {
     if (this._entryPoint === null) return;
 
     const seen = new Set<NodeId>([this._entryPoint]);
@@ -1017,6 +1066,31 @@ export class HNSWGraphStorage {
         }
       }
     }
+  }
+
+  /** Decode a physical page with this graph's layout, without claiming ownership. */
+  async readPhysicalPageNodes(pageId: number): Promise<HNSWNode[]> {
+    const usable = await this.readPageIfData(pageId);
+    if (!usable) throw new HnswCompatibilityError('HNSW directory references a missing graph page.');
+    const nodes: HNSWNode[] = [];
+    for (let slot = 0; slot < this.slotsPerPage; slot++) {
+      if (!this.isBitSet(usable, slot)) continue;
+      const offset = this.slotOffset(slot);
+      if (
+        usable[offset + 4] > this.maxStoredLevel ||
+        usable[offset + 11] > 1 ||
+        usable[offset + LAYER0_COUNT_OFFSET] > this.M * 2
+      )
+        throw new HnswCompatibilityError('HNSW graph page layout is invalid or ambiguous.');
+      for (let layer = 1; layer <= this.maxStoredLevel; layer++) {
+        if (usable[offset + layerNCountOffset(this.M, layer, this.nodeIdBytes)] > this.M)
+          throw new HnswCompatibilityError('HNSW graph page layout is invalid or ambiguous.');
+      }
+      nodes.push(this.deserialiseNode(usable, offset, encodeNodeId(pageId, slot)));
+    }
+    if (nodes.length !== this.getUsedCount(usable))
+      throw new HnswCompatibilityError('HNSW graph page occupied-slot count mismatch.');
+    return nodes;
   }
 
   /**

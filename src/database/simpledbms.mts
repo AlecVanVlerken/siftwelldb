@@ -166,12 +166,16 @@ import type {
  */
 export class SimpleDbms {
   private dbmsback: DbmsBack;
+  private reopening: Promise<void> | undefined;
 
   /**
    * Private constructor for the SimpleDbms class.
    * @param dbmsback - The DbmsBack instance to use for backend operations.
    */
-  private constructor(dbmsback: DbmsBack) {
+  private constructor(
+    dbmsback: DbmsBack,
+    private readonly hnswConfig = dbmsback.getVacuumHnswConfig(),
+  ) {
     this.dbmsback = dbmsback;
   }
 
@@ -187,7 +191,7 @@ export class SimpleDbms {
   static async create(dataFile: File, logFile: File, hnswConfig?: HnswConfig): Promise<SimpleDbms> {
     const dbmsback = new DbmsBack(dataFile, logFile, hnswConfig);
     await dbmsback.create();
-    return new SimpleDbms(dbmsback);
+    return new SimpleDbms(dbmsback, hnswConfig);
   }
 
   /**
@@ -201,7 +205,7 @@ export class SimpleDbms {
    */
   static async open(dataFile: File, logFile: File, hnswConfig?: HnswConfig): Promise<SimpleDbms> {
     const dbmsback = await DbmsBack.open(dataFile, logFile, hnswConfig);
-    return new SimpleDbms(dbmsback);
+    return new SimpleDbms(dbmsback, hnswConfig);
   }
 
   /**
@@ -210,8 +214,17 @@ export class SimpleDbms {
    * @param logfile - The log file to use for the database.
    */
   async reopen(datafile: File, logfile: File): Promise<void> {
-    const dbmsback = await DbmsBack.open(datafile, logfile);
-    this.dbmsback = dbmsback;
+    const perform = async (): Promise<void> => {
+      await this.dbmsback.close();
+      this.dbmsback = await DbmsBack.open(datafile, logfile, this.hnswConfig);
+    };
+    const reopening = this.reopening ? this.reopening.then(perform, perform) : perform();
+    this.reopening = reopening;
+    const clear = (): void => {
+      if (this.reopening === reopening) this.reopening = undefined;
+    };
+    void reopening.then(clear, clear);
+    await reopening;
   }
 
   /**
@@ -236,6 +249,7 @@ export class SimpleDbms {
    * @returns A Promise that resolves when the database is closed.
    */
   async close(): Promise<void> {
+    if (this.reopening) await this.reopening.catch(() => undefined);
     await this.dbmsback.close();
   }
 

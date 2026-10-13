@@ -38,7 +38,7 @@ import { BlockNodeStorage } from '../indexes/btree/nodestorage.mjs';
 import type { BlockLeafNode } from '../indexes/btree/leafnode.mjs';
 import type { BlockInternalNode } from '../indexes/btree/internalnode.mjs';
 import { HNSWIndex, type HnswGraphStructureNode, type HnswGraphStructureSnapshot } from '../indexes/hnsw/hnswIndex.mjs';
-import { HNSWGraphStorage } from '../indexes/hnsw/hnswGraphStorage.mjs';
+import { decodeNodeId, HnswCompatibilityError, HNSWGraphStorage } from '../indexes/hnsw/hnswGraphStorage.mjs';
 import { VectorHeapFile, validateVectorDimension } from '../indexes/hnsw/vectorHeapFile.mjs';
 import {
   COMPRESSION_ALGORITHMS,
@@ -177,9 +177,12 @@ export class DbmsBack {
   private mutationStarted = false;
   private preserveRelocationCandidates = false;
   private readonly relocationCandidates = new Map<'record' | 'btree' | 'hnsw', Promise<RelocationCandidates>>();
+  private lifecycle: 'open' | 'closing' | 'closed' = 'open';
+  private closePromise: Promise<void> | undefined;
 
   assertHealthy(): void {
     this.freeblockFile.assertHealthy();
+    if (this.lifecycle === 'closed') throw new Error('Database is closed; reopen before continuing.');
   }
 
   get isHealthy(): boolean {
@@ -193,6 +196,15 @@ export class DbmsBack {
   }
 
   private mutate<T>(operation: () => Promise<T>, preserveCandidates = false): Promise<T> {
+    if (this.lifecycle !== 'open') {
+      // Preserve the existing unsafe-session/recovery diagnosis after close.
+      try {
+        this.freeblockFile.assertHealthy();
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+      return Promise.reject(new Error('Database is closing or closed; reopen before continuing.'));
+    }
     const result = this.mutationQueue.then(async () => {
       this.assertHealthy();
       this.mutationStarted = false;
@@ -236,6 +248,7 @@ export class DbmsBack {
 
   // HNSW fields
   private hnswConfig: HnswConfig | undefined;
+  private hnswUnavailableReason: string | undefined;
   /** In-memory cache of per-collection HNSW indices. */
   private hnswIndexCache: Map<string, HNSWIndex> = new Map();
 
@@ -285,16 +298,24 @@ export class DbmsBack {
       const migrating = !dbmsback.metaCache[INDEXING_META_KEY];
       await dbmsback.migrateFieldIndexes();
       const pendingBefore = dbmsback.getPendingSemanticCollections().length;
+      let migratedMembership = false;
 
       // Re-open HNSW indices for every collection that was indexed before.
       if (hnswConfig) {
         try {
+          migratedMembership = await dbmsback.prepareHnswPageDirectories();
           for (const indexKey of Object.keys(dbmsback.getHnswMeta())) {
             const idx = await dbmsback.openHnswIndex(indexKey);
             dbmsback.hnswIndexCache.set(indexKey, idx);
           }
         } catch (err) {
-          if (err instanceof BlockReadError || err instanceof RecordReadError || err instanceof RecoveryRequiredError)
+          if (
+            err instanceof BlockReadError ||
+            err instanceof RecordReadError ||
+            err instanceof RecoveryRequiredError ||
+            err instanceof MutationRecoveryRequiredError ||
+            !dbmsback.isHealthy
+          )
             throw err;
           // Stored HNSW parameters don't match current config (e.g. DB was created
           // with different dimensions or M). Disable HNSW for this session so the
@@ -304,8 +325,10 @@ export class DbmsBack {
             err instanceof Error ? err.message : err,
           );
           dbmsback.hnswConfig = undefined;
+          dbmsback.hnswUnavailableReason = err instanceof Error ? err.message : String(err);
           for (const index of dbmsback.hnswIndexCache.values()) index.dispose();
           dbmsback.hnswIndexCache.clear();
+          migratedMembership = false;
         }
       }
 
@@ -329,7 +352,8 @@ export class DbmsBack {
         }
       }
 
-      if (migrating || dbmsback.getPendingSemanticCollections().length < pendingBefore) await dbmsback.commit();
+      if (migrating || migratedMembership || dbmsback.getPendingSemanticCollections().length < pendingBefore)
+        await dbmsback.commit();
       return dbmsback;
     } catch (error) {
       await dbmsback.close().catch(() => undefined);
@@ -363,26 +387,34 @@ export class DbmsBack {
     }
 
     const collectionMeta = { ...this.getCollectionMeta(collection) };
+    // Preflight complete cleanup ownership, even without an embedding provider.
+    const semanticIndexes = new Map<string, HNSWIndex>();
+    for (const key of this.hnswIndexKeysForCollection(collection)) {
+      if (this.hnswConfig) semanticIndexes.set(key, await this.getOrCreateHnswIndex(key));
+      else {
+        const cached = this.hnswIndexCache.get(key);
+        if (cached) {
+          semanticIndexes.set(key, cached);
+          continue;
+        }
+        const graph = await HNSWGraphStorage.open(this.freeblockFile, this.getHnswMeta()[key][0]);
+        graph.assertVectorDimension(graph.vectorDimension ?? 0);
+        const index = await HNSWIndex.open(graph, new VectorHeapFile(this.freeblockFile, graph.vectorDimension!), {
+          efSearch: 50,
+        });
+        this.hnswIndexCache.set(key, index);
+        semanticIndexes.set(key, index);
+      }
+    }
     this.beginMutation();
 
     const hnswMeta = this.getExistingHnswMeta();
     if (hnswMeta) {
-      if (!this.hnswConfig) {
-        for (const indexKey of this.hnswIndexKeysForCollection(collection, hnswMeta)) {
-          console.warn(
-            `Removing stale HNSW metadata for "${indexKey}" while deleting collection "${collection}" without active hnswConfig`,
-          );
-          delete hnswMeta[indexKey];
-          this.hnswIndexCache.delete(indexKey);
-        }
-      } else {
-        for (const indexKey of this.hnswIndexKeysForCollection(collection, hnswMeta)) {
-          const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
-          await hnswIdx.dropStorage();
-          hnswIdx.dispose();
-          delete hnswMeta[indexKey];
-          this.hnswIndexCache.delete(indexKey);
-        }
+      for (const [indexKey, hnswIdx] of semanticIndexes) {
+        await hnswIdx.dropStorage();
+        hnswIdx.dispose();
+        delete hnswMeta[indexKey];
+        this.hnswIndexCache.delete(indexKey);
       }
       if (Object.keys(hnswMeta).length === 0) {
         delete this.metaCache[HNSW_META_KEY];
@@ -455,11 +487,22 @@ export class DbmsBack {
    * @returns A Promise that resolves when the database backend is closed.
    */
   async close(): Promise<void> {
-    await this.mutationQueue;
-    this.relocationCandidates.clear();
-    for (const index of this.hnswIndexCache.values()) index.dispose();
-    this.hnswIndexCache.clear();
-    await this.freeblockFile.close();
+    if (this.closePromise) return this.closePromise;
+    this.lifecycle = 'closing';
+    this.closePromise = (async () => {
+      // Accepted semantic reads share the existing queue with writes and
+      // maintenance. New operations are rejected before they enter that queue.
+      await this.mutationQueue;
+      this.relocationCandidates.clear();
+      for (const index of this.hnswIndexCache.values()) index.dispose();
+      this.hnswIndexCache.clear();
+      await this.freeblockFile.close();
+      this.lifecycle = 'closed';
+    })().catch((error: unknown) => {
+      this.closePromise = undefined;
+      throw error;
+    });
+    return this.closePromise;
   }
 
   /**
@@ -573,7 +616,7 @@ export class DbmsBack {
       if (suffix) {
         const graph = await HNSWGraphStorage.open(this.freeblockFile, root[0]);
         const owners = new Set<string>();
-        for await (const node of graph.scanNodes()) {
+        for await (const node of graph.hasCompleteMembership ? graph.scanNodes() : graph.scanReachableNodes()) {
           if (node.deleted) continue; // Historic tombstone record pointers may have been reused.
           const document = await this.recordStore.readRecord(node.docId);
           if (
@@ -684,7 +727,8 @@ export class DbmsBack {
   }
 
   getFieldIndexConfig(collection: string): Record<string, boolean> {
-    this.assertHealthy();
+    // This is a detached metadata snapshot and does not access closed storage.
+    this.freeblockFile.assertHealthy();
     if (RESERVED_META_KEYS.has(collection))
       throw new IndexValidationError('This collection name is reserved for database metadata.');
     return Object.assign(safeDictionary(this.getIndexingMeta().fields[collection]), { id: true });
@@ -1650,18 +1694,12 @@ export class DbmsBack {
   async listHnswRelocationTargets(collection: string): Promise<HnswRelocationTarget[]> {
     return this.mutate(async () => {
       if (!this.hnswConfig) throw new Error('Cannot inspect HNSW relocation targets without hnswConfig');
-      const meta = this.getExistingHnswMeta();
       const targets: HnswRelocationTarget[] = [];
       for (const indexKey of this.hnswIndexKeysForCollection(collection)) {
         const [, indexKind] = semanticIndexIdentity(indexKey);
         const index = await this.getOrCreateHnswIndex(indexKey);
-        targets.push({
-          collection,
-          indexKind,
-          kind: 'hnsw-meta',
-          blockNumber: meta![indexKey][0],
-          hnswUnitState: 'live',
-        });
+        for (const blockNumber of index.metadataBlocks())
+          targets.push({ collection, indexKind, kind: 'hnsw-meta', blockNumber, hnswUnitState: 'live' });
         targets.push(...(await index.listRelocationTargets()).map((target) => ({ ...target, collection, indexKind })));
       }
       return targets;
@@ -1714,11 +1752,16 @@ export class DbmsBack {
 
     const hnswIdx = await this.getOrCreateHnswIndex(indexKey);
     if (target.kind === 'hnsw-meta') {
-      const [oldBlockNumber, vorm] = hnswMeta[indexKey];
+      const [rootBlock, vorm] = hnswMeta[indexKey];
+      const oldBlockNumber = target.blockNumber ?? rootBlock;
+      if (!hnswIdx.metadataBlocks().includes(oldBlockNumber)) throw new Error('HNSW metadata block is not owned.');
       this.beginMutation();
-      const newBlockNumber = await hnswIdx.relocateMetadata({ maxBlockExclusive: target.maxBlockExclusive });
+      const newBlockNumber = await hnswIdx.relocateMetadata({
+        maxBlockExclusive: target.maxBlockExclusive,
+        blockNumber: oldBlockNumber,
+      });
       if (newBlockNumber === null) return false;
-      hnswMeta[indexKey] = [newBlockNumber, vorm];
+      if (oldBlockNumber === rootBlock) hnswMeta[indexKey] = [newBlockNumber, vorm];
       await this.replaceHnswRelocationCandidate(
         { ...target, blockNumber: oldBlockNumber },
         { ...target, blockNumber: newBlockNumber },
@@ -1730,9 +1773,23 @@ export class DbmsBack {
 
     const nodeId = await this.resolveHnswRelocationNodeId(target);
     const previous = await hnswIdx.getRelocationTargetsForNode(nodeId);
+    const previousMetadata = hnswIdx.metadataBlocks();
     this.beginMutation();
     if (target.kind === 'hnsw-graph') {
       const newNodeId = await hnswIdx.relocateGraphNode(nodeId, { maxBlockExclusive: target.maxBlockExclusive });
+      const candidates = this.relocationCandidates.get('hnsw');
+      if (candidates) {
+        for (const blockNumber of hnswIdx.metadataBlocks()) {
+          if (!previousMetadata.includes(blockNumber))
+            (await candidates).add({
+              kind: 'hnsw-meta',
+              collection: target.collection,
+              indexKind: semanticIndexIdentity(indexKey)[1],
+              blockNumber,
+              hnswUnitState: 'live',
+            });
+        }
+      }
       const newBlockNumber = Math.floor(newNodeId / 4294967296);
       for (const unit of previous) {
         await this.replaceHnswRelocationCandidate(
@@ -1905,10 +1962,11 @@ export class DbmsBack {
     }
 
     const targets: RelocationTarget[] = [];
-    for (const [indexKey, [metaBlock]] of Object.entries(hnswMeta)) {
+    for (const indexKey of Object.keys(hnswMeta)) {
       const [collection, indexKind] = semanticIndexIdentity(indexKey);
       const index = await this.getOrCreateHnswIndex(indexKey);
-      targets.push({ kind: 'hnsw-meta', collection, indexKind, blockNumber: metaBlock, hnswUnitState: 'live' });
+      for (const blockNumber of index.metadataBlocks())
+        targets.push({ kind: 'hnsw-meta', collection, indexKind, blockNumber, hnswUnitState: 'live' });
       for (const target of await index.listRelocationTargets()) {
         targets.push({
           kind: target.kind,
@@ -2227,13 +2285,20 @@ export class DbmsBack {
    * @returns Up to `k` Documents ordered by semantic similarity (closest first).
    * @throws If HNSW is not configured.
    */
-  async semanticSearch(collection: string, query: string, k: number): Promise<Document[]> {
+  semanticSearch(collection: string, query: string, k: number): Promise<Document[]> {
+    return this.mutate(() => this.semanticSearchInternal(collection, query, k));
+  }
+
+  private async semanticSearchInternal(collection: string, query: string, k: number): Promise<Document[]> {
     this.assertHealthy();
     if (this.getPendingSemanticCollections().includes(collection))
       throw new Error(
         `Semantic reindex pending for \"${collection}\". Reopen with the original working embedding configuration to finish migration.`,
       );
-    if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
+    if (!this.hnswConfig)
+      throw new Error(
+        `Semantic search is not configured (no hnswConfig provided). ${this.hnswUnavailableReason ?? ''}`.trim(),
+      );
 
     const textConfig = this.textHnswConfig();
     if (!textConfig) return [];
@@ -2253,13 +2318,20 @@ export class DbmsBack {
     return results;
   }
 
-  async semanticImageTextSearch(collection: string, query: string, k: number): Promise<Document[]> {
+  semanticImageTextSearch(collection: string, query: string, k: number): Promise<Document[]> {
+    return this.mutate(() => this.semanticImageTextSearchInternal(collection, query, k));
+  }
+
+  private async semanticImageTextSearchInternal(collection: string, query: string, k: number): Promise<Document[]> {
     this.assertHealthy();
     if (this.getPendingSemanticCollections().includes(collection))
       throw new Error(
         `Semantic reindex pending for \"${collection}\". Reopen with the original working embedding configuration to finish migration.`,
       );
-    if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
+    if (!this.hnswConfig)
+      throw new Error(
+        `Semantic search is not configured (no hnswConfig provided). ${this.hnswUnavailableReason ?? ''}`.trim(),
+      );
     const imageConfig = this.imageHnswConfig();
     if (!imageConfig) {
       throw new Error('Text-to-image search requires an image index config with CLIP text and image encoders.');
@@ -2289,13 +2361,20 @@ export class DbmsBack {
    * @param k          - Number of results to return.
    * @returns Up to `k` Documents ordered by similarity (closest first).
    */
-  async semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<Document[]> {
+  semanticImageSearch(collection: string, queryImage: Buffer, k: number): Promise<Document[]> {
+    return this.mutate(() => this.semanticImageSearchInternal(collection, queryImage, k));
+  }
+
+  private async semanticImageSearchInternal(collection: string, queryImage: Buffer, k: number): Promise<Document[]> {
     this.assertHealthy();
     if (this.getPendingSemanticCollections().includes(collection))
       throw new Error(
         `Semantic reindex pending for \"${collection}\". Reopen with the original working embedding configuration to finish migration.`,
       );
-    if (!this.hnswConfig) throw new Error('Semantic search is not configured (no hnswConfig provided).');
+    if (!this.hnswConfig)
+      throw new Error(
+        `Semantic search is not configured (no hnswConfig provided). ${this.hnswUnavailableReason ?? ''}`.trim(),
+      );
     const imageConfig = this.imageHnswConfig();
     if (!imageConfig) {
       throw new Error('Image search requires imageEmbeddingFn in HnswConfig.');
@@ -2562,6 +2641,153 @@ export class DbmsBack {
     const graphStorage = await HNSWGraphStorage.open(this.freeblockFile, metaBlockId);
     const vectorHeap = new VectorHeapFile(this.freeblockFile, cfg.dimension);
     return HNSWIndex.open(graphStorage, vectorHeap, { efSearch, efConstruction });
+  }
+
+  /** One-time legacy migration. Routing supplies evidence, never completeness. */
+  private async prepareHnswPageDirectories(): Promise<boolean> {
+    const graphs = new Map<string, HNSWGraphStorage>();
+    const assignments = new Map<string, Set<number>>();
+    const reachableOwners = new Map<number, string>();
+    const claimed = new Map<number, string>();
+    const claim = (page: number, key: string) => {
+      if (claimed.has(page) && claimed.get(page) !== key)
+        throw new HnswCompatibilityError('Ambiguous legacy HNSW page ownership; stored allocations retained.');
+      claimed.set(page, key);
+    };
+    for (const [key, [root]] of Object.entries(this.getHnswMeta())) {
+      const graph = await HNSWGraphStorage.open(this.freeblockFile, root);
+      const config = this.hnswConfigForIndexKey(key);
+      if (!config) throw new HnswCompatibilityError('No runtime configuration for stored semantic index.');
+      graph.assertVectorDimension(config.dimension);
+      graphs.set(key, graph);
+      if (graph.hasCompleteMembership) {
+        for (const page of graph.ownedPageIds()) claim(page, key);
+      } else {
+        const pages = new Set<number>();
+        for await (const node of graph.scanReachableNodes()) {
+          if (reachableOwners.has(node.nodeId) && reachableOwners.get(node.nodeId) !== key)
+            throw new HnswCompatibilityError('Legacy HNSW routing has mixed ownership; stored allocations retained.');
+          reachableOwners.set(node.nodeId, key);
+          pages.add(decodeNodeId(node.nodeId).pageId);
+        }
+        for (const page of pages) claim(page, key);
+        assignments.set(key, pages);
+      }
+    }
+    if (assignments.size === 0) return false;
+
+    // Legacy pages have no owner tag. Assign disconnected pages only when
+    // layout, vectors and live primary-record anchors identify exactly one
+    // index. Tombstone-only and dual-index ambiguities must retain their data.
+    for (let page = 1; page < this.freeblockFile._getCachedBlockCount(); page++) {
+      const raw = await this.freeblockFile.readBlock(page);
+      if (raw[0] !== 0x02 || raw[1] !== 0xa3 || claimed.has(page)) continue;
+      const candidates: string[] = [];
+      for (const key of assignments.keys()) {
+        const graph = graphs.get(key)!;
+        let nodes;
+        try {
+          nodes = await graph.readPhysicalPageNodes(page);
+        } catch (error) {
+          if (error instanceof HnswCompatibilityError) continue;
+          throw error;
+        }
+        if (!nodes.some((node) => !node.deleted)) continue;
+        const [collection] = semanticIndexIdentity(key);
+        let valid = true;
+        for (const node of nodes) {
+          if (
+            node.vectorPtr.pageId < 1 ||
+            node.vectorPtr.pageId >= this.freeblockFile._getCachedBlockCount() ||
+            node.docId < 1 ||
+            node.docId >= this.freeblockFile._getCachedBlockCount()
+          ) {
+            valid = false;
+            break;
+          }
+          const vector = await this.freeblockFile.readBlock(node.vectorPtr.pageId);
+          if (
+            vector[0] !== 0x02 ||
+            (vector[1] !== 0xa5 && (vector[1] !== 0xa6 || vector.readUInt32LE(2) !== graph.vectorDimension))
+          ) {
+            valid = false;
+            break;
+          }
+          if (node.deleted) continue;
+          let document;
+          try {
+            document = await this.recordStore.readRecord(node.docId);
+          } catch (error) {
+            if (error instanceof RecordReadError) {
+              valid = false;
+              break;
+            }
+            throw error;
+          }
+          if (
+            !document ||
+            document.getCollectionName() !== collection ||
+            (await this.getDocumentBlockId(collection, document.getId())) !== node.docId
+          ) {
+            valid = false;
+            break;
+          }
+        }
+        if (valid) candidates.push(key);
+      }
+      if (candidates.length !== 1)
+        throw new HnswCompatibilityError(
+          'Legacy HNSW membership ownership is ambiguous; semantic operations disabled and stored allocations retained.',
+        );
+      const key = candidates[0];
+      assignments.get(key)!.add(page);
+      claim(page, key);
+    }
+    for (const [key, pages] of assignments) {
+      for (const page of pages) {
+        for (const node of await graphs.get(key)!.readPhysicalPageNodes(page)) {
+          const routingOwner = reachableOwners.get(node.nodeId);
+          if ((routingOwner !== undefined && routingOwner !== key) || (node.deleted && routingOwner === undefined))
+            throw new HnswCompatibilityError(
+              'Legacy HNSW tombstone or mixed-page ownership is unverified; stored allocations retained.',
+            );
+          if (!node.deleted) {
+            const [collection] = semanticIndexIdentity(key);
+            const document = await this.recordStore.readRecord(node.docId);
+            if (!document || document.getCollectionName() !== collection)
+              throw new HnswCompatibilityError(
+                'Legacy HNSW page has mixed or unverifiable collection ownership; stored allocations retained.',
+              );
+            if (routingOwner === undefined) {
+              const graph = graphs.get(key)!;
+              const possible = [...assignments.keys()].filter((otherKey) => {
+                const other = graphs.get(otherKey)!;
+                return (
+                  semanticIndexIdentity(otherKey)[0] === collection &&
+                  other.nodeSize === graph.nodeSize &&
+                  other.vectorDimension === graph.vectorDimension
+                );
+              });
+              if (possible.length !== 1 || (await this.getDocumentBlockId(collection, document.getId())) !== node.docId)
+                throw new HnswCompatibilityError(
+                  'Disconnected legacy HNSW member ownership is ambiguous; stored allocations retained.',
+                );
+            }
+          }
+          if (
+            node.neighbors.some((layer) => layer.some((neighbor) => claimed.get(decodeNodeId(neighbor).pageId) !== key))
+          )
+            throw new HnswCompatibilityError(
+              'Legacy HNSW graph references ambiguous ownership; stored allocations retained.',
+            );
+        }
+      }
+    }
+    await this.mutate(async () => {
+      this.beginMutation();
+      for (const [key, pages] of assignments) await graphs.get(key)!.establishPageOwnership([...pages]);
+    });
+    return true;
   }
 
   /**

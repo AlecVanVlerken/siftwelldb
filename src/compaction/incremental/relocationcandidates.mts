@@ -13,7 +13,7 @@ function keyFor(target: RelocationTarget): string {
     case 'hnsw-vector':
       return JSON.stringify([target.kind, target.collection, target.indexKind, target.nodeId]);
     case 'hnsw-meta':
-      return JSON.stringify([target.kind, target.collection, target.indexKind]);
+      return JSON.stringify([target.kind, target.collection, target.indexKind, target.blockNumber]);
     case 'tail-reclaim':
       throw new Error('Free tail reclamation does not require relocation candidate inventory');
   }
@@ -32,8 +32,10 @@ export class RelocationCandidates {
   private readonly heap: Entry[] = [];
   private readonly positions = new Map<string, number>();
   private readonly locations = new Map<string, Set<string>>();
+  private nextOrder: number;
 
   constructor(targets: RelocationTarget[]) {
+    this.nextOrder = targets.length;
     for (const [order, target] of targets.entries()) {
       const key = keyFor(target);
       const entry = { key, target, order };
@@ -50,6 +52,11 @@ export class RelocationCandidates {
     const order = this.heap[index].order;
     this.remove(index);
     this.insert({ key: keyFor(target), target, order });
+  }
+
+  add(target: RelocationTarget): void {
+    const key = keyFor(target);
+    if (!this.positions.has(key)) this.insert({ key, target, order: this.nextOrder++ });
   }
 
   top(limit: number): RelocationTarget[] {
