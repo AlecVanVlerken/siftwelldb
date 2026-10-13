@@ -19,6 +19,10 @@ async function canonicalPath(filepath: string): Promise<string> {
     link = await fs.readlink(filepath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    // NTFS streams can share a physical file even when the stream does not yet
+    // exist (including the unnamed stream alias `file::$DATA`).
+    if (process.platform === 'win32' && path.basename(filepath).includes(':'))
+      throw new Error(`Cannot validate an ambiguous new Windows stream path: ${filepath}`);
     return path.join(await fs.realpath(path.dirname(filepath)), path.basename(filepath));
   }
   return canonicalPath(path.isAbsolute(link) ? link : path.dirname(filepath) + path.sep + link);

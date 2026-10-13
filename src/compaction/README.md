@@ -42,6 +42,8 @@ Validation assumes exclusive ownership of the paths during vacuum. It does not
 prevent another process from changing links or replacing files between preflight
 and creation. On Windows and macOS, case variants of a new output location are
 conservatively rejected, including in case-sensitive directories.
+New Windows stream paths, including `file::$DATA`, are refused because their
+physical file identity cannot be established before creation.
 
 Incremental candidate discovery retains one verified in-memory inventory per
 backend session for records, B+ tree nodes and HNSW graph/vector/metadata units.

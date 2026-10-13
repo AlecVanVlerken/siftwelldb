@@ -7,6 +7,7 @@ import { SimpleDbms } from '../../../database/simpledbms.mjs';
 import { DbmsBack } from '../../../database/dbmsback.mjs';
 import { RealFile } from '../../../storage/file.mjs';
 import { MockFile } from '../../../../tests/helpers/mockfile.mjs';
+import * as vacuumRecovery from '../vacuum-recovery.mjs';
 
 vi.mock('../embedding-config.mjs', () => ({
   getClipHnswConfig: () => ({
@@ -723,6 +724,27 @@ describe('DatabaseService with real database files', () => {
     expect((await service.semanticSearch('books', 'second', 2)).length).toBe(2);
     expect(await fs.readdir(directory)).toEqual(expect.arrayContaining(['database.db', 'database.db.log']));
     expect((await fs.readdir(directory)).some((name) => name.includes('.vacuum-'))).toBe(false);
+  });
+
+  it('retains protected paths and stays connected after vacuum alias preflight rejection', async () => {
+    await service.create(filepath);
+    await service.insertDocument('books', { id: 'b1', title: 'preserve me' });
+    const before = await Promise.all([fs.readFile(filepath), fs.readFile(filepath + '.log')]);
+    const paths = vacuumRecovery.vacuumPaths(filepath);
+    vi.spyOn(vacuumRecovery, 'vacuumPaths').mockReturnValue({
+      ...paths,
+      tempData: filepath,
+      tempLog: filepath + '.log',
+    });
+    await expect(service.vacuum()).rejects.toThrow(/Vacuum preflight.*alias/);
+    expect(await Promise.all([fs.readFile(filepath), fs.readFile(filepath + '.log')])).toEqual(before);
+    expect((await fs.readdir(directory)).some((name) => name.includes('.vacuum-'))).toBe(false);
+    expect(service.isConnected).toBe(true);
+    expect(JSON.parse(await service.getDocumentById('books', 'b1'))).toMatchObject({ title: 'preserve me' });
+    await service.insertDocument('books', { id: 'b2', title: 'still writable' });
+    await service.disconnect();
+    await service.connect(filepath);
+    expect(JSON.parse(await service.getDocumentById('books', 'b2'))).toMatchObject({ title: 'still writable' });
   });
 
   it('restores and reconnects the original pair if reopening the vacuum target fails', async () => {
