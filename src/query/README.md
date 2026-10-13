@@ -124,6 +124,8 @@ Every selected nonaggregate field must appear in GROUP BY. HAVING filters aggreg
 
 Aggregation stores incremental state per group. DISTINCT aggregates additionally retain each distinct argument value. ORDER BY and LIMIT apply after grouping and HAVING.
 
+SUM and AVG use power-of-two scaling and compensated accumulation; tiny terms that underflow during scaling are retained separately. AVG avoids an overflowing total when its mean is finite. Results retain JavaScript floating-point precision. An unrepresentable aggregate raises an error for the whole query, including mixed aggregates, instead of returning Infinity/NaN or accidental JSON null. HTTP query errors return status 400; empty aggregates retain their documented null behavior.
+
 ```sql
 SELECT category, COUNT(*) AS n, AVG(year) AS average_year FROM articles GROUP BY category HAVING n > 1 ORDER BY n DESC;
 ```
