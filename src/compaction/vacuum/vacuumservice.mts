@@ -36,6 +36,10 @@ import { CollectionCatalog } from './collectioncatalog.mjs';
 import { DatabaseCopier } from './databasecopier.mjs';
 import { VacuumValidator } from './vacuumvalidator.mjs';
 import type { VacuumOptions, VacuumProgress, VacuumResult } from './vacuumtypes.mjs';
+import { fileIdentities, identitiesAlias } from '../../storage/fileidentity.mjs';
+
+/** No source commit, output creation or destination cleanup has begun. */
+export class VacuumPreflightError extends Error {}
 
 /**
  * Coordinates one full logical vacuum compaction operation.
@@ -76,7 +80,7 @@ export class VacuumService {
     const { source, validate = true } = this.options;
 
     this.reportProgress({ phase: 'preflight' });
-    this.assertPreconditions();
+    await this.assertPreconditions();
 
     await this.commitSource();
 
@@ -128,47 +132,53 @@ export class VacuumService {
    *
    * Current checks:
    *   • source database backend must exist
-   *   • temp files must not be the same objects as the source files
+   *   • all source and destination storage resources must be distinct
    *   • HNSW rebuild must be possible when HNSW-backed collections exist
    *
-   * @returns {void}
+   * @returns {Promise<void>}
    *
    * @throws {Error} If any precondition fails.
    *
    * @author Alec Van Vlerken
    */
-  private assertPreconditions(): void {
+  private async assertPreconditions(): Promise<void> {
     const { source, tempDataFile, tempLogFile, rebuildHnsw = true } = this.options;
 
     if (!source) {
-      throw new Error('Vacuum preflight failed: source database backend is missing.');
+      throw new VacuumPreflightError('Vacuum preflight failed: source database backend is missing.');
     }
 
-    if (source.getVacuumDataFile() === tempDataFile) {
-      throw new Error(
-        'Vacuum preflight failed: temporary data file must not be the same object as the source data file.',
+    const files = [source.getVacuumDataFile(), source.getVacuumLogFile(), tempDataFile, tempLogFile];
+    const roles = ['source data file', 'source WAL file', 'destination data file', 'destination WAL file'];
+    const rejectAlias = (a: number, b: number): never => {
+      throw new VacuumPreflightError(`Vacuum preflight failed: ${roles[b]} aliases ${roles[a]}.`);
+    };
+    for (let b = 1; b < files.length; b++) for (let a = 0; a < b; a++) if (files[a] === files[b]) rejectAlias(a, b);
+    const identities = await Promise.all(files.map(fileIdentities)).catch((error: unknown) => {
+      throw new VacuumPreflightError(
+        'Vacuum preflight failed: cannot establish file identities: ' +
+          (error instanceof Error ? error.message : String(error)),
+        { cause: error },
       );
-    }
-
-    if (source.getVacuumLogFile() === tempLogFile) {
-      throw new Error(
-        'Vacuum preflight failed: temporary log file must not be the same object as the source log file.',
-      );
-    }
+    });
+    for (let b = 1; b < files.length; b++)
+      for (let a = 0; a < b; a++)
+        if (identities[a].some((left) => identities[b].some((right) => identitiesAlias(left, right))))
+          rejectAlias(a, b);
 
     const catalog = new CollectionCatalog(source);
     const hasAnyHnswCollections = catalog.hasAnyHnswCollections();
     const hnswConfig = source.getVacuumHnswConfig();
 
     if (hasAnyHnswCollections && !rebuildHnsw) {
-      throw new Error(
+      throw new VacuumPreflightError(
         'Vacuum preflight failed: source database contains HNSW-backed collections, ' +
           'but HNSW rebuilding was disabled.',
       );
     }
 
     if (hasAnyHnswCollections && !hnswConfig) {
-      throw new Error(
+      throw new VacuumPreflightError(
         'Vacuum preflight failed: source database contains HNSW-backed collections, ' +
           'but no HNSW runtime configuration is available to rebuild them.',
       );

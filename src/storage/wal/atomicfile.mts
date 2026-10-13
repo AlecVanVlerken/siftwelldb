@@ -2,6 +2,7 @@
 // @date 2025-12-2
 
 import type { File } from '../file.mjs';
+import { fileIdentities, type FileIdentity } from '../fileidentity.mjs';
 import type { LogRecord } from './logrecord.mjs';
 import { computeChecksum, deserializeLogRecord } from './logrecord.mjs';
 import { writeAndSyncLog } from './logwriter.mjs';
@@ -171,6 +172,10 @@ export class AtomicFile implements File {
 
   get sectorSize(): number {
     return this.dataFile.sectorSize;
+  }
+
+  async getStorageIdentities(): Promise<readonly FileIdentity[]> {
+    return [...(await fileIdentities(this.dataFile)), ...(await fileIdentities(this.logFile))];
   }
 
   async read(buffer: Buffer, options: { position: number }): Promise<void> {

@@ -143,6 +143,10 @@ export class MockFile implements File {
     return Promise.resolve({ size: this.size });
   }
 
+  public getStorageIdentities() {
+    return Promise.resolve([{ kind: 'resource' as const, resource: this }]);
+  }
+
   /**
    * Performs some randomly chosen subset of the pending writes; the others are lost.
    */

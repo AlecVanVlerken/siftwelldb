@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import * as fsPromises from 'node:fs/promises';
+import { filesystemIdentities, type FileIdentity } from './fileidentity.mjs';
+
+export type { FileIdentity } from './fileidentity.mjs';
 
 export interface File {
   /**
@@ -16,6 +19,12 @@ export interface File {
   read(buffer: Buffer, options: { position: number }): Promise<void>;
   truncate(length: number): Promise<void>;
   stat(): Promise<{ size: number }>;
+  /**
+   * All storage resources create/write/truncate can modify, without modifying or
+   * opening them. Vacuum requires this contract. Wrappers must forward backing
+   * identities; independent memory files may use their backing object as resource.
+   */
+  getStorageIdentities?(): Promise<readonly FileIdentity[]>;
 }
 
 export class RealFile implements File {
@@ -110,5 +119,9 @@ export class RealFile implements File {
   public async stat(): Promise<{ size: number }> {
     assert(this.fileHandle !== null);
     return await this.fileHandle.stat();
+  }
+
+  public getStorageIdentities(): Promise<readonly FileIdentity[]> {
+    return filesystemIdentities(this.filePath, this.fileHandle);
   }
 }

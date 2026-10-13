@@ -5,6 +5,7 @@ import * as fs from 'node:fs/promises';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import * as path from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { VacuumPreflightError } from '../../compaction/vacuum/vacuumservice.mjs';
 import {
   SimpleDbms,
   type HnswConfig,
@@ -513,6 +514,7 @@ export class DatabaseService {
 
         return summary;
       } catch (error) {
+        if (error instanceof VacuumPreflightError) throw error;
         console.error('[compaction] manual full vacuum failed:', error);
         if (compacted) {
           try {

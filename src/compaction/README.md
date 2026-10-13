@@ -18,6 +18,31 @@ uncompressed fields and per-document overrides. Collection defaults are copied
 for future writes; they do not recompress existing documents with a different
 codec during vacuum. HNSW indexes are still rebuilt from live documents.
 
+Vacuum validates all six pairs among source data, source WAL, destination data
+and destination WAL before committing the source or creating either output.
+`RealFile` uses canonical paths and bigint device/inode identities, including
+open source handles, to detect separate wrappers, hard links, symbolic links
+and directory junctions. New destinations resolve through their existing parent
+directory; dangling links resolve to their intended target. Existing independent
+outputs may still be replaced. Preflight rejection leaves the source and outputs
+untouched and keeps the database usable. The webclient does no destination cleanup
+or replacement after such a rejection.
+
+Custom `File` implementations used by vacuum must implement the optional
+`getStorageIdentities()` method, returning every resource that creation, writes
+or truncation can modify. Filesystem identities contain a canonical absolute
+`path` and, for existing files, bigint `device` and `inode`. Memory files use
+`{ kind: 'resource', resource: backingObject }`; wrappers share their backing
+identity and compound files include their sidecars. `AtomicFile` forwards both
+underlying files' identities. Missing identities are rejected before any writes;
+other database operations do not require this method. Existing filesystem files
+without a usable physical identity are also refused.
+
+Validation assumes exclusive ownership of the paths during vacuum. It does not
+prevent another process from changing links or replacing files between preflight
+and creation. On Windows and macOS, case variants of a new output location are
+conservatively rejected, including in case-sensitive directories.
+
 Incremental candidate discovery retains one verified in-memory inventory per
 backend session for records, B+ tree nodes and HNSW graph/vector/metadata units.
 The first request inventories all eligible units; records are decoded and their
