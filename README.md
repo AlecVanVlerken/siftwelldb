@@ -1,225 +1,468 @@
 # SiftwellDB
 
-SiftwellDB is a private Node.js and TypeScript database project originating from the P&O CW 2025-2026 coursework. It combines a WAL-backed storage engine, document-oriented CRUD operations, B+ tree indexes, optional HNSW-based semantic search, compaction tooling, a browser UI, a query-language CLI, and conversational analytics.
+SiftwellDB is a document database written in TypeScript and Node.js, with a Rust implementation of HNSW for semantic
+search. It stores documents in a block-based file and uses B+ trees to look them up by ID or field value. The webclient
+lets you browse and edit documents, run SQL-like queries, search text and images and manage database storage.
 
-## Highlights
+The database implements its own record format, block allocation, indexes and recovery. These components share the same
+storage: editing a document updates its indexes, committing writes their changes together and compaction moves blocks
+while updating the references between them. The TypeScript API exposes these operations directly.
 
-- WAL-backed durability and recovery primitives under `src/storage/wal/`
-- Fixed-size block storage and record management under `src/storage/`
-- B+ tree indexing under `src/indexes/btree/`
-- Optional semantic search with a Rust-backed HNSW core under `src/indexes/hnsw/` and `hnsw-native/`
-- Compression advice and field-compression support under `src/database/`
-- Incremental compaction and full vacuum support under `src/compaction/`
-- Browser-based management UI under `src/webclient/`
-- SQL-like query language CLI under `src/query/`
-- Gemini-backed conversational analytics under `src/conversational/`
-- Performance benchmarks under `benchmarks/` and runnable demos under `examples/`
+![A tour of the running SiftwellDB webclient: opening a database, browsing documents and executing SQL](docs/media/webclient-tour.gif)
 
-## Repository layout
+The captures use small demo databases. The [media guide](docs/media/README.md) describes their contents, photo credits
+and how the recordings were made.
 
-- `src/storage/` - file abstraction, WAL/atomic writes, free blocks, and record storage
-- `src/indexes/` - B+ trees, persisted/native HNSW, and word/content indexes
-- `src/database/` - high-level SimpleDbms API, documents, compression, bulk import, and pagination
-- `src/query/` - SQL-like parser, planner, executor, and CLI
-- `src/compaction/` - public compaction entry point, with vacuum, incremental, and relocation modules; see the [compaction layout](src/compaction/README.md)
-- `src/webclient/server/` - HTTP daemon, router, services, and embedding configuration
-- `src/webclient/frontend/` - maintained HTML/CSS and browser TypeScript modules
-- `src/webclient/fixtures/` - sample data used by existing webclient seeding APIs
-- `src/conversational/` - semantic models, query generation, LLM provider, and chat engine
-- `src/types/` - local ambient declarations for third-party modules
-- `examples/` - text/image search demos, semantic map, and an independent teaching reference store
-- `examples/assets/` - maintained demo images, also used by image regression tests
-- `benchmarks/` - performance suites and plotting scripts
-- `scripts/` - import/index/seed commands and build helpers
-- `tests/` - shared helpers and subprocess fixtures; implementation tests live in a `tests/` subfolder of each module
-- `hnsw-native/` - Rust source and maintained prebuilt libraries
-- `build/` - generated runtime JavaScript, browser assets, and native libraries
+[Quick start](#quick-start) · [Documents](#working-with-documents) · [SQL and indexes](#queries-and-indexes) ·
+[Semantic search](#semantic-search) · [Demo](#demo-database) · [Storage](#storage-and-persistence) ·
+[Maintenance](#compaction-and-vacuum) · [Development](#development-and-verification)
 
-## Requirements
+## Quick start
 
-- Node.js 24.x. CI uses `node:24`.
-- npm
-- Python 3 if you want to run the plotting scripts under `benchmarks/`
-- Rust only if you want to rebuild the native HNSW library in `hnsw-native/`
-- `GEMINI_API_KEY` in `.env` if you want conversational analytics
+Use **Node.js 24** and npm. The compression code uses Node's Zstandard APIs. From the repository root:
 
-The repository includes prebuilt native HNSW binaries for Windows and Linux under `hnsw-native/prebuilt/`. Rust is only needed to rebuild them; see [native build instructions](hnsw-native/README.md).
-
-## Setup
-
-```bash
+```sh
 npm ci
-npm run build
-npm run lint
-npm test
-```
-
-Notes:
-
-- `npm run lint` checks runtime code, tests, examples, benchmarks, and scripts.
-- `npm test` runs the modules' regression tests and the reference-store tests; benchmarks are opt-in.
-- `npm run coverage` collects coverage for the non-benchmark source tree.
-- `npm run build` checks all maintained TypeScript, rebuilds runtime/browser code, and copies HTML/CSS and native libraries.
-- `npm run clean` removes generated build output. Databases and example images are kept.
-
-If a third-party package needs a local typing shim for this codebase, those declarations live in `src/types/`. The current repo includes `src/types/google-genai.d.ts` for `@google/genai`.
-
-## Running the web client
-
-The browser UI is served by `src/webclient/server/daemon.mts` on port 8000.
-
-```bash
 npm run build
 npm start
 ```
 
-Then open `http://localhost:8000`.
+Open **[http://localhost:8000](http://localhost:8000)**. The daemon prints that address when it starts. Select a saved
+database from the dropdown and click **Open**, or enter a name and click **Create database**. Persistent webclient
+databases live in the project's `databases/` folder. The daemon creates this folder and handles the data file, WAL and
+optional schema-model sidecar together. Creating a database requires a new name and never replaces an existing one.
 
-For source development, use `npm run start:dev` after building the browser assets.
-Create a populated database with `npm run seed:test`; see the [webclient guide](src/webclient/README.md).
+**Create demo database** opens temporary sample collections. The demo requires the local image sources described below.
 
-The daemon:
+The build compiles server and browser TypeScript and copies the static frontend assets and native libraries. Maintained
+HNSW binaries are included for x86-64 Windows and Linux. Rust is needed to rebuild them or provide a library for macOS
+or another CPU architecture. The [native build instructions](hnsw-native/README.md) explain how to compile and copy the
+library. The npm build copies the supplied binaries; rebuilding Rust is a separate step.
 
-- serves the frontend from `src/webclient/frontend/` and `build/webclient/frontend/`
-- exposes JSON APIs under `/api/`
-- opens or creates a database file you choose in the UI
-- stores WAL data in a sibling file with the `.log` suffix
-- can persist `GEMINI_API_KEY` into `.env` through the settings UI
+MiniLM and CLIP load on first use and download their model assets if they are not already cached. Once available,
+embedding inference runs locally. Normal startup does not need a Gemini key. Only conversational analytics uses Gemini:
+configure it through the webclient or copy `.env.example` to `.env` and supply your own key.
 
-## Field indexing
+For source development, build the browser assets first, then use `npm run start:dev`. Rebuild browser TypeScript after
+changing it and restart the daemon after server changes. The [webclient guide](src/webclient/README.md) describes the
+controls and operation lifecycle in more detail.
 
-Collection fields have a persisted `Indexed` setting. Ordinary string, number and boolean fields default to indexed, regardless of their names; image and binary fields are excluded. The primary `id` index is mandatory. Configure long text before inserting it:
+## Working with documents
+
+A database contains named collections. Inserting a collection's first document creates it. Documents are flat objects
+with a required `id` and fields containing strings, finite numbers, booleans or binary buffers. General arrays, nested
+objects and stored `null` values are not supported.
+
+In the webclient, select a collection in Object Explorer, open **Data** and add a JSON document. The editor can attach
+an image field, edit existing values or replace the whole document. Fields and Compression expose the collection's index
+and codec settings. Bulk actions operate on selected rows or the entire collection, including unloaded pages, after
+confirmation.
+
+![Collections and document counts in the running webclient](docs/media/webclient-overview.png)
+
+The backend commits document writes made through the webclient. Database operations run through a shared queue, so a
+large deletion can delay other reads and writes. The interface shows when a request is waiting and refreshes the
+collection list when the operation finishes.
+
+![A stored document and its field values in the webclient](docs/media/webclient-document.png)
+
+### Using the database API
+
+`SimpleDbms` is the main database API. The project is not published as an npm package, so this example imports the
+compiled modules. After building, save it as `example.mts` in the repository root and run `npx tsx example.mts`. It uses
+a fresh temporary directory so repeating it does not overwrite an existing database.
 
 ```typescript
-await db.setFieldIndexed('articles', 'body', false);
-await db.insertDocumentObject('articles', { id: '1', title: 'Databases', body: longArticle });
-const settings = db.getFieldIndexConfig('articles');
-await db.setFieldIndexed('articles', 'title', false);
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { SimpleDbms } from './build/database/simpledbms.mjs';
+import { RealFile } from './build/storage/file.mjs';
+
+const directory = await mkdtemp(path.join(tmpdir(), 'siftwell-example-'));
+const dataPath = path.join(directory, 'example.db');
+const logPath = `${dataPath}.log`;
+const db = await SimpleDbms.create(new RealFile(dataPath), new RealFile(logPath));
+
+try {
+  await db.setFieldIndexed('articles', 'body', false);
+  db.setFieldCompressionDefaults('articles', { body: 'zstd' });
+  await db.insertDocumentObject('articles', {
+    id: 1,
+    title: 'Building a database',
+    category: 'Engineering',
+    year: 2026,
+    body: 'Storage, indexes and recovery work together. '.repeat(100),
+  });
+  await db.editDocument('articles', 1, 'title', 'Inside a document database');
+  await db.commit();
+  console.log(await db.getDocumentObjectById('articles', 1));
+} finally {
+  await db.close();
+}
+
+const reopened = await SimpleDbms.open(new RealFile(dataPath), new RealFile(logPath));
+try {
+  console.log(await reopened.countDocuments('articles'));
+} finally {
+  await reopened.close();
+}
 ```
 
-Enabling an index validates and backfills existing documents. Disabling it frees the secondary tree while preserving documents; equality queries use the existing scan fallback. Call `commit()` to persist API changes. Indexed keys have a 2035-byte encoded limit with the default 4096-byte blocks, including field, ID and serialization overhead. Compression does not reduce index key size. Unindexed text stays in RecordStore and has no B+ tree key limit.
+`create()` replaces its destination contents; use `open()` for existing data. Keep the data file and its companion WAL
+together. Most direct library mutations and metadata changes require an explicit `commit()`. Closing releases resources
+without committing pending changes. Whole-collection `deleteCollection()` commits its deletion itself. Individual
+deletion is `deleteDocumentById(collection, id)`.
 
-With an embedding configuration, HNSW automatically uses eligible textual fields independently of these settings, including underscore-prefixed text. Images retain their separate encoder. Model input limits still apply. In the webclient, use the **Indexed** checkboxes in Fields or the document editor; changes apply to the collection and wait for backend completion.
+### Identifier consistency
 
-Existing databases migrate their field settings from persisted index roots and stored fields. Record, B+ tree, WAL and block formats remain unchanged. Semantic indexes with verified persisted dimensions can finish a pending field migration when the original working embedding configuration is available; pending migration is exposed by `getPendingSemanticCollections()` and the database status API. Graphs without dimension evidence stay disabled rather than guessing. Normal reopen and B+ tree toggles do not rebuild current semantic indexes. Full vacuum copies the settings before rebuilding records, and incremental compaction repairs references only for existing indexes.
+An ID is a well-formed Unicode string or a finite number. Each collection retains the primary ID type established by its
+first document, so numeric `42` and string `"42"` are not interchangeable. Collection and field names are exact,
+case-sensitive strings. The metadata collections `__hnsw__`, `__compression__` and `__indexing__` are reserved.
 
-Semantic deletion retains graph nodes, vectors and their record-pointer anchors as tombstones, without rebuilding the collection graph. Incremental compaction moves retained graph/vector units; full vacuum copies live logical documents and reclaims tombstones and retained dead records. Offline semantic mutations remain pending until reopening with a working embedding configuration.
+The HTTP API uses JSON-typed query parameters to preserve IDs and unusual names without URL-path normalization. See the
+[addressing contract](src/webclient/README.md#exact-document-addresses) and
+[stored identity and compatibility rules](docs/storage-and-index-compatibility.md#identifier-consistency).
 
-HNSW graph metadata now includes a versioned `HPD1` directory of exclusively owned graph pages. Occupied slots on those pages define complete persisted membership, including unreachable nodes and retained tombstones. Reopening, graph inspection, relocation and collection cleanup use that inventory independently of approximate graph navigation. The graph-node, vector, document, B+ tree and WAL layouts remain unchanged; large directories use linked metadata overflow blocks which also participate in incremental compaction.
+## Queries and indexes
 
-Older graphs migrate once when routing evidence, page layouts, vector dimensions and live primary-record anchors establish unambiguous ownership. The migration preserves node IDs, vectors and identifiable tombstones. Disconnected tombstones, mixed-ownership pages or indistinguishable text/image indexes can lack sufficient ownership evidence; those states retain their allocations and document access, with semantic operations disabled and an explicit error. Collection cleanup refuses unverified ownership rather than silently removing metadata or guessing which allocations to free.
+The **Query Language** tab runs the same SQL-like engine as the command-line tool and `QueryLanguage` library class. It
+supports `SELECT`, `INSERT`, `UPDATE`, `DELETE` and `EXPLAIN SELECT`. Selection includes predicates, aliases,
+`DISTINCT`, aggregates, `GROUP BY`, `HAVING`, ordering and `LIMIT`/`OFFSET`.
 
-Semantic searches share the backend operation queue with mutations and maintenance. Closing rejects new queued operations and waits for accepted operations to finish before freeing native resources. A rejected embedding releases the queue; an embedding that remains pending also keeps close pending. Native methods reject closed handles. `SimpleDbms.reopen()` closes the previous backend and reapplies the instance's original runtime configuration, including custom text/image encoders, while retaining persisted dimension checks. Embedding functions and credentials are not stored in database files.
+These queries use fields in the demo database. Run each statement separately; multi-statement input is not supported.
 
-Document mutations validate supported values, finite numbers, index keys, compression and embeddings before writing. Single-field edits preserve the stored codecs of untouched fields, including explicit uncompressed choices and binary fields, using the same preservation path as SQL UPDATE and preserving replacements.
+```sql
+SELECT department, COUNT(*) AS people, AVG(salary) AS average_salary
+FROM employees
+GROUP BY department
+HAVING COUNT(*) >= 5
+ORDER BY average_salary DESC;
 
-If a record, index or semantic mutation fails after changes may have begun, the session rejects subsequent reads, writes and commits, including direct block-file commits. `db.isHealthy` and `db.assertHealthy()` expose this state. Close without committing, then open a fresh database instance; logical staged changes, including earlier uncommitted successful operations, are discarded. Validation failures and completely discarded unpublished index builds remain usable. Bulk import continues after safe document rejections, but stops on an unsafe failure and throws `BulkImportError` with completed insertion and acknowledged-commit counts. The webclient closes unsafe sessions, stops maintenance and retains the database path for explicit reconnect.
+SELECT name, price
+FROM products
+WHERE price > 100
+ORDER BY price DESC
+LIMIT 10;
 
-This protection is not per-operation rollback or SQL statement atomicity. A failure during WAL commit still follows storage recovery: a complete submitted write set can be applied on reopen even when its commit was not acknowledged. Already acknowledged commits are retained.
-
-## Identifier consistency
-
-Collection and field names are exact, case-sensitive strings. Names such as `__proto__`, `constructor`, `toString`, punctuation, empty strings and distinct Unicode spellings are safe metadata keys. Only the existing collection names `__hnsw__`, `__compression__` and `__indexing__` are reserved for database metadata. User-keyed dictionaries have no inherited properties, and B+ tree caches encode the collection and field as a JSON tuple, so delimiters in names cannot cause collisions.
-
-Document IDs are finite numbers or well-formed Unicode strings, including empty strings and valid surrogate pairs. Each collection retains the primary ID type established by its first document; lookups and writes reject the other type instead of coercing it. String IDs retain their existing UTF-8 key encoding, case sensitivity and Unicode spelling. Unpaired UTF-16 surrogates are rejected before mutations and on ID lookup. Legacy malformed IDs are not renamed or silently re-keyed: document operations and vacuum report an explicit validation error when encountering such a record, leaving the source data available for recovery.
-
-String field contents follow the same Unicode well-formedness rule as IDs.
-Insert, edit, replacement, import, SQL literals and index lookups reject unpaired
-UTF-16 surrogates before UTF-8 encoding or mutation. Valid surrogate pairs and
-literal U+FFFD characters remain unchanged. RecordStore also checks decoded
-Document writes before allocation or compression; persistent formats are unchanged.
-
-Semantic metadata now stores a versioned map keyed by `[collection, "default" | "text" | "image"]` JSON tuples. Deletion, reindexing, tombstones, relocation and vacuum use exact collection ownership. Legacy flat names with no semantic suffix migrate directly. For `collection::text` or `collection::image`, live graph records with matching primary references must establish the exact owner; empty, tombstoned-only or unverified graphs refuse opening with a compatibility error and retain the stored data. Relocation targets carry a logical collection and optional `indexKind`; graph inspection takes the same optional kind instead of interpreting suffixes in collection names.
-
-The webclient uses JSON-typed query addresses so IDs and collection names are never altered by URL path normalization. See the [HTTP addressing contract](src/webclient/README.md#exact-document-addresses).
-
-## Cursor pagination
-
-`fetchPageCursor(db, { collection, iterableKey, limit, afterCursor? })` returns index-ordered JSON documents, `hasMore` and an opaque `nextCursor` string. Pass that string unchanged to resume. A version 1 token carries the exact collection, field, persisted key form and complete B+ tree key bytes, including the document ID component of secondary keys. Resumption seeks strictly after that logical key using the existing index comparator. Duplicate field values advance by their ID tie-breaker, and deleting the last emitted entry does not skip its surviving successor. Seeking costs O(log N), followed by reading the page and one lookahead entry; API total counts can require a separate initial scan.
-
-Tokens remain usable after commit/reopen, record or index relocation and full vacuum when the logical collection/index key form is retained. Malformed tokens, wrong collection/field bindings, incomplete composite keys and changed or removed index forms produce explicit cursor errors. Legacy bare field-value tokens are unsupported because they cannot identify a unique secondary position; restart from the first page.
-
-Pagination is not a snapshot. Inserts at keys after the saved position can appear on subsequent pages; inserts before it are not revisited. Updating an indexed value across that position can omit or repeat that document. A deleted entry continues from its old key's next surviving successor. For an unchanged dataset, concatenated pages exactly match full traversal of the same index. Ordinary inclusive `cursor()` seeks, SQL `LIMIT`/`OFFSET`, and the webclient's offset-based grid browsing retain their existing behavior.
-
-## Query language CLI
-
-The SQL-like query engine has a CLI entry point:
-
-```bash
-npm run cli -- "SELECT * FROM cities"
-npm run cli -- --data my.db --log my.db.log "SELECT country, COUNT(*) AS n FROM cities GROUP BY country ORDER BY n DESC"
+EXPLAIN SELECT name FROM products WHERE category = 'Outdoors' LIMIT 10;
 ```
 
-Supported operations include `SELECT`, `INSERT`, `UPDATE`, `DELETE`, and `EXPLAIN`. Full grammar, operator reference, type semantics, and worked examples live in `src/query/README.md`.
+![A grouped SQL query over the products collection](docs/media/webclient-sql.png)
 
-## Conversational analytics
+Writes use the document model rather than SQL table definitions:
 
-Conversational analytics is implemented under `src/conversational/` and can be used from the webclient or from the CLI.
-
-```bash
-npx tsx src/conversational/cli.mts --data my.db --model model.json
+```sql
+INSERT INTO playground VALUES { id: 'guide-1', title: 'Camping pack', quantity: 3 };
+UPDATE playground SET quantity = 9 WHERE id = 'guide-1';
+DELETE FROM playground WHERE id = 'guide-1';
 ```
 
-Requirements:
+The webclient asks for confirmation before SQL mutations. Direct library callers commit their own SQL writes. The CLI
+can open or initialize a database. Pass both paths explicitly, replacing the illustrative `example.db` pair with your
+own:
 
-- a database data file
-- a semantic model JSON file
-- `GEMINI_API_KEY` in `.env` or passed with `--api-key`
+```sh
+npm run cli -- --data example.db --log example.db.log "SELECT * FROM articles LIMIT 10"
+```
 
-The example environment file is `.env.example`.
+In PowerShell, use `npm.cmd run cli -- ...` so npm forwards the CLI options unchanged. The API example above puts its
+files in a fresh OS temporary directory, not the repository root.
 
-## Demos
+This is a deliberately limited query language. It has no joins, subqueries, general arithmetic projections, DDL or
+transaction statements. `CONTAINS` is a literal substring predicate. The [SQL reference](src/query/README.md) gives the
+grammar, comparison semantics and further examples; the same reference opens beside the webclient editor without an
+internet connection.
 
-Available demo scripts:
+Every collection has a primary B+ tree mapping IDs to record locations. Ordinary scalar fields also receive secondary
+indexes by default. A secondary key combines the field value with the ID, which lets repeated values retain a stable
+order. Changing a document updates its existing indexes; disabling a field index removes that tree without removing the
+field or document. Enabling one validates and backfills the current data.
 
-- `npm run demo` - text semantic search demo
-- `npm run demo:images` - image semantic search demo; uses maintained animal photos in `examples/assets/images/` and downloads missing samples
-- `npm run demo:map` - generates a standalone `map.html` semantic map
+Long article bodies are poor B+ tree keys. Disable their indexes before inserting them, as in the API example. Encoded
+keys are bounded by the block layout, with a 2,035-byte limit for default 4,096-byte blocks; composite-key overhead
+reduces the space available for a field value. Compressing a field does not shorten its index key. Unindexed text
+remains stored and available to scans and semantic indexing.
 
-The demos store generated databases under the ignored `demo-db/` directory. The map output, `map.html`, is also ignored. The teaching reference store is separate from the runtime DBMS; run its checks with `npm run test:reference`.
+The planner uses an index when it can answer a predicate with an equality lookup or a supported range scan. Other
+predicates scan the collection. Numeric secondary ranges currently use that fallback and `ORDER BY` sorts its candidates
+in memory. `EXPLAIN SELECT` shows which path a query uses.
 
-Import utilities are available as `npm run import:wikipedia`, `npm run seed:articles`, and `npm run index:content`; pass arguments after `--`.
+```mermaid
+flowchart LR
+    ID[Document ID] --> Primary[Primary B+ tree]
+    Filter[Indexed field value] --> Secondary[Secondary B+ tree]
+    Primary --> Pointer[Record pointer]
+    Secondary --> Pointer
+    Pointer --> Records[RecordStore document chain]
+```
 
-## Benchmarks
+For incremental traversal, `fetchPageCursor()` in [`src/database/pagination.mts`](src/database/pagination.mts) returns
+JSON strings in `data`, an optional `nextCursor` and `hasMore`. Pass the token unchanged to continue after the full
+logical key, including the ID tie-breaker. Tokens survive physical relocation and reopening, but pagination is not a
+snapshot: inserts or indexed-value changes can affect later pages. The webclient grid uses offset pagination and sorts
+or filters its loaded rows.
 
-The repository includes multiple benchmark suites under `benchmarks/`, including general DBMS performance, HNSW performance and recall, incremental compaction, and large-dataset loaders and workloads.
+## Semantic search
 
-Useful commands:
+An embedding turns text or an image into a numeric vector. Similar content tends to have nearby vectors, so a
+natural-language question can retrieve a document that uses different wording. SiftwellDB stores those vectors alongside
+a Hierarchical Navigable Small World graph, or HNSW, which searches for approximate nearest neighbours. The Rust library
+performs the graph search and updates; TypeScript coordinates document identity and persistent graph/vector storage.
 
-- `npm run benchmark:compression`
-- `npm run benchmark:pagination -- articles.db --total 100000`
-- `npm run benchmark:btree`
-- `npm run benchmark:dbms`
-- `npm run benchmark:hnsw`
-- `npm run benchmark:vacuum`
-- `npm run benchmark:incremental`
+The webclient uses two separate encoders and index kinds:
 
-Benchmark-specific documentation lives in:
+| Search                                        | Encoder                        | Vector dimensions |
+| --------------------------------------------- | ------------------------------ | ----------------: |
+| Text query to text documents                  | `Xenova/all-MiniLM-L6-v2`      |               384 |
+| Text query or uploaded image to stored images | `Xenova/clip-vit-base-patch32` |               512 |
 
-- `benchmarks/README.md` - suite inventory, small-run examples, and cleanup decisions
-- `benchmarks/hnsw/README.md`
-- `benchmarks/incremental-compaction/README.txt`
-- `benchmarks/large-dataset/README.txt`
+Eligible string fields contribute to the text representation independently of their B+ tree settings. Image fields use
+the image encoder; MIME sidecars do not contribute text. Documents with long text are not split into chunks, so model
+input limits still matter. The default models are aimed at English; other languages are accepted but multilingual
+retrieval quality is not assured. See the upstream
+[MiniLM](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) and
+[CLIP](https://huggingface.co/openai/clip-vit-base-patch32) model cards.
 
-Many benchmark plotting scripts are Python programs. Install their Python dependencies separately before running them.
+![A MiniLM text search over the knowledge collection](docs/media/webclient-semantic.png)
 
-## Main entry points
+In **Semantic Search**, select a collection and use its text mode for documents such as support tickets or articles.
+Photo/text-to-image mode embeds the query with CLIP and searches image vectors. Uploading an image performs
+image-to-image retrieval. The original image bytes remain ordinary stored document data; the vector is a separate
+representation used for matching.
 
-- `src/database/simpledbms.mts` - primary high-level library API
-- `src/webclient/server/daemon.mts` - browser UI and HTTP API
-- `src/query/cli.mts` - query language CLI
-- `src/conversational/cli.mts` - conversational analytics CLI
+The GIF shows searches in the demo's `photos` collection using a small selection of its photographs. CLIP embeds each
+query or uploaded image, then the native HNSW index ranks the stored image vectors. The results and document view display
+the photos read from the database.
 
-## HNSW note
+![HNSW photo search in the demo database, with text queries and an uploaded image](docs/media/webclient-hnsw-photo-search.gif)
 
-Semantic search is optional. Each graph persists its vector dimension, and new vector pages carry their own dimension tag. Opening checks the graph before native allocation or vector decoding; incompatible dimensions disable semantic operations for that session while ordinary document access remains available. Matching dimensions do not prove that two embedding models share a vector space: keep the original model and `HnswConfig` shape.
+Photo credits and the recording's licence are listed in the [media guide](docs/media/README.md#hnsw-photo-search).
 
-Legacy graphs without stored dimension evidence remain intact and disabled. Their dimension cannot safely be inferred from the current configuration, vector bytes, or an empty/tombstoned graph. Recovery requires an explicitly verified source or exporting readable documents into a fresh database with the intended configuration. Graph metadata and vector-page extensions require the updated reader for semantic operations; document records, B+ trees and WAL retain their existing formats. See [HNSW dimension compatibility](src/indexes/hnsw/README.md).
+HNSW returns an approximate ranking by vector similarity. Its graph and vectors are stored in the database file.
+Removing a semantic document leaves graph tombstones and retained anchors so navigation remains valid; those entries no
+longer appear as live results. Full vacuum rebuilds graphs from live documents and removes the retained tombstone data.
+Incremental compaction can relocate it without rebuilding the graph.
 
-## Related docs
+Programmatic semantic search requires an `HnswConfig` supplied when creating or opening the database. The webclient
+provides that configuration itself. Keep the original encoders and dimensions for a persisted index: equal dimensions
+alone do not make different embedding models compatible. [Dimension compatibility](src/indexes/hnsw/README.md) describes
+the persisted checks and legacy restrictions.
 
-- `licences.md`
-- `src/query/README.md`
-- `benchmarks/hnsw/README.md`
-- `benchmarks/incremental-compaction/README.txt`
-- `benchmarks/large-dataset/README.txt`
+## Demo database
+
+**Create demo database** generates sample collections in a temporary database. Structured records and longer articles
+are generated in code, while photographs and memes come from local files. The seeder inserts them through the database
+API, computes their embeddings and builds the B+ tree and HNSW indexes. It then commits and reopens the database before
+connecting the webclient.
+
+The default dataset contains **2,055 documents**, including **840 images**, when all required local inputs are
+available:
+
+| Collection      | Default count | What to explore                                 |
+| --------------- | ------------: | ----------------------------------------------- |
+| employees       |           200 | Departments, salaries and SQL aggregates        |
+| products        |           160 | Price filters, sorting and descriptions         |
+| orders          |           400 | Consistent quantities, totals and status groups |
+| knowledge       |            31 | Short semantic text searches                    |
+| articles        |           240 | Long text, field indexes and compression        |
+| travel_guides   |            64 | Destination descriptions and semantic queries   |
+| support_tickets |           120 | Paraphrases, priorities and resolutions         |
+| photos          |           450 | Photographs with their supplied captions        |
+| gallery         |           150 | Image retrieval without descriptive captions    |
+| memes           |           240 | Visual similarity across local templates        |
+
+Local inputs live under `examples/assets/images/photos/`, `gallery/` and `memes/`. The photo folder includes
+`captions.json` and the Flickr8k notice. Photos and gallery use different files; gallery documents intentionally omit
+caption metadata. The number of imported images depends on the available valid files. Supply these datasets locally
+before creating the demo.
+
+`npm run demo:images` uses a separate set of six bundled CC0 photographs directly in `examples/assets/images/`.
+
+Creation can take several minutes, especially during the first model download. The database belongs to the temporary
+session and is removed when you disconnect or switch databases. The daemon also removes abandoned demos after their
+browser tabs stop renewing the session. The [demo guide](src/webclient/README.md#temporary-demo) explains this
+lifecycle.
+
+To keep a copy of the demo, supply the local assets and run `npm run seed:test`. It creates
+`databases/webclient-test.db` and its WAL and refuses to overwrite an existing output. Select `webclient-test.db` from
+the database dropdown to open it. Smaller standalone
+text and image examples remain available through `npm run demo`, `npm run demo:images` and `npm run demo:map`.
+
+## Storage and persistence
+
+The default database uses **4,096-byte blocks**. `FreeBlockFile` manages allocation and reuse of free blocks.
+`RecordStore` serializes each document into one or more linked record blocks, while B+ trees and semantic storage use
+the same allocator. Deleting a record normally creates reusable space inside the file; it does not necessarily reduce
+the file's physical length.
+
+Changes are staged until a commit submits them through `AtomicFile`. Its write-ahead log, or WAL, records the data-file
+updates before they are applied:
+
+```mermaid
+flowchart LR
+    Staged[Staged record and index changes] --> Log[Write checksummed WAL and sync]
+    Log --> Data[Apply data-file updates and sync]
+    Data --> Clear[Clear WAL and sync]
+    Pending[Valid pending WAL on reopen] --> Replay[Replay updates]
+    Replay --> Data
+```
+
+A valid pending log can be replayed when the database reopens. A corrupt or incomplete log is retained and opening fails
+explicitly. The log covers changes to records, metadata, B+ trees and HNSW storage together.
+
+The WAL handles persistence, but there is no transaction API or statement rollback. A failure after a mutation has
+started can leave the in-memory state incomplete. The database then rejects further operations until it is closed and
+reopened. A complete submitted WAL can still be replayed if the process stopped before acknowledging the commit. The
+[storage notes](docs/storage-and-index-compatibility.md) describe recovery and compatibility in more detail.
+
+### Compression and binary fields
+
+String and binary payloads support `none`, `gzip`, `deflate`, `brotli`, `zstd-fast` and `zstd`. Collection field
+defaults affect future writes; per-write overrides can choose a different codec or explicitly keep data uncompressed.
+Compression that provides no benefit falls back to `none`. Saved defaults do not rewrite existing documents, and full
+vacuum preserves each field's stored codec.
+
+The Compression tab can sample a collection and recommend a policy without changing it. Saving the advice changes
+future-write defaults. The Lab compares compression policies and estimates their storage costs.
+
+![Compression settings and codec advice for article bodies](docs/media/webclient-compression.png)
+
+The API accepts `Buffer` fields to store images and other binary data directly in the database.
+`getDocumentObjectById()` restores binary fields as buffers; JSON responses encode them as base64. The webclient editor
+uses a typed binary representation to distinguish those bytes from ordinary strings and preserves untouched binary
+fields when editing another value.
+
+## Compaction and vacuum
+
+Incremental compaction works within the existing database. In bounded batches it moves records, B+ tree nodes and
+semantic graph/vector units into lower free blocks, repairs their references and trims a free suffix where possible.
+Retained anchors or other allocated blocks can prevent truncation. A run can improve the layout without reducing the
+file size, and semantic tombstones remain retained.
+
+Full vacuum builds a fresh database from live logical documents. Normal insertion rebuilds its indexes and computes
+embeddings, then validation compares the source and target. The webclient installs the rebuilt files through a recovery
+manifest and reopens them before returning to normal operation. An overlay shows progress for the collection and phase
+being processed. Replacement and reopening show a spinner because their work is not measured in document counts.
+
+The library's `vacuumCompactInto()` returns another open database instance; it does not replace the source files itself.
+Use background incremental compaction for bounded ongoing maintenance and full vacuum when a complete rebuild is worth
+the extra work and temporary output space. The space recovered depends on the database's layout and live data. The
+[compaction guide](src/compaction/README.md) describes the algorithms, relocation targets and maintenance policies.
+
+## How the components fit together
+
+The browser talks to `ApiRouter`, which delegates database work to `DatabaseService`. The service owns one active
+database and serializes operations that share storage. `SimpleDbms` is the higher-level API; `DbmsBack` coordinates
+records, index roots and mutation safety. SQL is parsed and planned before the executor calls those same database
+operations.
+
+```mermaid
+flowchart TD
+    Browser[Browser webclient] --> HTTP[HTTP API and DatabaseService]
+    HTTP --> SQL[Query parser, planner and executor]
+    HTTP --> DB[SimpleDbms and DbmsBack]
+    Library[TypeScript callers] --> DB
+    SQL --> DB
+    DB --> Records[RecordStore]
+    DB --> Trees[B+ trees]
+    DB --> Semantic[Persistent HNSW graph and vectors]
+    Semantic <--> Native[Native Rust HNSW via Koffi]
+    Records --> Blocks[FreeBlockFile]
+    Trees --> Blocks
+    Semantic --> Blocks
+    Blocks --> WAL[AtomicFile, WAL and file I/O]
+```
+
+Conversational analytics adds a schema model and Gemini-generated SQL on top of the query engine. That schema model
+describes collections and fields; it is separate from the embedding models used for similarity search. Chat permits
+read-only selection and explanation. Schema inspection works without a Gemini key. Generated charts use Chart.js, with a
+table fallback when it is unavailable.
+
+The HTTP API exposes connection, CRUD, query, search, compression and maintenance routes. Canonical collection/document
+addresses preserve exact names and ID types. The
+[webclient integration guide](src/webclient/README.md#integration-boundaries) maps the UI to its routes and explains the
+shared connection and queue.
+
+The main source directories are:
+
+```text
+src/
+  database/        Public API, documents, compression, import and pagination
+  storage/         Files, WAL, blocks and record serialization
+  indexes/         B+ trees, HNSW and word/content indexes
+  query/           Tokenizer, parser, planner, executor and CLI
+  compaction/      Incremental maintenance, relocation and full vacuum
+  conversational/ Schema model, Gemini integration and analytics CLI
+  webclient/       HTTP daemon, backend services, frontend and demo generators
+  types/           Local declarations used by the TypeScript build
+hnsw-native/       Rust source and maintained shared libraries
+examples/          Library examples, reference store and local image inputs
+tests/             Shared test helpers; module tests live beside each component
+benchmarks/        Performance workloads, results and plotting tools
+scripts/           Build, SQL-reference, import, indexing and seeding commands
+docs/              Documentation media and detailed compatibility notes
+```
+
+## Development and verification
+
+Run the repository checks from its root:
+
+```sh
+npm run build
+npm test
+npm run lint
+npm run prettier-check
+```
+
+The regression suite covers storage and WAL recovery, serialization, B+ trees, document mutations, SQL, HNSW
+persistence, compaction, vacuum recovery and HTTP integration. Module tests live in each component's `tests/` directory;
+`tests/` at the root contains shared helpers and subprocess fixtures. Ordinary tests use controlled embeddings, so they
+do not require downloading the external demo datasets or running the pretrained models.
+
+`npm run coverage` collects coverage. `npm run test:reference` exercises the separate teaching document store in
+`examples/`. To rebuild or test the Rust source, use `cargo build --release` and `cargo test` inside `hnsw-native/`,
+then copy the library into `prebuilt/` and rebuild TypeScript assets as described in the native guide. The TypeScript
+suite also tests the native bridge.
+
+Benchmarks are opt-in and excluded from `npm test`. They cover B+ tree and HNSW operations, compression, queries,
+pagination and both forms of compaction. [`benchmarks/README.md`](benchmarks/README.md) lists suites and manageable
+runs. For example, `npm run benchmark:query` runs the query workloads. Plotting scripts require their own Python
+dependencies. Generated databases and benchmark outputs are kept out of source control. Benchmark notes describe the
+workloads and results.
+
+`npm run docs:sql` regenerates the SQL reference and query README from their maintained source. `npm run clean` removes
+only generated build output. Model caches, local datasets and persistent databases have their own lifetimes and are not
+removed by that command.
+
+## Scope and current limits
+
+SiftwellDB is an engineering project for exploring database internals and their integration. Use one owner for a
+data/WAL pair. The webclient daemon has one active database shared by its tabs and no authentication or TLS layer; it is
+intended for trusted local use. It does not provide multi-process isolation, snapshot pagination, general transactions
+or full SQL compatibility.
+
+Indexed operations depend on the field policy and supported comparison type. Some filters scan and sorts or aggregate
+results can use substantial memory. Semantic retrieval is approximate and depends on the chosen model. Large collections
+still require record and index work when deleted or rebuilt; the service preserves serialization and exposes
+waiting/progress states.
+
+See the [SQL](src/query/README.md), [HNSW](src/indexes/hnsw/README.md), [storage](src/storage/blocks/README.md) and
+[webclient](src/webclient/README.md) guides for more detail on each component.
+
+## Assets and licences
+
+The demo uses Flickr8k photographs and captions, plus locally provided meme templates. The Flickr8k notice requests
+citation of M. Hodosh, P. Young and J. Hockenmaier's 2013 paper, _Framing Image Description as a Ranking Task: Data,
+Models and Evaluation Metrics_. It does not establish complete redistribution rights for every photograph. Creators and
+licences for the local meme templates are not fully recorded.
+
+The animal-image example uses bundled CC0 photographs from the WordPress Photo Directory. Their source pages,
+photographers, licence records and file hashes are listed in [the source manifest](examples/assets/images/sources.json).
+The documentation includes original illustrations and an attributed selection of Creative Commons photographs from the
+demo. Their source pages, licences and capture details are recorded in the [media guide](docs/media/README.md).
+
+The npm manifest declares the software as ISC. There is no root ISC `LICENSE` text in the repository and the Rust
+manifest does not declare a licence. [`licences.md`](licences.md) records the current software inventory and the limits
+of the available asset attribution. Software licence metadata does not grant rights to third-party images, datasets or
+model weights.

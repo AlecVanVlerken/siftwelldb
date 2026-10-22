@@ -2,8 +2,8 @@ Incremental Compaction Benchmarks
 ================================
 
 This directory contains the benchmark and demonstration suite for K-metric
-incremental compaction. The suite is grouped by the question each benchmark
-answers, so the folder is no longer one flat list of unrelated scripts.
+incremental compaction. Scenarios are grouped by the part of the algorithm or
+workload they measure.
 
 Folder structure
 ----------------
@@ -14,12 +14,12 @@ Folder structure
 
 - relocation/
   Relocation-domain benchmarks:
-  RecordStore, B+ tree, HNSW, controlled mixed tail blockers, and targeted
+  RecordStore, B+ tree, HNSW, controlled mixed tail blockers and targeted
   blocker-clear sequences.
 
 - consistency/
   Observable correctness benchmarks:
-  record-to-B+ tree reference stability, record-to-HNSW reference stability,
+  record-to-B+ tree reference stability, record-to-HNSW reference stability
   and exact HNSW semantic equivalence.
 
 - durability/
@@ -28,7 +28,7 @@ Folder structure
 - maintenance/
   Long-running and idle-style maintenance:
   no-op/plateau, bounded idle steps, long-run idle maintenance,
-  maintenance stability, rolling churn, and fallback honesty.
+  maintenance stability, rolling churn and fallback behavior.
 
 - performance/
   Runtime overhead and cost-vs-benefit benchmarks.
@@ -37,7 +37,7 @@ Folder structure
   Pathological layouts and stress scenarios.
 
 - shared/
-  Shared benchmark utilities, consistency snapshot helpers, and targeted
+  Shared benchmark utilities, consistency snapshot helpers and targeted
   storage helpers.
 
 - plotting/
@@ -137,7 +137,7 @@ Plot families
   Shows whether core scenarios move storage amplification toward K.
 
 - relocation/relocation_type_comparison.png
-  Shows RecordStore, B+ tree, HNSW, and tail-reclaim work by relocation
+  Shows RecordStore, B+ tree, HNSW and tail-reclaim work by relocation
   scenario.
 
 - relocation/relocation_step_attribution.png
@@ -153,7 +153,7 @@ Plot families
   shrink plots.
 
 - maintenance/maintenance_amplification_summary.png
-  Summarizes no-op, plateau, idle, and long-run maintenance amplification.
+  Summarizes no-op, plateau, idle and long-run maintenance amplification.
 
 - maintenance/maintenance_timeline.png
   Shows amplification over repeated workload/maintenance phases.
@@ -169,17 +169,17 @@ Interpretation notes
 
 - Core plots answer whether incremental compaction shrinks and converges.
 - Relocation plots answer which storage kind did the work.
-- Consistency plots answer whether records, indexes, cursors, and semantic
+- Consistency plots answer whether records, indexes, cursors and semantic
   results stayed equivalent.
 - Maintenance plots answer whether bounded idle compaction behaves sensibly
-  over time and reports plateau/fallback honestly.
+  over time and when it reaches a plateau or switches to a fallback.
 - Performance plots answer whether compaction cost is proportional to useful
   work.
 
 HNSW note
 ---------
 
-HNSW semantic equivalence has two different implementation stories:
+The two compaction methods affect HNSW differently:
 
 - Incremental record relocation preserves HNSW structure by stable relabeling.
   It updates the persisted document pointer/payload identity for the existing
@@ -191,7 +191,7 @@ HNSW semantic equivalence has two different implementation stories:
 The relabel invariant spec compares the HNSW graph snapshot before/after
 relabeling, normalizing only the intended document pointer change. The compared
 snapshot includes entry point, current max level, node IDs, vector pointers,
-vector payload values, deleted flags, levels, and neighbor lists.
+vector payload values, deleted flags, levels and neighbor lists.
 
 Correctness specs outside this folder
 -------------------------------------

@@ -3,6 +3,10 @@
 
 ## Overview
 
+Run the commands from the repository root on Node.js 24. The plotter requires pandas and matplotlib.
+Output paths such as "db/db.data" and "results/progress.csv" below are relative to
+"benchmarks/large-dataset/".
+
 The benchmark consists of three steps:
 
 1. **Loader**  
@@ -36,6 +40,8 @@ The benchmark consists of three steps:
 - Commits once per batch ("--batch")
 - Stops when the size of "db.data" reaches "--targetGB"
 - Writes one CSV row per batch to "results/progress.csv"
+
+Running the loader again replaces this benchmark's database and progress CSV.
 
 Each document contains:
 - an "id" field ("doc1234")
@@ -71,10 +77,10 @@ The workload size (number of documents) is inferred from the loader’s "progres
 
 ### Generate a large database
 
-- npx tsx benchmarks/large-dataset/large_dataset_loader.mts \
-  --targetGB 20 \
-  --payloadKB 512 \
-  --batch 200
+```sh
+npx tsx benchmarks/large-dataset/large_dataset_loader.mts --targetGB 20 --payloadKB 512 --batch 200
+```
+
 - Arguments:
     - --targetGB (default: 50): target size of db.data
     - --payloadKB (default: 512): size of document payload
@@ -86,10 +92,10 @@ The workload size (number of documents) is inferred from the loader’s "progres
 
 ### Run the read workload
 
-- npx tsx benchmarks/large-dataset/large_dataset_workload.mts \
-  --seconds 120 \
-  --scanEvery 10 \
-  --scanLen 100
+```sh
+npx tsx benchmarks/large-dataset/large_dataset_workload.mts --seconds 120 --scanEvery 10 --scanLen 100
+```
+
 - Arguments:
     - --seconds (default: 120): workload duration
     - --scanEvery (default: 10): one scan every N operations
@@ -99,8 +105,11 @@ The workload size (number of documents) is inferred from the loader’s "progres
 
 ### Generate plots
 
-- python benchmarks/large-dataset/plot_large_dataset.py
-- Arguments:
+```sh
+python benchmarks/large-dataset/plot_large_dataset.py
+```
+
+- Output:
     - results/images/*.png
 
 ## CSV output format
@@ -131,7 +140,7 @@ The workload size (number of documents) is inferred from the loader’s "progres
 
 ## Example results (20GB run)
 
-These example results were collected on:
+These historical results describe the original 20GB run, not a measurement of the current checkout. They were collected on:
 
 - System:
     - CPU: 12th Gen Intel(R) Core(TM) i7-1255U @ 1.70 GHz
