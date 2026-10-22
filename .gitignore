@@ -1,4 +1,4 @@
-# Generated builds, caches, and reports
+# Generated builds, caches and reports
 node_modules/
 build/
 coverage/
@@ -17,6 +17,7 @@ benchmarks/datasets/
 benchmarks/hnsw/datasets/
 
 # Local databases and generated examples
+/databases/
 *.data
 *.db
 *.db.model.json
@@ -26,6 +27,15 @@ testdb
 demo-db/
 converse-db/
 /map.html
+
+# Locally supplied third-party demo inputs and persistent generated showcases
+/Flickr8k_Dataset/
+/Flickr8k_text/
+/Memes templates*/
+/examples/assets/images/photos/
+/examples/assets/images/gallery/
+/examples/assets/images/memes/
+/output/demo-databases/
 
 # Local settings and editor artifacts
 .env

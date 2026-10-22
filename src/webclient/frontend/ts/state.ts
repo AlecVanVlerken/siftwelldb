@@ -1,3 +1,5 @@
+import type { DemoStatus } from './demo-session.js';
+
 /** Dictionaries indexed by database names must never consult inherited properties. */
 export function createDictionary<T>(values: Record<string, T> = {}): Record<string, T> {
   return Object.assign(Object.create(null) as Record<string, T>, values);
@@ -6,6 +8,8 @@ export function createDictionary<T>(values: Record<string, T> = {}): Record<stri
 export type WebclientState = {
   connected: boolean;
   filepath: string | null;
+  temporaryDemo: DemoStatus | null;
+  demoCreation: DemoStatus | null;
   geminiKeySet: boolean;
   collections: string[];
   countsByColl: Record<string, number | '?'>;
@@ -51,6 +55,8 @@ export type WebclientState = {
 export const state: WebclientState = {
   connected: false,
   filepath: null,
+  temporaryDemo: null,
+  demoCreation: null,
   geminiKeySet: false,
   collections: [],
   countsByColl: createDictionary(),
@@ -136,6 +142,8 @@ export function resetDisconnectedState(): void {
   invalidateRequestContext('database');
   state.connected = false;
   state.filepath = null;
+  state.temporaryDemo = null;
+  state.demoCreation = null;
   state.collections = [];
   state.docsByColl = createDictionary();
   state.countsByColl = createDictionary();

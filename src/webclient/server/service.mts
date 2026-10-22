@@ -38,6 +38,18 @@ import { QueryMutationError } from '../../query/executor.mjs';
 import { compareValues } from '../../query/expressions.mjs';
 import { getClipHnswConfig } from './embedding-config.mjs';
 import { generateDemoEmployees, generateSemanticKnowledgeDemoDocuments } from './demo-data.mjs';
+import { discoverDemoAssets, type DemoAssetOptions } from './demo-assets.mjs';
+import { generateShowcaseCollections, type ShowcaseCounts } from './demo-showcase-data.mjs';
+import { seedComprehensiveDemo, DEMO_MAX_BYTES, demoEmbeddingConfig } from './demo-seeder.mjs';
+import {
+  DemoDirectoryStore,
+  DemoLeases,
+  DemoSessionConflictError,
+  emptyDemoStatus,
+  type DemoStatus,
+  type OwnedDemoDirectory,
+} from './temporary-demo.mjs';
+import { randomUUID } from 'node:crypto';
 import {
   assertNoVacuumArtifacts,
   finishVacuumReplacement,
@@ -170,6 +182,7 @@ export type DatabaseStatus = {
   incrementalCompaction: IncrementalCompactionStatus;
   semanticIndexes: string[];
   semanticReindexPending: string[];
+  temporaryDemo: DemoStatus | null;
 };
 
 export class DatabaseInputError extends Error {
@@ -203,6 +216,17 @@ export type DatabaseServiceOptions = {
   hnswConfig?: HnswConfig | (() => HnswConfig | Promise<HnswConfig>);
   incrementalCompactionIntervalMs?: number;
   incrementalCompactionPolicy?: IncrementalCompactionPolicy;
+  demo?: {
+    assetRoot?: string;
+    assets?: DemoAssetOptions;
+    counts?: Partial<ShowcaseCounts>;
+    temporaryRoot?: string;
+    maxBytes?: number;
+    batchSize?: number;
+    leaseMs?: number;
+    graceMs?: number;
+    cleanupIntervalMs?: number;
+  };
 };
 
 const DEFAULT_INCREMENTAL_COMPACTION_INTERVAL_MS = 5_000;
@@ -279,12 +303,260 @@ export class DatabaseService {
   /** Per-collection cache of `getCollectionRecordBytes`. Invalidated on inserts/edits/deletes. */
   private recordBytesCache: Map<string, number> = new Map();
   private documentCountCache: Map<string, number> = new Map();
+  private readonly demoDirectories: DemoDirectoryStore;
+  private readonly demoOptions: NonNullable<DatabaseServiceOptions['demo']>;
+  private demoOwned: OwnedDemoDirectory | null = null;
+  private demoProgress = emptyDemoStatus();
+  private demoLeases: DemoLeases;
+  private demoAbort: AbortController | null = null;
+  private demoCreation: Promise<void> | null = null;
+  private demoClosingDatabase: SimpleDbms | null = null;
+  private demoStartup: Promise<string[]> | null = null;
+  private demoTimer: ReturnType<typeof setInterval> | null = null;
+  private shuttingDown = false;
 
   constructor(options: DatabaseServiceOptions = {}) {
     this.providedHnswConfig = options.hnswConfig;
     this.incrementalCompactionIntervalMs =
       options.incrementalCompactionIntervalMs ?? DEFAULT_INCREMENTAL_COMPACTION_INTERVAL_MS;
     this.incrementalCompactionPolicy = options.incrementalCompactionPolicy ?? DEFAULT_INCREMENTAL_COMPACTION_POLICY;
+    this.demoOptions = options.demo ?? {};
+    this.demoDirectories = new DemoDirectoryStore(this.demoOptions.temporaryRoot);
+    this.demoLeases = new DemoLeases(this.demoOptions.leaseMs, this.demoOptions.graceMs);
+  }
+
+  initializeTemporaryDemos(): Promise<string[]> {
+    this.demoStartup ??= this.demoDirectories.cleanupAbandoned();
+    return this.demoStartup;
+  }
+
+  getDemoStatus(clientId?: string): DemoStatus {
+    if (clientId && ['creating', 'ready'].includes(this.demoProgress.state)) this.demoLeases.touch(clientId);
+    return {
+      ...this.demoProgress,
+      counts: { ...this.demoProgress.counts },
+      warnings: [...this.demoProgress.warnings],
+      clientActive: clientId ? this.demoLeases.active().includes(clientId) : false,
+    };
+  }
+
+  get temporaryDemo(): DemoStatus | null {
+    return ['creating', 'ready', 'cancelling'].includes(this.demoProgress.state) || this.demoOwned
+      ? this.getDemoStatus()
+      : null;
+  }
+
+  startDemo(clientId: string): DemoStatus {
+    DemoLeases.validateClient(clientId);
+    if (this.shuttingDown) throw new DemoSessionConflictError('The daemon is shutting down.');
+    if (['creating', 'ready'].includes(this.demoProgress.state)) return this.getDemoStatus(clientId);
+    if (this.demoCreation) throw new DemoSessionConflictError('The previous demo is still being cleaned up.');
+    if (this.demoOwned || this.demoClosingDatabase)
+      throw new DemoSessionConflictError(
+        'Previous demo cleanup is pending. Disconnect to retry cleanup before creating another demo.',
+      );
+    const id = randomUUID();
+    const controller = new AbortController();
+    this.demoAbort = controller;
+    this.demoLeases = new DemoLeases(this.demoOptions.leaseMs, this.demoOptions.graceMs);
+    this.demoLeases.touch(clientId);
+    this.demoProgress = {
+      ...emptyDemoStatus(),
+      id,
+      state: 'creating',
+      stage: 'Inspecting local images and captions',
+      temporary: true,
+    };
+    this.startDemoTimer();
+    const started = performance.now();
+    const job = this.runExclusive('create-demo', async () => {
+      let database: SimpleDbms | null = null;
+      let owned: OwnedDemoDirectory | null = null;
+      try {
+        const warnings = await this.initializeTemporaryDemos();
+        controller.signal.throwIfAborted();
+        const assets = await discoverDemoAssets(
+          this.demoOptions.assetRoot ?? path.resolve(import.meta.dirname, '../../..'),
+          this.demoOptions.assets,
+          controller.signal,
+        );
+        for (const [name, wanted] of [
+          ['photos', this.demoOptions.assets?.photos ?? 450],
+          ['gallery', this.demoOptions.assets?.gallery ?? 150],
+          ['memes', this.demoOptions.assets?.memes ?? 240],
+        ] as const)
+          if (wanted > 0 && assets[name].length === 0)
+            throw new Error(`No usable ${name} assets were found for the comprehensive demo.`);
+        const collections = generateShowcaseCollections(this.demoOptions.counts);
+        const maxBytes = this.demoOptions.maxBytes ?? DEMO_MAX_BYTES;
+        if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes >= 2_000_000_000)
+          throw new Error('Demo storage budget must be positive and below 2 GB.');
+        if (assets.estimatedBytes >= maxBytes)
+          throw new Error(
+            'Selected demo assets exceed the conservative storage budget. Reduce the internal image counts.',
+          );
+        const disk = await fs.statfs(this.demoDirectories.root);
+        if (disk.bavail * disk.bsize < assets.estimatedBytes * 2)
+          throw new Error('Insufficient free disk space for the temporary demo and construction WAL.');
+        const skipped = Object.entries(assets.skipped)
+          .filter(([, count]) => count > 0)
+          .map(([reason, count]) => `${reason}: ${count}`);
+        this.demoProgress.warnings = [...warnings, ...skipped];
+        controller.signal.throwIfAborted();
+        await this.closeInternal();
+        owned = await this.demoDirectories.create(id);
+        this.demoOwned = owned;
+        const models = demoEmbeddingConfig(await this.getHnswConfig());
+        controller.signal.throwIfAborted();
+        this.demoProgress.stage = 'Creating temporary database';
+        database = await this.openDatabaseFiles(
+          new RealFile(owned.filepath),
+          new RealFile(this.logFilepath(owned.filepath)),
+          models.config,
+          true,
+        );
+        const result = await seedComprehensiveDemo(database, collections, assets, owned.filepath, {
+          signal: controller.signal,
+          maxBytes,
+          batchSize: this.demoOptions.batchSize,
+          footprint: () => this.demoDirectories.footprint(owned!),
+          checkEmbeddings: models.checkEmbeddings,
+          onProgress: (progress) => Object.assign(this.demoProgress, progress),
+        });
+        controller.signal.throwIfAborted();
+        this.dbms = database;
+        database = null;
+        this.currentFilepath = owned.filepath;
+        this.demoProgress = {
+          ...this.demoProgress,
+          state: 'ready',
+          stage: 'Demo ready',
+          collection: null,
+          filepath: owned.filepath,
+          counts: result.counts,
+          bytes: result.bytes,
+          durationMs: performance.now() - started,
+        };
+        this.onDatabaseOpened();
+      } catch (error) {
+        let failure: unknown = error;
+        try {
+          if (database) {
+            this.demoClosingDatabase = database;
+            await database.close();
+            this.demoClosingDatabase = null;
+          }
+          if (owned) await this.demoDirectories.remove(owned);
+          if (owned && this.demoOwned?.id === owned.id) this.demoOwned = null;
+        } catch (cleanupError) {
+          failure = new AggregateError(
+            [error, cleanupError],
+            `Demo creation failed; cleanup must be retried: ${String(cleanupError)}`,
+          );
+        }
+        this.demoProgress.state = 'failed';
+        this.demoProgress.stage = controller.signal.aborted ? 'Demo creation cancelled' : 'Demo creation failed';
+        this.demoProgress.error = failure instanceof Error ? failure.message : String(failure);
+        this.demoProgress.filepath = null;
+        this.demoProgress.durationMs = performance.now() - started;
+        if (!this.demoOwned && this.demoTimer) {
+          clearInterval(this.demoTimer);
+          this.demoTimer = null;
+        }
+      }
+    });
+    this.demoCreation = job;
+    void job
+      .finally(() => {
+        if (this.demoCreation === job) this.demoCreation = null;
+        if (this.demoAbort === controller) this.demoAbort = null;
+      })
+      .catch((error: unknown) => {
+        this.demoProgress.state = 'failed';
+        this.demoProgress.error = error instanceof Error ? error.message : String(error);
+      });
+    return this.getDemoStatus();
+  }
+
+  async waitForDemoCreation(): Promise<DemoStatus> {
+    await this.demoCreation;
+    return this.getDemoStatus();
+  }
+
+  heartbeatDemo(clientId: string, demoId: string): DemoStatus {
+    if (demoId !== this.demoProgress.id || !['creating', 'ready'].includes(this.demoProgress.state))
+      throw new DemoSessionConflictError('This temporary demo session has ended.');
+    return this.getDemoStatus(clientId);
+  }
+
+  releaseDemo(clientId: string, demoId: string): DemoStatus {
+    DemoLeases.validateClient(clientId);
+    if (demoId === this.demoProgress.id) this.demoLeases.release(clientId);
+    return this.getDemoStatus();
+  }
+
+  async cancelDemo(clientId: string, demoId: string): Promise<DemoStatus> {
+    if (demoId !== this.demoProgress.id) throw new DemoSessionConflictError('This demo creation has already ended.');
+    this.demoLeases.assertExclusive(clientId);
+    if (this.demoProgress.state === 'ready')
+      throw new DemoSessionConflictError('The demo is ready. Disconnect to end its session.');
+    if (!['creating', 'cancelling'].includes(this.demoProgress.state))
+      throw new DemoSessionConflictError('There is no demo creation to cancel.');
+    this.demoProgress.state = 'cancelling';
+    this.demoProgress.stage = 'Cancelling demo creation';
+    this.demoAbort?.abort(new Error('Demo creation cancelled.'));
+    await this.demoCreation;
+    return this.getDemoStatus();
+  }
+
+  assertCanLeaveDemo(clientId?: string): void {
+    if (this.temporaryDemo) this.demoLeases.assertExclusive(clientId);
+  }
+
+  private prepareDemoSwitch(clientId?: string): void {
+    this.assertCanLeaveDemo(clientId);
+    if (this.demoProgress.state === 'creating') {
+      this.demoProgress.state = 'cancelling';
+      this.demoProgress.stage = 'Cancelling demo creation';
+    }
+    this.demoAbort?.abort(new Error('Demo creation cancelled by database switching.'));
+  }
+
+  private startDemoTimer(): void {
+    if (this.demoTimer) return;
+    this.demoTimer = setInterval(() => {
+      void this.expireDemoSessions().catch((error: unknown) => console.error('Temporary demo cleanup failed:', error));
+    }, this.demoOptions.cleanupIntervalMs ?? 10_000);
+    this.demoTimer.unref();
+  }
+
+  async expireDemoSessions(now = Date.now()): Promise<void> {
+    const id = this.demoProgress.id;
+    if (!this.temporaryDemo || !this.demoLeases.expired(now)) return;
+    if (this.demoProgress.state === 'creating') {
+      this.demoProgress.state = 'cancelling';
+      this.demoProgress.stage = 'Cancelling abandoned demo creation';
+    }
+    this.demoAbort?.abort(new Error('Temporary demo session expired.'));
+    await this.runExclusive('expire-demo', async () => {
+      if (this.demoProgress.id === id && this.demoLeases.expired(now)) {
+        if (this.demoOwned) await this.closeInternal();
+        else {
+          this.demoProgress = emptyDemoStatus();
+          if (this.demoTimer) clearInterval(this.demoTimer);
+          this.demoTimer = null;
+        }
+      }
+    });
+  }
+
+  async shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    this.demoAbort?.abort(new Error('Demo creation cancelled by server shutdown.'));
+    if (this.demoTimer) clearInterval(this.demoTimer);
+    this.demoTimer = null;
+    await this.demoCreation;
+    await this.runExclusive('shutdown', async () => this.closeInternal());
   }
 
   private getHnswConfig(): Promise<HnswConfig> {
@@ -306,7 +578,12 @@ export class DatabaseService {
 
   /** True when a database is currently connected. */
   get isConnected(): boolean {
-    return this.dbms !== null && this.dbms.isHealthy;
+    return (
+      this.dbms !== null &&
+      this.dbms.isHealthy &&
+      !['creating', 'cancelling'].includes(this.demoProgress.state) &&
+      (!this.demoOwned || this.demoProgress.state === 'ready')
+    );
   }
 
   /** The filepath of the currently connected database, or null. */
@@ -323,9 +600,12 @@ export class DatabaseService {
    * Connect to an existing database or create a new one if the
    * file does not exist yet.
    */
-  async connect(filepath: string): Promise<string> {
+  async connect(filepath: string, clientId?: string): Promise<string> {
+    const sameDemo = this.demoOwned?.filepath === path.resolve(filepath) && this.demoProgress.state === 'ready';
+    if (!sameDemo) this.prepareDemoSwitch(clientId);
     return this.runExclusive('connect', async () => {
-      await this.closeInternal();
+      if (!sameDemo) this.assertCanLeaveDemo(clientId);
+      await this.closeInternal(sameDemo);
 
       const hnswConfig = await this.getHnswConfig();
 
@@ -368,8 +648,12 @@ export class DatabaseService {
   /**
    * Force-create a new database, deleting any existing files first.
    */
-  async create(filepath: string): Promise<string> {
+  async create(filepath: string, clientId?: string): Promise<string> {
+    this.prepareDemoSwitch(clientId);
     return this.runExclusive('create', async () => {
+      this.assertCanLeaveDemo(clientId);
+      if (this.demoOwned?.filepath === path.resolve(filepath))
+        throw new DemoSessionConflictError('Use reset to recreate the active temporary demo.');
       await this.closeInternal();
 
       await assertNoVacuumArtifacts(filepath);
@@ -388,8 +672,12 @@ export class DatabaseService {
   }
 
   /** Disconnect from the current database. */
-  async disconnect(): Promise<void> {
-    await this.runExclusive('disconnect', async () => this.closeInternal());
+  async disconnect(clientId?: string): Promise<void> {
+    this.prepareDemoSwitch(clientId);
+    await this.runExclusive('disconnect', async () => {
+      this.assertCanLeaveDemo(clientId);
+      await this.closeInternal();
+    });
   }
 
   /**
@@ -399,7 +687,7 @@ export class DatabaseService {
     await this.runExclusive('reset', async () => {
       const filepath = this.currentFilepath;
       if (!filepath) throw new Error('No filepath available');
-      await this.closeInternal();
+      await this.closeInternal(true);
 
       await assertNoVacuumArtifacts(filepath);
       await deleteIfExists(filepath);
@@ -417,6 +705,18 @@ export class DatabaseService {
 
   /** Return connection and file-size information for the current database. */
   async getStatus(): Promise<DatabaseStatus> {
+    if (['creating', 'cancelling'].includes(this.demoProgress.state))
+      return {
+        connected: false,
+        filepath: this.currentFilepath,
+        recoveryError: this.recoveryError,
+        busyOperation: 'create-demo',
+        size: null,
+        incrementalCompaction: this.getIncrementalCompactionStatus(),
+        semanticIndexes: [],
+        semanticReindexPending: [],
+        temporaryDemo: this.temporaryDemo,
+      };
     return this.runExclusive('database-status', async () => ({
       connected: this.isConnected,
       filepath: this.currentFilepath,
@@ -426,6 +726,7 @@ export class DatabaseService {
       incrementalCompaction: this.getIncrementalCompactionStatus(),
       semanticIndexes: this.isConnected ? this.dbms!.getHnswIndexKeys() : [],
       semanticReindexPending: this.isConnected ? this.dbms!.getPendingSemanticCollections() : [],
+      temporaryDemo: this.temporaryDemo,
     }));
   }
 
@@ -494,7 +795,7 @@ export class DatabaseService {
         await compacted.close();
         compacted = null;
 
-        await this.closeInternal();
+        await this.closeInternal(true);
         originalClosed = true;
 
         preparationAttempted = true;
@@ -534,7 +835,7 @@ export class DatabaseService {
         await Promise.allSettled([tempDataFile.close(), tempLogFile.close()]);
         if (originalClosed) {
           try {
-            await this.closeInternal();
+            await this.closeInternal(true);
             const reopen = async () => {
               this.dbms = await this.openDatabaseFiles(
                 new RealFile(filepath),
@@ -553,7 +854,7 @@ export class DatabaseService {
             this.currentFilepath = filepath;
             this.onDatabaseOpened();
           } catch (restoreError) {
-            await this.closeInternal().catch(() => undefined);
+            await this.closeInternal(true).catch(() => undefined);
             throw new AggregateError(
               [error, restoreError],
               'Vacuum failed and recovery could not complete. Recovery files were retained; the database is disconnected.',
@@ -1572,6 +1873,21 @@ export class DatabaseService {
     if (this.activeExclusiveToken !== null && this.exclusiveContext.getStore() === this.activeExclusiveToken) {
       return await task();
     }
+    if (
+      ['creating', 'cancelling'].includes(this.demoProgress.state) &&
+      ![
+        'create-demo',
+        'connect',
+        'create',
+        'disconnect',
+        'expire-demo',
+        'shutdown',
+        'demo-conversational-connect',
+      ].includes(operation)
+    )
+      throw new DemoSessionConflictError(
+        'Demo creation is running. Wait for it to finish or cancel it before using the database.',
+      );
 
     const previous = this.operationChain.catch(() => undefined);
     let release: () => void = () => {};
@@ -1642,10 +1958,25 @@ export class DatabaseService {
     return info;
   }
 
-  private async closeInternal(): Promise<void> {
+  private async closeInternal(preserveDemo = false): Promise<void> {
+    if (this.demoClosingDatabase) {
+      await this.demoClosingDatabase.close();
+      this.demoClosingDatabase = null;
+    }
     if (this.dbms) {
       await this.dbms.close();
       this.dbms = null;
+    }
+    if (!preserveDemo && this.demoOwned) {
+      const owned = this.demoOwned;
+      await this.demoDirectories.remove(owned);
+      this.demoOwned = null;
+      if (this.demoProgress.id === owned.id) {
+        this.demoProgress = emptyDemoStatus();
+        this.demoLeases = new DemoLeases(this.demoOptions.leaseMs, this.demoOptions.graceMs);
+        if (this.demoTimer) clearInterval(this.demoTimer);
+        this.demoTimer = null;
+      }
     }
     this.currentFilepath = null;
     this.incrementalCompactionQueued = false;

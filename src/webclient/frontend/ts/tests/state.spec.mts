@@ -49,6 +49,21 @@ describe('frontend state', () => {
     state.modelPromptDismissed = { books: true };
     state.modelGenerating = true;
     state.seedBusy = true;
+    state.temporaryDemo = {
+      id: 'owned-demo',
+      state: 'ready',
+      stage: 'Ready',
+      collection: null,
+      completed: 200,
+      total: 200,
+      counts: { employees: 200 },
+      error: null,
+      filepath: 'temp/demo.db',
+      temporary: true,
+      bytes: 4096,
+      warnings: [],
+    };
+    state.demoCreation = state.temporaryDemo;
     state.search.query = 'old question';
     state.search.image = { name: 'photo.png', dataUrl: 'data:image/png;base64,aA==', buffer: 'aA==' };
     state.search.results = ['{"id":"b1"}'];
@@ -76,6 +91,8 @@ describe('frontend state', () => {
     expect(state.modelPromptDismissed).toEqual({});
     expect(state.modelGenerating).toBe(false);
     expect(state.seedBusy).toBe(false);
+    expect(state.temporaryDemo).toBeNull();
+    expect(state.demoCreation).toBeNull();
     expect(state.search).toMatchObject({ query: '', image: null, results: null, busy: false, error: null });
     expect(state.lab.busy).toBe(false);
   });

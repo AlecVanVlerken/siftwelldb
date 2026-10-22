@@ -16,6 +16,7 @@ import {
 } from '../../database/compression.mjs';
 import { isFieldValue, parseRawDocument, validateDocumentId } from '../../database/document.mjs';
 import { IndexValidationError } from '../../database/dbmsback.mjs';
+import { DemoSessionConflictError } from './temporary-demo.mjs';
 
 const ENV_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../../.env');
 
@@ -182,6 +183,7 @@ function sendError(res: http.ServerResponse, statusCode: number, message: string
  * @author Alexandre-Gatien Bienfet
  */
 export class ApiRouter {
+  private demoConversationalId: string | null = null;
   constructor(
     private readonly db: DatabaseService,
     private readonly conv?: ConversationalService,
@@ -252,7 +254,11 @@ export class ApiRouter {
 
       // GET /api/status — always available, even when disconnected
       if (method === 'GET' && pathname === '/api/status') {
-        sendJSON(res, 200, { connected: this.db.isConnected, filepath: this.db.filepath });
+        sendJSON(res, 200, {
+          connected: this.db.isConnected,
+          filepath: this.db.filepath,
+          temporaryDemo: this.db.temporaryDemo,
+        });
         return;
       }
 
@@ -318,8 +324,10 @@ export class ApiRouter {
           sendError(res, 400, 'Missing filepath');
           return;
         }
+        const clientId = typeof body['clientId'] === 'string' ? body['clientId'] : undefined;
+        this.db.assertCanLeaveDemo(clientId);
         if (this.conv) this.conv.onDisconnect();
-        const message = await this.db.connect(filepath);
+        const message = await this.db.connect(filepath, clientId);
         if (this.conv) await this.conv.onConnect(filepath, this.db.rawDbms);
         sendJSON(res, 200, { message, filepath });
         return;
@@ -332,22 +340,67 @@ export class ApiRouter {
           sendError(res, 400, 'Missing filepath');
           return;
         }
+        const clientId = typeof body['clientId'] === 'string' ? body['clientId'] : undefined;
+        this.db.assertCanLeaveDemo(clientId);
         if (this.conv) this.conv.onDisconnect();
-        const message = await this.db.create(filepath);
+        const message = await this.db.create(filepath, clientId);
         if (this.conv) await this.conv.onConnect(filepath, this.db.rawDbms);
         sendJSON(res, 200, { message, filepath });
         return;
       }
 
       if (method === 'POST' && pathname === '/api/disconnect') {
-        if (!this.db.isConnected) {
+        if (!this.db.isConnected && !this.db.temporaryDemo) {
           sendError(res, 400, 'No database connected');
           return;
         }
-        await this.db.disconnect();
+        const body = await parseBody(req);
+        await this.db.disconnect(typeof body['clientId'] === 'string' ? body['clientId'] : undefined);
         if (this.conv) this.conv.onDisconnect();
         sendJSON(res, 200, { message: 'Disconnected' });
         return;
+      }
+
+      // Demo progress and tab leases deliberately bypass the database operation queue.
+      // A model inference or long seed must not block cancellation or keep-alive requests.
+      if (method === 'GET' && pathname === '/api/demo/status') {
+        sendJSON(res, 200, { demo: this.db.getDemoStatus(url.searchParams.get('clientId') ?? undefined) });
+        return;
+      }
+      if (method === 'POST' && pathname.startsWith('/api/demo/')) {
+        if (['/api/demo/create', '/api/demo/cancel', '/api/demo/heartbeat', '/api/demo/release'].includes(pathname)) {
+          const body = await parseBody(req);
+          const clientId = body['clientId'];
+          if (typeof clientId !== 'string') throw new ApiHttpError(400, 'Missing demo client identity');
+          if (pathname === '/api/demo/create') {
+            const demo = this.db.startDemo(clientId);
+            if (this.conv && demo.state === 'creating' && this.demoConversationalId !== demo.id) {
+              this.demoConversationalId = demo.id;
+              this.conv.onDisconnect();
+              void this.db
+                .waitForDemoCreation()
+                .then(async () => {
+                  await this.runDatabaseExclusive('demo-conversational-connect', async () => {
+                    if (this.db.isConnected && this.db.filepath)
+                      await this.conv!.onConnect(this.db.filepath, this.db.rawDbms);
+                  });
+                })
+                .catch((error: unknown) => console.error('Demo conversational connection failed:', error));
+            }
+            sendJSON(res, 202, { demo });
+            return;
+          }
+          const demoId = body['demoId'];
+          if (typeof demoId !== 'string') throw new ApiHttpError(400, 'Missing demo session identity');
+          const demo =
+            pathname === '/api/demo/cancel'
+              ? await this.db.cancelDemo(clientId, demoId)
+              : pathname === '/api/demo/heartbeat'
+                ? this.db.heartbeatDemo(clientId, demoId)
+                : this.db.releaseDemo(clientId, demoId);
+          sendJSON(res, 200, { demo });
+          return;
+        }
       }
 
       // ── Everything below requires an active connection ─────
@@ -988,6 +1041,10 @@ export class ApiRouter {
       // No route matched
       sendError(res, 404, 'API endpoint not found');
     } catch (error) {
+      if (error instanceof DemoSessionConflictError) {
+        sendJSON(res, 409, this.errorBody(error.message));
+        return;
+      }
       if (
         error instanceof ApiHttpError ||
         error instanceof DatabaseInputError ||

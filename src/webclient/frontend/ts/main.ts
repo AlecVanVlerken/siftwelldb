@@ -31,6 +31,7 @@ import {
 import { getSqlMutationKind } from './sql-ui.js';
 import { openSqlReference } from './sql-reference.js';
 import { mergeScopedModel } from './model-editor.js';
+import { DemoCreation, demoProgress } from './demo-session.js';
 
 async function api(path, options = {}) {
   const context = captureRequestContext('database');
@@ -94,6 +95,25 @@ let searchRequest = 0;
 let chatRequest = 0;
 let sqlRequest = 0;
 let connectionBusy = false;
+// A fresh identifier for every page prevents copied tabs from sharing a lease.
+const demoClientId =
+  crypto.randomUUID?.() ??
+  Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) => value.toString(16).padStart(2, '0')).join('');
+let retainedDemoId = null;
+let demoHeartbeatBusy = false;
+let demoCreationCancelled = false;
+const demoCreation = new DemoCreation(
+  demoClientId,
+  (status) => {
+    if (!state.demoCreation) resetConnectionView();
+    state.demoCreation = status;
+    retainDemo(status);
+    renderDemoProgress(status);
+  },
+  undefined,
+  undefined,
+  showDemoCancellationError,
+);
 let maintenanceBusy = false;
 let sqlBusy = false;
 let modelModalCollection = null;
@@ -128,6 +148,7 @@ function clearDocumentSelection() {
 }
 
 function resetConnectionView() {
+  retainDemo(null);
   overviewRefreshing = false;
   fieldIndexBusy = false;
   clearDocumentSelection();
@@ -222,6 +243,21 @@ function imageMimeMetadataField(fieldName) {
 // Bootstrap
 // ─────────────────────────────────────────────────────────────────
 async function bootstrap() {
+  try {
+    const { demo } = await api(`/api/demo/status?${new URLSearchParams({ clientId: demoClientId })}`);
+    if (demo.state === 'creating' || demo.state === 'cancelling') {
+      const [settings, embed] = await Promise.all([
+        api('/api/settings').catch(() => ({ geminiKeySet: false })),
+        api('/api/embeddings/status').catch(() => state.search.embedStatus),
+      ]);
+      state.geminiKeySet = settings.geminiKeySet;
+      state.search.embedStatus = embed;
+      await createDemoDatabase(demo);
+      return;
+    }
+  } catch {
+    // Ordinary databases remain usable if the demo status request fails.
+  }
   const context = captureRequestContext('database');
   try {
     const [status, settings, embed] = await Promise.all([
@@ -232,6 +268,7 @@ async function bootstrap() {
     if (!isCurrentRequestContext(context)) return;
     state.connected = status.connected;
     state.filepath = status.filepath;
+    retainDemo(status.temporaryDemo);
     state.geminiKeySet = settings.geminiKeySet;
     state.search.embedStatus = embed;
   } catch (e) {
@@ -256,18 +293,21 @@ function updateConnState() {
   const ct = $('#conn-text');
   if (state.connected) {
     ci.classList.add('ok');
-    ct.innerHTML = `<strong>${esc(state.filepath)}</strong>`;
+    ct.innerHTML = `<strong>${state.temporaryDemo ? 'Temporary demo' : esc(state.filepath)}</strong>`;
+    ci.title = state.temporaryDemo ? 'Temporary demo · removed after its session ends' : state.filepath;
     $('#cm-disconnect').disabled = connectionBusy;
     $('#app').classList.remove('disconnected');
   } else {
     ci.classList.remove('ok');
     ct.textContent = 'Disconnected';
+    ci.title = '';
     $('#cm-disconnect').disabled = true;
     $('#app').classList.add('disconnected');
   }
   $('#app').classList.toggle('disconnected', !state.connected || connectionBusy);
   $('#sb-add-collection').disabled = !state.connected || connectionBusy;
   $('#sb-filter').disabled = !state.connected || connectionBusy;
+  $('#cm-demo-note').classList.toggle('hidden', !state.temporaryDemo);
   renderConnectionMaintenanceMenu();
 }
 
@@ -1058,6 +1098,7 @@ async function refreshDatabaseStatus() {
       state.connected = true;
       state.filepath = status.filepath;
       state.databaseStatus = status;
+      retainDemo(status.temporaryDemo);
       const reopened = captureRequestContext('database');
       await loadCollections();
       await loadModel();
@@ -1067,6 +1108,7 @@ async function refreshDatabaseStatus() {
       return status;
     }
     state.databaseStatus = status;
+    retainDemo(status.temporaryDemo);
   } catch {
     if (!isCurrentRequestContext(context) || request !== databaseStatusRequest) return null;
     state.databaseStatus = null;
@@ -3111,7 +3153,7 @@ $('#cm-disconnect').addEventListener('click', async () => {
   invalidateRequestContext('database');
   updateConnState();
   try {
-    await api('/api/disconnect', { method: 'POST' });
+    await api('/api/disconnect', { method: 'POST', body: demoSessionBody() });
     resetConnectionView();
     toast('Disconnected', 'ok');
     openModal('modal-connect');
@@ -3127,6 +3169,7 @@ $('#cm-disconnect').addEventListener('click', async () => {
     if (status?.connected) {
       state.connected = true;
       state.filepath = status.filepath;
+      retainDemo(status.temporaryDemo);
       await loadCollections();
       await loadModel();
       await refreshDatabaseStatus();
@@ -3151,6 +3194,148 @@ $('#doc-image-file').addEventListener('change', () =>
 );
 
 // Connect modal
+function demoSessionBody() {
+  return { clientId: demoClientId, demoId: retainedDemoId };
+}
+
+function retainDemo(status) {
+  const id = status && ['creating', 'ready', 'cancelling'].includes(status.state) ? status.id : null;
+  state.temporaryDemo = status?.state === 'ready' ? status : null;
+  if (retainedDemoId === id) return;
+  retainedDemoId = id;
+  if (id) void sendDemoHeartbeat();
+}
+
+async function sendDemoHeartbeat() {
+  const id = retainedDemoId;
+  if (!id || demoHeartbeatBusy) return;
+  demoHeartbeatBusy = true;
+  try {
+    await requestApi('/api/demo/heartbeat', {
+      method: 'POST',
+      body: { clientId: demoClientId, demoId: id },
+    });
+  } catch {
+    // The regular status poll reports a lost connection. Transient failures retry.
+  } finally {
+    demoHeartbeatBusy = false;
+  }
+}
+
+setInterval(sendDemoHeartbeat, 20000);
+window.addEventListener('pageshow', () => void sendDemoHeartbeat());
+window.addEventListener('pagehide', () => {
+  if (!retainedDemoId) return;
+  navigator.sendBeacon(
+    '/api/demo/release',
+    new Blob([JSON.stringify(demoSessionBody())], { type: 'application/json' }),
+  );
+});
+
+function setConnectionBusy(busy) {
+  connectionBusy = busy;
+  for (const id of ['connect-open', 'connect-create', 'connect-demo']) $('#' + id).disabled = busy;
+  $('#connect-filepath').disabled = busy;
+  updateConnState();
+}
+
+function renderDemoProgress(status) {
+  const { percent, detail } = demoProgress(status);
+  $('#demo-progress').classList.remove('hidden');
+  $('#demo-stage').textContent = status.stage || 'Creating demo…';
+  const bar = $('#demo-progress-bar');
+  if (status.total > 0) bar.value = percent;
+  else bar.removeAttribute('value');
+  $('#demo-progress-detail').textContent = detail;
+  $('#demo-collection-counts').textContent = Object.entries(status.counts)
+    .map(([collection, count]) => `${collection}: ${fmtNum(count)}`)
+    .join(' · ');
+  $('#connect-demo-cancel').classList.remove('hidden');
+}
+
+async function reconcileConnection() {
+  const status = await api('/api/status');
+  resetConnectionView();
+  if (status.connected) {
+    state.connected = true;
+    state.filepath = status.filepath;
+    state.databaseStatus = status;
+    retainDemo(status.temporaryDemo);
+    await loadCollections();
+    await loadModel();
+    render();
+  }
+  return status;
+}
+
+async function createDemoDatabase(existing) {
+  if (connectionBusy) return;
+  demoCreationCancelled = false;
+  setConnectionBusy(true);
+  $('#connect-err').classList.add('hidden');
+  $('#connect-demo-cancel').disabled = false;
+  openModal('modal-connect');
+  $('#demo-progress').classList.remove('hidden');
+  $('#demo-stage').textContent = 'Preparing temporary demo…';
+  $('#demo-progress-bar').removeAttribute('value');
+  $('#demo-progress-detail').textContent = 'Preparing documents and semantic models…';
+  $('#demo-collection-counts').textContent = '';
+  $('#connect-demo-cancel').classList.remove('hidden');
+  try {
+    const demo = await demoCreation.start(existing);
+    if (!demo || demoCreationCancelled) {
+      await reconcileConnection();
+      toast('Demo creation cancelled.');
+      return;
+    }
+    $('#demo-stage').textContent = 'Opening demo…';
+    $('#connect-demo-cancel').disabled = true;
+    $('#connect-demo-cancel').classList.add('hidden');
+    const status = await reconcileConnection();
+    if (!status.connected || status.temporaryDemo?.id !== demo.id) throw new Error('The demo did not open.');
+    if (demoCreationCancelled) return;
+    if (state.collections.includes('employees')) selectCollection('employees');
+    closeModal('modal-connect');
+    toast('Temporary demo ready. Explore its collections, SQL, and semantic search.', 'ok');
+    for (const warning of demo.warnings) toast(warning, 'warn');
+    render();
+  } catch (e) {
+    try {
+      await reconcileConnection();
+    } catch {
+      resetConnectionView();
+    }
+    openModal('modal-connect');
+    $('#connect-err').classList.remove('hidden');
+    $('#connect-err').textContent = e.message;
+  } finally {
+    state.demoCreation = null;
+    $('#demo-progress').classList.add('hidden');
+    $('#connect-demo-cancel').classList.add('hidden');
+    setConnectionBusy(false);
+  }
+}
+
+function showDemoCancellationError(error) {
+  demoCreationCancelled = false;
+  $('#connect-demo-cancel').disabled = false;
+  $('#demo-stage').textContent = state.demoCreation?.stage || 'Creating demo…';
+  $('#connect-err').classList.remove('hidden');
+  $('#connect-err').textContent = error.message;
+}
+
+$('#connect-demo-cancel').addEventListener('click', async () => {
+  if (!connectionBusy || $('#connect-demo-cancel').disabled) return;
+  demoCreationCancelled = true;
+  $('#connect-demo-cancel').disabled = true;
+  $('#demo-stage').textContent = 'Cancelling demo…';
+  try {
+    await demoCreation.cancel();
+  } catch (e) {
+    showDemoCancellationError(e);
+  }
+});
+
 async function connectDatabase(mode) {
   if (connectionBusy) return;
   const fp = $('#connect-filepath').value.trim();
@@ -3159,25 +3344,24 @@ async function connectDatabase(mode) {
     $('#connect-err').textContent = 'Provide a file path.';
     return;
   }
-  connectionBusy = true;
-  for (const id of ['connect-open', 'connect-create', 'connect-demo']) $('#' + id).disabled = true;
-  $('#connect-filepath').disabled = true;
+  const session = demoSessionBody();
+  setConnectionBusy(true);
   $('#connect-err').classList.add('hidden');
   resetConnectionView();
   try {
     const endpoint = mode === 'open' ? '/api/connect' : '/api/create';
-    const { message } = await api(endpoint, { method: 'POST', body: { filepath: fp } });
+    const { message } = await api(endpoint, { method: 'POST', body: { filepath: fp, ...session } });
     const status = await api('/api/status');
     if (!status.connected) throw new Error('The database did not open.');
     state.connected = status.connected;
     state.filepath = status.filepath;
     state.databaseStatus = status;
+    retainDemo(status.temporaryDemo);
     toast(message, 'ok');
     closeModal('modal-connect');
     updateConnState();
     await loadCollections();
     await loadModel();
-    if (mode === 'demo') await seedDemoEmployees();
     render();
   } catch (e) {
     // A failed switch may have closed the old connection. Reconcile with the daemon.
@@ -3187,6 +3371,7 @@ async function connectDatabase(mode) {
         state.connected = true;
         state.filepath = status.filepath;
         state.databaseStatus = status;
+        retainDemo(status.temporaryDemo);
         await loadCollections();
         await loadModel();
         render();
@@ -3198,22 +3383,15 @@ async function connectDatabase(mode) {
     $('#connect-err').classList.remove('hidden');
     $('#connect-err').textContent = e.message;
   } finally {
-    connectionBusy = false;
-    for (const id of ['connect-open', 'connect-create', 'connect-demo']) $('#' + id).disabled = false;
-    $('#connect-filepath').disabled = false;
-    updateConnState();
+    setConnectionBusy(false);
   }
 }
 $('#connect-open').addEventListener('click', () => connectDatabase('open'));
-for (const [id, mode] of [
-  ['connect-create', 'create'],
-  ['connect-demo', 'demo'],
-]) {
-  $('#' + id).addEventListener('click', () => {
-    if (connectionBusy) return;
-    confirmAction('Create database?', 'An existing file at this path will be replaced.', () => connectDatabase(mode));
-  });
-}
+$('#connect-demo').addEventListener('click', () => createDemoDatabase());
+$('#connect-create').addEventListener('click', () => {
+  if (connectionBusy) return;
+  confirmAction('Create database?', 'An existing file at this path will be replaced.', () => connectDatabase('create'));
+});
 
 // Settings modal
 $('#set-save-gemini').addEventListener('click', async () => {

@@ -1,7 +1,15 @@
 node_modules/
 build/
 coverage/
+/databases/
 hnsw-native/target/
 benchmarks/**/results/
 benchmarks/**/datasets/
 *.db.model.json
+/Flickr8k_Dataset/
+/Flickr8k_text/
+/Memes templates*/
+/examples/assets/images/photos/
+/examples/assets/images/gallery/
+/examples/assets/images/memes/
+/output/demo-databases/

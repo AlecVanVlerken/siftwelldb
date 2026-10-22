@@ -55,6 +55,10 @@ declare module '@huggingface/transformers' {
   };
 
   export class RawImage {
+    constructor(data: Uint8Array | Uint8ClampedArray, width: number, height: number, channels: 1 | 2 | 3 | 4);
+    width: number;
+    height: number;
     static fromBlob(blob: Blob): Promise<RawImage>;
+    save(path: string): Promise<void>;
   }
 }

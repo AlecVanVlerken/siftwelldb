@@ -111,15 +111,28 @@ function requestHandler(req: http.IncomingMessage, res: http.ServerResponse): vo
 
 const server = http.createServer(requestHandler);
 
+for (const warning of await db.initializeTemporaryDemos()) console.error(warning);
+
 server.listen(port, () => {
   console.log(`SiftwellDB webclient running at http://localhost:${port}`);
 });
 
 // Graceful shutdown
-process.on('SIGINT', () => {
+let shuttingDown = false;
+function gracefulShutdown(): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   const shutdown = async () => {
-    await db.disconnect();
-    server.close(() => process.exit(0));
+    // Stop new requests first; accepted service operations drain before handles and files close.
+    server.close();
+    await db.shutdown();
+    conv.onDisconnect();
+    process.exit(0);
   };
-  void shutdown();
-});
+  void shutdown().catch((error: unknown) => {
+    console.error('Shutdown cleanup failed:', error);
+    process.exitCode = 1;
+  });
+}
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);

@@ -21,6 +21,7 @@
             </svg>
           </button>
           <div class="conn-menu hidden" id="conn-menu">
+            <div class="cm-note hidden" id="cm-demo-note">Temporary demo · removed after its session ends.</div>
             <button class="cm-item" id="cm-key" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="8" cy="15" r="4" />
@@ -188,16 +189,28 @@
           </div>
           <div class="ttl">
             Open a database
-            <div class="sub">Open a SiftwellDB database file, or create a new one.</div>
+            <div class="sub">Open a database file, or explore a temporary demo.</div>
           </div>
         </div>
         <div class="modal-body">
           <label>Database file</label>
           <input type="text" id="connect-filepath" placeholder="e.g. data.db" value="data.db" autocomplete="off" />
+          <p class="demo-intro">
+            Create demo database needs no file path. It includes articles, photos, memes, and structured data, and is
+            removed after its session ends.
+          </p>
+          <div class="demo-progress hidden" id="demo-progress" role="status" aria-live="polite">
+            <strong id="demo-stage">Preparing demo…</strong>
+            <progress id="demo-progress-bar" max="100" value="0" aria-label="Demo creation progress"></progress>
+            <span id="demo-progress-detail">Preparing documents and semantic models…</span>
+            <div id="demo-collection-counts"></div>
+            <p>First use may take longer while the text and image models load. You can cancel at any time.</p>
+          </div>
           <p><button class="tbtn" id="connect-sql-reference" type="button">Read the SQL Reference</button></p>
           <div class="err hidden" id="connect-err"></div>
         </div>
         <div class="modal-foot">
+          <button class="sec hidden" id="connect-demo-cancel" type="button">Cancel demo</button>
           <button class="sec" id="connect-demo">Create demo database</button>
           <button class="sec" id="connect-create">Create new</button>
           <button class="pri" id="connect-open">Open / create</button>
