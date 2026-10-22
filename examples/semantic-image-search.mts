@@ -11,13 +11,13 @@
  *
  * On first launch the demo:
  *   1. Downloads the CLIP model (~340 MB, cached after first run).
- *   2. Downloads 100 sample images from Lorem Picsum into examples/assets/images/.
+ *   2. Reads the six bundled CC0 photographs in examples/assets/images/.
  *   3. Inserts them into a SimpleDbms collection and commits to disk.
  *
  * Commands at the prompt:
  *   <query text>   — text-to-image semantic search (top 5 results)
  *   1-6            — use a numbered suggestion
- *   rebuild        — wipe the database & images folder (next run rebuilds)
+ *   rebuild        — reset the demo database (next run rebuilds)
  *   exit / quit    — close and exit
  */
 
@@ -52,128 +52,15 @@ const Y = '\x1b[33m';
 const M = '\x1b[35m';
 const BLU = '\x1b[34m';
 
-// ── Sample images — ~100 animals with specific Wikipedia article titles
-
-const ANIMALS = [
-  // Pets & domestic
-  'dog',
-  'cat',
-  'domestic pig',
-  'cattle',
-  'sheep',
-  'goat',
-  'horse',
-  'donkey',
-  'domestic duck',
-  'Canada goose',
-  'chicken',
-  'rabbit',
-  'hamster',
-  'chinchilla',
-  // Big cats & canids
-  'lion',
-  'tiger',
-  'cheetah',
-  'leopard',
-  'jaguar',
-  'lynx',
-  'snow leopard',
-  'wolf',
-  'red fox',
-  'hyena',
-  // Herbivores
-  'elephant',
-  'giraffe',
-  'zebra',
-  'hippopotamus',
-  'rhinoceros',
-  'bison',
-  'moose',
-  'deer',
-  'camel',
-  'llama',
-  'alpaca',
-  // Primates
-  'gorilla',
-  'chimpanzee',
-  'orangutan',
-  'ring-tailed lemur',
-  // Other mammals
-  'giant panda',
-  'koala',
-  'kangaroo',
-  'sloth',
-  'meerkat',
-  'otter',
-  'beaver',
-  'hedgehog',
-  'squirrel',
-  'raccoon',
-  'badger',
-  'skunk',
-  'armadillo',
-  'walrus',
-  'seal',
-  'manatee',
-  'narwhal',
-  // Marine
-  'dolphin',
-  'humpback whale',
-  'great white shark',
-  'octopus',
-  'seahorse',
-  'jellyfish',
-  'starfish',
-  'crab',
-  'lobster',
-  'clownfish',
-  'goldfish',
-  // Birds
-  'bald eagle',
-  'barn owl',
-  'flamingo',
-  'peacock',
-  'toucan',
-  'hummingbird',
-  'puffin',
-  'pelican',
-  'penguin',
-  'ostrich',
-  'emu',
-  'swan',
-  'American crow',
-  'albatross',
-  'parrot',
-  // Reptiles & amphibians
-  'chameleon',
-  'iguana',
-  'Komodo dragon',
-  'saltwater crocodile',
-  'king cobra',
-  'ball python',
-  'gecko',
-  'axolotl',
-  'common frog',
-  // Insects & arachnids
-  'butterfly',
-  'honey bee',
-  'dragonfly',
-  'ladybug',
-  'ant',
-  'spider',
-  'scorpion',
-  'snail',
-];
-
 // ── Suggestions ───────────────────────────────────────────────────────────────
 
 const SUGGESTIONS = [
   'a cute fluffy pet',
-  'a dangerous predator',
-  'a colourful tropical bird',
-  'an animal that lives in the ocean',
-  'a farm animal',
-  'something small with many legs',
+  'a large elephant with tusks',
+  'penguins standing beside water',
+  'a dog resting on a sandy beach',
+  'a cat sleeping in the sunlight',
+  'a butterfly on a flower',
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -205,46 +92,6 @@ function l2Normalize(v: Float32Array): Float32Array {
   for (let i = 0; i < v.length; i++) v[i] /= norm;
   return v;
 }
-
-const WIKI_UA = 'SimpleDbms-Demo/1.0 (educational project)';
-
-/** Download a single file via fetch, following redirects. */
-async function downloadFile(url: string, dest: string): Promise<void> {
-  const res = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': WIKI_UA } });
-  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  fs.writeFileSync(dest, buf);
-}
-
-/**
- * Resolve an animal name to a Wikipedia image via the REST summary API.
- * Falls back to `originalimage` when `thumbnail` is absent.
- * Retries up to 3 times with exponential back-off.
- */
-async function downloadAnimalImage(animal: string, dest: string): Promise<void> {
-  const summaryUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(animal)}`;
-  let lastErr: Error | undefined;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await new Promise((r) => setTimeout(r, 600 * attempt));
-    try {
-      const res = await fetch(summaryUrl, { headers: { 'User-Agent': WIKI_UA } });
-      if (!res.ok) throw new Error(`Wikipedia HTTP ${res.status} for "${animal}"`);
-      const json = (await res.json()) as {
-        thumbnail?: { source: string };
-        originalimage?: { source: string };
-      };
-      const imgUrl = json?.thumbnail?.source ?? json?.originalimage?.source;
-      if (!imgUrl) throw new Error(`No image in Wikipedia summary for "${animal}"`);
-      await downloadFile(imgUrl, dest);
-      return; // success
-    } catch (err) {
-      lastErr = err as Error;
-    }
-  }
-  throw lastErr ?? new Error(`Failed to download image for "${animal}" after 3 attempts`);
-}
-
-// ── Display helpers ───────────────────────────────────────────────────────────
 
 function printImageTable(imageDir: string, files: string[]) {
   printHeader(`Image database — ${files.length} images`);
@@ -336,40 +183,8 @@ async function main() {
 
   // ── Ensure sample images exist ────────────────────────────────────────────
 
-  fs.mkdirSync(IMAGE_DIR, { recursive: true });
-
-  // Build the set of filenames that already exist so we can skip them.
-  const existingSet = new Set(fs.readdirSync(IMAGE_DIR).filter((f) => /\.(jpe?g|png|webp)$/i.test(f)));
-
-  const missing = ANIMALS.filter((a) => !existingSet.has(`${a.toLowerCase().replace(/\s+/g, '_')}.jpg`));
-
-  if (missing.length > 0) {
-    const already = ANIMALS.length - missing.length;
-    console.log(
-      `\n  ${DIM}${already > 0 ? `${already} images already cached. ` : ''}Downloading ${missing.length} missing animal photos from Wikipedia…${R}\n`,
-    );
-    let ok = 0;
-    let fail = 0;
-    for (const animal of missing) {
-      // Use a safe filename: lowercase, spaces → underscores
-      const filename = `${animal.toLowerCase().replace(/\s+/g, '_')}.jpg`;
-      const dest = path.join(IMAGE_DIR, filename);
-      try {
-        await downloadAnimalImage(animal, dest);
-        ok++;
-        process.stdout.write(`\r    ${DIM}Downloaded ${ok}/${missing.length}: ${animal}${' '.repeat(30)}${R}`);
-      } catch {
-        fail++;
-      }
-      // Polite delay: avoids Wikipedia rate-limiting
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    console.log(
-      `\n    ${G}✓ ${ok} downloaded${R}${fail > 0 ? `  ${Y}(${fail} skipped — no image on Wikipedia)${R}` : ''}`,
-    );
-  }
-
-  // Rescan after potential download.
+  // Bundled photos have per-file provenance in assets/images/sources.json.
+  // No external image downloads are performed by this example.
   const imageFiles = fs
     .readdirSync(IMAGE_DIR)
     .filter((f) => /\.(jpe?g|png|webp)$/i.test(f))
@@ -382,19 +197,26 @@ async function main() {
 
   // ── Build or reopen the database ──────────────────────────────────────────
 
-  // If new images were downloaded since the last DB build, wipe the old DB so
-  // it gets rebuilt with the full set of images.
+  // Rebuild the disposable demo database when fixture names or bytes change.
+  fs.mkdirSync(DB_DIR, { recursive: true });
+  const currentImages = new Map(
+    imageFiles.map((file) => [file, fs.readFileSync(path.join(IMAGE_DIR, file)).toString('base64')]),
+  );
   if (fs.existsSync(DATA_PATH)) {
     let tempDb: SimpleDbms | undefined;
     try {
       tempDb = await SimpleDbms.open(new RealFile(DATA_PATH), new RealFile(WAL_PATH), hnswConfig);
       let storedCount = 0;
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      for await (const _ of tempDb.cursor('photos', 'id')) storedCount++;
+      let imagesMatch = true;
+      for await (const json of tempDb.cursor('photos', 'id')) {
+        const stored = JSON.parse(json) as ResultDoc;
+        if (currentImages.get(stored.id) !== stored['image.jpeg']) imagesMatch = false;
+        storedCount++;
+      }
       await tempDb.close();
       tempDb = undefined;
-      if (storedCount < imageFiles.length) {
-        console.log(`\n  ${Y}DB has ${storedCount} images but ${imageFiles.length} are on disk — rebuilding…${R}`);
+      if (!imagesMatch || storedCount !== imageFiles.length) {
+        console.log(`\n  ${Y}The bundled image set changed; rebuilding the demo database.${R}`);
         fs.unlinkSync(DATA_PATH);
         if (fs.existsSync(WAL_PATH)) fs.unlinkSync(WAL_PATH);
       }
@@ -411,10 +233,9 @@ async function main() {
     process.stdout.write(`\n  Building database: embedding ${imageFiles.length} images `);
     db = await SimpleDbms.create(new RealFile(DATA_PATH), new RealFile(WAL_PATH), hnswConfig);
     for (const file of imageFiles) {
-      const imageBuffer = fs.readFileSync(path.join(IMAGE_DIR, file));
       const doc = {
         id: file,
-        'image.jpeg': imageBuffer.toString('base64'),
+        'image.jpeg': currentImages.get(file)!,
       };
       await db.insertDocument('photos', JSON.stringify(doc));
       process.stdout.write('.');
@@ -467,8 +288,7 @@ async function main() {
     if (input.toLowerCase() === 'rebuild') {
       await db.close();
       for (const p of [DATA_PATH, WAL_PATH]) if (fs.existsSync(p)) fs.unlinkSync(p);
-      if (fs.existsSync(IMAGE_DIR)) fs.rmSync(IMAGE_DIR, { recursive: true });
-      console.log(`  ${Y}Database and images wiped. Run${R} npm run demo:images ${Y}again to rebuild.${R}\n`);
+      console.log(`  ${Y}Demo database reset. Run${R} npm run demo:images ${Y}again to rebuild.${R}\n`);
       rl.close();
       return;
     }

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs/promises';
+import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { Database } from '../reference-document-store.mjs';
 import { RealFile } from '../../src/storage/file.mjs';
 import { MockFile } from '../../tests/helpers/mockfile.mjs';
@@ -122,52 +125,60 @@ async function testManyCommits(deepEqual: (x: unknown, y: unknown) => void) {
 }
 
 async function testRealFile(deepEqual: (x: unknown, y: unknown) => void) {
-  const file = new RealFile('testdb');
-  {
-    const db = await Database.create(file);
-    await db.commit();
-    await db.close();
-  }
-  {
-    const db = await Database.open(file);
-    deepEqual(await db.getRecords(), []);
-    await db.close();
-  }
-  {
-    const db = await Database.open(file);
-    await db.insertRecord(0, { id: 'Leuven', population: 101032, isProvinceCapital: true });
-    await db.commit();
-    await db.close();
-  }
-  {
-    const db = await Database.open(file);
-    deepEqual(await db.getRecords(), [{ id: 'Leuven', population: 101032, isProvinceCapital: true }]);
-    await db.close();
-  }
-  {
-    const db = await Database.open(file);
-    await db.insertRecord(0, { id: 'Brussels', population: 196828, isNationalCapital: true });
-    await db.commit();
-    await db.close();
-  }
-  {
-    const db = await Database.open(file);
-    deepEqual(await db.getRecords(), [
-      { id: 'Brussels', population: 196828, isNationalCapital: true },
-      { id: 'Leuven', population: 101032, isProvinceCapital: true },
-    ]);
-    await db.close();
-  }
-  {
-    const db = await Database.open(file);
-    await db.deleteRecord(0);
-    await db.commit();
-    await db.close();
-  }
-  {
-    const db = await Database.open(file);
-    deepEqual(await db.getRecords(), [{ id: 'Leuven', population: 101032, isProvinceCapital: true }]);
-    await db.close();
+  const directory = await fs.mkdtemp(path.join(tmpdir(), 'siftwell-reference-test-'));
+  const filepath = path.join(directory, 'testdb');
+  const file = new RealFile(filepath);
+  try {
+    {
+      const db = await Database.create(file);
+      await db.commit();
+      await db.close();
+    }
+    {
+      const db = await Database.open(file);
+      deepEqual(await db.getRecords(), []);
+      await db.close();
+    }
+    {
+      const db = await Database.open(file);
+      await db.insertRecord(0, { id: 'Leuven', population: 101032, isProvinceCapital: true });
+      await db.commit();
+      await db.close();
+    }
+    {
+      const db = await Database.open(file);
+      deepEqual(await db.getRecords(), [{ id: 'Leuven', population: 101032, isProvinceCapital: true }]);
+      await db.close();
+    }
+    {
+      const db = await Database.open(file);
+      await db.insertRecord(0, { id: 'Brussels', population: 196828, isNationalCapital: true });
+      await db.commit();
+      await db.close();
+    }
+    {
+      const db = await Database.open(file);
+      deepEqual(await db.getRecords(), [
+        { id: 'Brussels', population: 196828, isNationalCapital: true },
+        { id: 'Leuven', population: 101032, isProvinceCapital: true },
+      ]);
+      await db.close();
+    }
+    {
+      const db = await Database.open(file);
+      await db.deleteRecord(0);
+      await db.commit();
+      await db.close();
+    }
+    {
+      const db = await Database.open(file);
+      deepEqual(await db.getRecords(), [{ id: 'Leuven', population: 101032, isProvinceCapital: true }]);
+      await db.close();
+    }
+  } finally {
+    await file.close().catch(() => undefined);
+    await fs.rm(filepath, { force: true });
+    await fs.rmdir(directory);
   }
 }
 
