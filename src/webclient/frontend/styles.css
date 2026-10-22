@@ -2494,7 +2494,39 @@ table.dg {
   margin: 10px 0 0;
   color: var(--t3);
 }
-#modal-connect .modal-foot button:disabled {
+#modal-connect .modal-foot {
+  flex-wrap: wrap;
+}
+.database-picker-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.database-picker-row select,
+.database-picker-row button {
+  padding: 8px 11px;
+  border: 1px solid var(--bd);
+  border-radius: 4px;
+  background: var(--bg2);
+  color: var(--t);
+  font-size: 13px;
+}
+.database-picker-row select {
+  flex: 1;
+  min-width: 0;
+}
+.database-picker-row select:focus {
+  border-color: var(--ac);
+}
+.database-picker-row button {
+  cursor: pointer;
+}
+.database-picker-row button:hover {
+  background: var(--bg3);
+}
+#modal-connect button:disabled,
+.database-picker-row select:disabled {
   opacity: 0.5;
   cursor: default;
 }

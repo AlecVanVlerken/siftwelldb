@@ -32,6 +32,7 @@ import { getSqlMutationKind } from './sql-ui.js';
 import { openSqlReference } from './sql-reference.js';
 import { mergeScopedModel } from './model-editor.js';
 import { DemoCreation, demoProgress } from './demo-session.js';
+import { DatabasePicker, databaseFilename, databaseNameFromPath } from './database-picker.js';
 import {
   CollectionOperations,
   createVacuumOverlay,
@@ -219,12 +220,11 @@ function showDisconnectedConnection(filepath, error = null) {
   resetConnectionView();
   pendingSql = sqlDraft;
   state.sqlHistory = sqlHistory;
-  if (filepath) $('#connect-filepath').value = filepath;
   if (error) {
     $('#connect-err').textContent = error;
     $('#connect-err').classList.remove('hidden');
   }
-  openModal('modal-connect');
+  showConnectionDialog(filepath);
 }
 
 function toast(msg, kind = '', title = '') {
@@ -253,6 +253,7 @@ let searchRequest = 0;
 let chatRequest = 0;
 let sqlRequest = 0;
 let connectionBusy = false;
+const databasePicker = new DatabasePicker();
 // A fresh identifier for every page prevents copied tabs from sharing a lease.
 const demoClientId =
   crypto.randomUUID?.() ??
@@ -441,6 +442,7 @@ function imageMimeMetadataField(fieldName) {
 // Bootstrap
 // ─────────────────────────────────────────────────────────────────
 async function bootstrap() {
+  void refreshDatabaseCatalog();
   try {
     const { demo } = await api(`/api/demo/status?${new URLSearchParams({ clientId: demoClientId })}`);
     if (demo.state === 'creating' || demo.state === 'cancelling') {
@@ -492,7 +494,7 @@ async function bootstrap() {
     await refreshDatabaseStatus();
     render();
   } else {
-    openModal('modal-connect');
+    showConnectionDialog();
   }
 }
 
@@ -501,7 +503,7 @@ function updateConnState() {
   const ct = $('#conn-text');
   if (state.connected) {
     ci.classList.add('ok');
-    ct.innerHTML = `<strong>${state.temporaryDemo ? 'Temporary demo' : esc(state.filepath)}</strong>`;
+    ct.innerHTML = `<strong>${state.temporaryDemo ? 'Temporary demo' : esc(databaseFilename(state.filepath))}</strong>`;
     ci.title = state.temporaryDemo ? 'Temporary demo · removed after its session ends' : state.filepath;
     $('#cm-disconnect').disabled = connectionBusy;
     $('#app').classList.remove('disconnected');
@@ -606,27 +608,6 @@ async function loadCollections(loadDocuments = true, allowDuringVacuum = false) 
   }
 }
 
-async function runSeedAction(label, task) {
-  const context = captureRequestContext('database');
-  if (state.seedBusy) {
-    toast('A seed operation is already running. Wait for it to finish first.', 'warn');
-    return null;
-  }
-  state.seedBusy = true;
-  render();
-  try {
-    const result = await task();
-    if (!isCurrentRequestContext(context)) return null;
-
-    return result;
-  } finally {
-    if (isCurrentRequestContext(context)) {
-      state.seedBusy = false;
-      render();
-    }
-  }
-}
-
 async function loadModel(allowDuringVacuum = false) {
   const context = captureRequestContext('database');
   try {
@@ -636,58 +617,6 @@ async function loadModel(allowDuringVacuum = false) {
   } catch {
     if (!isCurrentRequestContext(context)) return;
     // A failed refresh must not erase a previously verified schema.
-  }
-}
-
-async function seedDemoEmployees() {
-  const context = captureRequestContext();
-  try {
-    const result = await runSeedAction('employees', () => api('/api/demo/employees', { method: 'POST' }));
-    if (!result) return;
-    toast(result.message || 'Demo data ready', result.skipped ? '' : 'ok');
-    invalidateStorageCache();
-    await loadCollections();
-    await loadModel();
-    if (!isCurrentRequestContext(context)) return;
-    if (state.collections.includes('employees')) selectCollection('employees');
-    render();
-  } catch (e) {
-    if (isCurrentRequestContext(context)) toast('Failed to seed demo data: ' + e.message, 'err');
-  }
-}
-
-async function seedSemanticKnowledgeDemo() {
-  const context = captureRequestContext();
-  try {
-    const result = await runSeedAction('semantic text', () => api('/api/demo/semantic-knowledge', { method: 'POST' }));
-    if (!result) return;
-    toast(result.message || 'Semantic knowledge demo ready', result.skipped ? '' : 'ok');
-    invalidateStorageCache();
-    await loadCollections();
-    await loadModel();
-    if (!isCurrentRequestContext(context)) return;
-    if (state.collections.includes(result.collection || 'knowledge'))
-      selectCollection(result.collection || 'knowledge');
-    render();
-  } catch (e) {
-    if (isCurrentRequestContext(context)) toast('Failed to seed semantic knowledge demo: ' + e.message, 'err');
-  }
-}
-
-async function seedSemanticImageDemo() {
-  const context = captureRequestContext();
-  try {
-    const result = await runSeedAction('semantic images', () => api('/api/demo/semantic-images', { method: 'POST' }));
-    if (!result) return;
-    toast(result.message || 'Semantic image demo ready', result.skipped ? '' : 'ok');
-    invalidateStorageCache();
-    await loadCollections();
-    await loadModel();
-    if (!isCurrentRequestContext(context)) return;
-    if (state.collections.includes(result.collection || 'photos')) selectCollection(result.collection || 'photos');
-    render();
-  } catch (e) {
-    if (isCurrentRequestContext(context)) toast('Failed to seed semantic image demo: ' + e.message, 'err');
   }
 }
 
@@ -1553,7 +1482,7 @@ function renderOverview() {
       ? state.collections.reduce((sum, name) => sum + state.countsByColl[name], 0)
       : '?';
     $('#cnt').innerHTML = `<div class="ov">
-      <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(state.filepath || '—')}</span></h1>
+      <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(databaseFilename(state.filepath) || '—')}</span></h1>
       <p class="ovsub"><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span></p>
       ${bulkBusy ? '<p class="ovsub" role="status">Updating documents… Collection counts will refresh when complete.</p>' : ''}
       ${collectionOperations.pendingCollections.length ? `<p class="ovsub" role="status">Deleting ${collectionOperations.pendingCollections.map((name) => `“${esc(name)}”`).join(', ')}… Other database requests may wait.</p>` : ''}
@@ -3491,14 +3420,14 @@ $('#cm-auto-compact')?.addEventListener('change', (event) => {
 $('#cm-disconnect').addEventListener('click', async () => {
   if (connectionBusy || vacuumOverlay.active || !state.connected) return;
   closeConnMenu();
-  connectionBusy = true;
+  setConnectionBusy(true);
   invalidateRequestContext('database');
   updateConnState();
   try {
     await api('/api/disconnect', { method: 'POST', body: demoSessionBody() });
     resetConnectionView();
     toast('Disconnected', 'ok');
-    openModal('modal-connect');
+    showConnectionDialog();
   } catch (e) {
     toast(e.message, 'err');
     let status = null;
@@ -3516,10 +3445,9 @@ $('#cm-disconnect').addEventListener('click', async () => {
       await loadModel();
       await refreshDatabaseStatus();
       render();
-    } else openModal('modal-connect');
+    } else showConnectionDialog();
   } finally {
-    connectionBusy = false;
-    updateConnState();
+    setConnectionBusy(false);
   }
 });
 $('#sb-add-collection').addEventListener('click', openCollectionDocumentModal);
@@ -3536,6 +3464,55 @@ $('#doc-image-file').addEventListener('change', () =>
 );
 
 // Connect modal
+function renderDatabasePicker() {
+  const select = $('#connect-database');
+  const selectedName = databasePicker.selectedName;
+  select.replaceChildren();
+  if (!databasePicker.databases.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = databasePicker.loading
+      ? 'Loading databases...'
+      : databasePicker.error
+        ? 'Database list unavailable'
+        : 'No saved databases';
+    select.appendChild(option);
+  } else {
+    for (const database of databasePicker.databases) {
+      const option = document.createElement('option');
+      option.value = database.name;
+      option.textContent = database.filename;
+      select.appendChild(option);
+    }
+    select.value = selectedName;
+  }
+  select.disabled = connectionBusy || databasePicker.loading || !databasePicker.databases.length;
+  $('#connect-refresh').disabled = connectionBusy || databasePicker.loading;
+  $('#connect-name').disabled = connectionBusy;
+  $('#connect-open').disabled = !databasePicker.canOpen;
+  $('#connect-create').disabled = connectionBusy || !$('#connect-name').value.trim();
+  $('#connect-demo').disabled = connectionBusy;
+  $('#connect-catalog-status').textContent = databasePicker.loading
+    ? 'Loading saved databases...'
+    : databasePicker.error
+      ? `Could not load saved databases: ${databasePicker.error} Use Refresh to try again.`
+      : databasePicker.databases.length
+        ? 'Select a database to open.'
+        : 'No saved databases yet. Enter a name below to create one.';
+}
+
+async function refreshDatabaseCatalog(preferredName) {
+  const refresh = databasePicker.refresh(() => requestApi('/api/databases'), preferredName);
+  renderDatabasePicker();
+  await refresh;
+  renderDatabasePicker();
+}
+
+function showConnectionDialog(filepath = state.filepath) {
+  openModal('modal-connect');
+  void refreshDatabaseCatalog(databaseNameFromPath(filepath));
+}
+
 function demoSessionBody() {
   return { clientId: demoClientId, demoId: retainedDemoId };
 }
@@ -3576,9 +3553,10 @@ window.addEventListener('pagehide', () => {
 
 function setConnectionBusy(busy) {
   connectionBusy = busy;
-  for (const id of ['connect-open', 'connect-create', 'connect-demo']) $('#' + id).disabled = busy;
-  $('#connect-filepath').disabled = busy;
+  databasePicker.setBusy(busy);
+  renderDatabasePicker();
   updateConnState();
+  if (!busy) void refreshDatabaseCatalog(databaseNameFromPath(state.filepath));
 }
 
 function renderDemoProgress(status) {
@@ -3680,25 +3658,26 @@ $('#connect-demo-cancel').addEventListener('click', async () => {
 
 async function connectDatabase(mode) {
   if (connectionBusy || vacuumOverlay.active) return;
-  const fp = $('#connect-filepath').value.trim();
-  if (!fp) {
+  let request;
+  try {
+    request = databasePicker.request(mode, $('#connect-name').value, demoSessionBody());
+  } catch (error) {
     $('#connect-err').classList.remove('hidden');
-    $('#connect-err').textContent = 'Provide a file path.';
+    $('#connect-err').textContent = error.message;
     return;
   }
-  const session = demoSessionBody();
   setConnectionBusy(true);
   $('#connect-err').classList.add('hidden');
   resetConnectionView();
   try {
-    const endpoint = mode === 'open' ? '/api/connect' : '/api/create';
-    const { message } = await api(endpoint, { method: 'POST', body: { filepath: fp, ...session } });
+    const { message } = await api(request.endpoint, { method: 'POST', body: request.body });
     const status = await api('/api/status');
     if (!status.connected) throw new Error('The database did not open.');
     state.connected = status.connected;
     state.filepath = status.filepath;
     state.databaseStatus = status;
     retainDemo(status.temporaryDemo);
+    if (mode === 'create') $('#connect-name').value = '';
     toast(message, 'ok');
     closeModal('modal-connect');
     updateConnState();
@@ -3721,7 +3700,7 @@ async function connectDatabase(mode) {
     } catch {
       resetConnectionView();
     }
-    openModal('modal-connect');
+    showConnectionDialog();
     $('#connect-err').classList.remove('hidden');
     $('#connect-err').textContent = e.message;
   } finally {
@@ -3730,9 +3709,15 @@ async function connectDatabase(mode) {
 }
 $('#connect-open').addEventListener('click', () => connectDatabase('open'));
 $('#connect-demo').addEventListener('click', () => createDemoDatabase());
-$('#connect-create').addEventListener('click', () => {
-  if (connectionBusy) return;
-  confirmAction('Create database?', 'An existing file at this path will be replaced.', () => connectDatabase('create'));
+$('#connect-create').addEventListener('click', () => connectDatabase('create'));
+$('#connect-refresh').addEventListener('click', () => void refreshDatabaseCatalog());
+$('#connect-database').addEventListener('change', (event) => {
+  databasePicker.selectedName = event.target.value;
+  renderDatabasePicker();
+});
+$('#connect-name').addEventListener('input', renderDatabasePicker);
+$('#connect-name').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !$('#connect-create').disabled) void connectDatabase('create');
 });
 
 // Settings modal

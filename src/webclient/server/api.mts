@@ -29,6 +29,7 @@ class ApiHttpError extends Error {
   constructor(
     readonly statusCode: number,
     message: string,
+    readonly details: JsonBody = {},
   ) {
     super(message);
     this.name = 'ApiHttpError';
@@ -115,6 +116,15 @@ function readCompression(value: unknown): FieldCompressionOverrides | undefined 
     }
   }
   return value as FieldCompressionOverrides;
+}
+
+function readDatabaseName(body: JsonBody): string {
+  if (Object.hasOwn(body, 'filepath')) {
+    throw new ApiHttpError(400, 'Choose a database by name instead of providing a filepath.');
+  }
+  const name = body['name'];
+  if (typeof name !== 'string' || !name.trim()) throw new ApiHttpError(400, 'Provide a database name.');
+  return name;
 }
 
 function validateDocument(collection: string, value: unknown): void {
@@ -209,6 +219,35 @@ export class ApiRouter {
     return task();
   }
 
+  private async switchStoredDatabase(name: string, clientId: string | undefined, create: boolean): Promise<JsonBody> {
+    return this.runDatabaseExclusive(create ? 'create' : 'connect', async () => {
+      let message: string;
+      try {
+        message = create
+          ? await this.db.createStoredDatabase(name, clientId)
+          : await this.db.openStoredDatabase(name, clientId);
+      } catch (error) {
+        // Validation can leave the old connection usable; a failed open may have closed it.
+        if (!this.db.isConnected) {
+          this.conv?.onDisconnect();
+          if (!(error instanceof DatabaseInputError)) console.error('Database connection failed:', error);
+          throw new ApiHttpError(
+            error instanceof DatabaseInputError ? 400 : 500,
+            error instanceof Error ? error.message : String(error),
+            { connected: false, filepath: this.db.filepath },
+          );
+        }
+        throw error;
+      }
+      const filepath = this.db.filepath;
+      if (this.conv && filepath) {
+        this.conv.onDisconnect();
+        await this.conv.onConnect(filepath, this.db.rawDbms);
+      }
+      return { message, filepath };
+    });
+  }
+
   /**
    * Handle an incoming API request.
    *
@@ -263,6 +302,11 @@ export class ApiRouter {
           filepath: this.db.filepath,
           temporaryDemo: this.db.temporaryDemo,
         });
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/databases') {
+        sendJSON(res, 200, { databases: await this.db.listDatabases() });
         return;
       }
 
@@ -338,33 +382,21 @@ export class ApiRouter {
 
       if (method === 'POST' && pathname === '/api/connect') {
         const body = await parseBody(req);
-        const filepath = body['filepath'];
-        if (typeof filepath !== 'string' || !filepath.trim()) {
-          sendError(res, 400, 'Missing filepath');
-          return;
-        }
+        const name = readDatabaseName(body);
         const clientId = typeof body['clientId'] === 'string' ? body['clientId'] : undefined;
         this.db.assertCanLeaveDemo(clientId);
-        if (this.conv) this.conv.onDisconnect();
-        const message = await this.db.connect(filepath, clientId);
-        if (this.conv) await this.conv.onConnect(filepath, this.db.rawDbms);
-        sendJSON(res, 200, { message, filepath });
+        const result = await this.switchStoredDatabase(name, clientId, false);
+        sendJSON(res, 200, result);
         return;
       }
 
       if (method === 'POST' && pathname === '/api/create') {
         const body = await parseBody(req);
-        const filepath = body['filepath'];
-        if (typeof filepath !== 'string' || !filepath.trim()) {
-          sendError(res, 400, 'Missing filepath');
-          return;
-        }
+        const name = readDatabaseName(body);
         const clientId = typeof body['clientId'] === 'string' ? body['clientId'] : undefined;
         this.db.assertCanLeaveDemo(clientId);
-        if (this.conv) this.conv.onDisconnect();
-        const message = await this.db.create(filepath, clientId);
-        if (this.conv) await this.conv.onConnect(filepath, this.db.rawDbms);
-        sendJSON(res, 200, { message, filepath });
+        const result = await this.switchStoredDatabase(name, clientId, true);
+        sendJSON(res, 200, result);
         return;
       }
 
@@ -1082,7 +1114,11 @@ export class ApiRouter {
         error instanceof DatabaseInputError ||
         error instanceof IndexValidationError
       ) {
-        sendJSON(res, error instanceof ApiHttpError ? error.statusCode : 400, this.errorBody(error.message));
+        sendJSON(
+          res,
+          error instanceof ApiHttpError ? error.statusCode : 400,
+          this.errorBody(error.message, error instanceof ApiHttpError ? error.details : {}),
+        );
         return;
       }
       console.error('API Error:', error);

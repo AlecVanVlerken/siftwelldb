@@ -26,7 +26,6 @@ export type WebclientState = {
   treeExpanded: Record<string, boolean>;
   modelPromptDismissed: Record<string, boolean>;
   modelGenerating: boolean;
-  seedBusy: boolean;
   search: {
     mode: 'text' | 'image';
     query: string;
@@ -73,7 +72,6 @@ export const state: WebclientState = {
   treeExpanded: createDictionary(),
   modelPromptDismissed: createDictionary(),
   modelGenerating: false,
-  seedBusy: false,
   search: {
     mode: 'text',
     query: '',
@@ -159,7 +157,6 @@ export function resetDisconnectedState(): void {
   state.treeExpanded = createDictionary();
   state.modelPromptDismissed = createDictionary();
   state.modelGenerating = false;
-  state.seedBusy = false;
   state.search = {
     mode: 'text',
     query: '',

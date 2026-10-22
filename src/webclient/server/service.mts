@@ -54,6 +54,7 @@ import {
   type OwnedDemoDirectory,
 } from './temporary-demo.mjs';
 import { randomUUID } from 'node:crypto';
+import { DatabaseCatalog, DatabaseCatalogError, type StoredDatabase } from './database-catalog.mjs';
 import {
   assertNoVacuumArtifacts,
   finishVacuumReplacement,
@@ -249,6 +250,7 @@ export type VacuumSummary = {
 };
 
 export type DatabaseServiceOptions = {
+  databaseDirectory?: string;
   hnswConfig?: HnswConfig | (() => HnswConfig | Promise<HnswConfig>);
   incrementalCompactionIntervalMs?: number;
   incrementalCompactionPolicy?: IncrementalCompactionPolicy;
@@ -314,6 +316,7 @@ export type CollectionStorage = {
 };
 
 export class DatabaseService {
+  private readonly databaseCatalog: DatabaseCatalog;
   private dbms: SimpleDbms | null = null;
   private currentFilepath: string | null = null;
   private recoveryError: string | null = null;
@@ -360,6 +363,7 @@ export class DatabaseService {
   private shuttingDown = false;
 
   constructor(options: DatabaseServiceOptions = {}) {
+    this.databaseCatalog = new DatabaseCatalog(options.databaseDirectory);
     this.providedHnswConfig = options.hnswConfig;
     this.incrementalCompactionIntervalMs =
       options.incrementalCompactionIntervalMs ?? DEFAULT_INCREMENTAL_COMPACTION_INTERVAL_MS;
@@ -665,6 +669,65 @@ export class DatabaseService {
 
   private assertAvailable(): void {
     if (this.vacuumPending) throw new DatabaseBusyError();
+  }
+
+  /** List persistent databases independently of the active database or demo. */
+  async listDatabases(): Promise<StoredDatabase[]> {
+    return this.catalogOperation(() => this.databaseCatalog.list());
+  }
+
+  private async catalogOperation<T>(task: () => Promise<T>): Promise<T> {
+    try {
+      return await task();
+    } catch (error) {
+      if (error instanceof DatabaseCatalogError) throw new DatabaseInputError(error.message);
+      throw error;
+    }
+  }
+
+  /** Open only a named database in the managed directory, including interrupted vacuum recovery. */
+  async openStoredDatabase(name: string, clientId?: string): Promise<string> {
+    this.assertAvailable();
+    await this.catalogOperation(() => this.databaseCatalog.existing(name));
+    this.prepareDemoSwitch(clientId);
+    return this.runExclusive('connect', async () => {
+      this.assertCanLeaveDemo(clientId);
+      const hnswConfig = await this.getHnswConfig();
+      const filepath = await this.catalogOperation(() => this.databaseCatalog.existing(name));
+      await this.closeInternal();
+      await recoverVacuumReplacement(filepath, () => this.verifyVacuumFiles(filepath));
+      await this.catalogOperation(() => this.databaseCatalog.existing(name, true));
+      this.dbms = await this.openDatabaseFiles(
+        new RealFile(filepath),
+        new RealFile(this.logFilepath(filepath)),
+        hnswConfig,
+      );
+      this.currentFilepath = filepath;
+      this.onDatabaseOpened();
+      return 'Connected to existing database';
+    });
+  }
+
+  /** Create a named persistent database without replacing any existing database or recovery files. */
+  async createStoredDatabase(name: string, clientId?: string): Promise<string> {
+    this.assertAvailable();
+    await this.catalogOperation(() => this.databaseCatalog.unused(name));
+    this.prepareDemoSwitch(clientId);
+    return this.runExclusive('create', async () => {
+      this.assertCanLeaveDemo(clientId);
+      const hnswConfig = await this.getHnswConfig();
+      const filepath = await this.catalogOperation(() => this.databaseCatalog.unused(name));
+      await this.closeInternal();
+      this.dbms = await this.openDatabaseFiles(
+        new RealFile(filepath),
+        new RealFile(this.logFilepath(filepath)),
+        hnswConfig,
+        true,
+      );
+      this.currentFilepath = filepath;
+      this.onDatabaseOpened();
+      return 'Created new database';
+    });
   }
 
   /**

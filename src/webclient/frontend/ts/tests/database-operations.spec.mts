@@ -363,12 +363,14 @@ describe('full vacuum blocking dialog', () => {
 });
 
 describe('connection and maintenance markup', () => {
-  it('starts with an empty filepath, keeps dedicated demo creation, and labels the blocking vacuum dialog', async () => {
+  it('offers managed database selection and creation, keeps demo creation, and labels the blocking vacuum dialog', async () => {
     const html = await readFile(new URL('../../index.html', import.meta.url), 'utf8');
-    const filepath = html.match(/<input\b[^>]*\bid="connect-filepath"[^>]*>/)?.[0];
-    expect(filepath).toBeDefined();
-    expect(filepath).not.toMatch(/\bvalue="[^"]+"/);
-    expect(filepath).not.toContain('data.db');
+    expect(html).not.toContain('connect-filepath');
+    expect(html).toMatch(/<select\b[^>]*\bid="connect-database"/);
+    const name = html.match(/<input\b[^>]*\bid="connect-name"[^>]*>/)?.[0];
+    expect(name).toBeDefined();
+    expect(name).not.toMatch(/\bvalue="[^"]+"/);
+    expect(html).toContain('id="connect-refresh"');
     expect(html).toContain('id="connect-demo"');
     expect(html).toMatch(/id="database-operation-overlay"\s+role="dialog"\s+aria-modal="true"/);
     expect(html).toContain('aria-labelledby="database-operation-title"');

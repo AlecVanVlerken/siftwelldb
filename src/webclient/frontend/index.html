@@ -190,15 +190,26 @@
           </div>
           <div class="ttl">
             Open a database
-            <div class="sub">Open a database file, or explore a temporary demo.</div>
+            <div class="sub">Choose a saved database, create one or explore a temporary demo.</div>
           </div>
         </div>
         <div class="modal-body">
-          <label>Database file</label>
-          <input type="text" id="connect-filepath" placeholder="Enter a database path..." autocomplete="off" />
+          <label for="connect-database">Saved databases</label>
+          <div class="database-picker-row">
+            <select id="connect-database" aria-describedby="connect-catalog-status" disabled>
+              <option value="">Loading databases...</option>
+            </select>
+            <button class="sec" id="connect-refresh" type="button">Refresh</button>
+          </div>
+          <p id="connect-catalog-status" class="demo-intro" role="status" aria-live="polite">Loading databases...</p>
+          <label for="connect-name">New database name</label>
+          <input type="text" id="connect-name" placeholder="e.g. research" autocomplete="off" />
           <p class="demo-intro">
-            Create demo database needs no file path. It includes articles, photos, memes, and structured data, and is
-            removed after its session ends.
+            Saved databases and their companion files are kept in the project's databases folder.
+          </p>
+          <p class="demo-intro">
+            The temporary demo includes articles, photos, memes and structured data. It is removed after its session
+            ends.
           </p>
           <div class="demo-progress hidden" id="demo-progress" role="status" aria-live="polite">
             <strong id="demo-stage">Preparing demo…</strong>
@@ -213,8 +224,8 @@
         <div class="modal-foot">
           <button class="sec hidden" id="connect-demo-cancel" type="button">Cancel demo</button>
           <button class="sec" id="connect-demo">Create demo database</button>
-          <button class="sec" id="connect-create">Create new</button>
-          <button class="pri" id="connect-open">Open / create</button>
+          <button class="sec" id="connect-create" disabled>Create database</button>
+          <button class="pri" id="connect-open" disabled>Open selected</button>
         </div>
       </div>
     </div>

@@ -48,7 +48,6 @@ describe('frontend state', () => {
     state.treeExpanded = { books: true };
     state.modelPromptDismissed = { books: true };
     state.modelGenerating = true;
-    state.seedBusy = true;
     state.temporaryDemo = {
       id: 'owned-demo',
       state: 'ready',
@@ -90,7 +89,6 @@ describe('frontend state', () => {
     expect(state.treeExpanded).toEqual({});
     expect(state.modelPromptDismissed).toEqual({});
     expect(state.modelGenerating).toBe(false);
-    expect(state.seedBusy).toBe(false);
     expect(state.temporaryDemo).toBeNull();
     expect(state.demoCreation).toBeNull();
     expect(state.search).toMatchObject({ query: '', image: null, results: null, busy: false, error: null });

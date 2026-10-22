@@ -309,16 +309,16 @@ describe('ApiRouter', () => {
     expect(disconnected).toBe(false);
   });
 
-  it.each(['/api/connect', '/api/create'])('rejects a blank filepath for %s', async (route) => {
-    const response = await handle(new ApiRouter(createDbStub()), 'POST', route, JSON.stringify({ filepath: '   ' }));
+  it.each(['/api/connect', '/api/create'])('rejects a blank database name for %s', async (route) => {
+    const response = await handle(new ApiRouter(createDbStub()), 'POST', route, JSON.stringify({ name: '   ' }));
     expect(response.statusCode).toBe(400);
-    expect(JSON.parse(response.body)).toEqual({ error: 'Missing filepath' });
+    expect(JSON.parse(response.body)).toEqual({ error: 'Provide a database name.' });
   });
 
   it('returns 400 for malformed JSON request bodies', async () => {
     const router = new ApiRouter(createDbStub());
 
-    const res = await handle(router, 'POST', '/api/connect', '{"filepath":');
+    const res = await handle(router, 'POST', '/api/connect', '{"name":');
 
     expect(res.statusCode).toBe(400);
     expect(JSON.parse(res.body)).toEqual({ error: 'Invalid JSON' });
@@ -556,7 +556,7 @@ describe('ApiRouter', () => {
 
   it('returns 413 for oversized JSON request bodies', async () => {
     const router = new ApiRouter(createDbStub());
-    const body = JSON.stringify({ filepath: 'x'.repeat(5 * 1024 * 1024) });
+    const body = JSON.stringify({ name: 'x'.repeat(5 * 1024 * 1024) });
 
     const res = await handle(router, 'POST', '/api/connect', body);
 

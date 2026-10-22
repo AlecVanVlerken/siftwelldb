@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { SimpleDbms, type HnswConfig } from '../src/database/simpledbms.mjs';
 import { RealFile } from '../src/storage/file.mjs';
 import { getClipHnswConfig } from '../src/webclient/server/embedding-config.mjs';
+import { DatabaseCatalog } from '../src/webclient/server/database-catalog.mjs';
 import { discoverDemoAssets, type DemoAssetOptions } from '../src/webclient/server/demo-assets.mjs';
 import { generateShowcaseCollections, type ShowcaseCounts } from '../src/webclient/server/demo-showcase-data.mjs';
 import {
@@ -102,7 +103,7 @@ export async function createPersistentShowcase(
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const filepath = path.resolve(process.argv[2] ?? 'output/demo-databases/webclient-test.db');
+  const filepath = await new DatabaseCatalog().unused(process.argv[2] ?? 'webclient-test');
   let lastCollection: string | null = null;
   console.log('Inspecting local Flickr8k photographs, captions and meme templates...');
   const result = await createPersistentShowcase(filepath, {
