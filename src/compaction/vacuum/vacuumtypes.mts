@@ -52,14 +52,25 @@ export type VacuumOptions = {
  * Fields:
  *   • phase           — current high-level phase of the vacuum operation
  *   • collection      — current collection, when applicable
- *   • copiedDocuments — number of copied documents so far
- *   • totalDocuments  — optional total number of documents
+ *   • copiedDocuments — documents copied within the current collection
+ *   • totalDocuments  — live documents in the current collection
+ *
+ * Percentages describe only the active phase and collection. A completed
+ * collection may report 100 while other collections or finalization remain.
+ * `done` means the rebuilt target has passed the requested validation; file
+ * replacement and reopening belong to the caller and are not included here.
  */
 export type VacuumProgress = {
-  phase: 'preflight' | 'create-target' | 'copy-collection' | 'commit-target' | 'validate' | 'done';
+  phase: 'preflight' | 'commit-source' | 'create-target' | 'copy-collection' | 'commit-target' | 'validate' | 'done';
   collection?: string;
   copiedDocuments?: number;
   totalDocuments?: number;
+  /** Actual work within this phase and collection, never an overall estimate. */
+  processed?: number;
+  total?: number;
+  unit?: 'documents' | 'collections';
+  /** Absent when a denominator is unavailable or zero. */
+  percentage?: number;
 };
 
 /**

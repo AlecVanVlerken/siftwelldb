@@ -71,6 +71,7 @@
 
         <main class="main">
           <div class="obj-tabs" id="otabs"></div>
+          <div class="collection-load-status hidden" id="collection-load-status" role="status"></div>
           <div class="cnt" id="cnt"></div>
         </main>
       </div>
@@ -194,7 +195,7 @@
         </div>
         <div class="modal-body">
           <label>Database file</label>
-          <input type="text" id="connect-filepath" placeholder="e.g. data.db" value="data.db" autocomplete="off" />
+          <input type="text" id="connect-filepath" placeholder="Enter a database path..." autocomplete="off" />
           <p class="demo-intro">
             Create demo database needs no file path. It includes articles, photos, memes, and structured data, and is
             removed after its session ends.
@@ -357,6 +358,33 @@
     </div>
 
     <div id="toasts"></div>
+
+    <div
+      class="database-operation-overlay hidden"
+      id="database-operation-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-hidden="true"
+      aria-labelledby="database-operation-title"
+      aria-describedby="database-operation-detail"
+      tabindex="-1"
+    >
+      <div class="database-operation-card" role="status" aria-live="polite">
+        <div class="database-operation-spinner" aria-hidden="true"></div>
+        <h2 id="database-operation-title">Optimizing database...</h2>
+        <p id="database-operation-stage" aria-live="polite">Starting full vacuum...</p>
+        <progress
+          id="database-operation-progress"
+          class="hidden"
+          max="100"
+          aria-label="Progress in the current phase"
+        ></progress>
+        <p id="database-operation-percentage" class="hidden"></p>
+        <p id="database-operation-detail">
+          Full vacuum is in progress. Please wait while the database is rebuilt and reopened.
+        </p>
+      </div>
+    </div>
 
     <script type="module" src="/ts/main.js"></script>
   </body>

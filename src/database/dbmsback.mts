@@ -434,8 +434,9 @@ export class DbmsBack {
     }
 
     for (const pointer of recordPointers) {
-      await this.readIndexedDocument(pointer, collection);
-      await this.recordStore.deleteRecord(pointer);
+      await this.recordStore.deleteRecord(pointer, async (document) => {
+        await this.validateIndexedDocument(document, pointer, collection);
+      });
     }
 
     const btreeBlocks = new Set<number>();
@@ -1289,6 +1290,15 @@ export class DbmsBack {
   private async readIndexedDocument(pointer: number, collection: string): Promise<Document> {
     this.assertHealthy();
     const document = await this.recordStore.readRecord(pointer);
+    return this.validateIndexedDocument(document, pointer, collection);
+  }
+
+  private async validateIndexedDocument(
+    document: Document | null,
+    pointer: number,
+    collection: string,
+  ): Promise<Document> {
+    this.assertHealthy();
     if (!document) {
       throw new Error(`Index in collection "${collection}" references missing record at block ${pointer}`);
     }
@@ -1329,6 +1339,25 @@ export class DbmsBack {
       count += 1;
     }
     return count;
+  }
+
+  /** Primary IDs for bulk selection, without decoding binary document payloads. */
+  async getDocumentIds(collection: string): Promise<Array<string | number>> {
+    this.assertHealthy();
+    if (!this.hasCollectionMeta(collection)) return [];
+    const metadata = this.getCollectionMeta(collection)['id'];
+    if (!metadata) return [];
+    const [root, form] = metadata;
+    if (form !== 'S' && form !== 'N') throw new Error('Unsupported primary ID type');
+    const tree = await this.getOrCreateTree(collection, 'id', form, root);
+    const ids: Array<string | number> = [];
+    for await (const [key] of tree.iterate()) {
+      const id = form === 'N' ? key.readDoubleBE(0) : key.toString('utf8');
+      validateDocumentId(id);
+      if (!toBuffer(form, id).equals(key)) throw new Error('Invalid primary ID key');
+      ids.push(id);
+    }
+    return ids;
   }
 
   /**

@@ -5,7 +5,7 @@ import * as http from 'node:http';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DatabaseService, DatabaseInputError } from './service.mjs';
+import { DatabaseService, DatabaseInputError, DatabaseBusyError } from './service.mjs';
 import { QueryMutationError } from '../../query/executor.mjs';
 import type { ConversationalService } from './conversational-service.mjs';
 import { getEmbeddingStatus, preloadEmbeddingModels } from './embedding-config.mjs';
@@ -190,6 +190,8 @@ export class ApiRouter {
   ) {}
 
   private errorBody(error: string, extra: JsonBody = {}): JsonBody {
+    if (this.db.busyOperation === 'vacuum')
+      return { error, ...extra, busyOperation: 'vacuum', available: false, filepath: this.db.filepath };
     if (!this.db.isConnected && this.db.filepath) {
       this.conv?.onDisconnect();
       return { error, ...extra, connected: false, filepath: this.db.filepath };
@@ -256,6 +258,8 @@ export class ApiRouter {
       if (method === 'GET' && pathname === '/api/status') {
         sendJSON(res, 200, {
           connected: this.db.isConnected,
+          available: this.db.isConnected && this.db.busyOperation !== 'vacuum',
+          busyOperation: this.db.busyOperation ?? null,
           filepath: this.db.filepath,
           temporaryDemo: this.db.temporaryDemo,
         });
@@ -264,6 +268,11 @@ export class ApiRouter {
 
       if (method === 'GET' && pathname === '/api/database/status') {
         sendJSON(res, 200, await this.db.getStatus());
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/database/operations') {
+        sendJSON(res, 200, this.db.getOperations() as unknown as JsonBody);
         return;
       }
 
@@ -317,10 +326,20 @@ export class ApiRouter {
         return;
       }
 
+      // Connection state briefly changes while vacuum replaces and reopens files.
+      // Keep observation and demo leases available, but never treat that interval
+      // as a disconnected session or enqueue new conflicting database operations.
+      if (
+        this.db.busyOperation === 'vacuum' &&
+        !(method === 'GET' && pathname === '/api/demo/status') &&
+        !(method === 'POST' && ['/api/demo/heartbeat', '/api/demo/release'].includes(pathname))
+      )
+        throw new DatabaseBusyError();
+
       if (method === 'POST' && pathname === '/api/connect') {
         const body = await parseBody(req);
         const filepath = body['filepath'];
-        if (typeof filepath !== 'string' || !filepath) {
+        if (typeof filepath !== 'string' || !filepath.trim()) {
           sendError(res, 400, 'Missing filepath');
           return;
         }
@@ -336,7 +355,7 @@ export class ApiRouter {
       if (method === 'POST' && pathname === '/api/create') {
         const body = await parseBody(req);
         const filepath = body['filepath'];
-        if (typeof filepath !== 'string' || !filepath) {
+        if (typeof filepath !== 'string' || !filepath.trim()) {
           sendError(res, 400, 'Missing filepath');
           return;
         }
@@ -609,6 +628,10 @@ export class ApiRouter {
 
       // GET /api/collections
       if (method === 'GET' && pathname === '/api/collections') {
+        if (url.searchParams.get('counts') === 'true') {
+          sendJSON(res, 200, await this.db.getCollectionCounts());
+          return;
+        }
         const collections = await this.db.getCollections();
         sendJSON(res, 200, { collections });
         return;
@@ -1041,6 +1064,15 @@ export class ApiRouter {
       // No route matched
       sendError(res, 404, 'API endpoint not found');
     } catch (error) {
+      if (error instanceof DatabaseBusyError) {
+        sendJSON(res, 409, {
+          error: error.message,
+          busyOperation: error.busyOperation,
+          available: false,
+          filepath: this.db.filepath,
+        });
+        return;
+      }
       if (error instanceof DemoSessionConflictError) {
         sendJSON(res, 409, this.errorBody(error.message));
         return;

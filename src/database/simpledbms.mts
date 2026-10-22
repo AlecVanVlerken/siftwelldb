@@ -416,6 +416,19 @@ export class SimpleDbms {
     return this.dbmsback.getCollectionRecordBytes(collection);
   }
 
+  /** Counts primary index entries without loading document bodies or images. */
+  async countDocuments(collection: string): Promise<number> {
+    return this.dbmsback.getPrimaryReferenceCount(collection);
+  }
+
+  async getDocumentIds(collection: string): Promise<Array<string | number>> {
+    return this.dbmsback.getDocumentIds(collection);
+  }
+
+  async hasDocument(collection: string, id: RawId): Promise<boolean> {
+    return (await this.dbmsback.getDocumentBlockId(collection, id)) !== null;
+  }
+
   /**
    * Physical block size in bytes. Useful for surfacing accurate byte
    * accounting in UIs (every record reservation is a whole multiple of

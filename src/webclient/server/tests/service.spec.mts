@@ -2,11 +2,12 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DatabaseService } from '../service.mjs';
+import { DatabaseBusyError, DatabaseService } from '../service.mjs';
 import { SimpleDbms } from '../../../database/simpledbms.mjs';
 import { DbmsBack } from '../../../database/dbmsback.mjs';
 import { RealFile } from '../../../storage/file.mjs';
 import { MockFile } from '../../../../tests/helpers/mockfile.mjs';
+import { RecordStore } from '../../../storage/records/recordstore.mjs';
 import * as vacuumRecovery from '../vacuum-recovery.mjs';
 
 vi.mock('../embedding-config.mjs', () => ({
@@ -37,6 +38,14 @@ function setFakeDbms(service: DatabaseService, dbms: FakeDbms): ServiceInternals
   Object.assign(dbms, { isHealthy: true, assertHealthy() {} });
   // Count and demo fixtures only request first pages of their string ID index.
   Object.assign(dbms, {
+    async countDocuments(collection: string) {
+      let count = 0;
+      for await (const document of dbms.cursor(collection, 'id')) {
+        void document;
+        count++;
+      }
+      return count;
+    },
     async *cursorWithPosition(collection: string, field: string, after?: unknown) {
       if (field !== 'id' || after !== undefined) throw new Error('Unsupported stub cursor');
       for await (const document of dbms.cursor(collection, field)) {
@@ -76,6 +85,14 @@ async function* documents(values: string[]): AsyncIterable<string> {
   }
 }
 
+function gate(): { promise: Promise<void>; release: () => void } {
+  let release = () => {};
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
 describe('DatabaseService', () => {
   it('returns the requested cursor page with the full collection count', async () => {
     const service = new DatabaseService();
@@ -88,7 +105,7 @@ describe('DatabaseService', () => {
         ['c', 'C'],
       ])
         await db.insertDocumentObject('books', { id, title });
-      const cursor = vi.spyOn(db, 'cursor');
+      const count = vi.spyOn(db, 'countDocuments');
       const positioned = vi.spyOn(db, 'cursorWithPosition');
       const first = await service.getDocuments('books', 'title', undefined, 1);
       expect(first.documents).toEqual([JSON.stringify({ id: 'a', title: 'A' })]);
@@ -98,12 +115,12 @@ describe('DatabaseService', () => {
         total: 3,
         nextCursor: undefined,
       });
-      expect(cursor).toHaveBeenCalledExactlyOnceWith('books', 'id');
+      expect(count).toHaveBeenCalledExactlyOnceWith('books');
       expect(positioned).toHaveBeenLastCalledWith('books', 'title', {
         form: 'SS',
         key: Buffer.from([0, 1, 65, 0, 1, 97]),
       });
-      cursor.mockRestore();
+      count.mockRestore();
       positioned.mockRestore();
     } finally {
       await db.close();
@@ -657,6 +674,38 @@ describe('DatabaseService with real database files', () => {
     expect(JSON.parse(await service.getDocumentById('books', 'untouched'))).toMatchObject({ pages: 30 });
   });
 
+  it('counts binary collections without reading payloads and invalidates counts after deletion', async () => {
+    await service.create(filepath);
+    await service.insertDocument('images', { id: 'a', payload: Buffer.alloc(256 * 1024, 7) });
+    await service.insertDocument('images', { id: 'b', payload: Buffer.alloc(256 * 1024, 8) });
+    await service.insertDocument('numeric', { id: 42, title: 'first' });
+    const read = vi.spyOn(RecordStore.prototype, 'readRecord').mockRejectedValue(new Error('Payload read forbidden'));
+    expect((await service.getCollectionCounts()).counts).toMatchObject({ images: 2, numeric: 1 });
+    expect(await service.rawDbms.getDocumentIds('images')).toEqual(['a', 'b']);
+    expect(await service.rawDbms.getDocumentIds('numeric')).toEqual([42]);
+    expect(read).not.toHaveBeenCalled();
+    read.mockRestore();
+    await service.mutateDocuments('images', { ids: ['a'] });
+    expect((await service.getCollectionCounts()).counts['images']).toBe(1);
+    await service.mutateDocuments('images', { all: true });
+    expect((await service.getCollectionCounts()).counts['images']).toBe(0);
+  });
+
+  it('bulk delete selects and validates IDs without cursor or JSON payload preflight', async () => {
+    await service.create(filepath);
+    for (const id of [1, 2, 3]) await service.insertDocument('numeric', { id, payload: Buffer.alloc(64 * 1024) });
+    const cursor = vi.spyOn(service.rawDbms, 'cursor').mockImplementation(() => {
+      throw new Error('Payload cursor forbidden');
+    });
+    const read = vi.spyOn(service.rawDbms, 'getDocumentById').mockRejectedValue(new Error('JSON preflight forbidden'));
+    await expect(service.mutateDocuments('numeric', { ids: [1, 99] })).rejects.toThrow('Document not found');
+    expect(await service.rawDbms.countDocuments('numeric')).toBe(3);
+    expect(await service.mutateDocuments('numeric', { all: true })).toEqual({ affected: 3 });
+    expect(cursor).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+    expect(await service.rawDbms.countDocuments('numeric')).toBe(0);
+  });
+
   it('rejects invalid bulk edits before touching earlier targets', async () => {
     await service.create(filepath);
     await service.insertDocument('books', { id: 'a', title: 'first' });
@@ -724,6 +773,381 @@ describe('DatabaseService with real database files', () => {
     expect((await service.semanticSearch('books', 'second', 2)).length).toBe(2);
     expect(await fs.readdir(directory)).toEqual(expect.arrayContaining(['database.db', 'database.db.log']));
     expect((await fs.readdir(directory)).some((name) => name.includes('.vacuum-'))).toBe(false);
+  });
+
+  it('keeps deletion serialized and preserves other collections, SQL, semantic search and reopening', async () => {
+    await service.create(filepath);
+    await service.insertDocument('remove', { id: 'r1', title: 'second' });
+    await service.insertDocument('keep', { id: 'k1', title: 'first', score: 1 });
+    await service.insertDocument('keep', { id: 'k2', title: 'second', score: 2 });
+    await service.getCollectionCounts();
+    const database = service.rawDbms;
+    const originalDelete = database.deleteCollection.bind(database);
+    const started = gate();
+    const resume = gate();
+    vi.spyOn(database, 'deleteCollection').mockImplementationOnce(async (collection) => {
+      started.release();
+      await resume.promise;
+      return originalDelete(collection);
+    });
+    const redundantCommit = vi.spyOn(database, 'commit');
+    const deleting = service.deleteCollection('remove');
+    await started.promise;
+    expect(service.busyOperation).toBe('delete-collection');
+    expect(service.isConnected).toBe(true);
+    const read = vi.spyOn(database, 'cursorWithPosition');
+    const queuedRead = service.getDocuments('keep');
+    expect(read).not.toHaveBeenCalled();
+    resume.release();
+    await deleting;
+    expect(redundantCommit).not.toHaveBeenCalled();
+    expect((await queuedRead).total).toBe(2);
+    expect(service.rawDbms).toBe(database);
+    expect(service.isConnected).toBe(true);
+    expect(await service.getCollectionCounts()).toEqual({ collections: ['keep'], counts: { keep: 2 } });
+    expect(JSON.parse((await service.semanticSearch('keep', 'first', 1))[0])).toMatchObject({ id: 'k1' });
+    expect((await service.query('SELECT id FROM keep WHERE score = 2')).rows).toEqual([{ id: 'k2' }]);
+    await service.query("UPDATE keep SET score = 3 WHERE id = 'k1'");
+    await service.deleteCollection('keep');
+    await service.insertDocument('survivor', { id: 1, title: 'still usable' });
+    await service.connect(filepath);
+    expect(await service.getCollectionCounts()).toEqual({ collections: ['survivor'], counts: { survivor: 1 } });
+    expect(JSON.parse(await service.getDocumentById('survivor', 1))).toMatchObject({ title: 'still usable' });
+  });
+
+  it('keeps a rejected collection deletion connected without changing other counts', async () => {
+    await service.create(filepath);
+    await service.insertDocument('keep', { id: 'k1', title: 'first' });
+    const before = await service.getCollectionCounts();
+    await expect(service.deleteCollection('missing')).rejects.toThrow('does not exist');
+    expect(service.isConnected).toBe(true);
+    expect(await service.getCollectionCounts()).toEqual(before);
+    expect(JSON.parse((await service.semanticSearch('keep', 'first', 1))[0])).toMatchObject({ id: 'k1' });
+  });
+
+  it('exposes queued and running deletion metadata without waiting for the database queue', async () => {
+    await service.create(filepath);
+    await service.insertDocument('remove', { id: 'r1', title: 'first' });
+    const started = gate();
+    const resume = gate();
+    const holding = service.runExclusiveOperation('held-test', async () => {
+      started.release();
+      await resume.promise;
+    });
+    await started.promise;
+    const deleting = service.deleteCollection('remove');
+    expect(service.getOperations().deletions).toEqual([{ collection: 'remove', state: 'queued' }]);
+    await expect(service.deleteCollection('remove')).rejects.toThrow('already being deleted');
+    const deletingStarted = gate();
+    const deletingResume = gate();
+    const original = service.rawDbms.deleteCollection.bind(service.rawDbms);
+    vi.spyOn(service.rawDbms, 'deleteCollection').mockImplementationOnce(async (name) => {
+      deletingStarted.release();
+      await deletingResume.promise;
+      return original(name);
+    });
+    resume.release();
+    await holding;
+    await deletingStarted.promise;
+    try {
+      const snapshot = service.getOperations();
+      expect(snapshot.deletions).toEqual([{ collection: 'remove', state: 'running' }]);
+      snapshot.deletions[0].collection = 'mutated snapshot';
+      expect(service.getOperations().deletions[0].collection).toBe('remove');
+    } finally {
+      deletingResume.release();
+      await deleting;
+    }
+    expect(service.getOperations().deletions).toEqual([]);
+    await expect(service.deleteCollection('missing')).rejects.toThrow('does not exist');
+    expect(service.getOperations().deletions).toEqual([]);
+  });
+
+  it('reports actual vacuum counts without queue access and completes only after reopening', async () => {
+    await service.create(filepath);
+    await service.insertDocument('keep', { id: 'a1', title: 'first' });
+    const copying = gate();
+    const resumeCopying = gate();
+    const reopen = gate();
+    const resumeReopen = gate();
+    const database = service.rawDbms;
+    const originalVacuum = database.vacuumCompactInto.bind(database);
+    vi.spyOn(database, 'vacuumCompactInto').mockImplementationOnce(async (data, log, report) => {
+      report?.({
+        phase: 'copy-collection',
+        collection: 'keep',
+        processed: 1,
+        total: 2,
+        unit: 'documents',
+        percentage: 50,
+      });
+      copying.release();
+      await resumeCopying.promise;
+      return originalVacuum(data, log, report);
+    });
+    const originalOpen = SimpleDbms.open.bind(SimpleDbms);
+    vi.spyOn(SimpleDbms, 'open').mockImplementationOnce(async (...args) => {
+      reopen.release();
+      await resumeReopen.promise;
+      return originalOpen(...args);
+    });
+    const vacuum = service.vacuum();
+    const id = service.getOperations().vacuum!.id;
+    expect(service.getOperations().vacuum).toMatchObject({ state: 'queued', phase: 'queued' });
+    await copying.promise;
+    expect(service.getOperations().vacuum).toMatchObject({
+      id,
+      state: 'running',
+      phase: 'copy-collection',
+      processed: 1,
+      total: 2,
+      percentage: 50,
+    });
+    resumeCopying.release();
+    await reopen.promise;
+    try {
+      expect(service.isConnected).toBe(false);
+      expect(service.getOperations().vacuum).toMatchObject({ id, state: 'running', phase: 'reopen' });
+      expect(service.getOperations().vacuum?.percentage).toBeUndefined();
+    } finally {
+      resumeReopen.release();
+      await vacuum;
+    }
+    expect(service.getOperations().vacuum).toMatchObject({ id, state: 'completed', phase: 'complete' });
+    const nextPath = path.join(directory, 'other.db');
+    await service.connect(nextPath);
+    expect(service.getOperations().vacuum).toBeNull();
+    await expect(service.vacuum()).resolves.toBeDefined();
+    const secondId = service.getOperations().vacuum!.id;
+    expect(secondId).not.toBe(id);
+    vi.spyOn(service.rawDbms, 'vacuumCompactInto').mockRejectedValueOnce(new Error('controlled copy failure'));
+    await expect(service.vacuum()).rejects.toThrow('controlled copy failure');
+    expect(service.getOperations().vacuum).toMatchObject({
+      state: 'failed',
+      phase: 'failed',
+      error: 'controlled copy failure',
+    });
+    expect(service.getOperations().vacuum?.id).not.toBe(secondId);
+    expect(service.isConnected).toBe(true);
+  });
+
+  it('reports committed deletion when model cleanup fails without disconnecting healthy data', async () => {
+    await service.create(filepath);
+    await service.insertDocument('remove', { id: 'r1', title: 'second' });
+    await service.insertDocument('keep', { id: 'k1', title: 'first' });
+    await expect(
+      service.deleteCollection('remove', () => Promise.reject(new Error('Model file could not be saved'))),
+    ).rejects.toThrow('Model file could not be saved');
+    expect(service.isConnected).toBe(true);
+    expect(await service.getCollectionCounts()).toEqual({ collections: ['keep'], counts: { keep: 1 } });
+    await service.insertDocument('keep', { id: 'k2', title: 'second' });
+    expect((await service.getDocuments('keep')).total).toBe(2);
+  });
+
+  it('discards a genuinely unsafe collection deletion and retains the durable collections for reconnect', async () => {
+    await service.create(filepath);
+    await service.insertDocument('remove', { id: 'r1', title: 'second' });
+    await service.insertDocument('keep', { id: 'k1', title: 'first' });
+    const original = await fs.readFile(filepath);
+    const fault = vi
+      .spyOn(RecordStore.prototype, 'deleteRecord')
+      .mockRejectedValueOnce(new Error('Record free failed'));
+    await expect(service.deleteCollection('remove')).rejects.toThrow('Record free failed');
+    fault.mockRestore();
+    expect(service.isConnected).toBe(false);
+    expect(await service.getStatus()).toMatchObject({
+      connected: false,
+      recoveryError: expect.stringContaining('Record free failed') as unknown,
+    });
+    expect(await fs.readFile(filepath)).toEqual(original);
+    await service.connect(filepath);
+    expect(await service.getCollectionCounts()).toEqual({
+      collections: ['remove', 'keep'],
+      counts: { remove: 1, keep: 1 },
+    });
+    expect(JSON.parse((await service.semanticSearch('keep', 'first', 1))[0])).toMatchObject({ id: 'k1' });
+  });
+
+  it('exposes maintenance without queueing status or admitting conflicts while vacuum is reopening', async () => {
+    await service.create(filepath);
+    await service.insertDocument('keep', { id: 'k1', title: 'first' });
+    const originalOpen = SimpleDbms.open.bind(SimpleDbms);
+    const reopening = gate();
+    const resume = gate();
+    vi.spyOn(SimpleDbms, 'open').mockImplementationOnce(async (...args) => {
+      reopening.release();
+      await resume.promise;
+      return originalOpen(...args);
+    });
+    const vacuum = service.vacuum();
+    await reopening.promise;
+    try {
+      expect(service.isConnected).toBe(false);
+      expect(service.filepath).toBe(filepath);
+      expect(await service.getStatus()).toMatchObject({
+        connected: false,
+        available: false,
+        busyOperation: 'vacuum',
+        filepath,
+        size: null,
+      });
+      await expect(service.vacuum()).rejects.toBeInstanceOf(DatabaseBusyError);
+      await expect(service.insertDocument('keep', { id: 'blocked', title: 'first' })).rejects.toBeInstanceOf(
+        DatabaseBusyError,
+      );
+      await expect(service.connect(path.join(directory, 'different.db'))).rejects.toBeInstanceOf(DatabaseBusyError);
+      await expect(service.disconnect()).rejects.toBeInstanceOf(DatabaseBusyError);
+      expect(() => service.startDemo('test-client')).toThrow(DatabaseBusyError);
+    } finally {
+      resume.release();
+      await vacuum;
+    }
+    expect(service.isConnected).toBe(true);
+    expect(await service.getStatus()).toMatchObject({ available: true, busyOperation: null, filepath });
+    expect((await service.getDocuments('keep')).total).toBe(1);
+  });
+
+  it('reuses verified free-list stats across reads and refreshes them after each storage change', async () => {
+    await service.create(filepath);
+    await service.insertDocument('keep', { id: 'k1', title: 'first' });
+    await service.insertDocument('remove', { id: 'r1', title: 'second' });
+    const stats = vi.spyOn(service.rawDbms, 'getCompactionStorageStats');
+    const first = await service.getStatus();
+    await service.getCollections();
+    await service.getCollectionCounts();
+    await service.getDocuments('keep');
+    await service.semanticSearch('keep', 'first', 1);
+    expect((await service.getStatus()).size).toEqual(first.size);
+    expect(stats).toHaveBeenCalledTimes(1);
+
+    await service.insertDocument('keep', { id: 'k2', title: 'second' });
+    await service.getStatus();
+    expect(stats).toHaveBeenCalledTimes(2);
+    await service.editDocument('keep', 'k2', 'title', 'first');
+    await service.getStatus();
+    expect(stats).toHaveBeenCalledTimes(3);
+    await service.deleteDocument('keep', 'k2');
+    await service.getStatus();
+    expect(stats).toHaveBeenCalledTimes(4);
+    await service.setFieldIndexed('keep', 'title', false);
+    await service.getStatus();
+    expect(stats).toHaveBeenCalledTimes(5);
+    await service.deleteCollection('remove');
+    const fragmented = await service.getStatus();
+    expect(stats).toHaveBeenCalledTimes(6);
+    expect(fragmented.size?.freeBlocks).toBeGreaterThan(0);
+    await service.runIncrementalCompactionStep();
+    await service.getStatus();
+    expect(stats).toHaveBeenCalledTimes(7);
+
+    // External callbacks are conservatively invalidated, even when their name
+    // happens to match an internal read operation.
+    await service.runExclusiveOperation('get-documents', async () => {
+      await service.rawDbms.insertDocumentObject('keep', { id: 'k3', title: 'first' });
+      await service.rawDbms.commit();
+    });
+    await service.getStatus();
+    expect(stats).toHaveBeenCalledTimes(8);
+    await service.vacuum();
+    const rebuilt = service.rawDbms;
+    const rebuiltStats = vi.spyOn(rebuilt, 'getCompactionStorageStats');
+    const afterVacuum = await service.getStatus();
+    expect(afterVacuum.size?.totalBlocks).toBe((await rebuilt.getCompactionStorageStats()).totalBlocks);
+    expect(rebuiltStats).toHaveBeenCalledTimes(2);
+    await service.getStatus();
+    expect(rebuiltStats).toHaveBeenCalledTimes(2);
+    await service.connect(filepath);
+    const reopenedStats = vi.spyOn(service.rawDbms, 'getCompactionStorageStats');
+    await service.getStatus();
+    expect(reopenedStats).toHaveBeenCalledOnce();
+  });
+
+  it('preserves already accepted work and reports pending vacuum to a previously queued status request', async () => {
+    await service.create(filepath);
+    await service.insertDocument('keep', { id: 'k1', title: 'first' });
+    const started = gate();
+    const resume = gate();
+    const holding = service.runExclusiveOperation('held-request', async () => {
+      started.release();
+      await resume.promise;
+    });
+    await started.promise;
+    const accepted = service.insertDocument('keep', { id: 'k2', title: 'second' });
+    const status = service.getStatus();
+    const vacuum = service.vacuum();
+    try {
+      expect(service.busyOperation).toBe('vacuum');
+      await expect(service.deleteCollection('keep')).rejects.toBeInstanceOf(DatabaseBusyError);
+    } finally {
+      resume.release();
+      await holding;
+      await accepted;
+      expect(await status).toMatchObject({ busyOperation: 'vacuum', available: false });
+      await vacuum;
+    }
+    expect((await service.getDocuments('keep')).total).toBe(2);
+  });
+
+  it('reports the database selected by a previously accepted connection while vacuum reopens it', async () => {
+    await service.create(filepath);
+    await service.insertDocument('original', { id: 'a1', title: 'first' });
+    const targetPath = path.join(directory, 'target.db');
+    await service.create(targetPath);
+    await service.insertDocument('target', { id: 'b1', title: 'second' });
+    await service.connect(filepath);
+    const holdingStarted = gate();
+    const releaseHolding = gate();
+    const holding = service.runExclusiveOperation('held-request', async () => {
+      holdingStarted.release();
+      await releaseHolding.promise;
+    });
+    await holdingStarted.promise;
+
+    const originalOpen = SimpleDbms.open.bind(SimpleDbms);
+    const reopening = gate();
+    const resumeReopening = gate();
+    vi.spyOn(SimpleDbms, 'open')
+      .mockImplementationOnce(originalOpen)
+      .mockImplementationOnce(async (...args) => {
+        reopening.release();
+        await resumeReopening.promise;
+        return originalOpen(...args);
+      });
+    const switching = service.connect(targetPath);
+    const vacuum = service.vacuum();
+    releaseHolding.release();
+    await holding;
+    await switching;
+    await reopening.promise;
+    try {
+      expect(service.isConnected).toBe(false);
+      expect(service.filepath).toBe(targetPath);
+      expect(await service.getStatus()).toMatchObject({ busyOperation: 'vacuum', filepath: targetPath });
+    } finally {
+      resumeReopening.release();
+      await vacuum;
+    }
+    expect(await service.getCollections()).toEqual(['target']);
+    expect((await service.getDocuments('target')).total).toBe(1);
+    await service.connect(filepath);
+    expect((await service.getDocuments('original')).total).toBe(1);
+  });
+
+  it('preserves the failed recovery path and actual disconnection after vacuum cannot reopen', async () => {
+    await service.create(filepath);
+    await service.insertDocument('keep', { id: 'k1', title: 'first' });
+    const failedOpen = vi.spyOn(SimpleDbms, 'open').mockRejectedValue(new Error('Reopen failed'));
+    await expect(service.vacuum()).rejects.toThrow('recovery could not complete');
+    failedOpen.mockRestore();
+    expect(await service.getStatus()).toMatchObject({
+      connected: false,
+      available: false,
+      busyOperation: null,
+      filepath,
+      recoveryError: expect.stringContaining('recovery could not complete') as unknown,
+    });
+    await service.connect(filepath);
+    expect((await service.getDocuments('keep')).total).toBe(1);
   });
 
   it('retains protected paths and stays connected after vacuum alias preflight rejection', async () => {

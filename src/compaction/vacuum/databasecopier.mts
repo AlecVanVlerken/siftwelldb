@@ -98,6 +98,10 @@ export class DatabaseCopier {
     let collectionsCopied = 0;
     let documentsCopied = 0;
 
+    if (collections.length === 0) {
+      this.reportProgress({ phase: 'copy-collection', processed: 0, total: 0, unit: 'collections' });
+    }
+
     for (const collection of collections) {
       const copiedInCollection = await this.copyCollection(collection);
       collectionsCopied += 1;
@@ -131,6 +135,7 @@ export class DatabaseCopier {
    * @author Alec Van Vlerken
    */
   private async copyCollection(collection: string): Promise<number> {
+    this.reportProgress({ phase: 'copy-collection', collection });
     for (const [field, indexed] of Object.entries(this.source.getFieldIndexConfig(collection))) {
       await this.target.setFieldIndexed(collection, field, indexed);
     }
@@ -141,6 +146,15 @@ export class DatabaseCopier {
 
     if (!this.catalog.hasIdTree(collection)) {
       await this.ensureCleanHnswTarget(collection);
+      this.reportProgress({
+        phase: 'copy-collection',
+        collection,
+        copiedDocuments: 0,
+        totalDocuments: 0,
+        processed: 0,
+        total: 0,
+        unit: 'documents',
+      });
       return 0;
     }
 
@@ -151,7 +165,15 @@ export class DatabaseCopier {
       phase: 'copy-collection',
       collection,
       copiedDocuments: 0,
+      totalDocuments: expectedDocuments,
+      processed: 0,
+      total: expectedDocuments,
+      unit: 'documents',
+      ...(expectedDocuments > 0 ? { percentage: 0 } : {}),
     });
+
+    const progressStride = Math.max(1, Math.ceil(expectedDocuments / 100));
+    let lastProgressAt = performance.now();
 
     const docs = await this.source.cursor(collection, 'id');
 
@@ -165,11 +187,22 @@ export class DatabaseCopier {
       await this.target.insertDocument(doc, compression);
       copiedDocuments += 1;
 
-      this.reportProgress({
-        phase: 'copy-collection',
-        collection,
-        copiedDocuments,
-      });
+      if (
+        copiedDocuments < expectedDocuments &&
+        (copiedDocuments % progressStride === 0 || performance.now() - lastProgressAt >= 100)
+      ) {
+        this.reportProgress({
+          phase: 'copy-collection',
+          collection,
+          copiedDocuments,
+          totalDocuments: expectedDocuments,
+          processed: copiedDocuments,
+          total: expectedDocuments,
+          unit: 'documents',
+          percentage: Math.floor((copiedDocuments / expectedDocuments) * 100),
+        });
+        lastProgressAt = performance.now();
+      }
     }
 
     if (copiedDocuments !== expectedDocuments) {
@@ -184,6 +217,16 @@ export class DatabaseCopier {
       await this.target.ensurePrimaryIndex(collection, type);
     }
     await this.ensureCleanHnswTarget(collection);
+    this.reportProgress({
+      phase: 'copy-collection',
+      collection,
+      copiedDocuments,
+      totalDocuments: expectedDocuments,
+      processed: copiedDocuments,
+      total: expectedDocuments,
+      unit: 'documents',
+      ...(expectedDocuments > 0 ? { percentage: 100 } : {}),
+    });
     return copiedDocuments;
   }
 

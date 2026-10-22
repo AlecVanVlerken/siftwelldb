@@ -32,6 +32,7 @@ import type { FieldCompressionDefaults } from '../../database/compression.mjs';
 import type { DbmsBack } from '../../database/dbmsback.mjs';
 import { documentToJSON } from '../../database/document.mjs';
 import { CollectionCatalog } from './collectioncatalog.mjs';
+import type { VacuumProgress } from './vacuumtypes.mjs';
 
 /**
  * Validates that the compacted target database preserves the logical contents
@@ -53,6 +54,7 @@ export class VacuumValidator {
     private readonly source: DbmsBack,
     private readonly target: DbmsBack,
     private readonly catalog: CollectionCatalog,
+    private readonly onProgress?: (progress: VacuumProgress) => void,
   ) {
     this.targetCatalog = new CollectionCatalog(target);
   }
@@ -72,7 +74,12 @@ export class VacuumValidator {
   async validate(): Promise<void> {
     const collections = this.catalog.listCollections();
 
+    if (collections.length === 0) {
+      this.onProgress?.({ phase: 'validate', processed: 0, total: 0, unit: 'collections' });
+    }
+
     for (const collection of collections) {
+      this.onProgress?.({ phase: 'validate', collection });
       await this.validateCollection(collection);
     }
   }
@@ -102,8 +109,17 @@ export class VacuumValidator {
     const sourceHasIdTree = this.catalog.hasIdTree(collection);
     const targetHasIdTree = this.targetCatalog.hasIdTree(collection);
 
-    const sourceCount = await this.countDocuments(this.source, this.catalog, collection);
-    const targetCount = await this.countDocuments(this.target, this.targetCatalog, collection);
+    const sourceCount = sourceHasIdTree ? await this.source.getPrimaryReferenceCount(collection) : 0;
+    const targetCount = targetHasIdTree ? await this.target.getPrimaryReferenceCount(collection) : 0;
+
+    this.onProgress?.({
+      phase: 'validate',
+      collection,
+      processed: 0,
+      total: sourceCount,
+      unit: 'documents',
+      ...(sourceCount > 0 ? { percentage: 0 } : {}),
+    });
 
     if (sourceCount !== targetCount) {
       throw new Error(
@@ -134,80 +150,79 @@ export class VacuumValidator {
       );
     }
 
+    // Both primary cursors use the same ID ordering. Count and compare their
+    // verified records in one pass rather than decoding both databases once
+    // just to count them, then decoding them again for per-ID lookups.
     const sourceDocs = await this.source.cursor(collection, 'id');
+    const targetDocs = (await this.target.cursor(collection, 'id'))[Symbol.asyncIterator]();
+    let processed = 0;
+    const progressStride = Math.max(1, Math.ceil(sourceCount / 100));
+    let lastProgressAt = performance.now();
 
-    for await (const doc of sourceDocs) {
-      const id = doc.getId();
+    try {
+      for await (const doc of sourceDocs) {
+        const id = doc.getId();
 
-      if (id === undefined || id === null) {
-        throw new Error(
-          `Vacuum validation failed for collection "${collection}": ` +
-            `encountered source document without a valid id.`,
-        );
-      }
+        if (id === undefined || id === null) {
+          throw new Error(
+            `Vacuum validation failed for collection "${collection}": ` +
+              `encountered source document without a valid id.`,
+          );
+        }
 
-      const targetDocs = await this.target.cursor(collection, 'id', id);
+        const nextTarget = await targetDocs.next();
+        if (nextTarget.done || nextTarget.value.getId() !== id) {
+          throw new Error(
+            `Vacuum validation failed for collection "${collection}": ` +
+              `document with id "${String(id)}" not found in target database.`,
+          );
+        }
 
-      let found = false;
-      for await (const targetDoc of targetDocs) {
-        if (targetDoc.getId() === id) {
-          const sourceJson = documentToJSON(doc);
-          const targetJson = documentToJSON(targetDoc);
-          if (targetJson !== sourceJson) {
-            throw new Error(
-              `Vacuum validation failed for collection "${collection}": ` +
-                `document with id "${String(id)}" has different contents in target database.`,
-            );
-          }
+        if (documentToJSON(nextTarget.value) !== documentToJSON(doc)) {
+          throw new Error(
+            `Vacuum validation failed for collection "${collection}": ` +
+              `document with id "${String(id)}" has different contents in target database.`,
+          );
+        }
 
-          found = true;
-          break;
+        processed += 1;
+        if (
+          processed < sourceCount &&
+          (processed % progressStride === 0 || performance.now() - lastProgressAt >= 100)
+        ) {
+          this.onProgress?.({
+            phase: 'validate',
+            collection,
+            processed,
+            total: sourceCount,
+            unit: 'documents',
+            percentage: Math.floor((processed / sourceCount) * 100),
+          });
+          lastProgressAt = performance.now();
         }
       }
 
-      if (!found) {
+      if (!(await targetDocs.next()).done) {
+        throw new Error(`Vacuum validation failed for collection "${collection}": target contains extra documents.`);
+      }
+      if (processed !== sourceCount) {
         throw new Error(
           `Vacuum validation failed for collection "${collection}": ` +
-            `document with id "${String(id)}" not found in target database.`,
+            `document scan returned ${processed} documents from ${sourceCount} live primary references.`,
         );
       }
+
+      this.onProgress?.({
+        phase: 'validate',
+        collection,
+        processed,
+        total: sourceCount,
+        unit: 'documents',
+        ...(sourceCount > 0 ? { percentage: 100 } : {}),
+      });
+    } finally {
+      await targetDocs.return?.();
     }
-  }
-
-  /**
-   * Counts the number of logical documents in the given collection.
-   *
-   * If the collection has no `id` tree, then its logical document count is
-   * zero and no cursor iteration is attempted.
-   *
-   * @param {DbmsBack} db - The database backend to count from.
-   * @param {CollectionCatalog} catalog - The collection catalog corresponding to the database.
-   * @param {string} collection - The collection name.
-   * @returns {Promise<number>} The number of logical documents in the collection.
-   *
-   * @author Alec Van Vlerken
-   */
-  private async countDocuments(db: DbmsBack, catalog: CollectionCatalog, collection: string): Promise<number> {
-    if (!catalog.hasIdTree(collection)) {
-      return 0;
-    }
-
-    let count = 0;
-    const expectedCount = await db.getPrimaryReferenceCount(collection);
-
-    for await (const doc of await db.cursor(collection, 'id')) {
-      void doc;
-      count += 1;
-    }
-
-    if (count !== expectedCount) {
-      throw new Error(
-        `Vacuum validation failed for collection "${collection}": ` +
-          `document scan returned ${count} documents from ${expectedCount} live primary references.`,
-      );
-    }
-
-    return count;
   }
 
   /**

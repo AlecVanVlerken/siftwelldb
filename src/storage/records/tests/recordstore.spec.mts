@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RecordStore } from '../recordstore.mjs';
-import { parseRawDocument } from '../../../database/document.mjs';
+import { parseRawDocument, type Document } from '../../../database/document.mjs';
 import { MockFile } from '../../../../tests/helpers/mockfile.mjs';
 import { AtomicFile } from '../../wal/atomicfile.mjs';
 import { FreeBlockFile } from '../../blocks/freeblockfile.mjs';
@@ -82,6 +82,67 @@ describe('RecordStore', () => {
     expect(freeCount).toBe(1);
   });
 
+  it('validates decoded compressed and binary values while reusing the record traversal for deletion', async () => {
+    const { recordStore, freeBlockFile } = await createRecordStore();
+    const document = parseRawDocument('docs', {
+      id: 'large',
+      title: 'compressed text '.repeat(300),
+      image: Buffer.alloc(2000, 7),
+    });
+    const pointer = await recordStore.writeRecord(document, { compressionDefaults: { title: 'gzip' } });
+    await freeBlockFile.commit();
+    const chain = await recordStore.readRecordBlockChain(pointer);
+    expect(chain.length).toBeGreaterThan(1);
+    const read = vi.spyOn(freeBlockFile, 'readBlock');
+    const chainRead = vi.spyOn(recordStore, 'readRecordBlockChain');
+    const free = vi.spyOn(freeBlockFile, 'freeBlock');
+    const validate = vi.fn((decoded: Document | null) => {
+      expect(decoded?.asDocument()).toEqual(document.asDocument());
+      expect(free).not.toHaveBeenCalled();
+      return Promise.resolve();
+    });
+
+    await recordStore.deleteRecord(pointer, validate);
+
+    expect(validate).toHaveBeenCalledOnce();
+    expect(chainRead).not.toHaveBeenCalled();
+    // One decoding pass plus freeBlock's existing checked read; no extra chain walk.
+    for (const block of chain) expect(read.mock.calls.filter(([id]) => id === block)).toHaveLength(2);
+    expect(free).toHaveBeenCalledTimes(chain.length);
+    expect(await getFreeBlockCount(freeBlockFile)).toBe(chain.length);
+  });
+
+  it('does not free any record blocks when identity validation fails', async () => {
+    const { recordStore, freeBlockFile } = await createRecordStore();
+    const document = parseRawDocument('docs', { id: 'wrong-owner', image: Buffer.alloc(2000, 7) });
+    const pointer = await recordStore.writeRecord(document);
+    const failure = new Error('record belongs to a different collection');
+    const free = vi.spyOn(freeBlockFile, 'freeBlock');
+
+    await expect(recordStore.deleteRecord(pointer, () => Promise.reject(failure))).rejects.toBe(failure);
+
+    expect(free).not.toHaveBeenCalled();
+    expect((await recordStore.readRecord(pointer))?.asDocument()).toEqual(document.asDocument());
+    expect(await getFreeBlockCount(freeBlockFile)).toBe(0);
+  });
+
+  it('decodes compressed field payloads before validating or freeing a record', async () => {
+    const { recordStore, freeBlockFile } = await createRecordStore();
+    const pointer = await recordStore.writeRecordEncoded({
+      collection: 'docs',
+      id: 'corrupt',
+      iterableEntries: [{ key: 'body', valueType: 'string', compression: 'gzip', payloadBase64: 'bm90LWd6aXA=' }],
+      nonIterableEntries: [],
+    });
+    const validate = vi.fn(() => Promise.resolve());
+    const free = vi.spyOn(freeBlockFile, 'freeBlock');
+
+    await expect(recordStore.deleteRecord(pointer, validate)).rejects.toThrow(/Cannot read record/);
+
+    expect(validate).not.toHaveBeenCalled();
+    expect(free).not.toHaveBeenCalled();
+  });
+
   it('reuses freed blocks when allocating new records', async () => {
     const { recordStore } = await createRecordStore();
     const doc1 = parseRawDocument('cities', { id: 'first', population: 1 });
@@ -121,6 +182,13 @@ describe('RecordStore', () => {
     await expect(recordStore.readRecordEncoded(pointer)).rejects.toThrow(
       failure === 'cycle' ? 'Cyclic record chain' : 'length exceeds',
     );
+    const validate = vi.fn(() => Promise.resolve());
+    const free = vi.spyOn(freeBlockFile, 'freeBlock');
+    await expect(recordStore.deleteRecord(pointer, validate)).rejects.toThrow(
+      failure === 'cycle' ? 'Cyclic record chain' : 'length exceeds',
+    );
+    expect(validate).not.toHaveBeenCalled();
+    expect(free).not.toHaveBeenCalled();
     if (failure === 'cycle') {
       await expect(recordStore.deleteRecord(pointer)).rejects.toThrow('Cyclic record chain');
       expect((await freeBlockFile.readBlock(pointer))[0]).toBe(2);

@@ -271,8 +271,26 @@ export class RecordStore {
     return this.blockSize;
   }
 
-  async deleteRecord(blockID: number): Promise<void> {
-    const blocksToFree = await this.readRecordBlockChain(blockID);
+  /**
+   * An optional validator receives the fully decoded record before any block is
+   * freed. Collection deletion uses the same verified traversal for identity
+   * checks and deallocation, rather than reading the chain a second time.
+   */
+  async deleteRecord(blockID: number, validate?: (document: Document | null) => Promise<void>): Promise<void> {
+    let blocksToFree: number[];
+    if (validate) {
+      blocksToFree = [];
+      let document: Document | null;
+      try {
+        const stored = await this.readStoredDocument(blockID, blocksToFree);
+        document = stored ? this.deserializeDocument(stored) : null;
+      } catch (error) {
+        throw new RecordReadError(blockID, error);
+      }
+      await validate(document);
+    } else {
+      blocksToFree = await this.readRecordBlockChain(blockID);
+    }
 
     // Free all blocks
     for (const blockToFree of blocksToFree) {
@@ -407,7 +425,7 @@ export class RecordStore {
     return (defaults && Object.hasOwn(defaults, key) ? defaults[key] : undefined) ?? 'none';
   }
 
-  private async readStoredDocument(blockID: number): Promise<StoredDocumentV2 | null> {
+  private async readStoredDocument(blockID: number, blocks?: number[]): Promise<StoredDocumentV2 | null> {
     // Absence is determined explicitly; read/decode failures are never absence.
     if (!Number.isSafeInteger(blockID) || blockID < 0) throw new Error(`Invalid record block ${blockID}`);
     if (blockID === 0 || blockID >= getBlockCount(this.freeBlockFile)) return null;
@@ -416,7 +434,8 @@ export class RecordStore {
     const chunks: Buffer[] = [];
 
     // Follow the chain of blocks
-    for await (const [, blockData] of this.recordBlocks(blockID, head)) {
+    for await (const [currentBlockID, blockData] of this.recordBlocks(blockID, head)) {
+      blocks?.push(currentBlockID);
       // Read the pointer to the next block
       const nextBlockID = blockData.readUInt32LE(RecordStore.BLOCK_TYPE_BYTES);
 

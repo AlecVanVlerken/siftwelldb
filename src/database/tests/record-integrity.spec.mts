@@ -60,19 +60,19 @@ describe('live record integrity', () => {
 
   it('vacuum validation refuses matching incomplete scans rather than trusting their equal counts', async () => {
     const { back } = await fixture();
-    const target = await SimpleDbms.create(new MockFile(4096), new MockFile(4096));
-    open.push(target);
-    for (const [index, id] of ['A', 'C'].entries()) {
-      await target.insertDocumentObject('docs', { id, title: `document ${id}`, score: index === 0 ? 1 : 3 });
+    const { back: targetBack } = await fixture();
+    // Raw primary counts match, while both logical scans omit the same record.
+    // This must reach the completeness check rather than an earlier count mismatch.
+    for (const database of [back, targetBack]) {
+      expect(await database.getPrimaryReferenceCount('docs')).toBe(3);
+      const cursor = database.cursor.bind(database);
+      vi.spyOn(database, 'cursor').mockImplementation(async (collection, field, value) => {
+        const actual = await cursor(collection, field, value);
+        return (async function* () {
+          for await (const document of actual) if (document.getId() !== 'B') yield document;
+        })();
+      });
     }
-    const cursor = back.cursor.bind(back);
-    vi.spyOn(back, 'cursor').mockImplementation(async (collection, field, value) => {
-      const actual = await cursor(collection, field, value);
-      return (async function* () {
-        for await (const document of actual) if (document.getId() !== 'B') yield document;
-      })();
-    });
-    const targetBack = (target as unknown as { dbmsback: DbmsBack }).dbmsback;
     await expect(new VacuumValidator(back, targetBack, new CollectionCatalog(back)).validate()).rejects.toThrow(
       'document scan returned 2 documents from 3 live primary references',
     );

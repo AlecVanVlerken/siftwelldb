@@ -21,7 +21,7 @@ function focusModal(modal: HTMLElement): void {
 
 function handleModalKeyboard(event: KeyboardEvent): void {
   const current = openModals.at(-1);
-  if (!current) return;
+  if (!current || current.element.inert) return;
   if (event.key === 'Escape') {
     if (current.id !== 'modal-connect') closeModal(current.id);
     event.preventDefault();

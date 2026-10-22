@@ -82,6 +82,7 @@ export class VacuumService {
     this.reportProgress({ phase: 'preflight' });
     await this.assertPreconditions();
 
+    this.reportProgress({ phase: 'commit-source' });
     await this.commitSource();
 
     this.reportProgress({ phase: 'create-target' });
@@ -101,7 +102,7 @@ export class VacuumService {
       if (validate) {
         this.reportProgress({ phase: 'validate' });
 
-        const validator = new VacuumValidator(source, target, catalog);
+        const validator = new VacuumValidator(source, target, catalog, this.options.onProgress);
         await validator.validate();
 
         validated = true;

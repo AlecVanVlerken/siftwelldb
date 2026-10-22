@@ -30,7 +30,11 @@ import {
 } from '../../database/document.mjs';
 import { generateWikiArticles } from '../fixtures/wiki.mjs';
 import { RealFile } from '../../storage/file.mjs';
-import type { IncrementalCompactionPolicy, IncrementalCompactionResult } from '../../compaction/compaction.mjs';
+import type {
+  IncrementalCompactionPolicy,
+  IncrementalCompactionResult,
+  VacuumProgress,
+} from '../../compaction/compaction.mjs';
 import { fetchPageCursor } from '../../database/pagination.mjs';
 import { searchWordIndex, searchContentIndex } from '../../indexes/text/wordindex.mjs';
 import { QueryLanguage, type QueryResultRow } from '../../query/querylanguage.mjs';
@@ -175,6 +179,7 @@ export type DatabaseSizeInfo = {
 
 export type DatabaseStatus = {
   connected: boolean;
+  available: boolean;
   filepath: string | null;
   recoveryError: string | null;
   busyOperation: string | null;
@@ -185,10 +190,41 @@ export type DatabaseStatus = {
   temporaryDemo: DemoStatus | null;
 };
 
+export type VacuumOperationProgress = {
+  id: string;
+  filepath: string | null;
+  state: 'queued' | 'running' | 'completed' | 'failed';
+  phase:
+    | VacuumProgress['phase']
+    | 'queued'
+    | 'closing-target'
+    | 'replace-files'
+    | 'reopen'
+    | 'finalize'
+    | 'recover'
+    | 'complete'
+    | 'failed';
+  collection?: string;
+  processed?: number;
+  total?: number;
+  percentage?: number;
+  unit?: 'documents' | 'collections';
+  error?: string;
+};
+
 export class DatabaseInputError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'DatabaseInputError';
+  }
+}
+
+export class DatabaseBusyError extends Error {
+  readonly busyOperation = 'vacuum';
+
+  constructor() {
+    super('Full compaction is in progress. Wait for the database to reopen before using it.');
+    this.name = 'DatabaseBusyError';
   }
 }
 
@@ -285,6 +321,10 @@ export class DatabaseService {
   private readonly exclusiveContext = new AsyncLocalStorage<symbol>();
   private activeExclusiveToken: symbol | null = null;
   private currentOperation: string | null = null;
+  private vacuumPending = false;
+  private vacuumFilepath: string | null = null;
+  private vacuumProgress: VacuumOperationProgress | null = null;
+  private readonly collectionDeletions = new Map<string, { collection: string; state: 'queued' | 'running' }>();
   private incrementalCompactionEnabled = false;
   private incrementalCompactionQueued = false;
   private incrementalCompactionActive = false;
@@ -303,6 +343,10 @@ export class DatabaseService {
   /** Per-collection cache of `getCollectionRecordBytes`. Invalidated on inserts/edits/deletes. */
   private recordBytesCache: Map<string, number> = new Map();
   private documentCountCache: Map<string, number> = new Map();
+  private storageStatsCache: {
+    database: SimpleDbms;
+    stats: Awaited<ReturnType<SimpleDbms['getCompactionStorageStats']>>;
+  } | null = null;
   private readonly demoDirectories: DemoDirectoryStore;
   private readonly demoOptions: NonNullable<DatabaseServiceOptions['demo']>;
   private demoOwned: OwnedDemoDirectory | null = null;
@@ -347,6 +391,7 @@ export class DatabaseService {
   }
 
   startDemo(clientId: string): DemoStatus {
+    this.assertAvailable();
     DemoLeases.validateClient(clientId);
     if (this.shuttingDown) throw new DemoSessionConflictError('The daemon is shutting down.');
     if (['creating', 'ready'].includes(this.demoProgress.state)) return this.getDemoStatus(clientId);
@@ -588,12 +633,38 @@ export class DatabaseService {
 
   /** The filepath of the currently connected database, or null. */
   get filepath(): string | null {
-    return this.currentFilepath;
+    return this.currentFilepath ?? this.vacuumFilepath;
   }
 
   /** The operation currently holding exclusive DB access, if any. */
   get busyOperation(): string | null {
-    return this.currentOperation;
+    return this.vacuumPending ? 'vacuum' : this.currentOperation;
+  }
+
+  /** Operation metadata only: never waits for or reads a database being mutated. */
+  getOperations() {
+    return {
+      filepath: this.filepath,
+      connected: this.isConnected,
+      busyOperation: this.busyOperation,
+      deletions: Array.from(this.collectionDeletions.values(), (deletion) => ({ ...deletion })),
+      vacuum: this.vacuumProgress ? { ...this.vacuumProgress } : null,
+    };
+  }
+
+  private reportVacuum(phase: VacuumOperationProgress['phase'], progress: Partial<VacuumProgress> = {}): void {
+    if (!this.vacuumProgress) return;
+    this.vacuumProgress = {
+      id: this.vacuumProgress.id,
+      filepath: this.vacuumFilepath,
+      state: 'running',
+      ...progress,
+      phase,
+    };
+  }
+
+  private assertAvailable(): void {
+    if (this.vacuumPending) throw new DatabaseBusyError();
   }
 
   /**
@@ -601,6 +672,7 @@ export class DatabaseService {
    * file does not exist yet.
    */
   async connect(filepath: string, clientId?: string): Promise<string> {
+    this.assertAvailable();
     const sameDemo = this.demoOwned?.filepath === path.resolve(filepath) && this.demoProgress.state === 'ready';
     if (!sameDemo) this.prepareDemoSwitch(clientId);
     return this.runExclusive('connect', async () => {
@@ -649,6 +721,7 @@ export class DatabaseService {
    * Force-create a new database, deleting any existing files first.
    */
   async create(filepath: string, clientId?: string): Promise<string> {
+    this.assertAvailable();
     this.prepareDemoSwitch(clientId);
     return this.runExclusive('create', async () => {
       this.assertCanLeaveDemo(clientId);
@@ -673,6 +746,7 @@ export class DatabaseService {
 
   /** Disconnect from the current database. */
   async disconnect(clientId?: string): Promise<void> {
+    this.assertAvailable();
     this.prepareDemoSwitch(clientId);
     await this.runExclusive('disconnect', async () => {
       this.assertCanLeaveDemo(clientId);
@@ -705,32 +779,40 @@ export class DatabaseService {
 
   /** Return connection and file-size information for the current database. */
   async getStatus(): Promise<DatabaseStatus> {
-    if (['creating', 'cancelling'].includes(this.demoProgress.state))
+    const maintenance = (): DatabaseStatus => ({
+      connected: this.isConnected,
+      available: false,
+      filepath: this.filepath,
+      recoveryError: this.recoveryError,
+      busyOperation: this.vacuumPending ? 'vacuum' : 'create-demo',
+      size: null,
+      incrementalCompaction: this.getIncrementalCompactionStatus(),
+      semanticIndexes: [],
+      semanticReindexPending: [],
+      temporaryDemo: this.temporaryDemo,
+    });
+    if (this.vacuumPending || ['creating', 'cancelling'].includes(this.demoProgress.state)) return maintenance();
+    return this.runExclusive('database-status', async () => {
+      // A status request accepted before vacuum may have waited behind another
+      // operation. Report accepted maintenance rather than an obsolete idle state.
+      if (this.vacuumPending) return maintenance();
       return {
-        connected: false,
+        connected: this.isConnected,
+        available: this.isConnected,
         filepath: this.currentFilepath,
         recoveryError: this.recoveryError,
-        busyOperation: 'create-demo',
-        size: null,
+        busyOperation: null,
+        size: this.currentFilepath ? await this.databaseSizeInfo(this.currentFilepath, true) : null,
         incrementalCompaction: this.getIncrementalCompactionStatus(),
-        semanticIndexes: [],
-        semanticReindexPending: [],
+        semanticIndexes: this.isConnected ? this.dbms!.getHnswIndexKeys() : [],
+        semanticReindexPending: this.isConnected ? this.dbms!.getPendingSemanticCollections() : [],
         temporaryDemo: this.temporaryDemo,
       };
-    return this.runExclusive('database-status', async () => ({
-      connected: this.isConnected,
-      filepath: this.currentFilepath,
-      recoveryError: this.recoveryError,
-      busyOperation: null,
-      size: this.currentFilepath ? await this.databaseSizeInfo(this.currentFilepath) : null,
-      incrementalCompaction: this.getIncrementalCompactionStatus(),
-      semanticIndexes: this.isConnected ? this.dbms!.getHnswIndexKeys() : [],
-      semanticReindexPending: this.isConnected ? this.dbms!.getPendingSemanticCollections() : [],
-      temporaryDemo: this.temporaryDemo,
-    }));
+    });
   }
 
   setIncrementalCompactionEnabled(enabled: boolean): IncrementalCompactionStatus {
+    this.assertAvailable();
     this.incrementalCompactionEnabled = enabled;
     this.incrementalCompactionLastError = null;
 
@@ -775,97 +857,132 @@ export class DatabaseService {
    * Rebuild the current database into fresh files and swap them into place.
    */
   async vacuum(): Promise<VacuumSummary> {
-    return this.runExclusive('vacuum', async () => {
-      this.ensureConnected();
-      const filepath = this.currentFilepath;
-      if (!filepath) throw new Error('No filepath available');
+    this.assertAvailable();
+    this.vacuumPending = true;
+    this.vacuumFilepath = this.currentFilepath;
+    this.vacuumProgress = { id: randomUUID(), filepath: this.vacuumFilepath, state: 'queued', phase: 'queued' };
+    try {
+      return await this.runExclusive('vacuum', async () => {
+        this.ensureConnected();
+        const filepath = this.currentFilepath;
+        if (!filepath) throw new Error('No filepath available');
+        // Previously accepted connection work may have selected another file
+        // while this vacuum waited for its exclusive turn.
+        this.vacuumFilepath = filepath;
+        this.reportVacuum('preflight');
 
-      const before = await this.databaseSizeInfo(filepath);
-      await assertNoVacuumArtifacts(filepath);
-      const paths = vacuumPaths(filepath);
-      const tempDataFile = new RealFile(paths.tempData);
-      const tempLogFile = new RealFile(paths.tempLog);
-      const started = performance.now();
-      let compacted: SimpleDbms | null = null;
-      let originalClosed = false;
-      let preparationAttempted = false;
+        const before = await this.databaseSizeInfo(filepath);
+        await assertNoVacuumArtifacts(filepath);
+        const paths = vacuumPaths(filepath);
+        const tempDataFile = new RealFile(paths.tempData);
+        const tempLogFile = new RealFile(paths.tempLog);
+        const started = performance.now();
+        let compacted: SimpleDbms | null = null;
+        let originalClosed = false;
+        let preparationAttempted = false;
 
-      try {
-        compacted = await this.dbms!.vacuumCompactInto(tempDataFile, tempLogFile);
-        await compacted.close();
-        compacted = null;
+        try {
+          compacted = await this.dbms!.vacuumCompactInto(tempDataFile, tempLogFile, (progress) => {
+            // Core "done" means a validated target; installation and reopening still follow.
+            this.reportVacuum(progress.phase === 'done' ? 'closing-target' : progress.phase, progress);
+          });
+          this.reportVacuum('closing-target');
+          await compacted.close();
+          compacted = null;
 
-        await this.closeInternal(true);
-        originalClosed = true;
+          await this.closeInternal(true);
+          originalClosed = true;
 
-        preparationAttempted = true;
-        const manifest = await prepareVacuumReplacement(paths);
-        await installVacuumReplacement(paths);
+          preparationAttempted = true;
+          this.reportVacuum('replace-files');
+          const manifest = await prepareVacuumReplacement(paths);
+          await installVacuumReplacement(paths);
 
-        const hnswConfig = await this.getHnswConfig();
-        this.dbms = await this.openDatabaseFiles(new RealFile(filepath), new RealFile(paths.log), hnswConfig);
-        this.currentFilepath = filepath;
+          const hnswConfig = await this.getHnswConfig();
+          this.reportVacuum('reopen');
+          this.dbms = await this.openDatabaseFiles(new RealFile(filepath), new RealFile(paths.log), hnswConfig);
+          this.currentFilepath = filepath;
 
-        const after = await this.databaseSizeInfo(filepath);
-        // Do not expose a writable DB until the verified decision and cleanup
-        // are complete: later writes would invalidate recovery fingerprints.
-        await finishVacuumReplacement(paths, manifest);
-        this.onDatabaseOpened();
-        const summary = {
-          filepath,
-          before,
-          after,
-          bytesSaved: before.totalBytes - after.totalBytes,
-          durationMs: performance.now() - started,
-        };
+          const after = await this.databaseSizeInfo(filepath);
+          this.reportVacuum('finalize');
+          // Do not expose a writable DB until the verified decision and cleanup
+          // are complete: later writes would invalidate recovery fingerprints.
+          await finishVacuumReplacement(paths, manifest);
+          this.onDatabaseOpened();
+          this.vacuumProgress = { id: this.vacuumProgress!.id, filepath, state: 'completed', phase: 'complete' };
+          const summary = {
+            filepath,
+            before,
+            after,
+            bytesSaved: before.totalBytes - after.totalBytes,
+            durationMs: performance.now() - started,
+          };
 
-        return summary;
-      } catch (error) {
-        if (error instanceof VacuumPreflightError) throw error;
-        console.error('[compaction] manual full vacuum failed:', error);
-        if (compacted) {
-          try {
-            await compacted.close();
-          } catch (closeError) {
-            console.error('Failed to close compacted database after vacuum error:', closeError);
-          }
-        }
-        // The engine can fail while copying, before returning a target instance.
-        // Retain access to both raw handles so those temporary files can still close.
-        await Promise.allSettled([tempDataFile.close(), tempLogFile.close()]);
-        if (originalClosed) {
-          try {
-            await this.closeInternal(true);
-            const reopen = async () => {
-              this.dbms = await this.openDatabaseFiles(
-                new RealFile(filepath),
-                new RealFile(paths.log),
-                await this.getHnswConfig(),
-              );
-            };
-            if (preparationAttempted) {
-              await recoverVacuumReplacement(filepath, () => this.verifyVacuumFiles(filepath));
-              await reopen();
-            } else {
-              await deleteIfExists(paths.tempData);
-              await deleteIfExists(paths.tempLog);
-              await reopen();
+          return summary;
+        } catch (error) {
+          if (error instanceof VacuumPreflightError) throw error;
+          this.reportVacuum('recover');
+          console.error('[compaction] manual full vacuum failed:', error);
+          if (compacted) {
+            try {
+              await compacted.close();
+            } catch (closeError) {
+              console.error('Failed to close compacted database after vacuum error:', closeError);
             }
-            this.currentFilepath = filepath;
-            this.onDatabaseOpened();
-          } catch (restoreError) {
-            await this.closeInternal(true).catch(() => undefined);
-            throw new AggregateError(
-              [error, restoreError],
-              'Vacuum failed and recovery could not complete. Recovery files were retained; the database is disconnected.',
-            );
           }
+          // The engine can fail while copying, before returning a target instance.
+          // Retain access to both raw handles so those temporary files can still close.
+          await Promise.allSettled([tempDataFile.close(), tempLogFile.close()]);
+          if (originalClosed) {
+            try {
+              await this.closeInternal(true);
+              const reopen = async () => {
+                this.dbms = await this.openDatabaseFiles(
+                  new RealFile(filepath),
+                  new RealFile(paths.log),
+                  await this.getHnswConfig(),
+                );
+              };
+              if (preparationAttempted) {
+                await recoverVacuumReplacement(filepath, () => this.verifyVacuumFiles(filepath));
+                await reopen();
+              } else {
+                await deleteIfExists(paths.tempData);
+                await deleteIfExists(paths.tempLog);
+                await reopen();
+              }
+              this.currentFilepath = filepath;
+              this.onDatabaseOpened();
+            } catch (restoreError) {
+              await this.closeInternal(true).catch(() => undefined);
+              const failure = new AggregateError(
+                [error, restoreError],
+                'Vacuum failed and recovery could not complete. Recovery files were retained; the database is disconnected.',
+              );
+              this.currentFilepath = filepath;
+              this.recoveryError = failure.message;
+              throw failure;
+            }
+          }
+          await deleteIfExists(paths.tempData);
+          await deleteIfExists(paths.tempLog);
+          throw error;
         }
-        await deleteIfExists(paths.tempData);
-        await deleteIfExists(paths.tempLog);
-        throw error;
-      }
-    });
+      });
+    } catch (error) {
+      this.vacuumProgress = {
+        id: this.vacuumProgress.id,
+        filepath: this.vacuumFilepath,
+        state: 'failed',
+        phase: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      };
+      throw error;
+    } finally {
+      this.vacuumPending = false;
+      this.vacuumFilepath = null;
+      if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
+    }
   }
 
   // ── Collections ──────────────────────────────────────────────
@@ -881,15 +998,34 @@ export class DatabaseService {
     return all;
   }
 
+  /** Overview counts from primary indexes, without transferring document payloads. */
+  async getCollectionCounts(): Promise<{ collections: string[]; counts: Record<string, number> }> {
+    return this.runExclusive('collection-counts', async () => {
+      this.ensureConnected();
+      const collections = await this.dbms!.getCollections();
+      const counts = Object.create(null) as Record<string, number>;
+      for (const collection of collections) counts[collection] = await this.getDocumentCountUnlocked(collection);
+      return { collections, counts };
+    });
+  }
+
   /** Delete an entire collection. */
   async deleteCollection(collection: string, afterDelete?: () => Promise<void>): Promise<void> {
-    await this.runExclusive('delete-collection', async () => {
-      this.ensureConnected();
-      await this.dbms!.deleteCollection(collection);
-      await this.dbms!.commit();
-      this.invalidateCollectionStorage(collection);
-      if (afterDelete) await afterDelete();
-    });
+    if (this.collectionDeletions.has(collection))
+      throw new DatabaseInputError('This collection is already being deleted.');
+    const deletion = { collection, state: 'queued' as 'queued' | 'running' };
+    this.collectionDeletions.set(collection, deletion);
+    try {
+      await this.runExclusive('delete-collection', async () => {
+        deletion.state = 'running';
+        this.ensureConnected();
+        await this.dbms!.deleteCollection(collection);
+        this.invalidateCollectionStorage(collection);
+        if (afterDelete) await afterDelete();
+      });
+    } finally {
+      this.collectionDeletions.delete(collection);
+    }
     if (this.incrementalCompactionEnabled) this.scheduleIncrementalCompaction();
   }
 
@@ -1193,9 +1329,7 @@ export class DatabaseService {
   private async getDocumentCountUnlocked(collection: string): Promise<number> {
     const cached = this.documentCountCache.get(collection);
     if (cached !== undefined) return cached;
-    let count = 0;
-    const iterator = this.dbms!.cursor(collection, 'id')[Symbol.asyncIterator]();
-    while (!(await iterator.next()).done) count++;
+    const count = await this.dbms!.countDocuments(collection);
     this.documentCountCache.set(collection, count);
     return count;
   }
@@ -1356,23 +1490,16 @@ export class DatabaseService {
       if (edit && edit.field === 'id') {
         throw new DatabaseInputError('Choose a field other than the primary ID');
       }
-      const ids: Array<string | number> = [];
-      if ('all' in selection) {
-        for await (const json of this.dbms!.cursor(collection, 'id')) {
-          ids.push((JSON.parse(json) as { id: string | number }).id);
-        }
-      } else {
-        ids.push(...new Set(selection.ids));
-      }
+      const ids = 'all' in selection ? await this.dbms!.getDocumentIds(collection) : [...new Set(selection.ids)];
       // Validate every target before starting mutations, including unloaded rows.
       for (const id of ids) {
-        const document = JSON.parse(await this.dbms!.getDocumentById(collection, id)) as Record<string, unknown>;
         if (edit) {
+          const document = JSON.parse(await this.dbms!.getDocumentById(collection, id)) as Record<string, unknown>;
           if (!Object.prototype.hasOwnProperty.call(document, edit.field)) {
             throw new DatabaseInputError(`Field ${edit.field} is missing on document ${id}`);
           }
           this.validateIndexedKeys(collection, { ...document, [edit.field]: edit.value });
-        }
+        } else if (!(await this.dbms!.hasDocument(collection, id))) throw new DatabaseInputError('Document not found');
       }
       try {
         for (const id of ids) {
@@ -1829,6 +1956,7 @@ export class DatabaseService {
   }
 
   private scheduleIncrementalCompaction(): void {
+    if (this.vacuumPending) return;
     if (!this.incrementalCompactionEnabled) return;
     if (!this.isConnected) return;
     if (this.incrementalCompactionQueued || this.incrementalCompactionActive) return;
@@ -1873,6 +2001,7 @@ export class DatabaseService {
     if (this.activeExclusiveToken !== null && this.exclusiveContext.getStore() === this.activeExclusiveToken) {
       return await task();
     }
+    if (this.vacuumPending && !['vacuum', 'shutdown', 'expire-demo'].includes(operation)) throw new DatabaseBusyError();
     if (
       ['creating', 'cancelling'].includes(this.demoProgress.state) &&
       ![
@@ -1898,6 +2027,26 @@ export class DatabaseService {
 
     await previous;
     this.currentOperation = operation;
+    // Storage stats traverse the complete free list. Reuse them across reads,
+    // but conservatively invalidate for mutations and unknown external callers.
+    const changesStorage = ![
+      'database-status',
+      'list-collections',
+      'collection-counts',
+      'get-documents',
+      'get-document',
+      'word-search',
+      'content-search',
+      'semantic-search',
+      'semantic-photo-search',
+      'semantic-image-search',
+      'document-storage',
+      'document-metadata',
+      'collection-storage',
+      'get-field-indexes',
+      'legacy-document-address',
+    ].includes(operation);
+    if (changesStorage) this.storageStatsCache = null;
     const token = Symbol(operation);
     this.activeExclusiveToken = token;
     try {
@@ -1919,6 +2068,7 @@ export class DatabaseService {
       }
       throw error;
     } finally {
+      if (changesStorage) this.storageStatsCache = null;
       this.activeExclusiveToken = null;
       this.currentOperation = null;
       release();
@@ -1926,14 +2076,21 @@ export class DatabaseService {
   }
 
   async runExclusiveOperation<T>(operation: string, task: () => Promise<T>): Promise<T> {
-    return this.runExclusive(operation, task);
+    return this.runExclusive(operation, async () => {
+      this.storageStatsCache = null;
+      try {
+        return await task();
+      } finally {
+        this.storageStatsCache = null;
+      }
+    });
   }
 
   private logFilepath(filepath: string): string {
     return `${filepath}.log`;
   }
 
-  private async databaseSizeInfo(filepath: string): Promise<DatabaseSizeInfo> {
+  private async databaseSizeInfo(filepath: string, reuseStats = false): Promise<DatabaseSizeInfo> {
     const dataFileBytes = await sizeOrZero(filepath);
     const logFileBytes = await sizeOrZero(this.logFilepath(filepath));
     const info: DatabaseSizeInfo = {
@@ -1943,8 +2100,13 @@ export class DatabaseService {
     };
 
     if (this.dbms) {
-      const stats = await this.dbms.getCompactionStorageStats().catch(() => null);
+      const database = this.dbms;
+      const stats =
+        reuseStats && this.storageStatsCache?.database === database
+          ? this.storageStatsCache.stats
+          : await database.getCompactionStorageStats().catch(() => null);
       if (stats) {
+        if (reuseStats) this.storageStatsCache = { database, stats };
         info.activeDataBytes = stats.usedBlocks * stats.blockSize;
         info.freeDataBytes = stats.freeBlocks * stats.blockSize;
         info.amplification = stats.usedBlocks > 0 ? stats.totalBlocks / stats.usedBlocks : 1;
@@ -1959,6 +2121,8 @@ export class DatabaseService {
   }
 
   private async closeInternal(preserveDemo = false): Promise<void> {
+    this.storageStatsCache = null;
+    if (!this.vacuumPending) this.vacuumProgress = null;
     if (this.demoClosingDatabase) {
       await this.demoClosingDatabase.close();
       this.demoClosingDatabase = null;

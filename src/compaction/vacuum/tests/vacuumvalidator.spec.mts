@@ -2,13 +2,14 @@
 // @date: 2026-04-24
 
 import assert from 'assert';
-import { describe, it, beforeEach } from 'vitest';
+import { describe, it, beforeEach, expect, vi } from 'vitest';
 
 import { MockFile } from '../../../../tests/helpers/mockfile.mjs';
 import { DbmsBack } from '../../../database/dbmsback.mjs';
 import { JSONtoDocument } from '../../../database/document.mjs';
 import { CollectionCatalog } from '../collectioncatalog.mjs';
 import { VacuumValidator } from '../vacuumvalidator.mjs';
+import type { RecordStore } from '../../../storage/records/recordstore.mjs';
 
 //
 // Test setup helpers
@@ -93,6 +94,29 @@ describe('vacuumvalidator.mjs', () => {
     const validator = new VacuumValidator(source, target, new CollectionCatalog(source));
 
     await validator.validate();
+  });
+
+  it.each([
+    ['punctuation', ['z', '', 'é']],
+    ['numeric', [100, -7, 2]],
+  ] as const)('validates %s IDs with one decoded pass through each database', async (_kind, ids) => {
+    for (const id of ids) {
+      const document = JSONtoDocument(JSON.stringify({ id, title: `document ${id}` }), 'records');
+      await source.insertDocument(document);
+      await target.insertDocument(document);
+    }
+    const sourceStore = (source as unknown as { recordStore: RecordStore }).recordStore;
+    const targetStore = (target as unknown as { recordStore: RecordStore }).recordStore;
+    const sourceReads = vi.spyOn(sourceStore, 'readRecord');
+    const targetReads = vi.spyOn(targetStore, 'readRecord');
+    try {
+      await new VacuumValidator(source, target, new CollectionCatalog(source)).validate();
+      expect(sourceReads).toHaveBeenCalledTimes(ids.length);
+      expect(targetReads).toHaveBeenCalledTimes(ids.length);
+    } finally {
+      sourceReads.mockRestore();
+      targetReads.mockRestore();
+    }
   });
 
   it('rejects when target is missing a source collection', async () => {

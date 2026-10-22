@@ -26,6 +26,7 @@ export class ApiError extends Error {
     message: string,
     readonly affectedIds?: Array<string | number>,
     readonly connection?: DisconnectedConnection,
+    readonly busyOperation?: 'vacuum',
   ) {
     super(message);
     this.name = 'ApiError';
@@ -81,7 +82,12 @@ export async function api<T = Record<string, unknown>>(path: string, opts: ApiOp
       )
         ? json.affectedIds
         : undefined;
+    const busyOperation =
+      json && typeof json === 'object' && 'busyOperation' in json && json.busyOperation === 'vacuum'
+        ? 'vacuum'
+        : undefined;
     const connection: DisconnectedConnection | undefined =
+      !busyOperation &&
       json &&
       typeof json === 'object' &&
       'connected' in json &&
@@ -90,7 +96,7 @@ export async function api<T = Record<string, unknown>>(path: string, opts: ApiOp
       (typeof json.filepath === 'string' || json.filepath === null)
         ? { connected: false, filepath: json.filepath }
         : undefined;
-    throw new ApiError(message, affectedIds, connection);
+    throw new ApiError(message, affectedIds, connection, busyOperation);
   }
 
   return json as T;

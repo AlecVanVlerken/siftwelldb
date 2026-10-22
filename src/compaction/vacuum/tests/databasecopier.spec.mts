@@ -249,10 +249,15 @@ describe('databasecopier.mjs', () => {
     await copier.copyAll();
 
     assert.strictEqual(progressEvents.length >= 3, true);
-    assert.deepStrictEqual(progressEvents[0], {
+    assert.deepStrictEqual(progressEvents[1], {
       phase: 'copy-collection',
       collection: 'articles',
       copiedDocuments: 0,
+      totalDocuments: 2,
+      processed: 0,
+      total: 2,
+      unit: 'documents',
+      percentage: 0,
     });
 
     assert.strictEqual(
@@ -270,7 +275,7 @@ describe('databasecopier.mjs', () => {
     );
   });
 
-  it('does not emit document-copy progress for metadata-only collection', async () => {
+  it('reports metadata-only copying without inventing a percentage', async () => {
     source.setFieldCompressionDefaults('articles', { title: 'gzip' });
     await source.commit();
 
@@ -282,6 +287,17 @@ describe('databasecopier.mjs', () => {
 
     await copier.copyAll();
 
-    assert.deepStrictEqual(progressEvents, []);
+    assert.deepStrictEqual(progressEvents, [
+      { phase: 'copy-collection', collection: 'articles' },
+      {
+        phase: 'copy-collection',
+        collection: 'articles',
+        copiedDocuments: 0,
+        totalDocuments: 0,
+        processed: 0,
+        total: 0,
+        unit: 'documents',
+      },
+    ]);
   });
 });

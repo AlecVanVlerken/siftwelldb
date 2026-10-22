@@ -32,12 +32,170 @@ import { getSqlMutationKind } from './sql-ui.js';
 import { openSqlReference } from './sql-reference.js';
 import { mergeScopedModel } from './model-editor.js';
 import { DemoCreation, demoProgress } from './demo-session.js';
+import {
+  CollectionOperations,
+  createVacuumOverlay,
+  mergeCollectionCounts,
+  vacuumProgressView,
+  collectionLoadingMessage,
+} from './database-operations.js';
 
-async function api(path, options = {}) {
+const collectionOperations = new CollectionOperations();
+const vacuumOverlay = createVacuumOverlay($('#database-operation-overlay'), [
+  ...document.querySelectorAll('#app, #drawer, .modal-bg, #toasts'),
+]);
+let localVacuumPending = false;
+let serverVacuumBusy = false;
+let vacuumReconciliation = null;
+let statusFlight = null;
+let operationsFlight = null;
+let operationsTimer = null;
+let serverDeletions = [];
+let waitingCollectionLoad = null;
+let vacuumOperationId = null;
+let reportedVacuumFailureId = null;
+
+function pendingDeletions() {
+  return [
+    ...new Set([...collectionOperations.pendingCollections, ...serverDeletions.map((entry) => entry.collection)]),
+  ];
+}
+
+function renderVacuumProgress(progress = null) {
+  const view = vacuumProgressView(progress);
+  $('#database-operation-stage').textContent = view.stage;
+  $('#database-operation-detail').textContent = view.detail;
+  const bar = $('#database-operation-progress');
+  bar.classList.toggle('hidden', view.percentage === null);
+  if (view.percentage !== null) bar.value = view.percentage;
+  $('#database-operation-percentage').classList.toggle('hidden', view.percentage === null);
+  $('#database-operation-percentage').textContent = view.percentage === null ? '' : `${view.percentage}% of this phase`;
+  $('.database-operation-spinner').classList.toggle('hidden', view.percentage !== null);
+}
+
+function pollOperations() {
+  if (operationsTimer) return;
+  operationsTimer = setInterval(() => void refreshOperations(), 500);
+}
+
+async function refreshOperations() {
+  if (!state.connected) return null;
+  if (operationsFlight && isCurrentRequestContext(operationsFlight.context)) return operationsFlight.promise;
+  const flight = { context: captureRequestContext('database'), promise: null };
+  operationsFlight = flight;
+  flight.promise = (async () => {
+    try {
+      const snapshot = await api('/api/database/operations');
+      if (operationsFlight !== flight || !isCurrentRequestContext(flight.context)) return null;
+      if (
+        (snapshot.filepath && snapshot.filepath !== state.filepath) ||
+        (!snapshot.connected && snapshot.busyOperation !== 'vacuum')
+      ) {
+        await refreshDatabaseStatus();
+        return null;
+      }
+      const changed = JSON.stringify(serverDeletions) !== JSON.stringify(snapshot.deletions);
+      serverDeletions = snapshot.deletions || [];
+      if (snapshot.busyOperation === 'vacuum') {
+        serverVacuumBusy = true;
+        vacuumOverlay.show();
+        pollOperations();
+      }
+      const progress = snapshot.vacuum;
+      if (progress && (snapshot.busyOperation === 'vacuum' || progress.id === vacuumOperationId)) {
+        vacuumOperationId = progress.id;
+        renderVacuumProgress(progress);
+      }
+      if (changed) {
+        renderTree();
+        renderConnectionMaintenanceMenu();
+        renderCollectionLoadStatus();
+        if (state.tab === 'data') renderData();
+      }
+      if (vacuumOverlay.active && snapshot.busyOperation !== 'vacuum' && !localVacuumPending) {
+        serverVacuumBusy = false;
+        if (progress?.state === 'failed' && progress.id !== reportedVacuumFailureId) {
+          reportedVacuumFailureId = progress.id;
+          toast(`Full vacuum failed: ${progress.error}`, 'err');
+        }
+        await refreshDatabaseStatus();
+      }
+      if (waitingCollectionLoad && !pendingDeletions().length && !vacuumOverlay.active) {
+        const pending = waitingCollectionLoad;
+        waitingCollectionLoad = null;
+        if (isCurrentRequestContext(pending.context)) void loadSelectedCollection(pending.collection);
+      }
+      return snapshot;
+    } catch {
+      // A failed observation cannot establish readiness. Keep waiting and retry.
+      return null;
+    } finally {
+      if (operationsFlight === flight) operationsFlight = null;
+      if (!vacuumOverlay.active && !pendingDeletions().length && !waitingCollectionLoad && operationsTimer) {
+        clearInterval(operationsTimer);
+        operationsTimer = null;
+      }
+    }
+  })();
+  return flight.promise;
+}
+
+async function loadSelectedCollection(collection) {
+  const context = captureRequestContext();
+  documentPages.set(collection, {
+    ...(documentPages.get(collection) || {}),
+    loading: true,
+    waiting: false,
+    waitingForStatus: false,
+    error: null,
+  });
+  render();
+  // Probe operation metadata before submitting a database read. During deletion,
+  // keep just the latest selected view instead of queueing obsolete B, C, D reads.
+  const operations = await refreshOperations();
+  if (!isCurrentRequestContext(context)) return;
+  if (!operations || pendingDeletions().length || operations.busyOperation === 'vacuum') {
+    waitingCollectionLoad = { collection, context };
+    documentPages.set(collection, {
+      ...(documentPages.get(collection) || {}),
+      loading: true,
+      waiting: true,
+      waitingForStatus: !operations,
+    });
+    pollOperations();
+    render();
+    return;
+  }
+  waitingCollectionLoad = null;
+  await refreshDocs(collection);
+  if (isCurrentRequestContext(context)) render();
+}
+
+async function api(path, options = {}, allowDuringVacuum = false) {
+  if (
+    vacuumOverlay.active &&
+    !allowDuringVacuum &&
+    !['/api/status', '/api/database/status', '/api/database/operations'].includes(path)
+  )
+    throw new Error('Full vacuum is running. Please wait until the database is ready.');
+  const address = new URL(path, location.origin);
+  const target = address.searchParams.get('collection');
+  if (
+    target !== null &&
+    collectionOperations.isDeleting(JSON.parse(target)) &&
+    !(options.method === 'DELETE' && address.pathname === '/api/collection')
+  )
+    throw new Error('This collection is being deleted.');
   const context = captureRequestContext('database');
   try {
     return await requestApi(path, options);
   } catch (error) {
+    if (error.busyOperation === 'vacuum' && isCurrentRequestContext(context)) {
+      serverVacuumBusy = true;
+      vacuumOverlay.show();
+      pollOperations();
+      renderConnectionMaintenanceMenu();
+    }
     if (error.connection && state.connected && isCurrentRequestContext(context)) {
       if (path === '/api/query') {
         state.sqlHistory.unshift({
@@ -148,6 +306,20 @@ function clearDocumentSelection() {
 }
 
 function resetConnectionView() {
+  collectionOperations.resetDatabase();
+  vacuumOverlay.hide();
+  localVacuumPending = false;
+  serverVacuumBusy = false;
+  vacuumReconciliation = null;
+  statusFlight = null;
+  operationsFlight = null;
+  serverDeletions = [];
+  waitingCollectionLoad = null;
+  vacuumOperationId = null;
+  reportedVacuumFailureId = null;
+  if (operationsTimer) clearInterval(operationsTimer);
+  operationsTimer = null;
+  renderVacuumProgress();
   retainDemo(null);
   overviewRefreshing = false;
   fieldIndexBusy = false;
@@ -189,7 +361,6 @@ function resetSelectionView() {
   overviewRefreshing = false;
   fieldIndexBusy = false;
   clearDocumentSelection();
-  bulkBusy = false;
   recommendingFields.clear();
   closeModal('modal-bulk-edit');
   modelModalRequest++;
@@ -219,20 +390,47 @@ function resetSelectionView() {
 }
 
 async function loadCollectionDocuments(c, append = false) {
+  if (collectionOperations.isDeleting(c)) return false;
+  const collectionRequest = collectionOperations.capture(c);
   const context = captureRequestContext('database');
   const request = (documentRequests.get(c) || 0) + 1;
   documentRequests.set(c, request);
   const previous = state.docsByColl[c] || [];
   const limit = append ? DOCUMENT_PAGE_SIZE : Math.min(10000, Math.max(DOCUMENT_PAGE_SIZE, previous.length));
   const offset = append ? previous.length : 0;
-  const { documents, total, hasMore } = await api(`${documentsUrl(c)}&limit=${limit}&offset=${offset}`);
-  if (!isCurrentRequestContext(context) || documentRequests.get(c) !== request) return false;
-  const parsed = (documents || []).map((d) => JSON.parse(d));
-  const next = append ? [...previous, ...parsed] : parsed;
-  state.docsByColl[c] = next;
-  state.countsByColl[c] = total ?? next.length;
-  documentPages.set(c, { hasMore: hasMore ?? next.length < (total ?? next.length), loading: false });
-  return true;
+  documentPages.set(c, { ...(documentPages.get(c) || {}), loading: true, error: null });
+  try {
+    const { documents, total, hasMore } = await api(`${documentsUrl(c)}&limit=${limit}&offset=${offset}`);
+    if (
+      !isCurrentRequestContext(context) ||
+      !collectionOperations.isCurrent(collectionRequest) ||
+      documentRequests.get(c) !== request
+    )
+      return false;
+    const parsed = (documents || []).map((d) => JSON.parse(d));
+    const next = append ? [...previous, ...parsed] : parsed;
+    state.docsByColl[c] = next;
+    state.countsByColl[c] = total ?? next.length;
+    documentPages.set(c, { hasMore: hasMore ?? next.length < (total ?? next.length), loading: false });
+    return true;
+  } catch (error) {
+    if (
+      isCurrentRequestContext(context) &&
+      collectionOperations.isCurrent(collectionRequest) &&
+      documentRequests.get(c) === request
+    )
+      documentPages.set(c, { ...(documentPages.get(c) || {}), error: error.message });
+    throw error;
+  } finally {
+    if (
+      isCurrentRequestContext(context) &&
+      collectionOperations.isCurrent(collectionRequest) &&
+      documentRequests.get(c) === request
+    ) {
+      const page = documentPages.get(c);
+      if (page) page.loading = false;
+    }
+  }
 }
 
 function imageMimeMetadataField(fieldName) {
@@ -266,8 +464,14 @@ async function bootstrap() {
       api('/api/embeddings/status').catch(() => state.search.embedStatus),
     ]);
     if (!isCurrentRequestContext(context)) return;
-    state.connected = status.connected;
+    state.connected = status.connected || status.busyOperation === 'vacuum';
     state.filepath = status.filepath;
+    if (status.busyOperation === 'vacuum') {
+      serverVacuumBusy = true;
+      state.databaseStatus = status;
+      vacuumOverlay.show();
+      pollOperations();
+    }
     retainDemo(status.temporaryDemo);
     state.geminiKeySet = settings.geminiKeySet;
     state.search.embedStatus = embed;
@@ -279,6 +483,10 @@ async function bootstrap() {
   updateConnState();
   if (state.connected) {
     closeModal('modal-connect');
+    if (serverVacuumBusy) {
+      render();
+      return;
+    }
     await loadCollections();
     await loadModel();
     await refreshDatabaseStatus();
@@ -322,10 +530,12 @@ function renderConnectionMaintenanceMenu() {
   const manualEl = $('#cm-manual-compact');
   if (sizeEl) sizeEl.textContent = `Database file: ${size ? fmtSize(size.dataFileBytes) : '—'}`;
   if (autoEl) {
-    autoEl.disabled = !connected || maintenanceBusy || !!status?.busyOperation;
+    autoEl.disabled = !connected || maintenanceBusy || vacuumOverlay.active || !!status?.busyOperation;
     autoEl.checked = !!inc?.enabled;
   }
-  if (manualEl) manualEl.disabled = !connected || maintenanceBusy || !!status?.busyOperation;
+  if (manualEl)
+    manualEl.disabled =
+      !connected || maintenanceBusy || vacuumOverlay.active || pendingDeletions().length > 0 || !!status?.busyOperation;
   if (noteEl) {
     if (!connected) noteEl.textContent = 'Open a database to compact.';
     else if (maintenanceBusy || status?.busyOperation) noteEl.textContent = 'Compaction in progress…';
@@ -339,40 +549,44 @@ function renderConnectionMaintenanceMenu() {
   }
 }
 
-async function loadCollections() {
+async function loadCollections(loadDocuments = true, allowDuringVacuum = false) {
   const context = captureRequestContext('database');
+  const collectionRequest = collectionOperations.capture();
   const request = ++collectionsRequest;
   let complete = true;
   try {
-    const { collections } = await api('/api/collections');
-    if (!isCurrentRequestContext(context) || request !== collectionsRequest) return;
-    const nextCollections = collections || [];
-    const live = new Set(nextCollections);
+    const { collections, counts } = await api('/api/collections?counts=true', {}, allowDuringVacuum);
+    if (
+      !isCurrentRequestContext(context) ||
+      !collectionOperations.isCurrent(collectionRequest) ||
+      request !== collectionsRequest
+    )
+      return;
+    const live = new Set(collections || []);
+    const nextCollections = collectionOperations.visible(collections || []);
     for (const collection of Object.keys(state.docsByColl)) {
-      if (!live.has(collection)) {
+      if (!live.has(collection) && !collectionOperations.isDeleting(collection)) {
         delete state.docsByColl[collection];
         documentRequests.set(collection, (documentRequests.get(collection) || 0) + 1);
         documentPages.delete(collection);
       }
     }
-    for (const collection of Object.keys(state.countsByColl)) {
-      if (!live.has(collection)) delete state.countsByColl[collection];
-    }
     state.collections = nextCollections;
-    // Pre-load counts in parallel — small ops on each collection.
-    await Promise.all(
-      state.collections.map(async (c) => {
-        try {
-          await loadCollectionDocuments(c);
-        } catch {
-          if (!isCurrentRequestContext(context) || request !== collectionsRequest) return;
-          complete = false;
-          state.countsByColl[c] = '?';
-          state.docsByColl[c] = [];
-        }
-      }),
-    );
-    if (!isCurrentRequestContext(context) || request !== collectionsRequest) return;
+    state.countsByColl = mergeCollectionCounts(state.countsByColl, nextCollections, counts);
+    // Only the selected collection needs document payloads, especially for image collections.
+    if (loadDocuments && state.selectedCol !== null && live.has(state.selectedCol)) {
+      try {
+        await loadCollectionDocuments(state.selectedCol);
+      } catch {
+        complete = false;
+      }
+    }
+    if (
+      !isCurrentRequestContext(context) ||
+      !collectionOperations.isCurrent(collectionRequest) ||
+      request !== collectionsRequest
+    )
+      return;
     if (state.selectedCol !== null && !live.has(state.selectedCol)) {
       resetSelectionView();
       state.selectedCol = null;
@@ -381,7 +595,12 @@ async function loadCollections() {
     }
     return complete;
   } catch (e) {
-    if (!isCurrentRequestContext(context) || request !== collectionsRequest) return;
+    if (
+      !isCurrentRequestContext(context) ||
+      !collectionOperations.isCurrent(collectionRequest) ||
+      request !== collectionsRequest
+    )
+      return;
     toast('Failed to load collections: ' + e.message, 'err');
     return false;
   }
@@ -408,15 +627,15 @@ async function runSeedAction(label, task) {
   }
 }
 
-async function loadModel() {
+async function loadModel(allowDuringVacuum = false) {
   const context = captureRequestContext('database');
   try {
-    const { model } = await api('/api/conversational/model');
+    const { model } = await api('/api/conversational/model', {}, allowDuringVacuum);
     if (!isCurrentRequestContext(context)) return;
     state.model = model;
   } catch {
     if (!isCurrentRequestContext(context)) return;
-    state.model = null;
+    // A failed refresh must not erase a previously verified schema.
   }
 }
 
@@ -848,7 +1067,8 @@ async function saveDocumentModal() {
 // Selection
 // ─────────────────────────────────────────────────────────────────
 function selectCollection(c) {
-  if (!state.connected || !state.collections.includes(c)) return;
+  if (!state.connected || vacuumOverlay.active || collectionOperations.isDeleting(c) || !state.collections.includes(c))
+    return;
   resetSelectionView();
   state.selectedCol = c;
   state.tab = 'overview';
@@ -869,9 +1089,10 @@ function selectCollection(c) {
   state.lab.error = null;
   compressionDefaultsLoadedFor = null;
   closeDrawer();
-  render();
+  void loadSelectedCollection(c);
 }
 function selectRoot() {
+  waitingCollectionLoad = null;
   resetSelectionView();
   state.selectedCol = null;
   state.tab = 'overview';
@@ -944,7 +1165,11 @@ function renderTree() {
   // Only one database is ever connected, so there is no "database
   // node" in this tree — the connection pill in the top bar shows
   // which file is open. The explorer is just the collections list.
-  let h = '';
+  let h = pendingDeletions().length
+    ? `<div class="empty" role="status" style="padding:8px;">Deleting ${pendingDeletions()
+        .map((name) => `“${esc(name)}”`)
+        .join(', ')}… Other database requests may wait.</div>`
+    : '';
   if (colls.length === 0) {
     h += `<div class="empty" style="padding-left:8px;">${filter ? 'No matches.' : 'No collections yet.'}${filter ? '' : '<br><button class="tbtn pri" id="tree-add-collection" style="margin-top:10px;">Add collection</button>'}</div>`;
   } else {
@@ -985,30 +1210,55 @@ function renderTree() {
   $$('#tree [data-del]').forEach((b) =>
     b.addEventListener('click', (e) => {
       e.stopPropagation();
-      confirmAction(
-        `Drop collection “${b.dataset.del}”?`,
-        'This permanently removes every document in it.',
-        async () => {
-          const context = captureRequestContext('database');
-          try {
-            await api(collectionUrl(b.dataset.del), { method: 'DELETE' });
-            if (!isCurrentRequestContext(context)) return;
-            toast(`Dropped “${b.dataset.del}”`, 'ok');
-            invalidateStorageCache(b.dataset.del);
-            documentPages.delete(b.dataset.del);
-            await loadCollections();
-            if (!isCurrentRequestContext(context)) return;
-            await loadModel();
-            await refreshDatabaseStatus();
-            render();
-          } catch (err) {
-            if (!isCurrentRequestContext(context)) return;
-            toast(err.message, 'err');
-          }
-        },
+      confirmAction(`Drop collection “${b.dataset.del}”?`, 'This permanently removes every document in it.', () =>
+        deleteCollection(b.dataset.del),
       );
     }),
   );
+}
+
+async function deleteCollection(collection) {
+  if (!state.connected || vacuumOverlay.active) return;
+  const deletion = collectionOperations.beginDeletion(collection);
+  if (!deletion) return;
+  const context = captureRequestContext('database');
+  collectionsRequest++;
+  documentRequests.set(collection, (documentRequests.get(collection) || 0) + 1);
+  documentPages.delete(collection);
+  invalidateStorageCache(collection);
+  if (state.selectedCol === collection) {
+    resetSelectionView();
+    state.selectedCol = null;
+    state.tab = 'overview';
+  }
+  state.collections = collectionOperations.visible(state.collections);
+  render();
+  renderConnectionMaintenanceMenu();
+  pollOperations();
+  let failed = false;
+  try {
+    await api(collectionUrl(collection), { method: 'DELETE' });
+    if (!isCurrentRequestContext(context)) return;
+    toast(`Dropped “${collection}”`, 'ok');
+  } catch (error) {
+    if (!isCurrentRequestContext(context)) return;
+    failed = true;
+    toast(`Could not delete “${collection}”: ${error.message}`, 'err');
+  } finally {
+    if (isCurrentRequestContext(context) && collectionOperations.finishDeletion(deletion)) {
+      await refreshOperations();
+      renderConnectionMaintenanceMenu();
+      delete state.docsByColl[collection];
+      const loaded = await loadCollections(false);
+      if (!isCurrentRequestContext(context)) return;
+      if (failed && loaded === false && !state.collections.includes(collection)) {
+        state.collections.push(collection);
+        state.countsByColl[collection] = '?';
+      }
+      await Promise.all([loadModel(), refreshDatabaseStatus()]);
+      if (isCurrentRequestContext(context)) render();
+    }
+  }
 }
 
 function renderTabs() {
@@ -1016,7 +1266,7 @@ function renderTabs() {
   const dis = state.selectedCol === null;
   otabs.innerHTML = `
     <button class="ot ${state.tab === 'overview' ? 'on' : ''}" data-t="overview"><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></span>Overview</button>
-    <button class="ot ${state.tab === 'data' ? 'on' : ''}" data-t="data" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span>Data${state.selectedCol !== null ? `<span class="badge">${(state.docsByColl[state.selectedCol] || []).length}</span>` : ''}</button>
+    <button class="ot ${state.tab === 'data' ? 'on' : ''}" data-t="data" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="1"/><line x1="3" y1="9" x2="21" y2="9"/></svg></span>Data${state.selectedCol !== null ? `<span class="badge">${state.countsByColl[state.selectedCol] ?? '…'}</span>` : ''}</button>
     <button class="ot ${state.tab === 'fields' ? 'on' : ''}" data-t="fields" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span>Fields</button>
     <button class="ot ${state.tab === 'compression' ? 'on' : ''}" data-t="compression" ${dis ? 'disabled' : ''}>Compression</button>
     <button class="ot ${state.tab === 'lab' ? 'on' : ''}" data-t="lab" ${dis ? 'disabled' : ''}><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6L4 19a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3L14 8V2"/><path d="M8 14h8"/></svg></span>Lab</button>
@@ -1037,6 +1287,7 @@ function renderTabs() {
 
 function renderTab() {
   destroyAiCharts();
+  renderCollectionLoadStatus();
   if (!state.connected) {
     $('#cnt').innerHTML = '';
     return;
@@ -1055,6 +1306,17 @@ function renderTab() {
   }
 }
 
+function renderCollectionLoadStatus() {
+  const collection = state.selectedCol;
+  const message =
+    collection === null
+      ? null
+      : collectionLoadingMessage(collection, documentPages.get(collection), pendingDeletions());
+  const host = $('#collection-load-status');
+  host.classList.toggle('hidden', !message);
+  host.textContent = message || '';
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Overview
 // ─────────────────────────────────────────────────────────────────
@@ -1062,33 +1324,72 @@ function renderTab() {
 // when a collection is opened so we don't pay the cost upfront for
 // every collection in the sidebar.
 const storageCache = new Map();
+const storageRequests = new Map();
 async function getCollectionStorage(c) {
+  if (collectionOperations.isDeleting(c)) return null;
+  if (pendingDeletions().length || documentPages.get(c)?.loading) return null;
   const context = captureRequestContext('database');
+  const collectionRequest = collectionOperations.capture(c);
   const epoch = storageEpoch;
   if (storageCache.has(c)) return storageCache.get(c);
-  try {
-    const s = await api(collectionUrl(c, 'storage'));
-    if (!isCurrentRequestContext(context) || epoch !== storageEpoch) return null;
-    storageCache.set(c, s);
-    return s;
-  } catch {
-    if (isCurrentRequestContext(context) && epoch === storageEpoch) storageCache.set(c, null);
-    return null;
-  }
+  if (storageRequests.has(c)) return storageRequests.get(c);
+  const flight = (async () => {
+    try {
+      const s = await api(collectionUrl(c, 'storage'));
+      if (
+        !isCurrentRequestContext(context) ||
+        !collectionOperations.isCurrent(collectionRequest) ||
+        epoch !== storageEpoch
+      )
+        return null;
+      storageCache.set(c, s);
+      return s;
+    } catch {
+      // Keep a failed request retryable; never replace verified metrics with invented zeros.
+      return null;
+    } finally {
+      if (storageRequests.get(c) === flight) storageRequests.delete(c);
+    }
+  })();
+  storageRequests.set(c, flight);
+  return flight;
 }
 function invalidateStorageCache(c) {
   storageEpoch++;
-  if (c !== undefined && c !== null) storageCache.delete(c);
-  else storageCache.clear();
+  if (c !== undefined && c !== null) {
+    storageCache.delete(c);
+    storageRequests.delete(c);
+  } else {
+    storageCache.clear();
+    storageRequests.clear();
+  }
 }
 
 async function refreshDatabaseStatus() {
   if (!state.connected) return null;
-  const context = captureRequestContext('database');
+  if (statusFlight && isCurrentRequestContext(statusFlight.context)) return statusFlight.promise;
+  const flight = { context: captureRequestContext('database'), promise: null };
+  statusFlight = flight;
+  flight.promise = readDatabaseStatus(flight.context).finally(() => {
+    if (statusFlight === flight) statusFlight = null;
+  });
+  return flight.promise;
+}
+
+async function readDatabaseStatus(context) {
   const request = ++databaseStatusRequest;
   try {
     const status = await api('/api/database/status');
     if (!isCurrentRequestContext(context) || request !== databaseStatusRequest) return null;
+    if (status.busyOperation === 'vacuum') {
+      serverVacuumBusy = true;
+      vacuumOverlay.show();
+      pollOperations();
+      state.databaseStatus = { ...(state.databaseStatus || {}), busyOperation: 'vacuum', available: false };
+      renderConnectionMaintenanceMenu();
+      return state.databaseStatus;
+    }
+    serverVacuumBusy = false;
     if (!status.connected) {
       showDisconnectedConnection(status.filepath, status.recoveryError);
       return null;
@@ -1109,38 +1410,71 @@ async function refreshDatabaseStatus() {
     }
     state.databaseStatus = status;
     retainDemo(status.temporaryDemo);
+    if (vacuumOverlay.active && !localVacuumPending) await finishVacuumUi(context);
   } catch {
     if (!isCurrentRequestContext(context) || request !== databaseStatusRequest) return null;
-    state.databaseStatus = null;
+    // Preserve the last verified status; callers can report a failed refresh separately.
+    return null;
   }
   renderConnectionMaintenanceMenu();
   return state.databaseStatus;
 }
 
+async function finishVacuumUi(context) {
+  if (localVacuumPending || serverVacuumBusy || !isCurrentRequestContext(context)) return;
+  if (vacuumReconciliation) return vacuumReconciliation;
+  const finish = (async () => {
+    try {
+      invalidateStorageCache();
+      await Promise.all([loadCollections(false, true), loadModel(true)]);
+    } finally {
+      if (isCurrentRequestContext(context) && !localVacuumPending && !serverVacuumBusy) {
+        maintenanceBusy = false;
+        vacuumOverlay.hide();
+        updateConnState();
+        render();
+      }
+    }
+  })();
+  vacuumReconciliation = finish;
+  try {
+    await finish;
+  } finally {
+    if (vacuumReconciliation === finish) vacuumReconciliation = null;
+  }
+}
+
 async function runManualCompaction() {
-  if (!state.connected || maintenanceBusy) return;
+  if (!state.connected || maintenanceBusy || vacuumOverlay.active || pendingDeletions().length) return;
   const context = captureRequestContext('database');
   maintenanceBusy = true;
+  localVacuumPending = true;
+  // A held metadata response from an earlier vacuum must not become this one's progress.
+  operationsFlight = null;
+  vacuumOperationId = null;
+  reportedVacuumFailureId = null;
+  renderVacuumProgress();
+  vacuumOverlay.show();
+  pollOperations();
   renderConnectionMaintenanceMenu();
   try {
-    toast('Full vacuum compaction started. The UI may pause briefly.', '', 'Compaction');
-    const result = await api('/api/database/vacuum', { method: 'POST' });
+    const result = await api('/api/database/vacuum', { method: 'POST' }, true);
     if (!isCurrentRequestContext(context)) return;
 
     toast(`Vacuum complete: ${fmtSize(result.before.dataFileBytes)} → ${fmtSize(result.after.dataFileBytes)}`, 'ok');
     closeDrawer();
-    invalidateStorageCache();
-    await refreshDatabaseStatus();
-    await loadCollections();
-    if (!isCurrentRequestContext(context)) return;
-    render();
+    renderVacuumProgress({ id: vacuumOperationId || '', state: 'completed', phase: 'complete' });
   } catch (e) {
     if (!isCurrentRequestContext(context)) return;
     toast('Full vacuum compaction failed: ' + e.message, 'err');
-    await refreshDatabaseStatus();
+    reportedVacuumFailureId = vacuumOperationId;
+    renderVacuumProgress({ id: vacuumOperationId || '', state: 'failed', phase: 'failed', error: e.message });
   } finally {
     if (isCurrentRequestContext(context)) {
-      maintenanceBusy = false;
+      localVacuumPending = false;
+      operationsFlight = null;
+      const status = await refreshDatabaseStatus();
+      if (status && !serverVacuumBusy && isCurrentRequestContext(context)) await finishVacuumUi(context);
       renderConnectionMaintenanceMenu();
     }
   }
@@ -1186,19 +1520,16 @@ function renderDatabaseTools(status = state.databaseStatus) {
 }
 
 async function refreshOverview() {
-  if (!state.connected || overviewRefreshing) return;
+  if (!state.connected || overviewRefreshing || vacuumOverlay.active) return;
   const context = captureRequestContext();
   overviewRefreshing = true;
   if (state.tab === 'overview') renderOverview();
   try {
-    invalidateStorageCache();
-    clearDocumentSelection();
-    const collectionsLoaded = await loadCollections();
-    const status = await refreshDatabaseStatus();
+    const [collectionsLoaded, status] = await Promise.all([loadCollections(false), refreshDatabaseStatus()]);
     if (!isCurrentRequestContext(context)) return;
     toast(
       status && collectionsLoaded
-        ? 'Overview refreshed: documents, counts and storage reloaded.'
+        ? 'Collection counts and database status refreshed.'
         : 'Overview could not be refreshed completely. Try again.',
       status && collectionsLoaded ? 'ok' : 'err',
     );
@@ -1218,27 +1549,20 @@ function renderOverview() {
   const c = state.selectedCol;
   const context = captureRequestContext();
   if (c === null) {
-    const totalDocs = state.collections.reduce(
-      (s, x) => s + (typeof state.countsByColl[x] === 'number' ? state.countsByColl[x] : 0),
-      0,
-    );
+    const totalDocs = state.collections.every((name) => typeof state.countsByColl[name] === 'number')
+      ? state.collections.reduce((sum, name) => sum + state.countsByColl[name], 0)
+      : '?';
     $('#cnt').innerHTML = `<div class="ov">
       <h1><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span><span class="name">${esc(state.filepath || '—')}</span></h1>
       <p class="ovsub"><span><strong>${state.collections.length}</strong> collection${state.collections.length === 1 ? '' : 's'}</span><span><strong>${totalDocs.toLocaleString()}</strong> document${totalDocs === 1 ? '' : 's'}</span></p>
+      ${bulkBusy ? '<p class="ovsub" role="status">Updating documents… Collection counts will refresh when complete.</p>' : ''}
+      ${collectionOperations.pendingCollections.length ? `<p class="ovsub" role="status">Deleting ${collectionOperations.pendingCollections.map((name) => `“${esc(name)}”`).join(', ')}… Other database requests may wait.</p>` : ''}
       ${renderDatabaseTools()}
-      <div class="psec">
-        <h3>Demo datasets</h3>
-        <div class="pbody" style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="tbtn" data-seed-demo ${state.seedBusy ? 'disabled' : ''} style="border:1px solid var(--bd);background:var(--bg2);">${state.seedBusy ? 'Seeding...' : 'Seed employees'}</button>
-          <button class="tbtn" data-seed-semantic-text ${state.seedBusy ? 'disabled' : ''} style="border:1px solid var(--bd);background:var(--bg2);">${state.seedBusy ? 'Seeding...' : 'Seed semantic text demo'}</button>
-          <button class="tbtn" data-seed-semantic-images ${state.seedBusy ? 'disabled' : ''} style="border:1px solid var(--bd);background:var(--bg2);">${state.seedBusy ? 'Seeding...' : 'Seed semantic image demo'}</button>
-        </div>
-      </div>
       <div class="psec">
         <h3>Collections <span class="actions"><button class="tbtn pri" data-add-collection>Add collection</button></span></h3>
         <div>${
           state.collections.length === 0
-            ? `<div class="empty-state"><h4>No collections yet</h4><p>This database is empty. Add a collection by inserting its first JSON document, open the <strong>Query Language</strong> tab, or seed one of the built-in demo datasets.</p><div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;"><button class="tbtn pri" data-add-collection>Add collection</button><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div></div>`
+            ? `<div class="empty-state"><h4>${collectionOperations.pendingCollections.length ? 'Collection deletion in progress' : 'No collections yet'}</h4><p>Add a collection by inserting its first JSON document, or open the <strong>Query Language</strong> tab.</p><div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;"><button class="tbtn pri" data-add-collection>Add collection</button><button class="tbtn" data-open-sql style="border:1px solid var(--bd);background:var(--bg2);">Open Query Language tab</button></div></div>`
             : state.collections
                 .map((x) => {
                   const ex = getExplore(x);
@@ -1255,9 +1579,6 @@ function renderOverview() {
       renderTab();
     });
     $$('[data-add-collection]').forEach((b) => b.addEventListener('click', openCollectionDocumentModal));
-    document.querySelector('[data-seed-demo]')?.addEventListener('click', seedDemoEmployees);
-    document.querySelector('[data-seed-semantic-text]')?.addEventListener('click', seedSemanticKnowledgeDemo);
-    document.querySelector('[data-seed-semantic-images]')?.addEventListener('click', seedSemanticImageDemo);
     $$('[data-root-collection]').forEach((row) =>
       row.addEventListener('click', () => {
         selectCollection(row.dataset.rootCollection);
@@ -1276,7 +1597,7 @@ function renderOverview() {
   const fields = collectionFields(c);
   const totalSize = docs.reduce((s, d) => s + docSize(d), 0);
   const explore = getExplore(c);
-  const count = state.countsByColl[c] ?? docs.length;
+  const count = state.countsByColl[c] ?? '?';
 
   $('#cnt').innerHTML = `<div class="ov">
     <div class="crumb"><a id="ov-back">All collections</a> ›</div>
@@ -1320,7 +1641,7 @@ function renderOverview() {
         <div class="prow"><div class="k">Block size</div><div class="v num">${s.blockSize} B</div></div>
       `;
     } else if (host) {
-      host.innerHTML = `<div style="padding:14px;color:var(--t3);font-size:12px;">Storage info unavailable.</div>`;
+      host.innerHTML = `<div style="padding:14px;color:var(--t3);font-size:12px;">${pendingDeletions().length ? 'Waiting for collection deletion to finish.' : documentPages.get(c)?.loading ? 'Loading collection…' : 'Storage info unavailable.'}</div>`;
     }
   })();
 }
@@ -1481,7 +1802,18 @@ function renderData() {
 
 function renderDataGrid(docs, keys) {
   if (docs.length === 0) {
-    $('#dg-host').innerHTML = `<div class="dg"><div class="loader">No documents.</div></div>`;
+    const page = documentPages.get(state.selectedCol);
+    const loaded = Object.hasOwn(state.docsByColl, state.selectedCol);
+    const message = page?.loading
+      ? collectionLoadingMessage(state.selectedCol, page, pendingDeletions())
+      : page?.error
+        ? 'Documents could not be loaded. Use Refresh to try again.'
+        : !loaded
+          ? 'Documents are not loaded yet.'
+          : state.dataFilter
+            ? 'No matching documents.'
+            : 'No documents.';
+    $('#dg-host').innerHTML = `<div class="dg"><div class="loader">${message}</div></div>`;
     return;
   }
   const unionKeys = keys || [];
@@ -1579,6 +1911,7 @@ function confirmBulkMutation(edit) {
       : `Permanently delete ${scope}? This cannot be undone.`,
     async () => {
       if (!isCurrentRequestContext(context) || bulkBusy) return;
+      const databaseContext = captureRequestContext('database');
       bulkBusy = true;
       closeDrawer();
       if (state.tab === 'data') renderData();
@@ -1587,21 +1920,30 @@ function confirmBulkMutation(edit) {
           method: 'POST',
           body: { ...selection, ...(edit || {}) },
         });
-        if (!isCurrentRequestContext(context)) return;
-        clearDocumentSelection();
+        if (!isCurrentRequestContext(databaseContext)) return;
+        if (isCurrentRequestContext(context)) clearDocumentSelection();
         toast(`${edit ? 'Updated' : 'Deleted'} ${result.affected} documents`, 'ok');
       } catch (error) {
-        if (!isCurrentRequestContext(context)) return;
+        if (!isCurrentRequestContext(databaseContext)) return;
         toast(`Bulk operation failed: ${error.message}. Reloading to show the current data.`, 'err');
       } finally {
-        if (isCurrentRequestContext(context)) {
+        if (isCurrentRequestContext(databaseContext)) {
           invalidateStorageCache(collection);
           invalidateSemanticSearch(collection);
-          await refreshDocs(collection);
-          await refreshDatabaseStatus();
-          if (isCurrentRequestContext(context)) {
-            bulkBusy = false;
-            render();
+          delete state.docsByColl[collection];
+          documentPages.delete(collection);
+          documentRequests.set(collection, (documentRequests.get(collection) || 0) + 1);
+          // Navigation does not cancel a backend mutation. Refresh counts even after leaving its collection.
+          try {
+            await loadCollections(false);
+            if (isCurrentRequestContext(databaseContext) && state.selectedCol === collection)
+              await refreshDocs(collection);
+            await refreshDatabaseStatus();
+          } finally {
+            if (isCurrentRequestContext(databaseContext)) {
+              bulkBusy = false;
+              render();
+            }
           }
         }
       }
@@ -3147,7 +3489,7 @@ $('#cm-auto-compact')?.addEventListener('change', (event) => {
   setAutoCompaction(event.target.checked);
 });
 $('#cm-disconnect').addEventListener('click', async () => {
-  if (connectionBusy || !state.connected) return;
+  if (connectionBusy || vacuumOverlay.active || !state.connected) return;
   closeConnMenu();
   connectionBusy = true;
   invalidateRequestContext('database');
@@ -3269,7 +3611,7 @@ async function reconcileConnection() {
 }
 
 async function createDemoDatabase(existing) {
-  if (connectionBusy) return;
+  if (connectionBusy || vacuumOverlay.active) return;
   demoCreationCancelled = false;
   setConnectionBusy(true);
   $('#connect-err').classList.add('hidden');
@@ -3337,7 +3679,7 @@ $('#connect-demo-cancel').addEventListener('click', async () => {
 });
 
 async function connectDatabase(mode) {
-  if (connectionBusy) return;
+  if (connectionBusy || vacuumOverlay.active) return;
   const fp = $('#connect-filepath').value.trim();
   if (!fp) {
     $('#connect-err').classList.remove('hidden');
@@ -3426,6 +3768,10 @@ bootstrap();
 let statusPolling = false;
 setInterval(async () => {
   if (!state.connected || connectionBusy || statusPolling) return;
+  if (vacuumOverlay.active || pendingDeletions().length || waitingCollectionLoad) {
+    void refreshOperations();
+    return;
+  }
   statusPolling = true;
   try {
     const status = await refreshDatabaseStatus();

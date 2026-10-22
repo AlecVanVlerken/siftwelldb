@@ -159,6 +159,21 @@ describe('readLimit', () => {
 });
 
 describe('ApiRouter', () => {
+  it('returns lightweight collection counts when requested without fetching documents', async () => {
+    const router = new ApiRouter(
+      createConnectedDbStub({
+        getCollectionCounts: () =>
+          Promise.resolve({ collections: ['photos', 'gallery'], counts: { photos: 450, gallery: 150 } }),
+      }),
+    );
+    const response = await handle(router, 'GET', '/api/collections?counts=true');
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      collections: ['photos', 'gallery'],
+      counts: { photos: 450, gallery: 150 },
+    });
+  });
+
   it('reports backend disconnection and preserves completed SQL IDs after an unsafe failure', async () => {
     let connected = true;
     let conversationalDetached = false;
@@ -249,7 +264,55 @@ describe('ApiRouter', () => {
     const res = await handle(router, 'GET', '/api/status');
 
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toEqual({ connected: false, filepath: null });
+    expect(JSON.parse(res.body)).toEqual({ connected: false, available: false, busyOperation: null, filepath: null });
+  });
+
+  it('reports a vacuum close/reopen window as maintenance and rejects conflicts without a disconnect instruction', async () => {
+    let disconnected = false;
+    const router = new ApiRouter(
+      createDbStub({
+        get busyOperation() {
+          return 'vacuum';
+        },
+        get filepath() {
+          return 'maintained.db';
+        },
+      }),
+      createConversationalStub({
+        onDisconnect() {
+          disconnected = true;
+        },
+      }),
+    );
+    const snapshot = await handle(router, 'GET', '/api/status');
+    expect(JSON.parse(snapshot.body)).toMatchObject({
+      connected: false,
+      available: false,
+      busyOperation: 'vacuum',
+      filepath: 'maintained.db',
+    });
+    for (const [method, route] of [
+      ['GET', '/api/collections'],
+      ['DELETE', '/api/collections/books'],
+      ['POST', '/api/database/vacuum'],
+      ['POST', '/api/connect'],
+      ['POST', '/api/create'],
+      ['POST', '/api/disconnect'],
+      ['POST', '/api/demo/create'],
+      ['POST', '/api/query'],
+    ]) {
+      const response = await handle(router, method, route, JSON.stringify({ filepath: 'other.db' }));
+      expect(response.statusCode).toBe(409);
+      expect(JSON.parse(response.body)).toMatchObject({ busyOperation: 'vacuum', available: false });
+      expect(JSON.parse(response.body)).not.toHaveProperty('connected');
+    }
+    expect(disconnected).toBe(false);
+  });
+
+  it.each(['/api/connect', '/api/create'])('rejects a blank filepath for %s', async (route) => {
+    const response = await handle(new ApiRouter(createDbStub()), 'POST', route, JSON.stringify({ filepath: '   ' }));
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({ error: 'Missing filepath' });
   });
 
   it('returns 400 for malformed JSON request bodies', async () => {
@@ -759,6 +822,20 @@ describe('ApiRouter', () => {
 });
 
 describe('field indexing API', () => {
+  it('exposes in-memory progress while database handles are closed for vacuum', async () => {
+    const operations: ReturnType<DatabaseService['getOperations']> = {
+      filepath: 'fixture.db',
+      connected: false,
+      busyOperation: 'vacuum',
+      deletions: [],
+      vacuum: { id: 'v1', filepath: 'fixture.db', state: 'running', phase: 'reopen' },
+    };
+    const router = new ApiRouter(createDbStub({ busyOperation: 'vacuum', getOperations: () => operations }));
+    const response = await handle(router, 'GET', '/api/database/operations');
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual(operations);
+  });
+
   it('returns actual collection settings and awaits an index change', async () => {
     const config = { id: true, body: false };
     const router = new ApiRouter(

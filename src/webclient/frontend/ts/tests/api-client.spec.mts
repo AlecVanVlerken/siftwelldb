@@ -90,6 +90,25 @@ describe('api client', () => {
     });
   });
 
+  it('reports maintenance availability without treating temporary handle closure as a disconnect', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: 'Full vacuum is running',
+          busyOperation: 'vacuum',
+          connected: false,
+          filepath: 'saved.db',
+        }),
+        { status: 409 },
+      ),
+    );
+    await expect(api('/api/query')).rejects.toMatchObject({
+      message: 'Full vacuum is running',
+      busyOperation: 'vacuum',
+      connection: undefined,
+    });
+  });
+
   it('ignores malformed connection metadata', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('{"error":"Failed","connected":false,"filepath":42}', { status: 500 }),
